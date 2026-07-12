@@ -50,7 +50,7 @@ sequenceDiagram
   B-->>M: artifact reference + hash
 ```
 
-## Phase 2 push path
+## Approved push path
 
 ```mermaid
 sequenceDiagram

@@ -1,5 +1,4 @@
 import type { Sandbox } from '@cloudflare/sandbox';
-import type { BrowserWorker } from '@cloudflare/puppeteer';
 import type {
   DestroyWorkspaceParams,
   ProvisionWorkspaceParams
@@ -15,8 +14,9 @@ export interface Env {
   DESTROY_WORKFLOW: Workflow<DestroyWorkspaceParams>;
   METADATA: D1Database;
   ARTIFACTS: R2Bucket;
-  BROWSER: BrowserWorker;
+  BROWSER: BrowserRun;
   FORGE_DEV_AUTH_TOKEN?: string;
+  FORGE_OWNER_AUTH_TOKEN?: string;
   FORGE_CAPABILITY_SIGNING_KEY: string;
   FORGE_INTERNAL_PREVIEW_KEY: string;
   FORGE_DEFAULT_TENANT_ID: string;
@@ -33,4 +33,5 @@ export interface Env {
   FORGE_OAUTH_AUDIENCE?: string;
   FORGE_OAUTH_JWKS_URL?: string;
   FORGE_OAUTH_AUTHORIZATION_SERVER?: string;
+  FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS?: string;
 }

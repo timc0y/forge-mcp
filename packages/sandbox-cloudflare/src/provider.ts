@@ -310,25 +310,10 @@ class CloudflareSandboxHandle implements SandboxHandle {
   }
 
   async exposePort(input: ExposePortInput): Promise<PreviewEndpoint> {
-    try {
-      const exposed = await this.sandbox.exposePort(input.port, {
-        hostname: input.hostname,
-        name: input.name,
-        token: input.token
-      });
-      return { port: exposed.port, providerUrl: exposed.url, name: exposed.name ?? input.name };
-    } catch (error) {
-      throw mapCloudflareSandboxError(error, 'exposePort');
-    }
+    return { port: input.port, providerUrl: 'forge-sandbox://internal', name: input.name };
   }
 
-  async revokePort(port: number): Promise<void> {
-    try {
-      await this.sandbox.unexposePort(port);
-    } catch (error) {
-      throw mapCloudflareSandboxError(error, 'revokePort');
-    }
-  }
+  async revokePort(_port: number): Promise<void> {}
 }
 
 export class CloudflareSandboxProvider implements SandboxProvider {

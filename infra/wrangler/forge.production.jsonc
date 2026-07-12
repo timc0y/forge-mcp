@@ -16,10 +16,11 @@
   "upload_source_maps": true,
   "vars": {
     "FORGE_ENVIRONMENT": "production",
-    "FORGE_PUBLIC_ORIGIN": "https://forge.example",
-    "FORGE_PREVIEW_HOSTNAME": "preview.forge.example",
-    "FORGE_DEFAULT_TENANT_ID": "REPLACE_WITH_OAUTH_CONTEXT",
-    "FORGE_DEFAULT_PROJECT_ID": "REPLACE_WITH_OAUTH_CONTEXT"
+    "FORGE_PUBLIC_ORIGIN": "https://forge-edge-gateway.timcoy72.workers.dev",
+    "FORGE_PREVIEW_HOSTNAME": "forge-edge-gateway.timcoy72.workers.dev",
+    "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
+    "FORGE_DEFAULT_TENANT_ID": "ten_00000000000000000000000001",
+    "FORGE_DEFAULT_PROJECT_ID": "prj_00000000000000000000000001"
   },
   "browser": {
     "binding": "BROWSER"
@@ -28,7 +29,7 @@
     {
       "binding": "METADATA",
       "database_name": "forge-production",
-      "database_id": "REPLACE_ME",
+      "database_id": "b20e5bbf-15fe-4317-b01d-42511db76db5",
       "migrations_dir": "../../migrations/d1"
     }
   ],
@@ -42,8 +43,8 @@
     {
       "class_name": "Sandbox",
       "image": "../../Dockerfile",
-      "instance_type": "standard-3",
-      "max_instances": 100
+      "instance_type": "basic",
+      "max_instances": 3
     }
   ],
   "durable_objects": {

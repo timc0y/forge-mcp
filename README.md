@@ -6,9 +6,11 @@ Forge gives any compatible AI agent a secure remote development computer connect
 
 Forge is not an agent framework, IDE, CI product, or unrestricted shell service. It exposes bounded capabilities through MCP and a direct API while keeping provider credentials and Cloudflare implementation details behind adapters.
 
-## Current milestone
+## Current product
 
-This repository implements the Phase 0 foundation and the Phase 1 vertical-slice path:
+Forge is built for Parallax first. The complete product shape—Forge Local, self-hosted Forge and hosted Forge Cloud—is defined in [the product plan](docs/PRODUCT-PLAN.md).
+
+The current deployable vertical path is:
 
 ```text
 authenticated MCP request
@@ -72,4 +74,4 @@ See [system architecture](docs/architecture/system.md), [threat model](docs/secu
 
 ## Status
 
-The checked-in code is designed to type-check against pinned package versions and includes local unit and contract tests. A real shared Cloudflare environment still requires account bindings, OAuth registration, a Browser Run binding, D1/R2 resources and a GitHub App installation. The deployment runbook records the exact validation steps and does not claim those external resources exist until evidence is captured.
+The Forge Cloud private pilot is deployed at `https://forge-edge-gateway.timcoy72.workers.dev` with D1, R2, Durable Objects, Workflows, Browser Run, the smallest `basic` Sandbox profile, single-owner OAuth and remote MCP. Public-repository workspace execution is enabled. Private clone, push and PR creation remain disabled until the GitHub App credential proxy is configured and verified.

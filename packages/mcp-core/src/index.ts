@@ -15,6 +15,23 @@ export interface ForgeToolDefinition<TShape extends ZodRawShape = ZodRawShape> {
   approval: 'none' | 'policy' | 'required';
 }
 
+export type ForgeMcpContent =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string };
+
+export interface ForgeToolResponse {
+  kind: 'forge_tool_response';
+  value: Record<string, unknown>;
+  content: ForgeMcpContent[];
+}
+
+export function forgeToolResponse(
+  value: Record<string, unknown>,
+  content: ForgeMcpContent[]
+): ForgeToolResponse {
+  return { kind: 'forge_tool_response', value, content };
+}
+
 export const forgeTools = [
   { name: 'forge_workspace_create', title: 'Create Forge workspace', description: 'Create an isolated workspace from an authorized repository. Returns immediately with the current lifecycle state and revision.', inputSchema: { repository, ref: z.string().default('main'), runtime: z.enum(['node-22','node-24','python-3.13','general-purpose']).default('node-22'), persistence: z.enum(['ephemeral','snapshot_on_idle','persistent']).default('snapshot_on_idle'), bootstrap: z.boolean().default(true), start_preview: z.boolean().default(false), idempotency_key: idempotency }, sideEffect: 'workspace', approval: 'none' },
   { name: 'forge_workspace_get', title: 'Get Forge workspace', description: 'Return lifecycle, repository, revision, processes, previews, snapshot and outstanding state for one workspace.', inputSchema: { workspace_id: workspaceId }, sideEffect: 'none', approval: 'none' },
@@ -27,12 +44,15 @@ export const forgeTools = [
   { name: 'forge_git_status', title: 'Read Git status', description: 'Return structured working-tree and branch status for the workspace repository.', inputSchema: { workspace_id: workspaceId }, sideEffect: 'none', approval: 'none' },
   { name: 'forge_git_diff', title: 'Read Git diff', description: 'Return a bounded unified diff for the working tree or staged changes.', inputSchema: { workspace_id: workspaceId, staged: z.boolean().default(false) }, sideEffect: 'none', approval: 'none' },
   { name: 'forge_preview_expose', title: 'Expose private preview', description: 'Expose a running process through a short-lived Forge preview capability. Private is the default; public requires approval.', inputSchema: { workspace_id: workspaceId, process_id: z.string().startsWith('proc_'), port: z.number().int().min(1024).max(65535), access: z.enum(['private','tenant','share-link','public']).default('private'), ttl_seconds: z.number().int().min(60).max(86400).default(3600), expected_revision: revision, idempotency_key: idempotency }, sideEffect: 'workspace', approval: 'policy' },
+  { name: 'forge_review_capture', title: 'Capture Parallax review evidence', description: 'Capture a versioned Parallax evidence packet for bounded selections, routes, states and viewports. Use forge_artifact_get to inspect each stored screenshot image.', inputSchema: { workspace_id: workspaceId, preview_id: z.string().startsWith('prv_'), captures: z.array(z.object({ selection: z.string().min(1).max(200), route: z.string().startsWith('/'), state: z.string().min(1).max(100).default('entry') })).min(1).max(20), viewports: z.array(z.object({ id: z.string().min(1).max(40), width: z.number().int().min(240).max(3840), height: z.number().int().min(240).max(2160) })).min(1).max(4) }, sideEffect: 'workspace', approval: 'none' },
   { name: 'forge_browser_screenshot', title: 'Capture browser screenshot', description: 'Capture browser evidence from a Forge preview and persist it as an artifact bound to workspace revision and viewport.', inputSchema: { workspace_id: workspaceId, preview_id: z.string().startsWith('prv_'), path: z.string().startsWith('/').default('/'), viewport: z.object({ width: z.number().int().min(240).max(3840), height: z.number().int().min(240).max(2160) }), full_page: z.boolean().default(true) }, sideEffect: 'workspace', approval: 'none' },
+  { name: 'forge_browser_accessibility_tree', title: 'Read browser accessibility tree', description: 'Capture the bounded accessibility tree for a Forge preview route at a selected viewport.', inputSchema: { workspace_id: workspaceId, preview_id: z.string().startsWith('prv_'), path: z.string().startsWith('/').default('/'), viewport: z.object({ width: z.number().int().min(240).max(3840), height: z.number().int().min(240).max(2160) }) }, sideEffect: 'workspace', approval: 'none' },
+  { name: 'forge_artifact_get', title: 'Get browser artifact', description: 'Return a stored Forge artifact to the MCP client. Image artifacts are returned as MCP image content for direct model inspection.', inputSchema: { workspace_id: workspaceId, artifact_id: z.string().startsWith('art_'), max_bytes: z.number().int().min(1).max(4000000).default(2500000) }, sideEffect: 'none', approval: 'none' },
   { name: 'forge_workspace_destroy', title: 'Destroy Forge workspace', description: 'Revoke previews and capabilities, stop processes, destroy the sandbox and mark the workspace destroyed.', inputSchema: { workspace_id: workspaceId, preserve_artifacts: z.boolean().default(true), expected_revision: revision, idempotency_key: idempotency }, sideEffect: 'destructive', approval: 'policy' }
 ] as const satisfies readonly ForgeToolDefinition[];
 
 export type ForgeToolName = typeof forgeTools[number]['name'];
-export type ForgeToolHandler = (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+export type ForgeToolHandler = (input: Record<string, unknown>) => Promise<Record<string, unknown> | ForgeToolResponse>;
 export type ForgeToolHandlers = Record<ForgeToolName, ForgeToolHandler>;
 
 export interface ForgeMcpAdapter {

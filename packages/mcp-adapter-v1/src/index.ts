@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { forgeTools, type ForgeToolHandlers } from '@forge/mcp-core';
+import { forgeTools, type ForgeToolHandlers, type ForgeToolResponse } from '@forge/mcp-core';
 import { toForgeError } from '@forge/core';
 
 export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandlers): void {
@@ -18,10 +18,18 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
       },
       async (input: Record<string, unknown>) => {
         try {
-          const value = await handlers[definition.name](input as Record<string, unknown>);
+          const result = await handlers[definition.name](input as Record<string, unknown>);
+          const isResponse = (value: typeof result): value is ForgeToolResponse =>
+            typeof value === 'object' &&
+            value !== null &&
+            'kind' in value &&
+            value.kind === 'forge_tool_response';
+          const value = isResponse(result) ? result.value : result;
           return {
             structuredContent: value,
-            content: [{ type: 'text' as const, text: JSON.stringify(value) }]
+            content: isResponse(result)
+              ? result.content
+              : [{ type: 'text' as const, text: JSON.stringify(value) }]
           };
         } catch (error) {
           const shape = toForgeError(error).toJSON();

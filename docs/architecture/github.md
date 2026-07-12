@@ -4,4 +4,4 @@ Forge uses a GitHub App. Repository authorization is verified at each external o
 
 A reusable installation token must never enter the sandbox. Private clone and push use a credential-proxy capability bound to subject, tenant, workspace, repository, operation, branch pattern, expiry and nonce. The proxy exchanges that capability for a fresh installation token and forwards only an authorized Git request.
 
-Phase 1 supports public clone only. Phase 2 enables the proxy, branch/commit/push tools, PR creation and webhook reconciliation after the credential-path spike is deployed and audited.
+The private pilot supports public clone only. Private repositories and Git writes stay disabled until the proxy, branch/commit/push tools, PR creation and webhook reconciliation are deployed and audited.

@@ -87,7 +87,7 @@ export class GitHubAppGitProvider implements GitProvider {
 
   async createPullRequest(input: PullRequestInput): Promise<PullRequestRef> {
     throw new Error(
-      `PR creation is not enabled in the Phase 1 vertical slice for ${input.repository.owner}/${input.repository.name}.`
+      `PR creation is not enabled in the Forge Cloud private pilot for ${input.repository.owner}/${input.repository.name}.`
     );
   }
 

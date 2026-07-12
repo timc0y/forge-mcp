@@ -2,4 +2,4 @@
 
 The MCP HTTP authorization specification uses OAuth 2.1, Protected Resource Metadata, authorization-server discovery and PKCE-capable client flows. Forge is the resource server; the authorization server may be separate.
 
-Phase 1 keeps an explicit development bearer bypass only in non-production environments. Production deployment must expose RFC 9728 resource metadata, a correct `WWW-Authenticate` challenge, issuer discovery, audience/scope validation and no token passthrough to upstream services.
+The deployed private pilot exposes RFC 9728 resource metadata, dynamic client registration and Authorization Code with PKCE. Its single-owner approval page is intentionally not a public account system. The development bearer bypass remains restricted to non-production environments, and tokens are never passed through to workspace services.

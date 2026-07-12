@@ -17,6 +17,7 @@
     "FORGE_ENVIRONMENT": "development",
     "FORGE_PUBLIC_ORIGIN": "https://forge-edge-gateway-development.timcoy72.workers.dev",
     "FORGE_PREVIEW_HOSTNAME": "forge-edge-gateway-development.timcoy72.workers.dev",
+    "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
     "FORGE_DEFAULT_TENANT_ID": "ten_00000000000000000000000000",
     "FORGE_DEFAULT_PROJECT_ID": "prj_00000000000000000000000000"
   },
@@ -41,8 +42,8 @@
     {
       "class_name": "Sandbox",
       "image": "../../Dockerfile",
-      "instance_type": "standard-3",
-      "max_instances": 5
+      "instance_type": "basic",
+      "max_instances": 1
     }
   ],
   "durable_objects": {

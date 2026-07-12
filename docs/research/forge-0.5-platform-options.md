@@ -13,19 +13,21 @@ Cloudflare's Agents SDK supports remote MCP servers, Streamable HTTP, OAuth inte
 
 ## Repository execution
 
-Cloudflare Sandbox is built on Containers and provides Linux files, commands, processes, package managers, previews and isolated execution. It is the correct runtime boundary for arbitrary repository builds and tests. The Sandbox transport should use RPC; the older HTTP and WebSocket transports are being deprecated.
+Cloudflare Sandbox is built on Containers and provides Linux files, commands, processes, package managers, previews and isolated execution. It is the correct runtime boundary for arbitrary repository builds and tests. Forge uses RPC transport. Browser Run reaches the service through a private Worker bridge backed by `containerFetch`; scoped internal headers route both the page and root-relative assets without creating a public provider URL.
 
 - [Sandbox SDK](https://developers.cloudflare.com/sandbox/)
 - [Sandbox architecture](https://developers.cloudflare.com/sandbox/concepts/architecture/)
 - [Sandbox transport modes](https://developers.cloudflare.com/sandbox/configuration/transport/)
+- [Sandbox ports and container routing](https://developers.cloudflare.com/sandbox/api/ports/)
 - [Sandbox SDK repository](https://github.com/cloudflare/sandbox-sdk)
 
 ## Browser evidence
 
-Browser Run can be called directly from a Worker through a binding without an external API token. It supports screenshots and broader browser sessions. It is suitable for Parallax evidence when Forge has an approved preview URL or when a Sandbox exposes a running service.
+Browser Run can be called directly from a Worker through a binding without an external API token. Forge uses the stateless snapshot Quick Action to collect a screenshot and accessibility tree together for each viewport. Browser sessions remain unnecessary for the standard Parallax review path.
 
 - [Browser Run quick actions](https://developers.cloudflare.com/browser-run/get-started/)
 - [Browser Run screenshot endpoint](https://developers.cloudflare.com/browser-run/quick-actions/screenshot-endpoint/)
+- [Browser Run snapshot endpoint](https://developers.cloudflare.com/browser-run/quick-actions/snapshot/)
 - [Browser Run changelog](https://developers.cloudflare.com/changelog/product/browser-run/)
 
 ## State, artifacts and internal integration

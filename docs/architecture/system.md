@@ -48,6 +48,6 @@ flowchart TD
 
 ## Implemented vertical slice
 
-The Phase 1 foundation implements public Git clone, explicit Sandbox sessions, deterministic idempotent workspace creation, durable provisioning and destruction workflows, deterministic project detection, file tree/read/patch, bounded shell commands, background processes, Git status/diff, private preview capabilities, Browser Run screenshots, workspace revisions, mutation serialization, D1 reconciliation and teardown.
+The current foundation implements public Git clone, explicit Sandbox sessions, deterministic idempotent workspace creation, durable provisioning and destruction workflows, deterministic project detection, file tree/read/patch, bounded shell commands, background processes, Git status/diff, private preview capabilities, Browser Run screenshot/accessibility snapshots, workspace revisions, mutation serialization, D1 reconciliation and teardown.
 
-The private Git credential proxy, push/PR approval, suspension/restore workflows, full egress enforcement and deployed OAuth consent server are Phase 2/3 gates. Their contracts and ADRs exist; the code does not pretend they are complete.
+The deployed private pilot includes OAuth consent, public clone and the complete review-evidence path. The private Git credential proxy, push/PR approval, suspension/restore workflows and full egress enforcement remain release gates. Their contracts and ADRs exist; the code does not pretend they are complete.

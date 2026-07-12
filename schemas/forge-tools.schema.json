@@ -509,6 +509,103 @@
         "additionalProperties": false
       }
     },
+    "forge_review_capture": {
+      "title": "Capture Parallax review evidence",
+      "description": "Capture a versioned Parallax evidence packet for bounded selections, routes, states and viewports. Use forge_artifact_get to inspect each stored screenshot image.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "preview_id": {
+            "type": "string",
+            "pattern": "^prv_.*"
+          },
+          "captures": {
+            "minItems": 1,
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema0"
+            }
+          },
+          "viewports": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema1"
+            }
+          }
+        },
+        "required": [
+          "workspace_id",
+          "preview_id",
+          "captures",
+          "viewports"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "object",
+            "properties": {
+              "selection": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "route": {
+                "type": "string",
+                "pattern": "^\\/.*"
+              },
+              "state": {
+                "default": "entry",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            },
+            "required": [
+              "selection",
+              "route",
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          "__schema1": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 3840
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 2160
+              }
+            },
+            "required": [
+              "id",
+              "width",
+              "height"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
     "forge_browser_screenshot": {
       "title": "Capture browser screenshot",
       "description": "Capture browser evidence from a Forge preview and persist it as an artifact bound to workspace revision and viewport.",
@@ -562,6 +659,90 @@
           "path",
           "viewport",
           "full_page"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_browser_accessibility_tree": {
+      "title": "Read browser accessibility tree",
+      "description": "Capture the bounded accessibility tree for a Forge preview route at a selected viewport.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "preview_id": {
+            "type": "string",
+            "pattern": "^prv_.*"
+          },
+          "path": {
+            "default": "/",
+            "type": "string",
+            "pattern": "^\\/.*"
+          },
+          "viewport": {
+            "type": "object",
+            "properties": {
+              "width": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 3840
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 2160
+              }
+            },
+            "required": [
+              "width",
+              "height"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "workspace_id",
+          "preview_id",
+          "path",
+          "viewport"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_artifact_get": {
+      "title": "Get browser artifact",
+      "description": "Return a stored Forge artifact to the MCP client. Image artifacts are returned as MCP image content for direct model inspection.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "artifact_id": {
+            "type": "string",
+            "pattern": "^art_.*"
+          },
+          "max_bytes": {
+            "default": 2500000,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4000000
+          }
+        },
+        "required": [
+          "workspace_id",
+          "artifact_id",
+          "max_bytes"
         ],
         "additionalProperties": false
       }

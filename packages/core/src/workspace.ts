@@ -49,7 +49,7 @@ export interface Workspace {
   updatedAt: string;
   idleDeadline?: string;
   activeSnapshotId?: SnapshotId;
-  failure?: { stage: string; code: string; message: string };
+  failure?: { stage: string; code: string; message: string; retryable: boolean };
 }
 
 export interface WorkspaceMutationInput {

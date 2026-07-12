@@ -3,6 +3,7 @@ import {
   type WorkflowEvent,
   type WorkflowStep
 } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
 import type { WorkspaceId } from '@forge/core';
 import {
   workflowRetryPolicy,
@@ -29,22 +30,32 @@ export class ProvisionWorkspaceWorkflow extends WorkflowEntrypoint<
     event: Readonly<WorkflowEvent<ProvisionWorkspaceParams>>,
     step: WorkflowStep
   ): Promise<{ workspaceId: WorkspaceId; state: string; revision: number }> {
-    const result = await step.do(
-      'provision workspace',
-      workflowRetryPolicy,
-      async () => {
-        const remote = await coordinator(
-          this.env,
-          event.payload.workspaceId
-        ).provisionInitialized({ bootstrap: event.payload.bootstrap });
-        return { state: String(remote.state), revision: Number(remote.revision) };
-      }
-    );
-    return {
-      workspaceId: event.payload.workspaceId,
-      state: result.state,
-      revision: result.revision
-    };
+    try {
+      const result = await step.do(
+        'provision workspace',
+        workflowRetryPolicy,
+        async () => {
+          const remote = await coordinator(
+            this.env,
+            event.payload.workspaceId
+          ).provisionInitialized({ bootstrap: event.payload.bootstrap });
+          if (!remote.ok) {
+            const message = `${String(remote.code)}: ${String(remote.message)}`;
+            if (!remote.retryable) throw new NonRetryableError(message);
+            throw new Error(message);
+          }
+          return { state: String(remote.state), revision: Number(remote.revision) };
+        }
+      );
+      return {
+        workspaceId: event.payload.workspaceId,
+        state: result.state,
+        revision: result.revision
+      };
+    } catch (error) {
+      await coordinator(this.env, event.payload.workspaceId).provisionExhausted();
+      throw error;
+    }
   }
 }
 

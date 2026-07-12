@@ -167,13 +167,18 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async provisionInitialized(input: { bootstrap: boolean }): Promise<{
+    ok: boolean;
     state: string;
     revision: number;
+    retryable?: boolean;
+    code?: string;
+    message?: string;
   }> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       if (record.workspace.state === 'ready') {
         return {
+          ok: true,
           state: record.workspace.state,
           revision: record.workspace.revision
         };
@@ -184,8 +189,36 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         );
       } catch (error) {
         await this.save(record);
-        throw error;
+        const forgeError = error instanceof ForgeError
+          ? error
+          : new ForgeError({
+              code: 'FORGE_PROVIDER_UNAVAILABLE',
+              message: 'Workspace provisioning failed.',
+              retryable: true
+            });
+        return {
+          ok: false,
+          state: record.workspace.state,
+          revision: record.workspace.revision,
+          retryable: forgeError.retryable,
+          code: forgeError.code,
+          message: forgeError.message
+        };
       }
+      return {
+        ok: true,
+        state: record.workspace.state,
+        revision: record.workspace.revision
+      };
+    });
+  }
+
+  async provisionExhausted(): Promise<{ state: string; revision: number }> {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const before = record.workspace.revision;
+      this.app.markProvisioningExhausted(record);
+      if (record.workspace.revision !== before) await this.save(record);
       return {
         state: record.workspace.state,
         revision: record.workspace.revision
@@ -339,7 +372,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         retryable: false
       });
     }
-    return { workspace: record.workspace, preview };
+    return { workspace: record.workspace, preview, providerId: record.providerId };
   }
 
   async requestDestroy(input: {

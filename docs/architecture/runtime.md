@@ -19,4 +19,6 @@ The Cloudflare implementation uses `@cloudflare/sandbox` 0.12.3 through `package
 
 Provider IDs are derived from Forge IDs and never accepted directly from clients. The adapter consistently uses RPC transport, lowercase identifiers, bounded timeouts and stable Forge errors. Repository paths are checked in Forge and again inside the runtime.
 
-The first image is based on the pinned Cloudflare Sandbox image. Runtime profiles are policy labels in Phase 1; separate images become real only after image compatibility tests exist.
+The first image is based on the pinned Cloudflare Sandbox image and runs on Cloudflare's `basic` instance class. Runtime profiles are pilot policy labels; separate images become real only after image compatibility tests exist.
+
+Browser evidence reaches the running service through a private Worker bridge. Browser Run receives the Forge origin plus workspace-scoped internal headers; the Worker validates those headers, resolves the preview in the coordinator and uses `containerFetch` to reach the service. Responses are buffered to a 20 MB bound so browser navigation completes deterministically. Root-relative assets carry the same scoped headers, and no raw provider URL exists to leak or revoke.

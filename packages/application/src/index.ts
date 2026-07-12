@@ -222,17 +222,42 @@ export class ForgeApplicationService {
             message: 'Workspace provisioning failed.',
             retryable: true
           });
-      record.workspace.state = 'failed';
+      record.workspace.state = forgeError.retryable ? 'provisioning' : 'failed';
       record.workspace.failure = {
         stage: String(forgeError.details?.stage ?? 'provision'),
         code: forgeError.code,
-        message: forgeError.message
+        message: forgeError.message,
+        retryable: forgeError.retryable
       };
       record.workspace.revision = nextRevision(record.workspace.revision);
       record.workspace.updatedAt = new Date().toISOString();
       await onStateChange(record);
       throw forgeError;
     }
+  }
+
+  markProvisioningExhausted(record: WorkspaceRuntimeRecord): WorkspaceRuntimeRecord {
+    if (
+      record.workspace.state === 'ready' ||
+      record.workspace.state === 'destroying' ||
+      record.workspace.state === 'destroyed' ||
+      (record.workspace.state === 'failed' && record.workspace.failure?.retryable === false)
+    ) {
+      return record;
+    }
+
+    record.workspace.state = 'failed';
+    record.workspace.failure = record.workspace.failure
+      ? { ...record.workspace.failure, retryable: false }
+      : {
+          stage: 'provision',
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: 'Workspace provisioning exhausted its retry budget.',
+          retryable: false
+        };
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = new Date().toISOString();
+    return record;
   }
 
   async createWorkspace(input: CreateWorkspaceInput): Promise<WorkspaceRuntimeRecord> {
@@ -488,7 +513,7 @@ export class ForgeApplicationService {
       port: input.port,
       hostname: input.hostname,
       name: previewId,
-      token: crypto.randomUUID()
+      token: crypto.randomUUID().replaceAll('-', '').slice(0, 16)
     });
     const expiresAt = new Date(Date.now() + input.ttlSeconds * 1000).toISOString();
     record.previews[previewId] = {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ForgeApplicationService, type WorkspaceRuntimeRecord } from '@forge/application';
-import { ids } from '@forge/core';
+import { ForgeError, ids } from '@forge/core';
 import type {
   CreateSandboxInput,
   SandboxHandle,
@@ -48,7 +48,12 @@ class FakeProvider implements SandboxProvider {
     revokePort: async () => undefined
   };
 
-  async create(_input: CreateSandboxInput) { return this.handle; }
+  constructor(private readonly createError?: Error) {}
+
+  async create(_input: CreateSandboxInput) {
+    if (this.createError) throw this.createError;
+    return this.handle;
+  }
   async get() { return this.handle; }
   async suspend() {}
   async resume() { return this.handle; }
@@ -84,6 +89,44 @@ describe('Forge application service', () => {
     expect(states).toEqual(['provisioning', 'bootstrapping', 'ready']);
     expect(record.workspace).toMatchObject({ currentCommit: 'abcdef', currentBranch: 'main', state: 'ready' });
     expect(provider.calls).toContain('npm ci');
+  });
+
+  it('keeps retryable provisioning failures non-terminal until retries are exhausted', async () => {
+    const service = new ForgeApplicationService(new FakeProvider(new Error('temporary outage')));
+    const record = initialized(service);
+
+    await expect(service.provisionWorkspace(record, true)).rejects.toMatchObject({
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      retryable: true
+    });
+    expect(record.workspace).toMatchObject({
+      state: 'provisioning',
+      failure: { retryable: true }
+    });
+
+    service.markProvisioningExhausted(record);
+    expect(record.workspace).toMatchObject({
+      state: 'failed',
+      failure: { retryable: false }
+    });
+  });
+
+  it('makes non-retryable provisioning failures terminal immediately', async () => {
+    const service = new ForgeApplicationService(new FakeProvider(new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: 'invalid repository',
+      retryable: false
+    })));
+    const record = initialized(service);
+
+    await expect(service.provisionWorkspace(record, true)).rejects.toMatchObject({
+      code: 'FORGE_VALIDATION_FAILED',
+      retryable: false
+    });
+    expect(record.workspace).toMatchObject({
+      state: 'failed',
+      failure: { retryable: false }
+    });
   });
 
   it('replays a patch idempotently without applying twice', async () => {

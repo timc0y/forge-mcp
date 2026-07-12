@@ -12,7 +12,7 @@ export interface AuthenticatedContext {
 
 const jwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
-function constantTimeEqual(leftValue: string, rightValue: string): boolean {
+export function constantTimeEqual(leftValue: string, rightValue: string): boolean {
   const left = new TextEncoder().encode(leftValue);
   const right = new TextEncoder().encode(rightValue);
   if (left.length !== right.length) return false;
@@ -48,6 +48,32 @@ function getJwks(url: string): ReturnType<typeof createRemoteJWKSet> {
   return value;
 }
 
+async function authenticateForgeToken(token: string, env: Env): Promise<AuthenticatedContext | null> {
+  try {
+    const { payload } = await jwtVerify(
+      token,
+      new TextEncoder().encode(env.FORGE_CAPABILITY_SIGNING_KEY),
+      { issuer: env.FORGE_PUBLIC_ORIGIN, audience: 'forge-mcp' }
+    );
+    const subject = typeof payload.sub === 'string' ? payload.sub : '';
+    const tenantId = typeof payload.tenant_id === 'string' ? payload.tenant_id : '';
+    const projectId = typeof payload.project_id === 'string' ? payload.project_id : '';
+    const scopeValue = typeof payload.scope === 'string' ? payload.scope : '';
+    if (payload.token_type !== 'access' || !subject || !tenantId || !projectId) return null;
+    const scopes = scopeValue.split(/\s+/).filter(Boolean);
+    if (!scopes.includes('forge:workspace')) return null;
+    return {
+      subject,
+      tenantId,
+      projectId,
+      clientId: typeof payload.client_id === 'string' ? payload.client_id : 'oauth-client',
+      scopes
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function authenticate(request: Request, env: Env): Promise<AuthenticatedContext> {
   const token = bearer(request);
   if (!token) {
@@ -69,6 +95,9 @@ export async function authenticate(request: Request, env: Env): Promise<Authenti
       };
     }
   }
+
+  const forgeToken = await authenticateForgeToken(token, env);
+  if (forgeToken) return forgeToken;
 
   try {
     const issuer = required(env.FORGE_OAUTH_ISSUER, 'FORGE_OAUTH_ISSUER');
@@ -101,5 +130,5 @@ export async function authenticate(request: Request, env: Env): Promise<Authenti
 }
 
 export function oauthChallenge(env: Env): string {
-  return `Bearer resource_metadata="${env.FORGE_PUBLIC_ORIGIN}/.well-known/oauth-protected-resource", scope="forge:workspace"`;
+  return `Bearer resource_metadata="${env.FORGE_PUBLIC_ORIGIN}/.well-known/oauth-protected-resource/mcp", scope="forge:workspace"`;
 }
