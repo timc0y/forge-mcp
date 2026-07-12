@@ -34,4 +34,10 @@ export interface Env {
   FORGE_OAUTH_JWKS_URL?: string;
   FORGE_OAUTH_AUTHORIZATION_SERVER?: string;
   FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS?: string;
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_CLIENT_ID?: string;
+  GITHUB_APP_CLIENT_SECRET?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
+  GITHUB_APP_SLUG?: string;
+  GITHUB_WEBHOOK_SECRET?: string;
 }

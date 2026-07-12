@@ -4,6 +4,18 @@
   "version": 1,
   "generatedAt": "deterministic",
   "tools": {
+    "forge_repository_list": {
+      "title": "List authorized repositories",
+      "description": "List GitHub repositories currently authorized through the Forge GitHub App for this account.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
     "forge_workspace_create": {
       "title": "Create Forge workspace",
       "description": "Create an isolated workspace from an authorized repository. Returns immediately with the current lifecycle state and revision.",
@@ -445,6 +457,225 @@
         "required": [
           "workspace_id",
           "staged"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_git_branch_create": {
+      "title": "Create Forge branch",
+      "description": "Create and check out a local branch under the required forge/ namespace.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "branch": {
+            "type": "string",
+            "maxLength": 107,
+            "pattern": "^forge\\/.*"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "branch",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_git_commit": {
+      "title": "Commit workspace changes",
+      "description": "Stage selected repository paths and create a commit attributed to forge-mcp[bot].",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "paths": {
+            "default": [],
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema0"
+            }
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "message",
+          "paths",
+          "idempotency_key"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "forge_git_outgoing_diff": {
+      "title": "Inspect outgoing Git change",
+      "description": "Return the exact bounded diff and hash between the base branch and current Forge branch before approval.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "base": {
+            "default": "main",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        },
+        "required": [
+          "workspace_id",
+          "base"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_git_push": {
+      "title": "Push Forge branch",
+      "description": "Push a non-default forge/ branch through the GitHub App credential proxy. A real user approval page is required.",
+      "sideEffect": "external",
+      "approval": "required",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "branch": {
+            "type": "string",
+            "maxLength": 107,
+            "pattern": "^forge\\/.*"
+          },
+          "base": {
+            "default": "main",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "expected_diff_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "approval_id": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "branch",
+          "base",
+          "expected_diff_hash",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_pull_request_create": {
+      "title": "Create draft pull request",
+      "description": "Create a draft GitHub pull request for an already pushed Forge branch. A real user approval page is required.",
+      "sideEffect": "external",
+      "approval": "required",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "head": {
+            "type": "string",
+            "maxLength": 107,
+            "pattern": "^forge\\/.*"
+          },
+          "base": {
+            "default": "main",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "body": {
+            "default": "",
+            "type": "string",
+            "maxLength": 60000
+          },
+          "approval_id": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "head",
+          "base",
+          "title",
+          "body"
         ],
         "additionalProperties": false
       }

@@ -9,6 +9,7 @@ import { D1MetadataStore } from '@forge/metadata-d1';
 import { CloudflareSandboxProvider } from '@forge/sandbox-cloudflare';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
 import type { Env } from './env';
+import { repositoryCloneSource, repositoryPushSource } from './github';
 
 const RECORD_KEY = 'workspace-runtime';
 const LEASE_KEY = 'mutation-lease';
@@ -184,8 +185,12 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         };
       }
       try {
-        await this.app.provisionWorkspace(record, input.bootstrap, (next) =>
-          this.save(next)
+        const cloneSource = await repositoryCloneSource(this.env, record.workspace);
+        await this.app.provisionWorkspace(
+          record,
+          input.bootstrap,
+          (next) => this.save(next),
+          cloneSource
         );
       } catch (error) {
         await this.save(record);
@@ -343,6 +348,38 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
 
   async gitDiff(input: { staged: boolean }) {
     return this.app.gitDiff(await this.getRecord(), input.staged);
+  }
+
+  async gitBranchCreate(input: { branch: string; expectedRevision?: number; idempotencyKey: string }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const value = await this.app.gitBranchCreate(record, input.branch, input.expectedRevision, input.idempotencyKey);
+      await this.save(record);
+      return value;
+    });
+  }
+
+  async gitCommit(input: { message: string; paths: string[]; expectedRevision?: number; idempotencyKey: string }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const value = await this.app.gitCommit(record, input);
+      await this.save(record);
+      return value;
+    });
+  }
+
+  async gitOutgoingDiff(input: { base: string }) {
+    return this.app.gitOutgoingDiff(await this.getRecord(), input.base);
+  }
+
+  async gitPush(input: { branch: string; base: string; expectedDiffHash: string; expectedRevision?: number; idempotencyKey: string }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const source = await repositoryPushSource(this.env, record.workspace, input.branch);
+      const value = await this.app.gitPush(record, { ...input, source });
+      await this.save(record);
+      return value;
+    });
   }
 
   async previewExpose(input: {

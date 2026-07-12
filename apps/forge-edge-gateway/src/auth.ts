@@ -62,6 +62,13 @@ async function authenticateForgeToken(token: string, env: Env): Promise<Authenti
     if (payload.token_type !== 'access' || !subject || !tenantId || !projectId) return null;
     const scopes = scopeValue.split(/\s+/).filter(Boolean);
     if (!scopes.includes('forge:workspace')) return null;
+    if (subject.startsWith('github:')) {
+      const active = await env.METADATA.prepare(
+        `SELECT 1 AS ok FROM users u JOIN tenants t ON t.id=u.tenant_id
+          WHERE u.github_user_id=?1 AND u.tenant_id=?2 AND u.project_id=?3 AND t.status='active'`
+      ).bind(subject.slice(7), tenantId, projectId).first<{ ok: number }>();
+      if (active?.ok !== 1) return null;
+    }
     return {
       subject,
       tenantId,

@@ -13,6 +13,17 @@ import {
   token
 } from './oauth';
 import type { Env } from './env';
+import {
+  appDashboard,
+  approvalPage,
+  finishGitHubInstall,
+  finishGitHubLogin,
+  githubWebhook,
+  gitCredentialProxy,
+  installGitHubApp,
+  logout,
+  startGitHubLogin
+} from './github';
 
 export {
   Sandbox,
@@ -49,7 +60,7 @@ function landing(env: Env): Response {
 <style>body{margin:0;background:#0b0d10;color:#f6f7f9;font:16px/1.55 ui-sans-serif,system-ui}main{max-width:920px;margin:auto;padding:8rem 1.5rem}p{color:#b8bec8;max-width:720px}h1{font-size:clamp(2.8rem,8vw,6rem);line-height:.95;letter-spacing:-.06em;margin:.3em 0}.eyebrow{color:#8ae6b2;text-transform:uppercase;letter-spacing:.14em;font-size:.8rem}.actions{display:flex;gap:.75rem;flex-wrap:wrap;margin:2rem 0}.actions a{color:#0b0d10;background:#f6f7f9;padding:.8rem 1rem;border-radius:.55rem;text-decoration:none;font-weight:650}.actions a.secondary{color:#f6f7f9;background:#20242b}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin-top:4rem}.card{border:1px solid #2a3039;border-radius:.8rem;padding:1.2rem;background:#111419}.card h2{font-size:1rem;margin:0 0 .4rem}.card p{font-size:.92rem;margin:0}code{color:#8ae6b2}</style></head>
 <body><main><div class="eyebrow">Forge Cloud private pilot</div><h1>Run Parallax Review from any AI coding client.</h1>
 <p>Forge gives ChatGPT, Codex and Claude an isolated repository, Linux runtime and browser. Parallax defines what to review and what counts as evidence.</p>
-<div class="actions"><a href="${env.FORGE_PUBLIC_ORIGIN}/mcp">MCP endpoint</a><a class="secondary" href="${env.FORGE_PUBLIC_ORIGIN}/.well-known/oauth-protected-resource">Connection metadata</a></div>
+<div class="actions"><a href="${env.FORGE_PUBLIC_ORIGIN}/login/github">Continue with GitHub</a><a class="secondary" href="${env.FORGE_PUBLIC_ORIGIN}/.well-known/oauth-protected-resource">Connection metadata</a></div>
 <div class="grid"><div class="card"><h2>Repository + terminal</h2><p>Clone, inspect, patch, build and test inside an on-demand workspace.</p></div><div class="card"><h2>Browser evidence</h2><p>Capture phone and desktop screenshots plus accessibility evidence.</p></div><div class="card"><h2>Parallax contract</h2><p>Preserve audiences, missions, readiness and honest limitations.</p></div></div>
 <p style="margin-top:4rem"><code>${env.FORGE_ENVIRONMENT}</code> · Forge supplies the computer. Parallax supplies the review discipline.</p></main></body></html>`);
 }
@@ -248,6 +259,7 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if (url.pathname.startsWith('/git/')) return await gitCredentialProxy(request, env);
       if (
         url.pathname.startsWith('/__forge_browser/') ||
         request.headers.has('x-forge-browser-workspace') ||
@@ -292,6 +304,14 @@ export default {
       if (url.pathname === '/.well-known/oauth-authorization-server') {
         return json(authorizationServerMetadata(env));
       }
+      if (url.pathname === '/login/github') return await startGitHubLogin(request, env);
+      if (url.pathname === '/login/github/callback') return await finishGitHubLogin(request, env);
+      if (url.pathname === '/logout') return await logout(request, env);
+      if (url.pathname === '/app') return await appDashboard(request, env);
+      if (url.pathname === '/github/install') return await installGitHubApp(request, env);
+      if (url.pathname === '/github/setup') return await finishGitHubInstall(request, env);
+      const approvalMatch = url.pathname.match(/^\/approvals\/(apr_[0-9a-hjkmnp-tv-z]{20,32})$/u);
+      if (approvalMatch?.[1]) return await approvalPage(request, env, approvalMatch[1]);
       if (url.pathname === '/oauth/register' && request.method === 'POST') {
         return await registerClient(request, env);
       }
@@ -311,18 +331,7 @@ export default {
       }
       if (url.pathname.startsWith('/preview/')) return await preview(request, env, url);
       if (url.pathname === '/openapi.json') return json(openapi);
-      if (url.pathname === '/github/webhooks') {
-        return json(
-          {
-            error: {
-              code: 'FORGE_NOT_IMPLEMENTED',
-              message: 'GitHub webhooks are unavailable until the credential proxy is configured.',
-              retryable: false
-            }
-          },
-          501
-        );
-      }
+      if (url.pathname === '/github/webhooks' && request.method === 'POST') return await githubWebhook(request, env);
       if (url.pathname === '/' && request.method === 'GET') return landing(env);
       return new Response('Not found', { status: 404 });
     } catch (error) {

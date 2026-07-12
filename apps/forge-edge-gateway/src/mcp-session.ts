@@ -17,6 +17,14 @@ import { CloudflareBrowserProvider } from '@forge/browser-cloudflare';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import type { Env } from './env';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
+import {
+  authorizeRepository,
+  completeApproval,
+  createDraftPullRequest,
+  listAuthorizedRepositories,
+  requestApproval,
+  requireApproval
+} from './github';
 
 interface SessionProps extends Record<string, unknown> {
   subject: string;
@@ -109,8 +117,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   private handlers(): ForgeToolHandlers {
     const env = this.env;
     return {
+      forge_repository_list: async () => {
+        const identity = this.identity();
+        return { repositories: await listAuthorizedRepositories(env, identity.tenantId) };
+      },
       forge_workspace_create: async (input) => {
         const identity = this.identity();
+        const repository = input.repository as { provider: 'github'; owner: string; name: string };
+        await authorizeRepository(env, identity, repository);
         const idempotencyKey = text(input.idempotency_key);
         const workspaceId = await workspaceIdFromIdempotency(
           `${identity.tenantId}:${identity.projectId}`,
@@ -120,11 +134,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           workspaceId,
           tenantId: identity.tenantId as TenantId,
           projectId: identity.projectId as ProjectId,
-          repository: input.repository as {
-            provider: 'github';
-            owner: string;
-            name: string;
-          },
+          repository,
           ref: text(input.ref),
           runtimeProfile: text(input.runtime) as
             | 'node-22'
@@ -227,6 +237,67 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).gitDiff({
           staged: Boolean(input.staged)
         }));
+      },
+      forge_git_branch_create: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).gitBranchCreate({
+          branch: text(input.branch), expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+        }));
+      },
+      forge_git_commit: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).gitCommit({
+          message: text(input.message), paths: input.paths as string[], expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+        }));
+      },
+      forge_git_outgoing_diff: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).gitOutgoingDiff({ base: text(input.base) }));
+      },
+      forge_git_push: async (input) => {
+        const identity = this.identity();
+        const workspaceId = text(input.workspace_id);
+        const branch = text(input.branch);
+        const base = text(input.base);
+        const diffHash = text(input.expected_diff_hash);
+        const approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        if (!approvalId) {
+          const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash });
+          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact push, then retry with approval_id.', retryable: false, details: approval });
+        }
+        await requireApproval(env, identity, approvalId, workspaceId, 'git.push', { branch, base, diffHash });
+        try {
+          const result = await (await authorizedCoordinator(env, identity, workspaceId)).gitPush({
+            branch, base, expectedDiffHash: diffHash, expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+          });
+          await completeApproval(env, approvalId, true);
+          return asRecord(result);
+        } catch (error) {
+          await completeApproval(env, approvalId, false);
+          throw error;
+        }
+      },
+      forge_pull_request_create: async (input) => {
+        const identity = this.identity();
+        const workspaceId = text(input.workspace_id);
+        const head = text(input.head);
+        const base = text(input.base);
+        const title = text(input.title);
+        const approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        if (!approvalId) {
+          const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title });
+          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this draft PR, then retry with approval_id.', retryable: false, details: approval });
+        }
+        await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title });
+        try {
+          const state = await (await authorizedCoordinator(env, identity, workspaceId)).getState();
+          const result = await createDraftPullRequest(env, identity, state.repository, { head, base, title, body: text(input.body) });
+          await completeApproval(env, approvalId, true);
+          return result;
+        } catch (error) {
+          await completeApproval(env, approvalId, false);
+          throw error;
+        }
       },
       forge_preview_expose: async (input) => {
         const identity = this.identity();

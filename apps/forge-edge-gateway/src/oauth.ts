@@ -1,5 +1,6 @@
 import { SignJWT, jwtVerify } from 'jose';
 import type { Env } from './env';
+import { getWebSession, type UserRow } from './github';
 
 const ACCESS_TOKEN_SECONDS = 60 * 60;
 const REFRESH_TOKEN_SECONDS = 60 * 60 * 24 * 30;
@@ -243,7 +244,7 @@ export async function registerClient(request: Request, env: Env): Promise<Respon
   }, 201);
 }
 
-function authorizeForm(url: URL, error?: string): Response {
+function authorizeForm(url: URL, user?: UserRow, error?: string): Response {
   const fields = ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'code_challenge', 'code_challenge_method']
     .map((key) => `<input type="hidden" name="${key}" value="${escapeHtml(url.searchParams.get(key) ?? '')}">`)
     .join('');
@@ -252,9 +253,9 @@ function authorizeForm(url: URL, error?: string): Response {
 <title>Authorize Forge MCP</title>
 <style>body{font:16px system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem}label{display:block;margin:.75rem 0}input{box-sizing:border-box;width:100%;padding:.7rem}button{padding:.7rem 1rem;background:#111;color:#fff;border:0;border-radius:.4rem}</style>
 <h1>Authorize Forge MCP</h1>
-<p>This connects the MCP client to your Forge workspace. The token is checked by Forge and is never returned to the client.</p>
+<p>This connects the MCP client to ${user ? `<strong>${escapeHtml(user.github_login)}</strong>&#39;s` : 'your'} Forge workspace.</p>
 ${error ? `<p role="alert">${escapeHtml(error)}</p>` : ''}
-<form method="post">${fields}<label>Forge development token<input name="token" type="password" autocomplete="current-password" required></label><button>Authorize</button></form>`);
+<form method="post">${fields}${user ? '' : '<label>Forge development token<input name="token" type="password" autocomplete="current-password" required></label>'}<button>Authorize</button></form>`);
 }
 
 export async function authorize(request: Request, env: Env): Promise<Response> {
@@ -274,15 +275,18 @@ export async function authorize(request: Request, env: Env): Promise<Response> {
   ) {
     return json({ error: 'invalid_request' }, 400);
   }
-  const ownerToken = env.FORGE_OWNER_AUTH_TOKEN ?? env.FORGE_DEV_AUTH_TOKEN;
-  if (!ownerToken) {
-    return json({ error: 'server_auth_not_configured' }, 503);
+  const githubEnabled = Boolean(env.GITHUB_APP_CLIENT_ID && env.GITHUB_APP_CLIENT_SECRET);
+  const user = githubEnabled ? await getWebSession(request, env) : null;
+  if (githubEnabled && !user) {
+    return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
   }
-  if (request.method === 'GET') return authorizeForm(url);
+  const ownerToken = env.FORGE_OWNER_AUTH_TOKEN ?? env.FORGE_DEV_AUTH_TOKEN;
+  if (!githubEnabled && !ownerToken) return json({ error: 'server_auth_not_configured' }, 503);
+  if (request.method === 'GET') return authorizeForm(url, user ?? undefined);
 
   const body = await parseBody(request);
-  if (!constantTimeEqual(body.get('token') ?? '', ownerToken)) {
-    return authorizeForm(url, 'The Forge token was not accepted.');
+  if (!githubEnabled && !constantTimeEqual(body.get('token') ?? '', ownerToken ?? '')) {
+    return authorizeForm(url, undefined, 'The Forge token was not accepted.');
   }
 
   const code = randomToken('code');
@@ -298,9 +302,9 @@ export async function authorize(request: Request, env: Env): Promise<Response> {
     redirectUri,
     challenge,
     scope,
-    'dev-user',
-    env.FORGE_DEFAULT_TENANT_ID,
-    env.FORGE_DEFAULT_PROJECT_ID,
+    user ? `github:${user.github_user_id}` : 'dev-user',
+    user?.tenant_id ?? env.FORGE_DEFAULT_TENANT_ID,
+    user?.project_id ?? env.FORGE_DEFAULT_PROJECT_ID,
     expiresAt
   ).run();
 

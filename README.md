@@ -14,15 +14,16 @@ The current deployable vertical path is:
 
 ```text
 authenticated MCP request
+  -> GitHub-backed Forge account and repository authorization
   -> Workspace Coordinator Durable Object
   -> CloudflareSandboxProvider
-  -> public Git clone
+  -> public or private Git clone through a scoped credential proxy
   -> project detection and bootstrap
   -> file read/tree/patch
   -> bounded command and process execution
   -> private preview capability
   -> Browser Run screenshot
-  -> Git status/diff
+  -> Git status/diff, Forge branch, bot commit and approval-gated draft PR
   -> workspace destruction
 ```
 
@@ -74,4 +75,4 @@ See [system architecture](docs/architecture/system.md), [threat model](docs/secu
 
 ## Status
 
-The Forge Cloud private pilot is deployed at `https://forge-edge-gateway.timcoy72.workers.dev` with D1, R2, Durable Objects, Workflows, Browser Run, the smallest `basic` Sandbox profile, single-owner OAuth and remote MCP. Public-repository workspace execution is enabled. Private clone, push and PR creation remain disabled until the GitHub App credential proxy is configured and verified.
+The Forge Cloud private pilot is deployed at `https://forge-edge-gateway.timcoy72.workers.dev` with D1, R2, Durable Objects, Workflows, Browser Run, the smallest `basic` Sandbox profile, GitHub-backed OAuth and remote MCP. The `forge-mcp-cloud` GitHub App authorizes selected repositories. Private clone uses a short-lived Forge credential-proxy capability; branch pushes and draft PR creation require a separate browser approval.

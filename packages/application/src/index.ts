@@ -54,6 +54,11 @@ export interface CreateWorkspaceInput {
   actor: ActorRef;
 }
 
+export interface RepositoryCloneSource {
+  url: string;
+  authorizationHeader?: string;
+}
+
 function repositorySlug(repository: RepositoryRef): string {
   if (
     !/^[A-Za-z0-9_.-]{1,100}$/.test(repository.owner) ||
@@ -84,6 +89,26 @@ function sandboxProviderId(workspaceId: WorkspaceId): string {
 
 function quoted(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function assertForgeBranch(branch: string): void {
+  if (
+    !/^forge\/[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$/u.test(branch) ||
+    branch.includes('..') ||
+    branch.endsWith('/') ||
+    branch.endsWith('.lock')
+  ) {
+    throw new ForgeError({
+      code: 'FORGE_GIT_PUSH_BLOCKED',
+      message: 'Forge branches must use the forge/<task> namespace.',
+      retryable: false
+    });
+  }
+}
+
+async function sha256Text(value: string): Promise<string> {
+  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export class ForgeApplicationService {
@@ -125,7 +150,8 @@ export class ForgeApplicationService {
   async provisionWorkspace(
     record: WorkspaceRuntimeRecord,
     bootstrap: boolean,
-    onStateChange: (record: WorkspaceRuntimeRecord) => Promise<void> = async () => undefined
+    onStateChange: (record: WorkspaceRuntimeRecord) => Promise<void> = async () => undefined,
+    cloneSource?: RepositoryCloneSource
   ): Promise<WorkspaceRuntimeRecord> {
     if (record.workspace.state === 'ready') return record;
     if (!['requested', 'provisioning', 'failed'].includes(record.workspace.state)) {
@@ -153,14 +179,37 @@ export class ForgeApplicationService {
         idleTimeout: '10m'
       });
 
+      const source = cloneSource ?? {
+        url: `https://github.com/${repositorySlug(record.workspace.repository)}.git`
+      };
+      const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
+      if (source.authorizationHeader) {
+        await handle.writeFile({
+          path: gitConfigPath,
+          content: `[http]\n\textraHeader = ${source.authorizationHeader}\n`
+        });
+      }
       const clone = await handle.exec({
-        command: `git clone --depth 1 --branch ${quoted(record.workspace.requestedRef)} https://github.com/${repositorySlug(record.workspace.repository)}.git /workspace/repo`,
+        command: `git clone --depth 1 --branch ${quoted(record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
         cwd: '/workspace',
         timeoutMs: 180_000,
         outputLimitBytes: 200_000,
         sessionId: 'system',
-        networkPolicy: 'development'
+        networkPolicy: 'development',
+        environment: source.authorizationHeader
+          ? { GIT_CONFIG_GLOBAL: gitConfigPath, GIT_TERMINAL_PROMPT: '0' }
+          : { GIT_TERMINAL_PROMPT: '0' }
       });
+      if (source.authorizationHeader) {
+        await handle.exec({
+          command: `rm -f ${quoted(gitConfigPath)}`,
+          cwd: '/workspace',
+          timeoutMs: 10_000,
+          outputLimitBytes: 1_000,
+          sessionId: 'system',
+          networkPolicy: 'deny_all'
+        }).catch(() => undefined);
+      }
       if (clone.exitCode !== 0) {
         throw new ForgeError({
           code: 'FORGE_PROVIDER_UNAVAILABLE',
@@ -562,6 +611,100 @@ export class ForgeApplicationService {
       outputLimitBytes: 500_000,
       networkPolicy: 'deny_all'
     });
+  }
+
+  async gitBranchCreate(
+    record: WorkspaceRuntimeRecord,
+    branch: string,
+    expectedRevision: number | undefined,
+    idempotencyKey: string
+  ) {
+    assertForgeBranch(branch);
+    const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
+    if (operation.replay) return { replay: true, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+    const result = await (await this.handle(record)).exec({
+      command: `git switch -c ${quoted(branch)}`,
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 50_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the branch.', retryable: false });
+    record.workspace.currentBranch = branch;
+    return { branch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+  }
+
+  async gitCommit(
+    record: WorkspaceRuntimeRecord,
+    input: { message: string; paths: string[]; expectedRevision?: number; idempotencyKey: string }
+  ) {
+    assertForgeBranch(record.workspace.currentBranch ?? '');
+    if (!input.message.trim() || input.message.length > 500) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Commit message is invalid.', retryable: false });
+    const paths = input.paths.length ? input.paths : ['.'];
+    if (paths.some((path) => path.startsWith('/') || path.includes('..') || path.includes('\0'))) {
+      throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Commit paths must stay inside the repository.', retryable: false });
+    }
+    const operation = this.beginMutation(record, input.expectedRevision, input.idempotencyKey);
+    if (operation.replay) return { replay: true, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+    const handle = await this.handle(record);
+    const stage = await handle.exec({
+      command: `git add -- ${paths.map(quoted).join(' ')}`,
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 50_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (stage.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not stage the selected files.', retryable: false });
+    const commit = await handle.exec({
+      command: `git commit -m ${quoted(input.message.trim())}`,
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 100_000,
+      sessionId: 'system', networkPolicy: 'deny_all',
+      environment: {
+        GIT_AUTHOR_NAME: 'forge-mcp[bot]',
+        GIT_AUTHOR_EMAIL: 'forge-mcp[bot]@users.noreply.github.com',
+        GIT_COMMITTER_NAME: 'forge-mcp[bot]',
+        GIT_COMMITTER_EMAIL: 'forge-mcp[bot]@users.noreply.github.com'
+      }
+    });
+    if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
+    const head = await handle.exec({ command: 'git rev-parse HEAD', cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' });
+    record.workspace.currentCommit = head.stdout.trim();
+    return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+  }
+
+  async gitOutgoingDiff(record: WorkspaceRuntimeRecord, base: string) {
+    assertRef(base);
+    const result = await (await this.handle(record)).exec({
+      command: `git diff --no-ext-diff --binary ${quoted(base)}...HEAD`,
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 1_000_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not calculate the outgoing change.', retryable: false });
+    return { diff: result.stdout, diffHash: await sha256Text(result.stdout), branch: record.workspace.currentBranch, base };
+  }
+
+  async gitPush(
+    record: WorkspaceRuntimeRecord,
+    input: { branch: string; expectedDiffHash: string; base: string; source: RepositoryCloneSource; expectedRevision?: number; idempotencyKey: string }
+  ) {
+    assertForgeBranch(input.branch);
+    if (record.workspace.currentBranch !== input.branch) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'The requested branch is not checked out.', retryable: false });
+    const outgoing = await this.gitOutgoingDiff(record, input.base);
+    if (outgoing.diffHash !== input.expectedDiffHash) throw new ForgeError({ code: 'FORGE_STALE_REVISION', message: 'The outgoing diff changed after approval was requested.', retryable: false });
+    const operation = this.beginMutation(record, input.expectedRevision, input.idempotencyKey);
+    if (operation.replay) return { replay: true, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+    const configPath = `/workspace/tmp/gitconfig-push-${record.workspace.id}`;
+    if (!input.source.authorizationHeader) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'GitHub App authorization is required for push.', retryable: false });
+    const handle = await this.handle(record);
+    await handle.writeFile({ path: configPath, content: `[http]\n\textraHeader = ${input.source.authorizationHeader}\n` });
+    try {
+      const result = await handle.exec({
+        command: `git push ${quoted(input.source.url)} HEAD:${quoted(`refs/heads/${input.branch}`)}`,
+        cwd: '/workspace/repo', timeoutMs: 120_000, outputLimitBytes: 200_000,
+        sessionId: 'system', networkPolicy: 'development',
+        environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+      });
+      if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'GitHub rejected the Forge branch push.', retryable: false, details: { stderr: result.stderr.slice(0, 2_000) } });
+    } finally {
+      await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
+    }
+    return { branch: input.branch, commit: record.workspace.currentCommit, diffHash: outgoing.diffHash, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
   requestDestroy(
