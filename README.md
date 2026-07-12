@@ -27,7 +27,7 @@ authenticated MCP request
   -> workspace destruction
 ```
 
-For an already deployed site, `forge_url_review` skips the workspace entirely and uses Browser Run Quick Actions to return phone and desktop screenshots directly to the model. Forge Cloud permits two active workspaces globally, uses 90-second idle sleep, and keeps the URL-review path container-free.
+For an already deployed site, `forge_review` skips the workspace entirely and uses Browser Run Quick Actions to return phone and desktop screenshots directly to the model. Forge Cloud permits two active workspaces globally, uses 90-second idle sleep, and keeps the URL-review path container-free.
 
 Supporting ChatGPT and other MCP Apps hosts receive the optional `ui://forge/workspace-console` interface for repository, workspace, evidence and approval results. Clients without MCP Apps continue to receive the same structured and textual tool output.
 

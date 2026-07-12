@@ -84,7 +84,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     {
       instructions: [
         'Use Forge as a remote development computer and Parallax as the review contract.',
-        'For an existing deployed URL, call forge_url_review first: it returns screenshots without starting a container.',
+        'For an existing deployed URL, call forge_review first: it returns screenshots without starting a container.',
         'Create one workspace per repository task and reuse its workspace_id.',
         'Read repository instructions and parallax/ files before choosing routes or making changes.',
         'Use forge_review_capture for bounded route and viewport evidence, then call forge_artifact_get and inspect every screenshot used in a finding.',
@@ -124,7 +124,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         return { repositories: await listAuthorizedRepositories(env, identity.tenantId) };
       },
-      forge_url_review: async (input) => {
+      forge_review: async (input) => {
         const identity = this.identity();
         const workspaceId = ids.workspace();
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);

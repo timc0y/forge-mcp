@@ -320,15 +320,28 @@ export async function listAuthorizedRepositories(env: Env, tenantId: string): Pr
 export async function appDashboard(request: Request, env: Env): Promise<Response> {
   const user = await getWebSession(request, env);
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent('/app')}`, 302);
-  const repositories = await listAuthorizedRepositories(env, user.tenant_id);
+  const [repositories, active] = await Promise.all([
+    listAuthorizedRepositories(env, user.tenant_id),
+    env.METADATA.prepare(
+      `SELECT COUNT(*) AS count FROM workspaces WHERE state NOT IN ('suspended','failed','destroying','destroyed')`
+    ).first<{ count: number }>()
+  ]);
+  const repositoryRow = (repo: Record<string, unknown>) => `<li><span><strong>${escapeHtml(String(repo.owner))}/${escapeHtml(String(repo.name))}</strong><small>${escapeHtml(String(repo.visibility))} · ${escapeHtml(String(repo.default_branch))}</small></span></li>`;
   const rows = repositories.length
-    ? repositories.map((repo) => `<li><strong>${escapeHtml(String(repo.owner))}/${escapeHtml(String(repo.name))}</strong> <small>${escapeHtml(String(repo.visibility))}</small></li>`).join('')
-    : '<li>No repositories connected yet.</li>';
+    ? repositories.slice(0, 6).map(repositoryRow).join('')
+    : '<li><span><strong>No repositories connected</strong><small>Install the GitHub App to build, edit and create draft PRs.</small></span></li>';
+  const moreRows = repositories.length > 6
+    ? `<details><summary>Show ${repositories.length - 6} more repositories</summary><ul>${repositories.slice(6).map(repositoryRow).join('')}</ul></details>`
+    : '';
+  const mcpUrl = `${env.FORGE_PUBLIC_ORIGIN}/mcp`;
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge Cloud</title><style>body{font:16px/1.5 system-ui;max-width:52rem;margin:4rem auto;padding:0 1rem}header{display:flex;justify-content:space-between;align-items:center}a.button{display:inline-block;background:#111;color:#fff;padding:.7rem 1rem;border-radius:.5rem;text-decoration:none}li{padding:.6rem 0;border-bottom:1px solid #ddd}small{color:#666}</style>
-<header><div><h1>Forge Cloud</h1><p>Signed in as <strong>${escapeHtml(user.github_login)}</strong></p></div><a href="/logout">Sign out</a></header>
-<p><a class="button" href="/github/install">Install or manage the GitHub App</a></p><h2>Authorized repositories</h2><ul>${rows}</ul>
-<h2>Connect an AI client</h2><code>${env.FORGE_PUBLIC_ORIGIN}/mcp</code>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+<title>Forge Cloud</title><style>:root{color-scheme:light dark;--bg:#fafafa;--surface:#fff;--ink:#181818;--muted:#626262;--line:#dedede;--soft:#f1f1f1;--accent:#5747e8}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}main{max-width:940px;margin:0 auto;padding:42px 24px 72px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:28px;border-bottom:1px solid var(--line)}h1{font-size:30px;letter-spacing:-.03em;margin:0 0 5px}h2{font-size:17px;margin:0 0 10px}p{margin:0;color:var(--muted);max-width:68ch}.toplinks{display:flex;gap:14px;align-items:center}a{color:inherit}.button{display:inline-block;background:var(--ink);color:var(--surface);padding:9px 13px;border-radius:8px;text-decoration:none;font-weight:650}.button:hover{opacity:.86}.layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(260px,.8fr);gap:36px;padding-top:30px}.section{margin-bottom:30px}.prompt{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:15px;margin-top:10px;color:var(--ink);font:14px/1.5 ui-monospace,SFMono-Regular,monospace}.prompt+ .prompt{margin-top:8px}.meter{display:flex;align-items:center;gap:10px;margin-top:12px}.slots{display:flex;gap:5px}.slot{width:32px;height:8px;border-radius:4px;background:var(--soft)}.slot.used{background:var(--accent)}code{display:block;background:var(--soft);border-radius:8px;padding:11px;overflow:auto;margin:10px 0;color:var(--ink)}ul{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--line)}li{padding:11px 0;border-bottom:1px solid var(--line)}li span{display:flex;justify-content:space-between;gap:12px}small{color:var(--muted)}.note{font-size:13px;margin-top:10px}details{margin-top:10px}summary{cursor:pointer;color:var(--muted);font-size:13px}summary:hover{color:var(--ink)}@media(max-width:720px){main{padding:28px 18px}.layout{grid-template-columns:1fr}header{align-items:flex-start}.toplinks{flex-direction:column;align-items:flex-end}li span{display:block}small{display:block}}@media(prefers-color-scheme:dark){:root{--bg:#151515;--surface:#1d1d1d;--ink:#f2f2f2;--muted:#aaa;--line:#373737;--soft:#292929;--accent:#8277ff}}</style>
+<main><header><div><h1>Forge</h1><p>A real development computer for ChatGPT, Codex and Claude. Review a site cheaply, or open a repository to build, fix, test and prepare a draft PR.</p></div><div class="toplinks"><span>${escapeHtml(user.github_login)}</span><a href="/logout">Sign out</a></div></header>
+<div class="layout"><div><section class="section"><h2>Start in your AI client</h2><p>Connect this MCP URL once, then use ordinary language. Forge chooses the smallest capable path.</p><code id="mcp">${mcpUrl}</code><a class="button" href="#" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied';return false">Copy MCP URL</a></section>
+<section class="section"><h2>Good first prompts</h2><div class="prompt">Review https://example.com with Parallax on phone and desktop. Inspect every screenshot.</div><div class="prompt">Open ${escapeHtml(user.github_login)}/parallax-review, run the checks, explain the architecture, and do not change anything yet.</div><div class="prompt">Build my project, fix the most important issue, verify it with screenshots, then ask before creating a draft PR.</div></section>
+<section class="section"><h2>How Forge keeps cost down</h2><p>Live URLs use Browser Run without a container. Repository inspection uses GitHub. A container starts only for install, build, edit, test or preview work, and sleeps after 90 seconds idle.</p></section></div>
+<aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots"><i class="slot ${(active?.count ?? 0)>0?'used':''}"></i><i class="slot ${(active?.count ?? 0)>1?'used':''}"></i></div><span>${active?.count ?? 0} of 2 active</span></div><p class="note">Shared across this Forge Cloud pilot.</p></section>
+<section class="section"><h2>GitHub repositories</h2><a class="button" href="/github/install">Manage access</a><ul>${rows}</ul>${moreRows}</section></aside></div></main>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }
 
 export async function authorizeRepository(

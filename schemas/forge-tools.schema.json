@@ -16,9 +16,9 @@
         "additionalProperties": false
       }
     },
-    "forge_url_review": {
-      "title": "Review a live URL with screenshots",
-      "description": "Use the cheapest Forge path: capture inspected screenshot and accessibility evidence from an existing URL without starting a container. Ideal for Parallax reviews of deployed sites.",
+    "forge_review": {
+      "title": "Review a site with Parallax",
+      "description": "The easiest and cheapest Forge path. Capture screenshot and accessibility evidence from an existing URL without starting a container, ready for a strict Parallax review.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
