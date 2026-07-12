@@ -1,0 +1,87 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "forge-edge-gateway",
+  "main": "../../apps/forge-edge-gateway/src/index.ts",
+  "compatibility_date": "2026-07-12",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  },
+  "upload_source_maps": true,
+  "vars": {
+    "FORGE_ENVIRONMENT": "production",
+    "FORGE_PUBLIC_ORIGIN": "https://forge.example",
+    "FORGE_PREVIEW_HOSTNAME": "preview.forge.example",
+    "FORGE_DEFAULT_TENANT_ID": "REPLACE_WITH_OAUTH_CONTEXT",
+    "FORGE_DEFAULT_PROJECT_ID": "REPLACE_WITH_OAUTH_CONTEXT"
+  },
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "d1_databases": [
+    {
+      "binding": "METADATA",
+      "database_name": "forge-production",
+      "database_id": "REPLACE_ME",
+      "migrations_dir": "../../migrations/d1"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "forge-production-artifacts"
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "../../Dockerfile",
+      "instance_type": "standard-3",
+      "max_instances": 100
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Sandbox",
+        "name": "Sandbox"
+      },
+      {
+        "class_name": "ForgeMcpSession",
+        "name": "MCP_SESSIONS"
+      },
+      {
+        "class_name": "WorkspaceCoordinator",
+        "name": "WORKSPACE_COORDINATORS"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Sandbox",
+        "ForgeMcpSession",
+        "WorkspaceCoordinator"
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "name": "forge-production-provision",
+      "binding": "PROVISION_WORKFLOW",
+      "class_name": "ProvisionWorkspaceWorkflow"
+    },
+    {
+      "name": "forge-production-destroy",
+      "binding": "DESTROY_WORKFLOW",
+      "class_name": "DestroyWorkspaceWorkflow"
+    }
+  ]
+}

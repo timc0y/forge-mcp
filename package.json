@@ -1,0 +1,42 @@
+{
+  "name": "forge-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.13.1",
+  "engines": {
+    "node": ">=22 <27"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @forge/edge-gateway dev",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "vitest run",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "vitest run tests/e2e",
+    "check": "pnpm boundaries:check && pnpm typecheck && pnpm test && pnpm schemas:check",
+    "schemas:generate": "tsx scripts/generate-schemas.ts",
+    "schemas:check": "tsx scripts/generate-schemas.ts --check",
+    "deploy:dev": "pnpm --filter @forge/edge-gateway deploy:dev",
+    "cf:typegen": "pnpm --filter @forge/edge-gateway cf:typegen",
+    "boundaries:check": "tsx scripts/check-boundaries.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260712.1",
+    "@forge/application": "workspace:*",
+    "@forge/audit": "workspace:*",
+    "@forge/capabilities": "workspace:*",
+    "@forge/core": "workspace:*",
+    "@forge/mcp-core": "workspace:*",
+    "@forge/policy": "workspace:*",
+    "@forge/project-detection": "workspace:*",
+    "@forge/repo-index": "workspace:*",
+    "@forge/sandbox-core": "workspace:*",
+    "@forge/sandbox-local-docker": "workspace:*",
+    "@types/node": "24.10.1",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.9",
+    "zod": "4.4.3"
+  }
+}

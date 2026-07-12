@@ -1,0 +1,606 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Forge MCP tool schemas",
+  "version": 1,
+  "generatedAt": "deterministic",
+  "tools": {
+    "forge_workspace_create": {
+      "title": "Create Forge workspace",
+      "description": "Create an isolated workspace from an authorized repository. Returns immediately with the current lifecycle state and revision.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "repository": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "const": "github"
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            },
+            "required": [
+              "provider",
+              "owner",
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "ref": {
+            "default": "main",
+            "type": "string"
+          },
+          "runtime": {
+            "default": "node-22",
+            "type": "string",
+            "enum": [
+              "node-22",
+              "node-24",
+              "python-3.13",
+              "general-purpose"
+            ]
+          },
+          "persistence": {
+            "default": "snapshot_on_idle",
+            "type": "string",
+            "enum": [
+              "ephemeral",
+              "snapshot_on_idle",
+              "persistent"
+            ]
+          },
+          "bootstrap": {
+            "default": true,
+            "type": "boolean"
+          },
+          "start_preview": {
+            "default": false,
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "repository",
+          "ref",
+          "runtime",
+          "persistence",
+          "bootstrap",
+          "start_preview",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_workspace_get": {
+      "title": "Get Forge workspace",
+      "description": "Return lifecycle, repository, revision, processes, previews, snapshot and outstanding state for one workspace.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_files_tree": {
+      "title": "List workspace files",
+      "description": "Return a bounded, Git-aware file tree rooted inside /workspace.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "path": {
+            "default": "/workspace/repo",
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "depth": {
+            "default": 4,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "limit": {
+            "default": 1000,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          }
+        },
+        "required": [
+          "workspace_id",
+          "path",
+          "depth",
+          "limit"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_files_read": {
+      "title": "Read workspace file",
+      "description": "Read a bounded text range with a content hash for conflict-safe edits.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "start_line": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "end_line": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "max_bytes": {
+            "default": 200000,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500000
+          }
+        },
+        "required": [
+          "workspace_id",
+          "path",
+          "max_bytes"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_files_patch": {
+      "title": "Apply file patch",
+      "description": "Apply a unified diff inside the repository. Requires an idempotency key and optional expected workspace revision.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "patch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000000
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "patch",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_shell_exec": {
+      "title": "Execute bounded command",
+      "description": "Execute a foreground command in an explicit directory with timeout, output and network-policy bounds.",
+      "sideEffect": "workspace",
+      "approval": "policy",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "cwd": {
+            "default": "/workspace/repo",
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "timeout_ms": {
+            "default": 300000,
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 900000
+          },
+          "environment": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "network_policy": {
+            "default": "development",
+            "type": "string",
+            "enum": [
+              "deny_all",
+              "package_install",
+              "development",
+              "custom_allowlist",
+              "unrestricted_with_approval"
+            ]
+          },
+          "output_limit_bytes": {
+            "default": 200000,
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 1000000
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          },
+          "approved": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "command",
+          "cwd",
+          "timeout_ms",
+          "environment",
+          "network_policy",
+          "output_limit_bytes",
+          "idempotency_key",
+          "approved"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_process_start": {
+      "title": "Start background process",
+      "description": "Start a long-running process such as a development server and return a Forge process identifier immediately.",
+      "sideEffect": "workspace",
+      "approval": "policy",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "cwd": {
+            "default": "/workspace/repo",
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "environment": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "network_policy": {
+            "default": "development",
+            "type": "string",
+            "enum": [
+              "deny_all",
+              "package_install",
+              "development",
+              "custom_allowlist"
+            ]
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "command",
+          "cwd",
+          "environment",
+          "network_policy",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_process_logs": {
+      "title": "Read process logs",
+      "description": "Read a bounded process-log page using an opaque cursor.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "process_id": {
+            "type": "string",
+            "pattern": "^proc_.*"
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "process_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_git_status": {
+      "title": "Read Git status",
+      "description": "Return structured working-tree and branch status for the workspace repository.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_git_diff": {
+      "title": "Read Git diff",
+      "description": "Return a bounded unified diff for the working tree or staged changes.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "staged": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "staged"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_preview_expose": {
+      "title": "Expose private preview",
+      "description": "Expose a running process through a short-lived Forge preview capability. Private is the default; public requires approval.",
+      "sideEffect": "workspace",
+      "approval": "policy",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "process_id": {
+            "type": "string",
+            "pattern": "^proc_.*"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 65535
+          },
+          "access": {
+            "default": "private",
+            "type": "string",
+            "enum": [
+              "private",
+              "tenant",
+              "share-link",
+              "public"
+            ]
+          },
+          "ttl_seconds": {
+            "default": 3600,
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "process_id",
+          "port",
+          "access",
+          "ttl_seconds",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_browser_screenshot": {
+      "title": "Capture browser screenshot",
+      "description": "Capture browser evidence from a Forge preview and persist it as an artifact bound to workspace revision and viewport.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "preview_id": {
+            "type": "string",
+            "pattern": "^prv_.*"
+          },
+          "path": {
+            "default": "/",
+            "type": "string",
+            "pattern": "^\\/.*"
+          },
+          "viewport": {
+            "type": "object",
+            "properties": {
+              "width": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 3840
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 2160
+              }
+            },
+            "required": [
+              "width",
+              "height"
+            ],
+            "additionalProperties": false
+          },
+          "full_page": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "preview_id",
+          "path",
+          "viewport",
+          "full_page"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_workspace_destroy": {
+      "title": "Destroy Forge workspace",
+      "description": "Revoke previews and capabilities, stop processes, destroy the sandbox and mark the workspace destroyed.",
+      "sideEffect": "destructive",
+      "approval": "policy",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "preserve_artifacts": {
+            "default": true,
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "preserve_artifacts",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

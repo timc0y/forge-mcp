@@ -1,0 +1,36 @@
+import type { Sandbox } from '@cloudflare/sandbox';
+import type { BrowserWorker } from '@cloudflare/puppeteer';
+import type {
+  DestroyWorkspaceParams,
+  ProvisionWorkspaceParams
+} from '@forge/workflows-cloudflare';
+import type { ForgeMcpSession } from './mcp-session';
+import type { WorkspaceCoordinator } from './workspace-coordinator';
+
+export interface Env {
+  Sandbox: DurableObjectNamespace<Sandbox>;
+  MCP_SESSIONS: DurableObjectNamespace<ForgeMcpSession>;
+  WORKSPACE_COORDINATORS: DurableObjectNamespace<WorkspaceCoordinator>;
+  PROVISION_WORKFLOW: Workflow<ProvisionWorkspaceParams>;
+  DESTROY_WORKFLOW: Workflow<DestroyWorkspaceParams>;
+  METADATA: D1Database;
+  ARTIFACTS: R2Bucket;
+  BROWSER: BrowserWorker;
+  FORGE_DEV_AUTH_TOKEN?: string;
+  FORGE_CAPABILITY_SIGNING_KEY: string;
+  FORGE_INTERNAL_PREVIEW_KEY: string;
+  FORGE_DEFAULT_TENANT_ID: string;
+  FORGE_DEFAULT_PROJECT_ID: string;
+  FORGE_PUBLIC_ORIGIN: string;
+  FORGE_PREVIEW_HOSTNAME: string;
+  FORGE_ENVIRONMENT:
+    | 'local'
+    | 'development'
+    | 'preview'
+    | 'staging'
+    | 'production';
+  FORGE_OAUTH_ISSUER?: string;
+  FORGE_OAUTH_AUDIENCE?: string;
+  FORGE_OAUTH_JWKS_URL?: string;
+  FORGE_OAUTH_AUTHORIZATION_SERVER?: string;
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.wrangler/
+.dev.vars
+.env
+*.log
+.DS_Store
+artifacts/
+.tmp/
+*.tsbuildinfo
+apps/forge-edge-gateway/src/worker-configuration.d.ts
+
+*.tsbuildinfo
