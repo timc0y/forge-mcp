@@ -16,6 +16,115 @@
         "additionalProperties": false
       }
     },
+    "forge_url_review": {
+      "title": "Review a live URL with screenshots",
+      "description": "Use the cheapest Forge path: capture inspected screenshot and accessibility evidence from an existing URL without starting a container. Ideal for Parallax reviews of deployed sites.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "captures": {
+            "minItems": 1,
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema0"
+            }
+          },
+          "viewports": {
+            "default": [
+              {
+                "id": "phone",
+                "width": 390,
+                "height": 844
+              },
+              {
+                "id": "desktop",
+                "width": 1440,
+                "height": 900
+              }
+            ],
+            "minItems": 1,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema1"
+            }
+          },
+          "full_page": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "url",
+          "captures",
+          "viewports",
+          "full_page"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "object",
+            "properties": {
+              "selection": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/.*"
+              },
+              "state": {
+                "default": "entry",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            },
+            "required": [
+              "selection",
+              "path",
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          "__schema1": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 1920
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 320,
+                "maximum": 2160
+              }
+            },
+            "required": [
+              "id",
+              "width",
+              "height"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
     "forge_workspace_create": {
       "title": "Create Forge workspace",
       "description": "Create an isolated workspace from an authorized repository. Returns immediately with the current lifecycle state and revision.",

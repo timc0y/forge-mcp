@@ -326,7 +326,7 @@ export class CloudflareSandboxProvider implements SandboxProvider {
     return getSandbox(this.env.Sandbox, providerId, {
       enableDefaultSession: false,
       normalizeId: true,
-      sleepAfter: options?.idleTimeout ?? '10m',
+      sleepAfter: options?.idleTimeout ?? '90s',
       transport: TRANSPORT
     });
   }

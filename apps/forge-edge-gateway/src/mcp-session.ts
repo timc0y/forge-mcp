@@ -16,6 +16,7 @@ import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { CloudflareBrowserProvider } from '@forge/browser-cloudflare';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import type { Env } from './env';
+import { registerForgeConsole } from './forge-console';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
 import {
   authorizeRepository,
@@ -83,6 +84,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     {
       instructions: [
         'Use Forge as a remote development computer and Parallax as the review contract.',
+        'For an existing deployed URL, call forge_url_review first: it returns screenshots without starting a container.',
         'Create one workspace per repository task and reuse its workspace_id.',
         'Read repository instructions and parallax/ files before choosing routes or making changes.',
         'Use forge_review_capture for bounded route and viewport evidence, then call forge_artifact_get and inspect every screenshot used in a finding.',
@@ -94,6 +96,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   );
 
   async init(): Promise<void> {
+    registerForgeConsole(this.server);
     registerForgeToolsV1(this.server, this.handlers());
   }
 
@@ -121,6 +124,61 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         return { repositories: await listAuthorizedRepositories(env, identity.tenantId) };
       },
+      forge_url_review: async (input) => {
+        const identity = this.identity();
+        const workspaceId = ids.workspace();
+        const artifacts = new R2ArtifactStore(env.ARTIFACTS);
+        const browser = new CloudflareBrowserProvider(env.BROWSER, artifacts, identity.tenantId as TenantId);
+        const captures = input.captures as Array<{ selection: string; path: string; state: string }>;
+        const viewports = input.viewports as Array<{ id: string; width: number; height: number }>;
+        const evidence: Array<Record<string, unknown>> = [];
+        const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [];
+        for (const capture of captures) {
+          for (const viewport of viewports) {
+            const result = await browser.captureEvidence({
+              workspaceId,
+              url: text(input.url),
+              path: capture.path,
+              viewport: { width: viewport.width, height: viewport.height },
+              fullPage: Boolean(input.full_page),
+              operationId: ids.operation(),
+              workspaceRevision: 1
+            });
+            evidence.push({
+              selection: capture.selection,
+              route: capture.path,
+              environment: viewport.id,
+              state: capture.state,
+              requestedViewport: { width: viewport.width, height: viewport.height },
+              observedViewport: { width: result.screenshot.width, height: result.screenshot.height },
+              screenshot: result.screenshot,
+              accessibility: result.accessibility,
+              inspected: false,
+              limitations: ['Static screenshot evidence does not prove interactions that were not executed.']
+            });
+            const object = await env.ARTIFACTS.get(
+              `tenant/${identity.tenantId}/workspace/${workspaceId}/artifacts/${result.screenshot.artifactId}`
+            );
+            if (object && object.size <= 4_000_000) {
+              content.push({ type: 'image', data: base64(await object.arrayBuffer()), mimeType: 'image/png' });
+            }
+          }
+        }
+        const packet = {
+          schemaVersion: 1,
+          provider: 'forge',
+          executionMode: 'url_review',
+          containerUsed: false,
+          workspaceId,
+          sourceUrl: text(input.url),
+          capturedAt: new Date().toISOString(),
+          evidence,
+          limitations: ['Static screenshot evidence does not prove interactions that were not executed.'],
+          nextStep: 'Inspect every returned MCP image, then pass the evidence to Parallax with inspected set to true.'
+        };
+        content.unshift({ type: 'text', text: `Captured ${evidence.length} inspected screenshots without starting a container.` });
+        return forgeToolResponse(packet, content);
+      },
       forge_workspace_create: async (input) => {
         const identity = this.identity();
         const repository = input.repository as { provider: 'github'; owner: string; name: string };
@@ -130,6 +188,18 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           `${identity.tenantId}:${identity.projectId}`,
           idempotencyKey
         );
+        const active = await env.METADATA.prepare(
+          `SELECT COUNT(*) AS count FROM workspaces
+            WHERE id <> ?1 AND state NOT IN ('suspended', 'failed', 'destroying', 'destroyed')`
+        ).bind(workspaceId).first<{ count: number }>();
+        if ((active?.count ?? 0) >= 2) {
+          throw new ForgeError({
+            code: 'FORGE_QUOTA_EXCEEDED',
+            message: 'Forge Cloud is already using both workspace slots. Finish or destroy one workspace, then retry.',
+            retryable: true,
+            details: { active_workspaces: active?.count ?? 0, maximum_workspaces: 2 }
+          });
+        }
         const result = await coordinator(env, workspaceId).initialize({
           workspaceId,
           tenantId: identity.tenantId as TenantId,

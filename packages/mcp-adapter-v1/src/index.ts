@@ -2,6 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { forgeTools, type ForgeToolHandlers, type ForgeToolResponse } from '@forge/mcp-core';
 import { toForgeError } from '@forge/core';
 
+const FORGE_CONSOLE_URI = 'ui://forge/workspace-console';
+
 export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandlers): void {
   for (const definition of forgeTools) {
     server.registerTool(
@@ -14,6 +16,10 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
           readOnlyHint: definition.sideEffect === 'none',
           destructiveHint: definition.sideEffect === 'destructive',
           idempotentHint: definition.sideEffect !== 'destructive'
+        },
+        _meta: {
+          ui: { resourceUri: FORGE_CONSOLE_URI, visibility: ['model', 'app'] },
+          'openai/outputTemplate': FORGE_CONSOLE_URI
         }
       },
       async (input: Record<string, unknown>) => {

@@ -131,7 +131,7 @@ async function sandboxPreviewFetch(
   const response = await getSandbox(env.Sandbox, detail.providerId, {
     enableDefaultSession: false,
     normalizeId: true,
-    sleepAfter: '10m',
+    sleepAfter: '90s',
     transport: 'rpc'
   }).containerFetch(upstreamRequest, detail.preview.port);
   return { response, target };
