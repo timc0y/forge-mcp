@@ -15,8 +15,8 @@
   "upload_source_maps": true,
   "vars": {
     "FORGE_ENVIRONMENT": "development",
-    "FORGE_PUBLIC_ORIGIN": "http://localhost:8787",
-    "FORGE_PREVIEW_HOSTNAME": "preview.dev.forge.invalid",
+    "FORGE_PUBLIC_ORIGIN": "https://forge-edge-gateway-development.timcoy72.workers.dev",
+    "FORGE_PREVIEW_HOSTNAME": "forge-edge-gateway-development.timcoy72.workers.dev",
     "FORGE_DEFAULT_TENANT_ID": "ten_00000000000000000000000000",
     "FORGE_DEFAULT_PROJECT_ID": "prj_00000000000000000000000000"
   },
@@ -27,7 +27,7 @@
     {
       "binding": "METADATA",
       "database_name": "forge-development",
-      "database_id": "00000000-0000-0000-0000-000000000001",
+      "database_id": "73c05873-11b4-4f3a-a121-42d7517a69c2",
       "migrations_dir": "../../migrations/d1"
     }
   ],
