@@ -2,7 +2,7 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "forge-edge-gateway-development",
   "main": "../../apps/forge-edge-gateway/src/index.ts",
-  "compatibility_date": "2026-07-12",
+  "compatibility_date": "2026-07-13",
   "compatibility_flags": [
     "nodejs_compat"
   ],
@@ -43,7 +43,7 @@
       "class_name": "Sandbox",
       "image": "../../Dockerfile",
       "instance_type": "basic",
-      "max_instances": 1
+      "max_instances": 2
     }
   ],
   "durable_objects": {

@@ -78,6 +78,19 @@ function initialized(service: ForgeApplicationService): WorkspaceRuntimeRecord {
 }
 
 describe('Forge application service', () => {
+  it('rejects client operations until provisioning has completed', async () => {
+    const service = new ForgeApplicationService(new FakeProvider());
+    const record = initialized(service);
+
+    record.workspace.state = 'provisioning';
+    await expect(service.read(record, { path: '/workspace/repo/README.md', maxBytes: 1_000 }))
+      .rejects.toMatchObject({ code: 'FORGE_WORKSPACE_NOT_READY' });
+
+    record.workspace.state = 'bootstrapping';
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .rejects.toMatchObject({ code: 'FORGE_WORKSPACE_NOT_READY' });
+  });
+
   it('provisions through explicit lifecycle states', async () => {
     const provider = new FakeProvider();
     const service = new ForgeApplicationService(provider);

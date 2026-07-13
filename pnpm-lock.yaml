@@ -77,6 +77,9 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@forge/git-core':
+        specifier: workspace:*
+        version: link:../../packages/git-core
       '@forge/mcp-adapter-v1':
         specifier: workspace:*
         version: link:../../packages/mcp-adapter-v1
@@ -86,6 +89,9 @@ importers:
       '@forge/metadata-d1':
         specifier: workspace:*
         version: link:../../packages/metadata-d1
+      '@forge/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
       '@forge/sandbox-cloudflare':
         specifier: workspace:*
         version: link:../../packages/sandbox-cloudflare

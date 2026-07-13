@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "wrangler dev --config ../../infra/wrangler/forge.development.jsonc",
     "deploy:dev": "wrangler deploy --config ../../infra/wrangler/forge.development.jsonc",
+    "deploy:prod": "wrangler deploy --config ../../infra/wrangler/forge.production.jsonc",
     "cf:typegen": "wrangler types --config ../../infra/wrangler/forge.development.jsonc src/worker-configuration.d.ts",
+    "cf:typegen:prod": "wrangler types --config ../../infra/wrangler/forge.production.jsonc /tmp/forge-worker-production.d.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -16,9 +18,11 @@
     "@forge/browser-cloudflare": "workspace:*",
     "@forge/capabilities": "workspace:*",
     "@forge/core": "workspace:*",
+    "@forge/git-core": "workspace:*",
     "@forge/mcp-adapter-v1": "workspace:*",
     "@forge/mcp-core": "workspace:*",
     "@forge/metadata-d1": "workspace:*",
+    "@forge/policy": "workspace:*",
     "@forge/sandbox-cloudflare": "workspace:*",
     "@forge/sandbox-core": "workspace:*",
     "@forge/workflows-cloudflare": "workspace:*",

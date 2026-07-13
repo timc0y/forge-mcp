@@ -8,6 +8,7 @@ export interface CapabilityClaims {
   action: string;
   repository?: string;
   branchPattern?: string;
+  gitCommit?: string;
   nonce: string;
   issuedAt: number;
   expiresAt: number;
@@ -39,7 +40,8 @@ function parseClaims(value: unknown): CapabilityClaims {
     typeof input.expiresAt !== 'number' ||
     !Number.isSafeInteger(input.expiresAt) ||
     (input.repository !== undefined && typeof input.repository !== 'string') ||
-    (input.branchPattern !== undefined && typeof input.branchPattern !== 'string')
+    (input.branchPattern !== undefined && typeof input.branchPattern !== 'string') ||
+    (input.gitCommit !== undefined && (typeof input.gitCommit !== 'string' || !/^[a-f0-9]{40,64}$/i.test(input.gitCommit)))
   ) {
     throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Invalid capability token.', retryable: false });
   }
@@ -53,7 +55,11 @@ export async function issueCapability(claims: CapabilityClaims, secret: string):
   return `${payload}.${encode(signature)}`;
 }
 
-export async function verifyCapability(token: string, secret: string, expected: Pick<CapabilityClaims, 'workspaceId' | 'action'>): Promise<CapabilityClaims> {
+export async function verifyCapability(
+  token: string,
+  secret: string,
+  expected: Pick<CapabilityClaims, 'workspaceId' | 'action'> & Partial<Pick<CapabilityClaims, 'repository' | 'branchPattern' | 'gitCommit'>>
+): Promise<CapabilityClaims> {
   const [payload, signature] = token.split('.');
   if (!payload || !signature) throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Invalid capability token.', retryable: false });
   const valid = await crypto.subtle.verify('HMAC', await key(secret), decode(signature), new TextEncoder().encode(payload));
@@ -68,6 +74,11 @@ export async function verifyCapability(token: string, secret: string, expected: 
   const now = Math.floor(Date.now() / 1000);
   if (claims.version !== 1 || claims.expiresAt <= now || claims.workspaceId !== expected.workspaceId || claims.action !== expected.action) {
     throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Capability is expired or outside its scope.', retryable: false });
+  }
+  for (const field of ['repository', 'branchPattern', 'gitCommit'] as const) {
+    if (expected[field] !== undefined && claims[field] !== expected[field]) {
+      throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Capability is expired or outside its scope.', retryable: false });
+    }
   }
   return claims;
 }

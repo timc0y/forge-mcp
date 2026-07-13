@@ -15,9 +15,11 @@ import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { CloudflareBrowserProvider } from '@forge/browser-cloudflare';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
+import { classifyCommand } from '@forge/policy';
 import type { Env } from './env';
 import { registerForgeConsole } from './forge-console';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
+import { reserveWorkspaceSlot, releaseWorkspaceSlot } from './capacity';
 import {
   authorizeRepository,
   completeApproval,
@@ -76,6 +78,11 @@ function optionalNumber(value: unknown): number | undefined {
 
 function asRecord(value: object): Record<string, unknown> {
   return value as unknown as Record<string, unknown>;
+}
+
+async function sha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
@@ -176,7 +183,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           limitations: ['Static screenshot evidence does not prove interactions that were not executed.'],
           nextStep: 'Inspect every returned MCP image, then pass the evidence to Parallax with inspected set to true.'
         };
-        content.unshift({ type: 'text', text: `Captured ${evidence.length} inspected screenshots without starting a container.` });
+        content.unshift({ type: 'text', text: `Captured ${evidence.length} screenshots without starting a container. Inspect every returned image before marking its evidence inspected.` });
         return forgeToolResponse(packet, content);
       },
       forge_workspace_create: async (input) => {
@@ -188,46 +195,46 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           `${identity.tenantId}:${identity.projectId}`,
           idempotencyKey
         );
-        const active = await env.METADATA.prepare(
-          `SELECT COUNT(*) AS count FROM workspaces
-            WHERE id <> ?1 AND state NOT IN ('suspended', 'failed', 'destroying', 'destroyed')`
-        ).bind(workspaceId).first<{ count: number }>();
-        if ((active?.count ?? 0) >= 2) {
-          throw new ForgeError({
-            code: 'FORGE_QUOTA_EXCEEDED',
-            message: 'Forge Cloud is already using both workspace slots. Finish or destroy one workspace, then retry.',
-            retryable: true,
-            details: { active_workspaces: active?.count ?? 0, maximum_workspaces: 2 }
+        await reserveWorkspaceSlot(env.METADATA, workspaceId);
+        let result;
+        try {
+          result = await coordinator(env, workspaceId).initialize({
+            workspaceId,
+            tenantId: identity.tenantId as TenantId,
+            projectId: identity.projectId as ProjectId,
+            repository,
+            ref: text(input.ref),
+            runtimeProfile: text(input.runtime) as
+              | 'node-22'
+              | 'node-24'
+              | 'python-3.13'
+              | 'general-purpose',
+            persistence: 'ephemeral',
+            bootstrap: Boolean(input.bootstrap),
+            idempotencyKey,
+            actor: { type: 'agent', id: identity.subject }
           });
+        } catch (error) {
+          await releaseWorkspaceSlot(env.METADATA, workspaceId);
+          throw error;
         }
-        const result = await coordinator(env, workspaceId).initialize({
-          workspaceId,
-          tenantId: identity.tenantId as TenantId,
-          projectId: identity.projectId as ProjectId,
-          repository,
-          ref: text(input.ref),
-          runtimeProfile: text(input.runtime) as
-            | 'node-22'
-            | 'node-24'
-            | 'python-3.13'
-            | 'general-purpose',
-          persistence: text(input.persistence) as
-            | 'ephemeral'
-            | 'snapshot_on_idle'
-            | 'persistent',
-          bootstrap: Boolean(input.bootstrap),
-          idempotencyKey,
-          actor: { type: 'agent', id: identity.subject }
-        });
-        if (!result.replay || result.state === 'requested' || result.state === 'failed') {
+        if (['failed', 'suspended', 'destroyed'].includes(result.state)) {
+          await releaseWorkspaceSlot(env.METADATA, workspaceId);
+        }
+        if (!result.replay || result.state === 'requested') {
           const workflowId = workflowInstanceId('provision', workspaceId);
           try {
             await env.PROVISION_WORKFLOW.create({
               id: workflowId,
               params: { workspaceId, bootstrap: Boolean(input.bootstrap) }
             });
-          } catch {
-            await env.PROVISION_WORKFLOW.get(workflowId);
+          } catch (createError) {
+            try {
+              await env.PROVISION_WORKFLOW.get(workflowId);
+            } catch {
+              await releaseWorkspaceSlot(env.METADATA, workspaceId);
+              throw createError;
+            }
           }
         }
         return {
@@ -268,17 +275,43 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_shell_exec: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).shellExec({
-          command: text(input.command),
-          cwd: text(input.cwd),
-          timeoutMs: number(input.timeout_ms),
-          environment: input.environment as Record<string, string>,
-          networkPolicy: text(input.network_policy) as never,
-          outputLimitBytes: number(input.output_limit_bytes),
-          expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: text(input.idempotency_key),
-          approved: Boolean(input.approved)
-        }));
+        const workspaceId = text(input.workspace_id);
+        const command = text(input.command);
+        const cwd = text(input.cwd);
+        const networkPolicy = text(input.network_policy) as never;
+        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const decision = classifyCommand(command, networkPolicy);
+        const approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        const environment = input.environment as Record<string, string>;
+        const environmentHash = await sha256(JSON.stringify(Object.entries(environment).sort(([left], [right]) => left.localeCompare(right))));
+        const approvalPayload = { command, cwd, networkPolicy, environmentHash };
+        let claimedApproval = false;
+        if (decision.allowed && decision.approvalRequired) {
+          if (!approvalId) {
+            const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} command`, approvalPayload);
+            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact command, then retry with approval_id.', retryable: false, details: approval });
+          }
+          await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
+          claimedApproval = true;
+        }
+        try {
+          const result = await workspace.shellExec({
+            command,
+            cwd,
+            timeoutMs: number(input.timeout_ms),
+            environment,
+            networkPolicy,
+            outputLimitBytes: number(input.output_limit_bytes),
+            expectedRevision: optionalNumber(input.expected_revision),
+            idempotencyKey: text(input.idempotency_key),
+            approved: claimedApproval
+          });
+          if (claimedApproval && approvalId) await completeApproval(env, approvalId, true);
+          return asRecord(result);
+        } catch (error) {
+          if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
+          throw error;
+        }
       },
       forge_process_start: async (input) => {
         const identity = this.identity();
@@ -353,15 +386,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const head = text(input.head);
         const base = text(input.base);
         const title = text(input.title);
+        const body = text(input.body);
         const approvalId = input.approval_id ? text(input.approval_id) : undefined;
         if (!approvalId) {
-          const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title });
+          const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body });
           throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this draft PR, then retry with approval_id.', retryable: false, details: approval });
         }
-        await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title });
+        await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title, body });
         try {
           const state = await (await authorizedCoordinator(env, identity, workspaceId)).getState();
-          const result = await createDraftPullRequest(env, identity, state.repository, { head, base, title, body: text(input.body) });
+          const result = await createDraftPullRequest(env, identity, state.repository, { head, base, title, body });
           await completeApproval(env, approvalId, true);
           return result;
         } catch (error) {

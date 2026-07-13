@@ -4,6 +4,26 @@ import { toForgeError } from '@forge/core';
 
 const FORGE_CONSOLE_URI = 'ui://forge/workspace-console';
 
+const RETRY_SAFE_MUTATIONS = new Set([
+  'forge_workspace_create', 'forge_files_patch', 'forge_shell_exec', 'forge_process_start',
+  'forge_git_branch_create', 'forge_git_commit', 'forge_git_push', 'forge_preview_expose',
+  'forge_workspace_destroy'
+]);
+const TRUE_READS = new Set([
+  'forge_repository_list', 'forge_workspace_get', 'forge_files_tree', 'forge_files_read',
+  'forge_process_logs', 'forge_git_status', 'forge_git_diff', 'forge_git_outgoing_diff',
+  'forge_artifact_get'
+]);
+
+export function toolAnnotations(name: string, sideEffect: 'none' | 'workspace' | 'external' | 'destructive') {
+  const readOnly = TRUE_READS.has(name);
+  return {
+    readOnlyHint: readOnly,
+    destructiveHint: sideEffect === 'destructive',
+    idempotentHint: readOnly || RETRY_SAFE_MUTATIONS.has(name)
+  };
+}
+
 export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandlers): void {
   for (const definition of forgeTools) {
     server.registerTool(
@@ -12,11 +32,7 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
         title: definition.title,
         description: definition.description,
         inputSchema: definition.inputSchema,
-        annotations: {
-          readOnlyHint: definition.sideEffect === 'none',
-          destructiveHint: definition.sideEffect === 'destructive',
-          idempotentHint: definition.sideEffect !== 'destructive'
-        },
+        annotations: toolAnnotations(definition.name, definition.sideEffect),
         _meta: {
           ui: { resourceUri: FORGE_CONSOLE_URI, visibility: ['model', 'app'] },
           'openai/outputTemplate': FORGE_CONSOLE_URI

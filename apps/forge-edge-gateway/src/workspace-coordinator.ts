@@ -375,7 +375,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async gitPush(input: { branch: string; base: string; expectedDiffHash: string; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const source = await repositoryPushSource(this.env, record.workspace, input.branch);
+      const source = await repositoryPushSource(this.env, record.workspace, input.branch, record.workspace.currentCommit ?? '');
       const value = await this.app.gitPush(record, { ...input, source });
       await this.save(record);
       return value;

@@ -127,7 +127,7 @@
     },
     "forge_workspace_create": {
       "title": "Create Forge workspace",
-      "description": "Create an isolated workspace from an authorized repository. Returns immediately with the current lifecycle state and revision.",
+      "description": "Create a disposable isolated workspace from an authorized repository. Returns immediately with the current lifecycle state and revision.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -174,20 +174,12 @@
             ]
           },
           "persistence": {
-            "default": "snapshot_on_idle",
+            "default": "ephemeral",
             "type": "string",
-            "enum": [
-              "ephemeral",
-              "snapshot_on_idle",
-              "persistent"
-            ]
+            "const": "ephemeral"
           },
           "bootstrap": {
             "default": true,
-            "type": "boolean"
-          },
-          "start_preview": {
-            "default": false,
             "type": "boolean"
           },
           "idempotency_key": {
@@ -202,7 +194,6 @@
           "runtime",
           "persistence",
           "bootstrap",
-          "start_preview",
           "idempotency_key"
         ],
         "additionalProperties": false
@@ -349,7 +340,7 @@
     },
     "forge_shell_exec": {
       "title": "Execute bounded command",
-      "description": "Execute a foreground command in an explicit directory with timeout, output and network-policy bounds.",
+      "description": "Execute a foreground command in an explicit directory with timeout, output and network-policy bounds. Risky commands return a real user approval URL.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -413,9 +404,9 @@
             "minLength": 8,
             "maxLength": 200
           },
-          "approved": {
-            "default": false,
-            "type": "boolean"
+          "approval_id": {
+            "type": "string",
+            "pattern": "^apr_.*"
           }
         },
         "required": [
@@ -426,8 +417,7 @@
           "environment",
           "network_policy",
           "output_limit_bytes",
-          "idempotency_key",
-          "approved"
+          "idempotency_key"
         ],
         "additionalProperties": false
       }

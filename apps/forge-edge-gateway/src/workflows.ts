@@ -12,6 +12,7 @@ import {
 } from '@forge/workflows-cloudflare';
 import type { Env } from './env';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
+import { releaseWorkspaceSlot } from './capacity';
 
 function coordinator(
   env: Env,
@@ -54,6 +55,7 @@ export class ProvisionWorkspaceWorkflow extends WorkflowEntrypoint<
       };
     } catch (error) {
       await coordinator(this.env, event.payload.workspaceId).provisionExhausted();
+      await releaseWorkspaceSlot(this.env.METADATA, event.payload.workspaceId);
       throw error;
     }
   }
@@ -84,6 +86,7 @@ export class DestroyWorkspaceWorkflow extends WorkflowEntrypoint<
       this.env,
       event.payload.workspaceId
     ).getState();
+    await releaseWorkspaceSlot(this.env.METADATA, event.payload.workspaceId);
     return {
       workspaceId: event.payload.workspaceId,
       state: state.state,

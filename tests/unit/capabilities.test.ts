@@ -49,4 +49,20 @@ describe('Forge capabilities', () => {
       })
     ).rejects.toMatchObject({ code: 'FORGE_PERMISSION_DENIED' });
   });
+
+  it('enforces optional repository, branch and commit scope', async () => {
+    const scoped = await issueCapability({
+      ...claims(),
+      action: 'git:push',
+      repository: 'example/project',
+      branchPattern: 'forge/tim/fix',
+      gitCommit: 'a'.repeat(40)
+    }, secret);
+    await expect(verifyCapability(scoped, secret, {
+      workspaceId: claims().workspaceId,
+      action: 'git:push',
+      repository: 'example/project',
+      branchPattern: 'forge/tim/other'
+    })).rejects.toMatchObject({ code: 'FORGE_PERMISSION_DENIED' });
+  });
 });

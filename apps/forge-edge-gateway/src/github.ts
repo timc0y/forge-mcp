@@ -1,6 +1,7 @@
 import { SignJWT, importPKCS8 } from 'jose';
 import { ForgeError, ids, type RepositoryRef, type Workspace } from '@forge/core';
 import { issueCapability, verifyCapability } from '@forge/capabilities';
+import { assertReceivePackScope, parseReceivePackCommands } from '@forge/git-core';
 import type { AuthenticatedContext } from './auth';
 import type { Env } from './env';
 
@@ -322,9 +323,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent('/app')}`, 302);
   const [repositories, active] = await Promise.all([
     listAuthorizedRepositories(env, user.tenant_id),
-    env.METADATA.prepare(
-      `SELECT COUNT(*) AS count FROM workspaces WHERE state NOT IN ('suspended','failed','destroying','destroyed')`
-    ).first<{ count: number }>()
+    env.METADATA.prepare('SELECT COUNT(*) AS count FROM workspace_slots').first<{ count: number }>()
   ]);
   const repositoryRow = (repo: Record<string, unknown>) => `<li><span><strong>${escapeHtml(String(repo.owner))}/${escapeHtml(String(repo.name))}</strong><small>${escapeHtml(String(repo.visibility))} · ${escapeHtml(String(repo.default_branch))}</small></span></li>`;
   const rows = repositories.length
@@ -391,12 +390,13 @@ export async function repositoryCloneSource(env: Env, workspace: Workspace): Pro
   };
 }
 
-export async function repositoryPushSource(env: Env, workspace: Workspace, branch: string): Promise<{
+export async function repositoryPushSource(env: Env, workspace: Workspace, branch: string, commit: string): Promise<{
   url: string;
   authorizationHeader: string;
 }> {
   const row = await authorizeRepository(env, { tenantId: workspace.tenantId, projectId: workspace.projectId }, workspace.repository);
   if (!row) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Install the Forge GitHub App before pushing.', retryable: false });
+  if (!/^[a-f0-9]{40,64}$/i.test(commit)) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'The approved Git commit is unavailable.', retryable: false });
   const now = Math.floor(Date.now() / 1000);
   const capability = await issueCapability({
     version: 1,
@@ -406,6 +406,7 @@ export async function repositoryPushSource(env: Env, workspace: Workspace, branc
     repository: `${workspace.repository.owner}/${workspace.repository.name}`,
     action: 'git:push',
     branchPattern: branch,
+    gitCommit: commit,
     nonce: crypto.randomUUID(),
     issuedAt: now,
     expiresAt: now + 5 * 60
@@ -420,6 +421,37 @@ function bearer(request: Request): string {
   return request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1] ?? '';
 }
 
+async function inspectReceivePackBody(body: ReadableStream<Uint8Array<ArrayBuffer>>): Promise<{
+  body: ReadableStream<Uint8Array<ArrayBuffer>>;
+  commands: ReturnType<typeof parseReceivePackCommands>;
+}> {
+  const [inspection, upstream] = body.tee();
+  const reader = inspection.getReader();
+  let buffered = new Uint8Array();
+  try {
+    while (buffered.byteLength <= 65_536) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const next = new Uint8Array(buffered.byteLength + value.byteLength);
+      next.set(buffered);
+      next.set(value, buffered.byteLength);
+      buffered = next;
+      const commands = parseReceivePackCommands(buffered);
+      if (commands) {
+        await reader.cancel();
+        return { body: upstream, commands };
+      }
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    await upstream.cancel().catch(() => undefined);
+    throw error;
+  }
+  await reader.cancel().catch(() => undefined);
+  await upstream.cancel().catch(() => undefined);
+  throw new Error('Git receive-pack command section is missing or too large.');
+}
+
 export async function gitCredentialProxy(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const match = url.pathname.match(/^\/git\/(ws_[^/]+)\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\.git\/(.+)$/u);
@@ -428,7 +460,8 @@ export async function gitCredentialProxy(request: Request, env: Env): Promise<Re
   const push = rest.includes('receive-pack') || url.searchParams.get('service') === 'git-receive-pack';
   const claims = await verifyCapability(bearer(request), env.FORGE_CAPABILITY_SIGNING_KEY, {
     workspaceId,
-    action: push ? 'git:push' : 'git:clone'
+    action: push ? 'git:push' : 'git:clone',
+    repository: `${owner}/${name}`
   });
   if (claims.repository !== `${owner}/${name}`) {
     throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Git capability is outside its repository or operation scope.', retryable: false });
@@ -438,6 +471,19 @@ export async function gitCredentialProxy(request: Request, env: Env): Promise<Re
       WHERE tenant_id = ?1 AND owner = ?2 AND name = ?3 AND authorization_state = 'authorized'`
   ).bind(claims.tenantId, owner, name).first<{ installation_id: string; name: string }>();
   if (!repository) throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Repository authorization was revoked.', retryable: false });
+  let upstreamBody = request.body;
+  if (push && request.method === 'POST') {
+    if (!upstreamBody || !claims.branchPattern || !claims.gitCommit) {
+      throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Git push capability is missing its approved branch or commit.', retryable: false });
+    }
+    try {
+      const inspected = await inspectReceivePackBody(upstreamBody);
+      assertReceivePackScope(inspected.commands, claims.branchPattern, claims.gitCommit);
+      upstreamBody = inspected.body;
+    } catch {
+      throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Git push is outside its approved branch or commit scope.', retryable: false });
+    }
+  }
   const token = await installationToken(env, repository.installation_id, repository.name, push ? 'write' : 'read');
   const upstream = new URL(`https://github.com/${owner}/${name}.git/${rest}`);
   upstream.search = url.search;
@@ -448,7 +494,7 @@ export async function gitCredentialProxy(request: Request, env: Env): Promise<Re
   const response = await fetch(upstream, {
     method: request.method,
     headers,
-    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
+    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : upstreamBody,
     redirect: 'manual'
   });
   const responseHeaders = new Headers(response.headers);
@@ -461,7 +507,7 @@ export async function requestApproval(
   env: Env,
   identity: Pick<AuthenticatedContext, 'tenantId' | 'subject'>,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec',
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string }> {
@@ -480,7 +526,7 @@ export async function requireApproval(
   identity: Pick<AuthenticatedContext, 'tenantId'>,
   approvalId: string,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec',
   expected: Record<string, unknown>
 ): Promise<void> {
   const row = await env.METADATA.prepare(

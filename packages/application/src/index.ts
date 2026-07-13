@@ -154,7 +154,7 @@ export class ForgeApplicationService {
     cloneSource?: RepositoryCloneSource
   ): Promise<WorkspaceRuntimeRecord> {
     if (record.workspace.state === 'ready') return record;
-    if (!['requested', 'provisioning', 'failed'].includes(record.workspace.state)) {
+    if (!['requested', 'provisioning'].includes(record.workspace.state)) {
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_CONFLICT',
         message: `Workspace cannot be provisioned from ${record.workspace.state}.`,
@@ -176,7 +176,7 @@ export class ForgeApplicationService {
           tenantId: record.workspace.tenantId,
           repository: repositorySlug(record.workspace.repository)
         },
-        idleTimeout: '10m'
+        idleTimeout: '90s'
       });
 
       const source = cloneSource ?? {
@@ -325,7 +325,7 @@ export class ForgeApplicationService {
         retryable: false
       });
     }
-    if (!['ready', 'busy', 'bootstrapping', 'provisioning'].includes(record.workspace.state)) {
+    if (!['ready', 'busy'].includes(record.workspace.state)) {
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_NOT_READY',
         message: `Workspace is ${record.workspace.state}.`,

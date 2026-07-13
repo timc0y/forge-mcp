@@ -20,7 +20,9 @@
     "schemas:generate": "tsx scripts/generate-schemas.ts",
     "schemas:check": "tsx scripts/generate-schemas.ts --check",
     "deploy:dev": "pnpm --filter @forge/edge-gateway deploy:dev",
+    "deploy:prod": "pnpm --filter @forge/edge-gateway deploy:prod",
     "cf:typegen": "pnpm --filter @forge/edge-gateway cf:typegen",
+    "cf:typegen:prod": "pnpm --filter @forge/edge-gateway cf:typegen:prod",
     "boundaries:check": "tsx scripts/check-boundaries.ts"
   },
   "devDependencies": {
