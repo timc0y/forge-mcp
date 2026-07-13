@@ -154,7 +154,6 @@ try {
     runtime: 'node-22',
     persistence: 'ephemeral',
     bootstrap: false,
-    start_preview: false,
     idempotency_key: key('create')
   });
   workspaceId = created.value.workspace_id;

@@ -277,15 +277,17 @@ export async function authorize(request: Request, env: Env): Promise<Response> {
   }
   const githubEnabled = Boolean(env.GITHUB_APP_CLIENT_ID && env.GITHUB_APP_CLIENT_SECRET);
   const user = githubEnabled ? await getWebSession(request, env) : null;
-  if (githubEnabled && !user) {
+  const ownerToken = env.FORGE_OWNER_AUTH_TOKEN ?? env.FORGE_DEV_AUTH_TOKEN;
+  const body = request.method === 'POST' ? await parseBody(request) : null;
+  const ownerAuthorized = Boolean(ownerToken && body && constantTimeEqual(body.get('token') ?? '', ownerToken));
+  if (githubEnabled && !user && !ownerAuthorized) {
     return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
   }
-  const ownerToken = env.FORGE_OWNER_AUTH_TOKEN ?? env.FORGE_DEV_AUTH_TOKEN;
   if (!githubEnabled && !ownerToken) return json({ error: 'server_auth_not_configured' }, 503);
   if (request.method === 'GET') return authorizeForm(url, user ?? undefined);
 
-  const body = await parseBody(request);
-  if (!githubEnabled && !constantTimeEqual(body.get('token') ?? '', ownerToken ?? '')) {
+  if (!body) return json({ error: 'invalid_request' }, 400);
+  if (!user && !ownerAuthorized) {
     return authorizeForm(url, undefined, 'The Forge token was not accepted.');
   }
 
@@ -302,7 +304,7 @@ export async function authorize(request: Request, env: Env): Promise<Response> {
     redirectUri,
     challenge,
     scope,
-    user ? `github:${user.github_user_id}` : 'dev-user',
+    user ? `github:${user.github_user_id}` : 'owner-user',
     user?.tenant_id ?? env.FORGE_DEFAULT_TENANT_ID,
     user?.project_id ?? env.FORGE_DEFAULT_PROJECT_ID,
     expiresAt
