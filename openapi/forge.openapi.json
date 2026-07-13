@@ -1,0 +1,50 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Forge Control API",
+    "version": "0.1.0",
+    "description": "Non-MCP control, discovery and webhook endpoints. Workspace capabilities are exposed through MCP."
+  },
+  "servers": [{ "url": "https://forge.example" }],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": { "200": { "description": "Healthy" } }
+      }
+    },
+    "/.well-known/oauth-protected-resource": {
+      "get": {
+        "operationId": "oauthProtectedResourceMetadata",
+        "responses": { "200": { "description": "RFC 9728 protected resource metadata" } }
+      }
+    },
+    "/mcp": {
+      "post": {
+        "operationId": "mcpStreamableHttp",
+        "security": [{ "oauth2": ["forge:workspace"] }],
+        "responses": { "200": { "description": "MCP Streamable HTTP response" } }
+      }
+    },
+    "/github/webhooks": {
+      "post": {
+        "operationId": "githubWebhook",
+        "responses": { "202": { "description": "Webhook accepted" }, "501": { "description": "Phase 2 not enabled" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "oauth2": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://authorization-server.example/authorize",
+            "tokenUrl": "https://authorization-server.example/token",
+            "scopes": { "forge:workspace": "Use Forge workspaces" }
+          }
+        }
+      }
+    }
+  }
+}

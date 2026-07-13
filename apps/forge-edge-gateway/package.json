@@ -1,0 +1,38 @@
+{
+  "name": "@forge/edge-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config ../../infra/wrangler/forge.development.jsonc",
+    "deploy:dev": "wrangler deploy --config ../../infra/wrangler/forge.development.jsonc",
+    "deploy:prod": "wrangler deploy --config ../../infra/wrangler/forge.production.jsonc",
+    "cf:typegen": "wrangler types --config ../../infra/wrangler/forge.development.jsonc src/worker-configuration.d.ts",
+    "cf:typegen:prod": "wrangler types --config ../../infra/wrangler/forge.production.jsonc /tmp/forge-worker-production.d.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.12.3",
+    "@forge/application": "workspace:*",
+    "@forge/artifacts-r2": "workspace:*",
+    "@forge/browser-cloudflare": "workspace:*",
+    "@forge/capabilities": "workspace:*",
+    "@forge/core": "workspace:*",
+    "@forge/git-core": "workspace:*",
+    "@forge/mcp-adapter-v1": "workspace:*",
+    "@forge/mcp-core": "workspace:*",
+    "@forge/metadata-d1": "workspace:*",
+    "@forge/policy": "workspace:*",
+    "@forge/sandbox-cloudflare": "workspace:*",
+    "@forge/sandbox-core": "workspace:*",
+    "@forge/workflows-cloudflare": "workspace:*",
+    "@modelcontextprotocol/ext-apps": "1.7.2",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "agents": "0.17.3",
+    "jose": "6.2.2",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "wrangler": "4.110.0"
+  }
+}

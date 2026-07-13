@@ -1,0 +1,13 @@
+{
+  "name": "@forge/artifacts-r2",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@forge/artifacts-core": "workspace:*",
+    "@forge/core": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "forge-edge-gateway",
+  "main": "../../apps/forge-edge-gateway/src/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  },
+  "upload_source_maps": true,
+  "vars": {
+    "FORGE_ENVIRONMENT": "production",
+    "FORGE_PUBLIC_ORIGIN": "https://forge-edge-gateway.timcoy72.workers.dev",
+    "FORGE_PREVIEW_HOSTNAME": "forge-edge-gateway.timcoy72.workers.dev",
+    "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
+    "FORGE_DEFAULT_TENANT_ID": "ten_00000000000000000000000001",
+    "FORGE_DEFAULT_PROJECT_ID": "prj_00000000000000000000000001",
+    "GITHUB_APP_ID": "4281819",
+    "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
+    "GITHUB_APP_SLUG": "forge-mcp-cloud"
+  },
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "d1_databases": [
+    {
+      "binding": "METADATA",
+      "database_name": "forge-production",
+      "database_id": "b20e5bbf-15fe-4317-b01d-42511db76db5",
+      "migrations_dir": "../../migrations/d1"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "forge-production-artifacts"
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "../../Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 2
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Sandbox",
+        "name": "Sandbox"
+      },
+      {
+        "class_name": "ForgeMcpSession",
+        "name": "MCP_SESSIONS"
+      },
+      {
+        "class_name": "WorkspaceCoordinator",
+        "name": "WORKSPACE_COORDINATORS"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Sandbox",
+        "ForgeMcpSession",
+        "WorkspaceCoordinator"
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "name": "forge-production-provision",
+      "binding": "PROVISION_WORKFLOW",
+      "class_name": "ProvisionWorkspaceWorkflow"
+    },
+    {
+      "name": "forge-production-destroy",
+      "binding": "DESTROY_WORKFLOW",
+      "class_name": "DestroyWorkspaceWorkflow"
+    }
+  ]
+}

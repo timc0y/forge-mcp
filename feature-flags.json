@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "flags": [
+    {
+      "key": "browser_live_view_beta",
+      "maturity": "beta",
+      "defaultEnabled": false,
+      "owner": "browser",
+      "reviewAt": "2026-10-01",
+      "successMetric": "90% successful user handoffs",
+      "fallback": "stored screenshots"
+    },
+    {
+      "key": "browser_session_recording_beta",
+      "maturity": "beta",
+      "defaultEnabled": false,
+      "owner": "browser",
+      "reviewAt": "2026-10-01",
+      "successMetric": "evidence replay without secret leakage",
+      "fallback": "screenshots and JSONL logs"
+    },
+    {
+      "key": "browser_playwright_mcp_beta",
+      "maturity": "experimental",
+      "defaultEnabled": false,
+      "owner": "browser",
+      "reviewAt": "2026-09-01",
+      "successMetric": "lower tool latency without policy bypass",
+      "fallback": "explicit browser tools"
+    },
+    {
+      "key": "browser_stagehand_beta",
+      "maturity": "experimental",
+      "defaultEnabled": false,
+      "owner": "browser",
+      "reviewAt": "2026-09-01",
+      "successMetric": "higher scenario completion",
+      "fallback": "Puppeteer scenarios"
+    },
+    {
+      "key": "browser_webmcp_beta",
+      "maturity": "experimental",
+      "defaultEnabled": false,
+      "owner": "browser",
+      "reviewAt": "2026-09-01",
+      "successMetric": "safe page-owned tool discovery",
+      "fallback": "DOM and accessibility inspection"
+    },
+    {
+      "key": "forge_code_mode_experimental",
+      "maturity": "experimental",
+      "defaultEnabled": false,
+      "owner": "mcp",
+      "reviewAt": "2026-09-01",
+      "successMetric": "reduced context without reduced auditability",
+      "fallback": "explicit MCP tools"
+    },
+    {
+      "key": "mcp_sdk_v2_beta",
+      "maturity": "beta",
+      "defaultEnabled": false,
+      "owner": "mcp",
+      "reviewAt": "2026-08-15",
+      "successMetric": "contract parity across three clients",
+      "fallback": "MCP SDK v1"
+    },
+    {
+      "key": "alchemy_infra_experimental",
+      "maturity": "experimental",
+      "defaultEnabled": false,
+      "owner": "platform",
+      "reviewAt": "2026-10-01",
+      "successMetric": "Wrangler parity and clean destroy",
+      "fallback": "canonical Wrangler"
+    }
+  ]
+}

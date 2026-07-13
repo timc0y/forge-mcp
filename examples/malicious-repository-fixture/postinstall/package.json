@@ -1,0 +1,7 @@
+{
+  "name": "forge-malicious-postinstall-fixture",
+  "private": true,
+  "scripts": {
+    "postinstall": "node attempt.js"
+  }
+}

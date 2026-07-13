@@ -1,0 +1,1 @@
+{"name":"@forge/mcp-core","version":"0.1.0","type":"module","exports":"./src/index.ts","dependencies":{"@forge/core":"workspace:*","zod":"4.4.3"},"scripts":{"typecheck":"tsc -p tsconfig.json --noEmit"}}

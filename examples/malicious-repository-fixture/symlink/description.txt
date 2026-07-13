@@ -1,0 +1,1 @@
+Create a symlink under /workspace/repo that points outside /workspace and assert every file adapter rejects traversal through it.

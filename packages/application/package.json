@@ -1,0 +1,5 @@
+{
+  "name":"@forge/application","version":"0.1.0","type":"module","exports":"./src/index.ts",
+  "dependencies":{"@forge/core":"workspace:*","@forge/capabilities":"workspace:*","@forge/policy":"workspace:*","@forge/project-detection":"workspace:*","@forge/sandbox-core":"workspace:*"},
+  "scripts":{"typecheck":"tsc -p tsconfig.json --noEmit"}
+}

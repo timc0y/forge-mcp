@@ -1,0 +1,15 @@
+{
+  "name": "@forge/git-github",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@forge/capabilities": "workspace:*",
+    "@forge/core": "workspace:*",
+    "@forge/git-core": "workspace:*",
+    "jose": "6.2.2"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}
