@@ -1,6 +1,7 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "forge-edge-gateway-development",
+  "account_id": "04d3e478b1ddf0f5147120cacbf430de",
   "main": "../../apps/forge-edge-gateway/src/index.ts",
   "compatibility_date": "2026-07-13",
   "compatibility_flags": [
