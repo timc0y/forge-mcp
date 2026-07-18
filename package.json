@@ -19,10 +19,8 @@
     "check": "pnpm boundaries:check && pnpm typecheck && pnpm test && pnpm schemas:check",
     "schemas:generate": "tsx scripts/generate-schemas.ts",
     "schemas:check": "tsx scripts/generate-schemas.ts --check",
-    "deploy:dev": "pnpm --filter @forge/edge-gateway deploy:dev",
-    "deploy:prod": "pnpm --filter @forge/edge-gateway deploy:prod",
+    "deploy": "pnpm --filter @forge/edge-gateway deploy",
     "cf:typegen": "pnpm --filter @forge/edge-gateway cf:typegen",
-    "cf:typegen:prod": "pnpm --filter @forge/edge-gateway cf:typegen:prod",
     "boundaries:check": "tsx scripts/check-boundaries.ts"
   },
   "devDependencies": {
