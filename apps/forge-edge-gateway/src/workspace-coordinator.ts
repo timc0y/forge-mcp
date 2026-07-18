@@ -52,6 +52,23 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return record;
   }
 
+  /**
+   * Load the workspace record and confirm the repository checkout still exists
+   * before a repository-scoped operation runs. If the checkout has vanished the
+   * workspace is marked failed and the degraded state is persisted so a later
+   * forge_workspace_get reflects the loss instead of continuing to report ready.
+   */
+  private async repoRecord(): Promise<WorkspaceRuntimeRecord> {
+    const record = await this.getRecord();
+    try {
+      await this.app.assertCheckoutPresent(record);
+    } catch (error) {
+      await this.save(record);
+      throw error;
+    }
+    return record;
+  }
+
   private async save(record: WorkspaceRuntimeRecord): Promise<void> {
     await Promise.all([
       this.ctx.storage.put(RECORD_KEY, record),
@@ -231,6 +248,18 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
+  /**
+   * Return workspace state or null when no coordinator record exists, without
+   * throwing across the RPC boundary. Used by forge_artifact_get to distinguish
+   * a container-backed workspace from a URL-review workspace (which has no
+   * coordinator) so its artifacts remain retrievable.
+   */
+  async tryGetState() {
+    const record = await this.ctx.storage.get<WorkspaceRuntimeRecord>(RECORD_KEY);
+    if (!record) return null;
+    return this.getState();
+  }
+
   async getState() {
     const record = await this.getRecord();
     const lease = await this.ctx.storage.get<MutationLease>(LEASE_KEY);
@@ -256,7 +285,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async filesTree(input: { path: string; depth: number; limit: number }) {
-    return this.app.tree(await this.getRecord(), input);
+    return this.app.tree(await this.repoRecord(), input);
   }
 
   async filesRead(input: {
@@ -265,7 +294,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     endLine?: number;
     maxBytes: number;
   }) {
-    return this.app.read(await this.getRecord(), input);
+    return this.app.read(await this.repoRecord(), input);
   }
 
   async filesPatch(input: {
@@ -274,7 +303,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     idempotencyKey: string;
   }) {
     return this.serializeMutation(async () => {
-      const record = await this.getRecord();
+      const record = await this.repoRecord();
       const value = await this.app.patch(
         record,
         { patch: input.patch, cwd: '/workspace/repo' },
@@ -298,8 +327,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     approved: boolean;
   }) {
     const decisionRequiresSerialization = input.idempotencyKey !== undefined;
+    const touchesRepo = input.cwd === '/workspace/repo' || input.cwd.startsWith('/workspace/repo/');
     const action = async () => {
-      const record = await this.getRecord();
+      const record = touchesRepo ? await this.repoRecord() : await this.getRecord();
       const before = record.workspace.revision;
       const value = await this.app.exec(record, {
         command: input.command,
@@ -343,16 +373,16 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async gitStatus() {
-    return this.app.gitStatus(await this.getRecord());
+    return this.app.gitStatus(await this.repoRecord());
   }
 
   async gitDiff(input: { staged: boolean }) {
-    return this.app.gitDiff(await this.getRecord(), input.staged);
+    return this.app.gitDiff(await this.repoRecord(), input.staged);
   }
 
   async gitBranchCreate(input: { branch: string; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
-      const record = await this.getRecord();
+      const record = await this.repoRecord();
       const value = await this.app.gitBranchCreate(record, input.branch, input.expectedRevision, input.idempotencyKey);
       await this.save(record);
       return value;
@@ -361,7 +391,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
 
   async gitCommit(input: { message: string; paths: string[]; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
-      const record = await this.getRecord();
+      const record = await this.repoRecord();
       const value = await this.app.gitCommit(record, input);
       await this.save(record);
       return value;
@@ -369,7 +399,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async gitOutgoingDiff(input: { base: string }) {
-    return this.app.gitOutgoingDiff(await this.getRecord(), input.base);
+    return this.app.gitOutgoingDiff(await this.repoRecord(), input.base);
   }
 
   async gitPush(input: { branch: string; base: string; expectedDiffHash: string; expectedRevision?: number; idempotencyKey: string }) {

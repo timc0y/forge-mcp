@@ -16,6 +16,7 @@
     "@forge/application": "workspace:*",
     "@forge/artifacts-r2": "workspace:*",
     "@forge/browser-cloudflare": "workspace:*",
+    "@forge/browser-core": "workspace:*",
     "@forge/capabilities": "workspace:*",
     "@forge/core": "workspace:*",
     "@forge/git-core": "workspace:*",

@@ -1,6 +1,9 @@
 import type { ArtifactStore } from '@forge/artifacts-core';
 import type {
   AccessibilityResult,
+  BrowserActInput,
+  BrowserActResult,
+  BrowserActionStep,
   BrowserEvidenceResult,
   BrowserProvider,
   ScreenshotInput,
@@ -13,6 +16,7 @@ interface SnapshotResponse {
   result?: {
     screenshot?: string;
     accessibilityTree?: unknown;
+    url?: string;
   };
   errors?: Array<{ message?: string; code?: number }>;
 }
@@ -35,6 +39,32 @@ function baseOptions(input: Omit<ScreenshotInput, 'fullPage'>): BrowserRunBaseOp
     cacheTTL: 0,
     actionTimeout: 60_000
   };
+}
+
+// Translate Forge's bounded action vocabulary into the Browser Run `actions`
+// array. Kept in one place so the provider-specific action contract does not
+// leak into the domain contract.
+function toBrowserRunActions(steps: BrowserActionStep[], base: URL): unknown[] {
+  return steps.map((step) => {
+    switch (step.kind) {
+      case 'navigate':
+        return { type: 'navigate', url: new URL(step.path.replace(/^\/+/, ''), base).toString() };
+      case 'click':
+        return { type: 'click', selector: step.selector };
+      case 'fill':
+        return { type: 'type', selector: step.selector, text: step.value };
+      case 'press':
+        return { type: 'keyboard', key: step.key };
+      case 'wait_for_selector':
+        return { type: 'waitForSelector', selector: step.selector, timeout: step.timeoutMs ?? 10_000 };
+      case 'wait_for_text':
+        return { type: 'waitForText', text: step.text, timeout: step.timeoutMs ?? 10_000 };
+      case 'wait':
+        return { type: 'wait', timeout: step.timeoutMs };
+      case 'reload':
+        return { type: 'reload' };
+    }
+  });
 }
 
 function decodeBase64(value: string): ArrayBuffer {
@@ -88,6 +118,12 @@ export class CloudflareBrowserProvider implements BrowserProvider {
       formats,
       screenshotOptions: { type: 'png', fullPage: input.fullPage }
     };
+    return this.snapshotWithOptions(options as BrowserRunSnapshotOptions);
+  }
+
+  private async snapshotWithOptions(
+    options: BrowserRunSnapshotOptions
+  ): Promise<SnapshotResponse['result']> {
     for (let attempt = 0; attempt < 4; attempt += 1) {
       let response: Response;
       try {
@@ -145,6 +181,30 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     return {
       screenshot: await this.storeScreenshot(input, decodeBase64(result.screenshot)),
       accessibility: { tree: result.accessibilityTree, truncated: false }
+    };
+  }
+
+  async act(input: BrowserActInput): Promise<BrowserActResult> {
+    const base = new URL(input.url.endsWith('/') ? input.url : `${input.url}/`);
+    const actions = toBrowserRunActions(input.steps, base);
+    const options = {
+      ...baseOptions(input),
+      formats: ['screenshot', 'markdown', 'accessibilityTree'] as SnapshotOptions['formats'],
+      screenshotOptions: { type: 'png', fullPage: input.fullPage },
+      actions
+    };
+    const result = await this.snapshotWithOptions(options as unknown as BrowserRunSnapshotOptions);
+    if (!result?.screenshot || result.accessibilityTree === undefined) {
+      console.error('forge_browser_act_missing_formats', {
+        resultKeys: result ? Object.keys(result) : []
+      });
+      throw new Error('Browser Run action run omitted required evidence formats.');
+    }
+    return {
+      screenshot: await this.storeScreenshot(input, decodeBase64(result.screenshot)),
+      accessibility: { tree: result.accessibilityTree, truncated: false },
+      stepsExecuted: input.steps.length,
+      finalUrl: typeof result.url === 'string' ? result.url : undefined
     };
   }
 

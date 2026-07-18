@@ -9,6 +9,7 @@ import {
   type RepositoryRef,
   type TenantId,
   type Workspace,
+  type WorkspaceFailureDetails,
   type WorkspaceId
 } from '@forge/core';
 import { assertCommandAllowed, classifyCommand } from '@forge/policy';
@@ -215,7 +216,14 @@ export class ForgeApplicationService {
           code: 'FORGE_PROVIDER_UNAVAILABLE',
           message: 'Repository clone failed.',
           retryable: false,
-          details: { stage: 'clone', stderr: clone.stderr.slice(0, 2_000) }
+          details: {
+            stage: 'clone',
+            phase: 'checkout',
+            exitCode: clone.exitCode,
+            durationMs: clone.durationMs,
+            stderr: clone.stderr.slice(0, 4_000),
+            stdout: clone.stdout.slice(0, 1_000)
+          }
         });
       }
 
@@ -240,7 +248,17 @@ export class ForgeApplicationService {
             code: 'FORGE_PROVIDER_UNAVAILABLE',
             message: 'Project bootstrap failed.',
             retryable: false,
-            details: { stage: 'bootstrap', stderr: install.stderr.slice(0, 4_000) }
+            details: {
+              stage: 'bootstrap',
+              phase: 'dependency_install',
+              command: detection.installCommand,
+              packageManager: detection.packageManager,
+              exitCode: install.exitCode,
+              durationMs: install.durationMs,
+              truncated: install.truncated,
+              stderr: install.stderr.slice(0, 4_000),
+              stdout: install.stdout.slice(0, 2_000)
+            }
           });
         }
       }
@@ -269,14 +287,20 @@ export class ForgeApplicationService {
         : new ForgeError({
             code: 'FORGE_PROVIDER_UNAVAILABLE',
             message: 'Workspace provisioning failed.',
-            retryable: true
+            retryable: true,
+            details: {
+              stage: 'provision',
+              reason: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000),
+              cause: error instanceof Error ? error.name : 'unknown'
+            }
           });
       record.workspace.state = forgeError.retryable ? 'provisioning' : 'failed';
       record.workspace.failure = {
         stage: String(forgeError.details?.stage ?? 'provision'),
         code: forgeError.code,
         message: forgeError.message,
-        retryable: forgeError.retryable
+        retryable: forgeError.retryable,
+        ...(forgeError.details ? { details: forgeError.details as WorkspaceFailureDetails } : {})
       };
       record.workspace.revision = nextRevision(record.workspace.revision);
       record.workspace.updatedAt = new Date().toISOString();
@@ -335,6 +359,54 @@ export class ForgeApplicationService {
     return this.sandboxProvider.get(record.providerId);
   }
 
+  /**
+   * Confirm the repository checkout is still present before a repository-scoped
+   * operation runs. A `ready` workspace whose `/workspace/repo` mount has
+   * vanished is transitioned to `failed` with a clear checkout failure instead
+   * of letting downstream commands report a bare "No such file or directory".
+   * Returns silently when the workspace is not in a repo-usable state (the
+   * normal state gate in {@link handle} will produce the right error) and
+   * throws {@link ForgeError} `FORGE_WORKSPACE_NOT_READY` when the checkout is
+   * gone. On success it refreshes `workspace.checkout` health in place.
+   */
+  async assertCheckoutPresent(record: WorkspaceRuntimeRecord): Promise<void> {
+    if (!['ready', 'busy'].includes(record.workspace.state)) return;
+    const handle = await this.sandboxProvider.get(record.providerId);
+    const probe = await handle.exec({
+      command: 'test -d /workspace/repo/.git && echo forge_checkout_present || echo forge_checkout_missing',
+      cwd: '/workspace',
+      timeoutMs: 10_000,
+      outputLimitBytes: 1_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    });
+    const checkedAt = new Date().toISOString();
+    if (probe.stdout.includes('forge_checkout_present')) {
+      record.workspace.checkout = { healthy: true, checkedAt };
+      return;
+    }
+    record.workspace.state = 'failed';
+    record.workspace.checkout = {
+      healthy: false,
+      checkedAt,
+      detail: 'The repository checkout at /workspace/repo is missing.'
+    };
+    record.workspace.failure = {
+      stage: 'checkout',
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      message: 'The repository checkout is no longer available in the workspace.',
+      retryable: false
+    };
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = checkedAt;
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_NOT_READY',
+      message: 'The repository checkout is missing; the workspace has been marked failed. Create a new workspace to continue.',
+      retryable: false,
+      details: { checkout: 'missing' }
+    });
+  }
+
   beginMutation(
     record: WorkspaceRuntimeRecord,
     expectedRevision: number | undefined,
@@ -376,12 +448,19 @@ export class ForgeApplicationService {
     }
     const value = await (await this.handle(record)).applyPatch(input);
     if (!value.applied) {
+      const rejectedFiles = value.rejectedFiles ?? [];
       throw new ForgeError({
         code: 'FORGE_PATCH_REJECTED',
-        message: 'The patch could not be applied cleanly.',
+        message: rejectedFiles.length
+          ? `The patch did not apply to ${rejectedFiles.join(', ')}. The working tree was left unchanged.`
+          : 'The patch could not be applied cleanly. The working tree was left unchanged.',
         retryable: false,
         operationId: operation.operationId,
-        details: { output: value.output.slice(0, 4_000) }
+        details: {
+          output: value.output.slice(0, 4_000),
+          ...(rejectedFiles.length ? { rejectedFiles } : {}),
+          rolledBack: value.rolledBack ?? true
+        }
       });
     }
     return {
