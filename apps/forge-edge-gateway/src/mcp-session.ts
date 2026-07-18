@@ -155,8 +155,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             skipped.push({ route: capture.path, environment: viewport.id, reason: 'capture_deadline_reached' });
             continue;
           }
+          let result;
           try {
-            const result = await browser.captureEvidence({
+            result = await browser.captureEvidence({
               workspaceId,
               url: text(input.url),
               path: capture.path,
@@ -165,30 +166,37 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               operationId: ids.operation(),
               workspaceRevision: 1
             });
-            evidence.push({
-              selection: capture.selection,
-              route: capture.path,
-              environment: viewport.id,
-              state: capture.state,
-              requestedViewport: { width: viewport.width, height: viewport.height },
-              observedViewport: { width: result.screenshot.width, height: result.screenshot.height },
-              screenshot: result.screenshot,
-              accessibility: result.accessibility,
-              inspected: false,
-              limitations: ['Static screenshot evidence does not prove interactions that were not executed.']
-            });
-            const object = await env.ARTIFACTS.get(
-              `tenant/${identity.tenantId}/workspace/${workspaceId}/artifacts/${result.screenshot.artifactId}`
-            );
-            if (object && object.size <= 4_000_000) {
-              content.push({ type: 'image', data: base64(await object.arrayBuffer()), mimeType: 'image/png' });
-            }
           } catch (error) {
             failures.push({
               route: capture.path,
               environment: viewport.id,
               reason: error instanceof Error ? error.message.slice(0, 500) : 'Capture failed.'
             });
+            continue;
+          }
+          evidence.push({
+            selection: capture.selection,
+            route: capture.path,
+            environment: viewport.id,
+            state: capture.state,
+            requestedViewport: { width: viewport.width, height: viewport.height },
+            observedViewport: { width: result.screenshot.width, height: result.screenshot.height },
+            screenshot: result.screenshot,
+            accessibility: result.accessibility,
+            inspected: false,
+            limitations: ['Static screenshot evidence does not prove interactions that were not executed.']
+          });
+          // The inline image is a convenience; a failure fetching it must not
+          // demote an evidence cell that was already captured and stored.
+          try {
+            const object = await env.ARTIFACTS.get(
+              `tenant/${identity.tenantId}/workspace/${workspaceId}/artifacts/${result.screenshot.artifactId}`
+            );
+            if (object && object.size <= 4_000_000) {
+              content.push({ type: 'image', data: base64(await object.arrayBuffer()), mimeType: 'image/png' });
+            }
+          } catch {
+            // Evidence remains valid and retrievable via forge_artifact_get.
           }
         }
         if (evidence.length === 0) {
@@ -642,7 +650,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             case 'wait_for_text':
               return { kind: 'wait_for_text', text: text(step.text), timeoutMs: optionalNumber(step.timeout_ms) };
             case 'wait':
-              return { kind: 'wait', timeoutMs: number(step.timeout_ms) };
+              return { kind: 'wait', timeoutMs: optionalNumber(step.timeout_ms) ?? 1_000 };
             case 'reload':
             default:
               return { kind: 'reload' };
