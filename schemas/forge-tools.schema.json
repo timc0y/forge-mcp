@@ -1045,6 +1045,124 @@
         "additionalProperties": false
       }
     },
+    "forge_browser_act": {
+      "title": "Run bounded browser interactions",
+      "description": "Drive a real user journey against a Forge preview: navigate, click, fill, press keys and wait for selectors or text, then capture a screenshot and accessibility tree of the resulting state. Use this to prove multi-step flows (add to cart, submit a form, open a menu) that a single screenshot cannot.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "preview_id": {
+            "type": "string",
+            "pattern": "^prv_.*"
+          },
+          "path": {
+            "default": "/",
+            "type": "string",
+            "pattern": "^\\/.*"
+          },
+          "steps": {
+            "minItems": 1,
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema0"
+            }
+          },
+          "viewport": {
+            "type": "object",
+            "properties": {
+              "width": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 3840
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 2160
+              }
+            },
+            "required": [
+              "width",
+              "height"
+            ],
+            "additionalProperties": false
+          },
+          "full_page": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "preview_id",
+          "path",
+          "steps",
+          "viewport",
+          "full_page"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "navigate",
+                  "click",
+                  "fill",
+                  "press",
+                  "wait_for_selector",
+                  "wait_for_text",
+                  "wait",
+                  "reload"
+                ]
+              },
+              "selector": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 10000
+              },
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^\\/.*"
+              },
+              "timeout_ms": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 30000
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
     "forge_artifact_get": {
       "title": "Get browser artifact",
       "description": "Return a stored Forge artifact to the MCP client. Image artifacts are returned as MCP image content for direct model inspection.",

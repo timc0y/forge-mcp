@@ -14,6 +14,7 @@ import { registerForgeToolsV1 } from '@forge/mcp-adapter-v1';
 import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { CloudflareBrowserProvider } from '@forge/browser-cloudflare';
+import type { BrowserActionStep } from '@forge/browser-core';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { classifyCommand } from '@forge/policy';
 import type { Env } from './env';
@@ -139,9 +140,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const captures = input.captures as Array<{ selection: string; path: string; state: string }>;
         const viewports = input.viewports as Array<{ id: string; width: number; height: number }>;
         const evidence: Array<Record<string, unknown>> = [];
+        const failures: Array<Record<string, unknown>> = [];
+        const skipped: Array<Record<string, unknown>> = [];
         const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [];
-        for (const capture of captures) {
-          for (const viewport of viewports) {
+        // Each (capture × viewport) cell is captured independently so one slow
+        // or failing route cannot discard evidence that already succeeded. A
+        // soft deadline stops the loop before the outer tool timeout would, and
+        // any cells left uncaptured are reported as skipped rather than lost.
+        const startedAt = Date.now();
+        const deadlineMs = 110_000;
+        const cells = captures.flatMap((capture) => viewports.map((viewport) => ({ capture, viewport })));
+        for (const { capture, viewport } of cells) {
+          if (Date.now() - startedAt > deadlineMs) {
+            skipped.push({ route: capture.path, environment: viewport.id, reason: 'capture_deadline_reached' });
+            continue;
+          }
+          try {
             const result = await browser.captureEvidence({
               workspaceId,
               url: text(input.url),
@@ -169,8 +183,23 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             if (object && object.size <= 4_000_000) {
               content.push({ type: 'image', data: base64(await object.arrayBuffer()), mimeType: 'image/png' });
             }
+          } catch (error) {
+            failures.push({
+              route: capture.path,
+              environment: viewport.id,
+              reason: error instanceof Error ? error.message.slice(0, 500) : 'Capture failed.'
+            });
           }
         }
+        if (evidence.length === 0) {
+          throw new ForgeError({
+            code: 'FORGE_PREVIEW_UNAVAILABLE',
+            message: 'No screenshots could be captured from the requested URL.',
+            retryable: true,
+            details: { failures, skipped }
+          });
+        }
+        const complete = failures.length === 0 && skipped.length === 0;
         const packet = {
           schemaVersion: 1,
           provider: 'forge',
@@ -179,11 +208,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           workspaceId,
           sourceUrl: text(input.url),
           capturedAt: new Date().toISOString(),
+          requestedCaptures: cells.length,
+          capturedCount: evidence.length,
+          complete,
           evidence,
+          failures,
+          skipped,
           limitations: ['Static screenshot evidence does not prove interactions that were not executed.'],
-          nextStep: 'Inspect every returned MCP image, then pass the evidence to Parallax with inspected set to true.'
+          nextStep: complete
+            ? 'Inspect every returned MCP image, then pass the evidence to Parallax with inspected set to true.'
+            : 'Inspect the returned images, then re-run forge_review for the routes listed in failures and skipped (fewer routes per call captures more reliably).'
         };
-        content.unshift({ type: 'text', text: `Captured ${evidence.length} screenshots without starting a container. Inspect every returned image before marking its evidence inspected.` });
+        const summary = complete
+          ? `Captured ${evidence.length} screenshots without starting a container. Inspect every returned image before marking its evidence inspected.`
+          : `Captured ${evidence.length} of ${cells.length} screenshots without starting a container (${failures.length} failed, ${skipped.length} skipped). Inspect the returned images and re-run the remaining routes in smaller batches.`;
+        content.unshift({ type: 'text', text: summary });
         return forgeToolResponse(packet, content);
       },
       forge_workspace_create: async (input) => {
@@ -567,11 +606,112 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         });
         return asRecord(result);
       },
+      forge_browser_act: async (input) => {
+        const identity = this.identity();
+        const workspaceId = text(input.workspace_id) as WorkspaceId;
+        const previewId = text(input.preview_id);
+        const detail = await (await authorizedCoordinator(env, identity, workspaceId)).getPreviewInternal(previewId);
+        if (new Date(detail.preview.expiresAt).getTime() <= Date.now()) {
+          throw new ForgeError({
+            code: 'FORGE_PREVIEW_UNAVAILABLE',
+            message: 'Preview has expired.',
+            retryable: false
+          });
+        }
+        const rawSteps = input.steps as Array<{
+          kind: BrowserActionStep['kind'];
+          selector?: string;
+          value?: string;
+          key?: string;
+          text?: string;
+          path?: string;
+          timeout_ms?: number;
+        }>;
+        const steps: BrowserActionStep[] = rawSteps.map((step) => {
+          switch (step.kind) {
+            case 'navigate':
+              return { kind: 'navigate', path: text(step.path ?? '/') };
+            case 'click':
+              return { kind: 'click', selector: text(step.selector) };
+            case 'fill':
+              return { kind: 'fill', selector: text(step.selector), value: text(step.value ?? '') };
+            case 'press':
+              return { kind: 'press', key: text(step.key) };
+            case 'wait_for_selector':
+              return { kind: 'wait_for_selector', selector: text(step.selector), timeoutMs: optionalNumber(step.timeout_ms) };
+            case 'wait_for_text':
+              return { kind: 'wait_for_text', text: text(step.text), timeoutMs: optionalNumber(step.timeout_ms) };
+            case 'wait':
+              return { kind: 'wait', timeoutMs: number(step.timeout_ms) };
+            case 'reload':
+            default:
+              return { kind: 'reload' };
+          }
+        });
+        const artifacts = new R2ArtifactStore(env.ARTIFACTS);
+        const browser = new CloudflareBrowserProvider(env.BROWSER, artifacts, detail.workspace.tenantId);
+        const result = await browser.act({
+          workspaceId,
+          url: `${env.FORGE_PUBLIC_ORIGIN}/__forge_browser/${workspaceId}/${previewId}/`,
+          path: text(input.path),
+          headers: {
+            'x-forge-internal-preview': env.FORGE_INTERNAL_PREVIEW_KEY,
+            'x-forge-browser-workspace': workspaceId,
+            'x-forge-browser-preview': previewId
+          },
+          viewport: input.viewport as { width: number; height: number },
+          fullPage: Boolean(input.full_page),
+          steps,
+          operationId: ids.operation(),
+          repositoryCommit: detail.workspace.currentCommit,
+          workspaceRevision: detail.workspace.revision
+        });
+        const value = {
+          schemaVersion: 1,
+          provider: 'forge',
+          workspaceId,
+          previewId,
+          commit: detail.workspace.currentCommit,
+          workspaceRevision: detail.workspace.revision,
+          capturedAt: new Date().toISOString(),
+          stepsExecuted: result.stepsExecuted,
+          finalUrl: result.finalUrl,
+          screenshot: result.screenshot,
+          accessibility: result.accessibility,
+          inspected: false,
+          nextStep: 'Call forge_artifact_get for screenshot.artifactId, inspect the image, then record the journey result in Parallax.'
+        };
+        const object = await env.ARTIFACTS.get(
+          `tenant/${detail.workspace.tenantId}/workspace/${workspaceId}/artifacts/${result.screenshot.artifactId}`
+        );
+        if (!object || object.size > 4_000_000) return value;
+        return forgeToolResponse(value, [{ type: 'image', data: base64(await object.arrayBuffer()), mimeType: 'image/png' }]);
+      },
       forge_artifact_get: async (input) => {
         const identity = this.identity();
         const workspaceId = text(input.workspace_id);
-        const state = await (await authorizedCoordinator(env, identity, workspaceId)).getState();
         const artifactId = text(input.artifact_id);
+        // A container-backed workspace has a coordinator record that binds it to
+        // the caller's tenant and project. A URL-review workspace (from
+        // forge_review) has no coordinator, so its artifacts are only reachable
+        // through the tenant-scoped R2 key. Fall back to that path when — and
+        // only when — no coordinator record exists, so real cross-project
+        // workspaces still fail the authorization check above.
+        let workspaceRevision: number | null = null;
+        let source: 'workspace' | 'url_review' = 'workspace';
+        const state = await coordinator(env, workspaceId).tryGetState();
+        if (state) {
+          if (state.tenantId !== identity.tenantId || state.projectId !== identity.projectId) {
+            throw new ForgeError({
+              code: 'FORGE_PERMISSION_DENIED',
+              message: 'The workspace is outside the authenticated project.',
+              retryable: false
+            });
+          }
+          workspaceRevision = state.revision;
+        } else {
+          source = 'url_review';
+        }
         const object = await env.ARTIFACTS.get(
           `tenant/${identity.tenantId}/workspace/${workspaceId}/artifacts/${artifactId}`
         );
@@ -595,7 +735,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const value = {
           artifact_id: artifactId,
           workspace_id: workspaceId,
-          workspace_revision: state.revision,
+          workspace_revision: workspaceRevision,
+          source,
           content_type: mimeType,
           size_bytes: object.size,
           metadata: object.customMetadata ?? {}

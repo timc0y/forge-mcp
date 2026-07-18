@@ -5,6 +5,7 @@ import {
   assertWorkspaceTransition,
   ids,
   nextRevision,
+  toForgeError,
   workspaceIdFromIdempotency
 } from '@forge/core';
 
@@ -12,6 +13,14 @@ describe('Forge core invariants', () => {
   it('creates valid branded identifiers', () => {
     const workspace = ids.workspace();
     expect(() => assertForgeId(workspace, 'ws')).not.toThrow();
+  });
+
+  it('preserves diagnostic detail when wrapping unexpected errors', () => {
+    const wrapped = toForgeError(new TypeError('mount /workspace/repo vanished'));
+    expect(wrapped.code).toBe('FORGE_INTERNAL_ERROR');
+    expect(wrapped.details).toMatchObject({ cause: 'TypeError', reason: 'mount /workspace/repo vanished' });
+    const passthrough = new ForgeError({ code: 'FORGE_PATCH_REJECTED', message: 'no', retryable: false });
+    expect(toForgeError(passthrough)).toBe(passthrough);
   });
 
   it('derives stable workspace IDs from idempotency scope', async () => {

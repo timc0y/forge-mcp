@@ -48,6 +48,23 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+// git apply emits `error: patch failed: path/to/file:12` and
+// `error: path/to/file: patch does not apply` on rejection. Surface the
+// offending paths so the caller learns which file blocked the patch.
+function parseRejectedPatchFiles(output: string): string[] {
+  const files = new Set<string>();
+  for (const line of output.split('\n')) {
+    const failed = line.match(/patch failed:\s*(.+?):\d+/);
+    if (failed?.[1]) {
+      files.add(failed[1].trim());
+      continue;
+    }
+    const doesNotApply = line.match(/error:\s*(.+?):\s*patch does not apply/);
+    if (doesNotApply?.[1]) files.add(doesNotApply[1].trim());
+  }
+  return [...files];
+}
+
 async function sha256(content: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -252,37 +269,69 @@ class CloudflareSandboxHandle implements SandboxHandle {
   }
 
   async applyPatch(input: PatchInput): Promise<PatchResult> {
+    const cwd = await this.canonicalWorkspacePath(input.cwd);
+    const patchPath = `/workspace/tmp/patch-${crypto.randomUUID()}.diff`;
     try {
-      const cwd = await this.canonicalWorkspacePath(input.cwd);
-      const patchPath = `/workspace/tmp/patch-${crypto.randomUUID()}.diff`;
       await this.sandbox.writeFile(patchPath, input.patch, { sessionId: 'system' });
-      try {
-        const result = await this.exec({
-          command: `git apply --whitespace=nowarn ${shellQuote(patchPath)}`,
-          cwd,
-          timeoutMs: 60_000,
-          outputLimitBytes: 100_000,
-          sessionId: 'system',
-          networkPolicy: 'deny_all'
-        });
-        const changed = await this.exec({
-          command: 'git diff --name-only',
-          cwd,
-          timeoutMs: 30_000,
-          outputLimitBytes: 100_000,
-          sessionId: 'system',
-          networkPolicy: 'deny_all'
-        });
+    } catch (error) {
+      throw mapCloudflareSandboxError(error, 'applyPatch:write');
+    }
+    try {
+      // --check first so a rejected patch never mutates the tree; git apply is
+      // atomic, so a failed check guarantees the working tree is unchanged.
+      const check = await this.exec({
+        command: `git apply --check --whitespace=nowarn ${shellQuote(patchPath)}`,
+        cwd,
+        timeoutMs: 60_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      if (check.exitCode !== 0) {
+        const output = `${check.stdout}${check.stderr}`;
         return {
-          applied: result.exitCode === 0,
-          output: `${result.stdout}${result.stderr}`,
-          changedFiles: changed.stdout.split('\n').filter(Boolean)
+          applied: false,
+          output,
+          changedFiles: [],
+          rejectedFiles: parseRejectedPatchFiles(output),
+          rolledBack: true
         };
-      } finally {
-        await this.sandbox.deleteFile(patchPath).catch(() => undefined);
       }
+      const result = await this.exec({
+        command: `git apply --whitespace=nowarn ${shellQuote(patchPath)}`,
+        cwd,
+        timeoutMs: 60_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      if (result.exitCode !== 0) {
+        const output = `${result.stdout}${result.stderr}`;
+        return {
+          applied: false,
+          output,
+          changedFiles: [],
+          rejectedFiles: parseRejectedPatchFiles(output),
+          rolledBack: true
+        };
+      }
+      const changed = await this.exec({
+        command: 'git diff --name-only',
+        cwd,
+        timeoutMs: 30_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      return {
+        applied: true,
+        output: `${result.stdout}${result.stderr}`,
+        changedFiles: changed.stdout.split('\n').filter(Boolean)
+      };
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'applyPatch');
+    } finally {
+      await this.sandbox.deleteFile(patchPath).catch(() => undefined);
     }
   }
 

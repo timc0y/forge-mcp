@@ -71,6 +71,9 @@ importers:
       '@forge/browser-cloudflare':
         specifier: workspace:*
         version: link:../../packages/browser-cloudflare
+      '@forge/browser-core':
+        specifier: workspace:*
+        version: link:../../packages/browser-core
       '@forge/capabilities':
         specifier: workspace:*
         version: link:../../packages/capabilities

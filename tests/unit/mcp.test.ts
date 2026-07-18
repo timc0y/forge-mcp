@@ -28,4 +28,22 @@ describe('Forge MCP public contracts', () => {
     expect(toolAnnotations('forge_files_read', 'none')).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     expect(toolAnnotations('forge_workspace_create', 'workspace')).toMatchObject({ idempotentHint: true });
   });
+
+  it('exposes bounded interactive browser steps that are not retry-safe', () => {
+    const act = tool('forge_browser_act');
+    expect(act.sideEffect).toBe('workspace');
+    const schema = act.inputSchema as Record<string, unknown>;
+    expect(Object.keys(schema)).toEqual(
+      expect.arrayContaining(['workspace_id', 'preview_id', 'steps', 'viewport'])
+    );
+    const steps = schema.steps as { safeParse(value: unknown): { success: boolean } };
+    expect(steps.safeParse([{ kind: 'click', selector: '#add-to-cart' }]).success).toBe(true);
+    expect(steps.safeParse([{ kind: 'not_a_real_action' }]).success).toBe(false);
+    expect(steps.safeParse([]).success).toBe(false);
+    // Interactions are order-dependent side effects, never silently replayed.
+    expect(toolAnnotations('forge_browser_act', 'workspace')).toMatchObject({
+      readOnlyHint: false,
+      idempotentHint: false
+    });
+  });
 });

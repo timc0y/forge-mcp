@@ -49,8 +49,23 @@ export interface Workspace {
   updatedAt: string;
   idleDeadline?: string;
   activeSnapshotId?: SnapshotId;
-  failure?: { stage: string; code: string; message: string; retryable: boolean };
+  failure?: {
+    stage: string;
+    code: string;
+    message: string;
+    retryable: boolean;
+    details?: WorkspaceFailureDetails;
+  };
+  checkout?: { healthy: boolean; checkedAt: string; detail?: string };
 }
+
+// Kept structured-clone serializable so it survives the Durable Object RPC
+// boundary in forge_workspace_get (a Record<string, unknown> would collapse the
+// stub return type to never).
+export type WorkspaceFailureDetails = Record<
+  string,
+  string | number | boolean | null | string[]
+>;
 
 export interface WorkspaceMutationInput {
   workspaceId: WorkspaceId;

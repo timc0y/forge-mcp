@@ -3,4 +3,18 @@ export interface ScreenshotInput { workspaceId: WorkspaceId; url: string; path: 
 export interface ScreenshotResult { artifactId: ArtifactId; contentType: 'image/png'; width: number; height: number; sha256: string; }
 export interface AccessibilityResult { tree: unknown; truncated: boolean; }
 export interface BrowserEvidenceResult { screenshot: ScreenshotResult; accessibility: AccessibilityResult; }
-export interface BrowserProvider { screenshot(input: ScreenshotInput): Promise<ScreenshotResult>; accessibilityTree(input: Omit<ScreenshotInput,'fullPage'>): Promise<AccessibilityResult>; captureEvidence(input: ScreenshotInput): Promise<BrowserEvidenceResult>; }
+// Bounded interactive primitives so multi-step journeys (add to cart, submit a
+// form, open a menu) can be exercised before capturing evidence, rather than
+// only proving a single rendered state.
+export type BrowserActionStep =
+  | { kind: 'navigate'; path: string }
+  | { kind: 'click'; selector: string }
+  | { kind: 'fill'; selector: string; value: string }
+  | { kind: 'press'; key: string }
+  | { kind: 'wait_for_selector'; selector: string; timeoutMs?: number }
+  | { kind: 'wait_for_text'; text: string; timeoutMs?: number }
+  | { kind: 'wait'; timeoutMs: number }
+  | { kind: 'reload' };
+export interface BrowserActInput extends ScreenshotInput { steps: BrowserActionStep[]; }
+export interface BrowserActResult extends BrowserEvidenceResult { stepsExecuted: number; finalUrl?: string; }
+export interface BrowserProvider { screenshot(input: ScreenshotInput): Promise<ScreenshotResult>; accessibilityTree(input: Omit<ScreenshotInput,'fullPage'>): Promise<AccessibilityResult>; captureEvidence(input: ScreenshotInput): Promise<BrowserEvidenceResult>; act(input: BrowserActInput): Promise<BrowserActResult>; }
