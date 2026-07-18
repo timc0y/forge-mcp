@@ -4,11 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --config ../../infra/wrangler/forge.development.jsonc",
-    "deploy:dev": "wrangler deploy --config ../../infra/wrangler/forge.development.jsonc",
-    "deploy:prod": "wrangler deploy --config ../../infra/wrangler/forge.production.jsonc",
-    "cf:typegen": "wrangler types --config ../../infra/wrangler/forge.development.jsonc src/worker-configuration.d.ts",
-    "cf:typegen:prod": "wrangler types --config ../../infra/wrangler/forge.production.jsonc /tmp/forge-worker-production.d.ts",
+    "dev": "wrangler dev --config ../../infra/wrangler/forge.jsonc --var FORGE_ENVIRONMENT:development",
+    "deploy": "wrangler deploy --config ../../infra/wrangler/forge.jsonc",
+    "cf:typegen": "wrangler types --config ../../infra/wrangler/forge.jsonc src/worker-configuration.d.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
