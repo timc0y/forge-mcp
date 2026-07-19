@@ -25,16 +25,13 @@ function fakeD1(slots: SlotRow[], workspaces: Record<string, WorkspaceRow>) {
     slots,
     prepare(sql: string) {
       let values: unknown[] = [];
-      const perTenant = () => {
-        const matches = [...sql.matchAll(/SELECT (\d+) AS slot/g)].map((m) => Number(m[1]));
-        return matches.length ? Math.max(...matches) : 0;
-      };
+      // Bind order for the reserve statement: perTenant, workspaceId, tenantId, now, globalCap.
       const claim = (): number | null => {
-        const [workspaceId, tenantId, claimedAt, globalCap] = values as [string, string, string, number];
+        const [perTenant, workspaceId, tenantId, claimedAt, globalCap] = values as [number, string, string, string, number];
         if (slots.some((slot) => slot.workspace_id === workspaceId)) return null; // ON CONFLICT DO NOTHING
         if (slots.length >= globalCap) return null;
         const tenantSlots = new Set(slots.filter((slot) => slot.tenant_id === tenantId).map((slot) => slot.slot));
-        const free = Array.from({ length: perTenant() }, (_, i) => i + 1).find((slot) => !tenantSlots.has(slot));
+        const free = Array.from({ length: perTenant }, (_, i) => i + 1).find((slot) => !tenantSlots.has(slot));
         if (free === undefined) return null;
         slots.push({ slot: free, tenant_id: tenantId, workspace_id: workspaceId, claimed_at: claimedAt });
         return free;
@@ -145,6 +142,20 @@ describe('workspace slot capacity (per-tenant)', () => {
     await expect(reserveWorkspaceSlot(db, 'ten_c', 'wsp_c1', caps)).rejects.toMatchObject({
       code: 'FORGE_QUOTA_EXCEEDED',
       details: { scope: 'global', global_in_use: 2 }
+    });
+  });
+
+  it('handles a large per-tenant range without a compound-SELECT term explosion', async () => {
+    // Regression: the reserve query must scale to large N via a recursive CTE,
+    // not an N-term UNION ALL chain (which D1 rejects as "too many terms").
+    const db = fakeD1([], {});
+    const caps = { global: 100, perTenant: 50 };
+    for (let index = 1; index <= 50; index += 1) {
+      expect(await reserveWorkspaceSlot(db, 'ten_a', `wsp_${index}`, caps)).toBe(index);
+    }
+    await expect(reserveWorkspaceSlot(db, 'ten_a', 'wsp_over', caps)).rejects.toMatchObject({
+      code: 'FORGE_QUOTA_EXCEEDED',
+      details: { scope: 'tenant' }
     });
   });
 
