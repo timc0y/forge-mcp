@@ -193,6 +193,35 @@ function assertForgeBranch(branch: string): void {
   }
 }
 
+// Bound on a single provider.create(): a hung backend must surface as a
+// retryable error and let the workflow retry/compensate, not silently hang the
+// provision step until the whole workflow times out (and dies before its catch).
+const PROVIDER_CREATE_TIMEOUT_MS = 120_000;
+
+// Race a promise against a timeout that rejects with a retryable ForgeError. The
+// underlying promise keeps running (the SandboxProvider contract has no
+// cancellation), but the provision step fails fast instead of hanging.
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, phase: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: 'Workspace provisioning timed out.',
+            retryable: true,
+            details: { stage: 'provision', phase, timeoutMs }
+          })
+        ),
+      timeoutMs
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function sha256Text(value: string): Promise<string> {
   const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -456,16 +485,20 @@ export class ForgeApplicationService {
       // place. Transparent to the caller — Forge chooses.
       const provider = await this.router.selectForCreate();
       record.workspace.provider = { kind: provider.kind, version: provider.version };
-      const handle = await provider.create({
-        providerId: record.providerId,
-        runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
-        labels: {
-          workspaceId: record.workspace.id,
-          tenantId: record.workspace.tenantId,
-          repository: repositorySlug(record.workspace.repository)
-        },
-        idleTimeout: '90s'
-      });
+      const handle = await withTimeout(
+        provider.create({
+          providerId: record.providerId,
+          runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
+          labels: {
+            workspaceId: record.workspace.id,
+            tenantId: record.workspace.tenantId,
+            repository: repositorySlug(record.workspace.repository)
+          },
+          idleTimeout: '90s'
+        }),
+        PROVIDER_CREATE_TIMEOUT_MS,
+        'container_create'
+      );
 
       const source = cloneSource ?? this.defaultCloneSource(record);
 
@@ -502,7 +535,30 @@ export class ForgeApplicationService {
         sessionId: 'system',
         networkPolicy: 'deny_all'
       });
+      // Guard the probe before trusting its output. A non-zero exit (or a probe
+      // that produced no HEAD) means the checkout is not actually in a usable
+      // state — flipping to `ready` here would strand the workspace at a hollow
+      // `ready` with an empty currentCommit. Throw a retryable provisioning error
+      // instead so the workflow's retry/compensation path runs (→ `failed` +
+      // slot release). Note: an empty branch is legitimate (a tag/SHA ref checks
+      // out in detached HEAD); currentBranch falls back to the requested ref below.
       const parsedProbe = parseProvisionProbe(probe.stdout);
+      if (probe.exitCode !== 0 || !parsedProbe.head) {
+        throw new ForgeError({
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: 'Workspace provisioning probe failed.',
+          retryable: true,
+          details: {
+            stage: 'provision',
+            phase: 'probe',
+            exitCode: probe.exitCode,
+            truncated: probe.truncated,
+            reason: parsedProbe.head ? 'probe_exit_nonzero' : 'empty_head',
+            stderr: probe.stderr.slice(0, 4_000),
+            stdout: probe.stdout.slice(0, 1_000)
+          }
+        });
+      }
       const detection = parsedProbe.detection;
       record.detection = detection;
 

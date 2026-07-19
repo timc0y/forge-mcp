@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { McpAgent } from 'agents/mcp';
+import { z } from 'zod';
 import {
   ForgeError,
   ids,
@@ -222,6 +223,67 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   async init(): Promise<void> {
     registerForgeConsole(this.server);
     registerForgeToolsV1(this.server, this.handlers());
+    this.registerPrompts();
+  }
+
+  // Slash-command style entry points that mirror the server workflow in the
+  // instructions block: each prompt renders one concise user turn that steers
+  // the model down the intended Forge path (URL review, coding task, draft PR).
+  private registerPrompts(): void {
+    const userText = (text: string) => ({
+      messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }]
+    });
+
+    this.server.registerPrompt(
+      'review-live-url',
+      {
+        title: 'Review a live URL',
+        description: 'Review an already-deployed URL with Parallax — screenshots without starting a container.',
+        argsSchema: {
+          url: z.string().describe('The deployed URL to review, e.g. https://example.com'),
+          notes: z.string().optional().describe('Optional focus areas, routes or states to prioritise')
+        }
+      },
+      ({ url, notes }) =>
+        userText(
+          `Review the deployed site at ${url} with Parallax. Call forge_review first (it captures screenshots without starting a container), covering the key routes at phone and desktop viewports. Inspect every returned screenshot before reaching any verdict, and resolve or explicitly accept any structureSummary heading defects.${
+            notes ? ` Focus on: ${notes}.` : ''
+          }`
+        )
+    );
+
+    this.server.registerPrompt(
+      'start-task',
+      {
+        title: 'Start a coding task',
+        description: 'Start a coding task on an authorized repository in a fresh Forge workspace.',
+        argsSchema: {
+          repository: z.string().describe('The repository to work in, e.g. owner/name'),
+          task: z.string().describe('What the task should accomplish')
+        }
+      },
+      ({ repository, task }) =>
+        userText(
+          `Start a coding task on ${repository}: ${task}. Create one Forge workspace for this task with forge_workspace_create and reuse its workspace_id, poll forge_workspace_get until it is ready, read the repository instructions and any parallax/ files before making changes, then implement and verify the change. Request explicit approval before any Git push or pull-request action, and destroy the workspace when the task is complete.`
+        )
+    );
+
+    this.server.registerPrompt(
+      'prepare-draft-pr',
+      {
+        title: 'Prepare a draft PR',
+        description: 'Prepare a draft pull request for the current Forge branch once tests pass.',
+        argsSchema: {
+          workspace_id: z.string().optional().describe('The workspace whose branch should become a draft PR')
+        }
+      },
+      ({ workspace_id }) =>
+        userText(
+          `Prepare a draft pull request${
+            workspace_id ? ` for workspace ${workspace_id}` : ''
+          } once the tests pass. First run the tests and confirm they are green, then inspect the outgoing diff with forge_git_outgoing_diff, push the forge/ branch, and create the draft PR — requesting explicit user approval at the push and pull-request steps.`
+        )
+    );
   }
 
   private identity(): SessionProps {
@@ -467,18 +529,48 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
         if (!result.replay || result.state === 'requested') {
           const workflowId = workflowInstanceId('provision', workspaceId);
+          const provisionParams = { workspaceId, bootstrap: Boolean(input.bootstrap) };
           try {
-            await env.PROVISION_WORKFLOW.create({
-              id: workflowId,
-              params: { workspaceId, bootstrap: Boolean(input.bootstrap) }
-            });
+            await env.PROVISION_WORKFLOW.create({ id: workflowId, params: provisionParams });
           } catch (createError) {
+            let instance;
             try {
-              await env.PROVISION_WORKFLOW.get(workflowId);
+              instance = await env.PROVISION_WORKFLOW.get(workflowId);
             } catch {
+              // The instance genuinely could not be reached: nothing is driving
+              // provisioning, so release the slot and surface the failure.
               await releaseWorkspaceSlot(env.METADATA, workspaceId);
               throw createError;
             }
+            // .get() succeeds even for a DEAD instance. If that instance has
+            // reached a terminal state (complete/errored/terminated) but the
+            // workspace never reached a live state, the original provisioning
+            // died and would never be re-driven — leaving the workspace stuck
+            // at 'requested'. Re-drive under a fresh, deterministic instance id
+            // (resume-safe: the same idempotency key always derives the same id,
+            // so a retried tool call replays onto the same re-drive instance).
+            const status = await instance.status().catch(() => undefined);
+            const phase = status?.status;
+            const terminal = phase === 'complete' || phase === 'errored' || phase === 'terminated';
+            const workspaceLive = !['requested', 'provisioning', 'bootstrapping'].includes(result.state);
+            if (terminal && !workspaceLive) {
+              const nonce = (await sha256(`${idempotencyKey}:provision-redrive`)).slice(0, 12);
+              const redriveId = `${workflowId}-r${nonce}`;
+              try {
+                await env.PROVISION_WORKFLOW.create({ id: redriveId, params: provisionParams });
+              } catch (redriveError) {
+                // A prior re-drive already exists (resume-safe replay of this
+                // same tool call). Only fail if it cannot be found at all.
+                try {
+                  await env.PROVISION_WORKFLOW.get(redriveId);
+                } catch {
+                  await releaseWorkspaceSlot(env.METADATA, workspaceId);
+                  throw redriveError;
+                }
+              }
+            }
+            // Otherwise the instance is still running: keep swallowing, the
+            // in-flight workflow will drive provisioning to completion.
           }
         }
         return {

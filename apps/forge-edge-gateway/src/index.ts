@@ -1,7 +1,7 @@
 import { getSandbox, Sandbox, ContainerProxy } from '@cloudflare/sandbox';
 import { ForgeError, type WorkspaceId } from '@forge/core';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
-import { reclaimStaleSlots, slotTtlMs } from './capacity';
+import { listSlotOccupants, reclaimStaleSlots, releaseWorkspaceSlot, slotTtlMs } from './capacity';
 import { snapshotsEnabled, snapshotKey, recordSnapshot } from './snapshots';
 import { handleMultipartUpload } from './multipart-upload';
 import { parseDepsCacheKey, recordDepsCache } from './deps-cache';
@@ -439,9 +439,53 @@ async function reapAbandonedSlots(env: Env): Promise<void> {
   }
 }
 
+// Stuck-provisioning watchdog: a provision workflow can die/time out mid-run
+// (evicted before its JS catch), leaving the workspace frozen in a non-terminal
+// provisioning state — never `failed`, never past the idle TTL — so its D1 slot
+// leaks and the tenant cap eventually wedges. This sweep force-fails any slot
+// occupant wedged past STUCK_PROVISION_MS via the coordinator's
+// markProvisioningExhausted path, then releases its slot. Best-effort per
+// workspace: one failure must not abort the rest.
+async function reapStuckProvisioning(env: Env): Promise<void> {
+  let occupants;
+  try {
+    occupants = await listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now());
+  } catch (error) {
+    console.warn('forge_provision_watchdog_scan_failed', {
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+    });
+    return;
+  }
+  for (const occupant of occupants) {
+    if (!occupant.stuckProvisioning) continue;
+    const workspaceId = occupant.workspaceId as WorkspaceId;
+    try {
+      // Force the DO terminal (`failed`) so it stops reporting a non-terminal
+      // state, then free the leaked slot.
+      const result = await coordinator(env, workspaceId).provisionExhausted();
+      await releaseWorkspaceSlot(env.METADATA, workspaceId);
+      console.log('forge_provision_watchdog_reaped', {
+        slot: occupant.slot,
+        tenantId: occupant.tenantId,
+        workspaceId: occupant.workspaceId,
+        priorState: occupant.state,
+        state: result.state,
+        idleMinutes: occupant.idleMinutes
+      });
+    } catch (error) {
+      console.warn('forge_provision_watchdog_failed', {
+        workspaceId: occupant.workspaceId,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+      });
+    }
+  }
+}
+
 export default {
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(reapAbandonedSlots(env));
+    // Force-fail wedged provisioning slots first so they surface as `failed` and
+    // release their slots, then run the general stale-slot reaper for the rest.
+    ctx.waitUntil(reapStuckProvisioning(env).then(() => reapAbandonedSlots(env)));
   },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
