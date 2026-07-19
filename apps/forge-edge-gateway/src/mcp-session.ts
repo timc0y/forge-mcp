@@ -15,6 +15,7 @@ import { registerForgeToolsV1 } from '@forge/mcp-adapter-v1';
 import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { D1TaskStore } from '@forge/metadata-d1';
+import { analyzeDiff, selectContext, suggestChecks } from '@forge/insight';
 import {
   applyTaskPatch,
   assertTaskOwnership,
@@ -432,6 +433,41 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         );
         await store.put(updated);
         return { task_id: updated.id, state: updated.state, revision: updated.revision };
+      },
+      forge_context_get: async (input) => {
+        const identity = this.identity();
+        const root = text(input.root);
+        const tree = await (await authorizedCoordinator(env, identity, text(input.workspace_id))).filesTree({
+          path: root,
+          depth: 20,
+          limit: 10000
+        });
+        const files = (tree.entries as Array<{ path: string; type: string }>)
+          .filter((entry) => entry.type === 'file')
+          .map((entry) => entry.path.replace(/^\/workspace\/repo\//, ''));
+        return asRecord(selectContext({
+          goal: text(input.goal),
+          files,
+          root: root.replace(/^\/workspace\/repo\/?/, ''),
+          maxResults: number(input.max_results),
+          categories: input.categories as ('source' | 'tests' | 'docs' | 'config')[] | undefined
+        }));
+      },
+      forge_diff_metadata: async (input) => {
+        const identity = this.identity();
+        const outgoing = await (await authorizedCoordinator(env, identity, text(input.workspace_id))).gitOutgoingDiff({
+          base: text(input.base)
+        });
+        const compact = analyzeDiff(outgoing.diff);
+        return {
+          ...compact,
+          diffHash: outgoing.diffHash,
+          base: outgoing.base,
+          branch: outgoing.branch,
+          suggestedChecks: suggestChecks(compact.files.map((file) => file.path)),
+          rawDiffAvailableVia: 'forge_git_outgoing_diff',
+          note: 'Syntax-only summary. Inspect the raw diff before any Git mutation.'
+        };
       },
       forge_review: async (input) => {
         const identity = this.identity();

@@ -431,6 +431,94 @@
         "additionalProperties": false
       }
     },
+    "forge_context_get": {
+      "title": "Select bounded repository context",
+      "description": "Rank the most relevant repository files for a goal deterministically (no embeddings, no model). Returns paths with reasons, governing instructions, adjacent tests, package context and warnings — never file contents. The client decides what to read. Cheap.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "task_id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "root": {
+            "default": "/workspace/repo",
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "max_results": {
+            "default": 12,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "categories": {
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema0"
+            }
+          }
+        },
+        "required": [
+          "workspace_id",
+          "goal",
+          "root",
+          "max_results"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "enum": [
+              "source",
+              "tests",
+              "docs",
+              "config"
+            ]
+          }
+        }
+      }
+    },
+    "forge_diff_metadata": {
+      "title": "Summarize the outgoing diff",
+      "description": "Return deterministic compact metadata over the outgoing diff (changed files, additions/deletions, changed exports, tests, config, migrations, possible secret exposure, risk areas and suggested hunks) plus targeted verification suggestions. Syntax-only: inspect the raw diff via forge_git_outgoing_diff before any Git mutation.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "base": {
+            "default": "main",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        },
+        "required": [
+          "workspace_id",
+          "base"
+        ],
+        "additionalProperties": false
+      }
+    },
     "forge_files_tree": {
       "title": "List workspace files",
       "description": "Return a bounded, Git-aware file tree rooted inside /workspace.",

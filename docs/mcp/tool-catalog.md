@@ -38,4 +38,18 @@ and modelled in `@forge/task-core`. Resume-relevant context is stored as bounded
 JSON that never holds secrets, full source, complete logs or raw diffs; large
 evidence stays in R2 and is referenced by artifact id.
 
+## Context and diff insight tools
+
+Deterministic, container-free helpers backed by `@forge/insight` (no embeddings,
+no model). See `docs/plans/context-and-diffs.md`.
+
+- `forge_context_get` — rank the most relevant files for a goal and return
+  paths, reasons, governing instructions, adjacent tests and package context
+  (never file contents). The client decides what to read.
+- `forge_diff_metadata` — compact, syntax-only metadata over the outgoing diff
+  (changed files, exports, tests, config, migrations, possible secret exposure,
+  risk areas, suggested hunks, stable hash) plus targeted `suggestedChecks`. The
+  raw diff stays available via `forge_git_outgoing_diff` and must be inspected
+  before any Git mutation.
+
 Machine-readable schemas are generated into `schemas/forge-tools.schema.json`. Later phases add snapshot/resume, process stop, full Git/PR, browser accessibility/inspection, context and approvals without changing the existing names.

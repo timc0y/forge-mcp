@@ -13,7 +13,8 @@ const RETRY_SAFE_MUTATIONS = new Set([
 const TRUE_READS = new Set([
   'forge_repository_list', 'forge_workspace_get', 'forge_files_tree', 'forge_files_read',
   'forge_process_logs', 'forge_git_status', 'forge_git_diff', 'forge_git_outgoing_diff',
-  'forge_artifact_get', 'forge_task_get', 'forge_task_summary', 'forge_task_list'
+  'forge_artifact_get', 'forge_task_get', 'forge_task_summary', 'forge_task_list',
+  'forge_context_get', 'forge_diff_metadata'
 ]);
 
 // Tools that reach the open world of arbitrary external URLs (not just the
