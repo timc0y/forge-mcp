@@ -125,6 +125,47 @@ strong{font-weight:650}
 .diff .ln.hunk{color:var(--accent);opacity:.85;padding-left:12px}.diff .ln.hunk::before{content:""}
 .diff .more{padding:7px 12px;font-size:11px;color:var(--faint);font-family:var(--font);border-top:1px solid var(--line);background:var(--soft)}
 
+/* Section header row (title + expand control) */
+.sect>h2 .grow{flex:1}
+.expand{margin-left:auto;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:999px;padding:3px 10px;font-size:11px;font-weight:600;letter-spacing:0;text-transform:none;transition:border-color .12s,color .12s}
+.expand:hover{border-color:var(--accent);color:var(--accent)}
+.expand .ic{font-size:12px}
+
+/* Screenshot gallery */
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.shot{position:relative;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;background:var(--panel);box-shadow:var(--shadow);cursor:pointer;transition:border-color .12s,transform .08s}
+.shot:hover{border-color:var(--accent)}.shot:active{transform:translateY(1px)}
+.shot .frame{position:relative;width:100%;aspect-ratio:16/10;background:var(--soft);overflow:hidden;display:block}
+.shot .frame img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:top center;display:block}
+.shot .ov{position:absolute;top:8px;right:8px;z-index:1}
+.shot .cap{padding:9px 11px;display:flex;flex-direction:column;gap:5px;min-width:0}
+.shot .cap .r{font-weight:600;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.shot .cap .m{display:flex;flex-wrap:wrap;gap:5px}
+.shot .zoom{position:absolute;bottom:8px;right:8px;z-index:1;background:rgba(0,0,0,.55);color:#fff;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600;opacity:0;transition:opacity .12s}
+.shot:hover .zoom{opacity:1}
+
+/* Lightbox */
+.lightbox{position:fixed;inset:0;z-index:50;background:rgba(8,8,12,.86);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;gap:14px}
+.lightbox img{max-width:100%;max-height:78vh;border-radius:var(--radius-sm);box-shadow:0 12px 48px -12px rgba(0,0,0,.7);object-fit:contain}
+.lightbox .lb-cap{color:#fff;font-size:13px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:90%}
+.lightbox .lb-close{position:absolute;top:16px;right:18px;width:34px;height:34px;border-radius:50%;border:none;background:rgba(255,255,255,.14);color:#fff;font-size:18px;line-height:1;display:grid;place-items:center}
+.lightbox .lb-close:hover{background:rgba(255,255,255,.26)}
+
+/* Host action bar (approval / preview / PR) */
+.hostbar{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:13px 14px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--panel);box-shadow:var(--shadow)}
+.hostbar .hb-lead{font-size:13px;color:var(--muted);flex:1 1 180px;min-width:0}
+.hostbar .hb-lead strong{color:var(--ink)}
+.hostbar button{border:1px solid transparent;border-radius:var(--radius-sm);padding:9px 15px;font-weight:650;font-size:13px;background:var(--accent);color:var(--accent-ink);transition:transform .08s ease,filter .12s ease}
+.hostbar button.secondary{background:var(--surface);color:var(--ink);border-color:var(--line)}
+.hostbar button:hover{filter:brightness(1.05)}.hostbar button.secondary:hover{border-color:var(--accent)}
+.hostbar button:active{transform:translateY(1px)}
+
+/* Fullscreen display mode — use the extra room */
+body.fs main{max-width:1200px}
+body.fs .gallery{grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+body.fs .diff pre{max-height:none}
+body.fs .diff .ln{white-space:pre-wrap}
+
 /* Skeleton (working state) */
 .sk{display:flex;flex-direction:column;gap:12px}
 .sk .bar{height:14px;border-radius:6px;background:linear-gradient(90deg,var(--soft) 25%,var(--line-soft) 37%,var(--soft) 63%);background-size:400% 100%;animation:shimmer 1.3s ease infinite}
@@ -158,9 +199,52 @@ strong{font-weight:650}
 var content=document.getElementById('content');
 var pill=document.getElementById('status');
 var statusText=document.getElementById('status-text');
+// Component-only bulk data forwarded on the tool-result: params._meta["forge/widget"].
+// Standardized read with a structuredContent fallback (see message handler).
+var WIDGET={};
+var GALLERY=null; // screenshots currently shown, for the lightbox
 
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function has(a){return Array.isArray(a)&&a.length>0;}
+
+/* ---- host bridge (feature-detected; degrades on hosts without these) ---- */
+function rpc(method,params){
+  try{parent.postMessage({jsonrpc:'2.0',id:(crypto&&crypto.randomUUID)?crypto.randomUUID():String(Date.now()+Math.random()),method:method,params:params},'*');}catch(_){}
+}
+function openLink(url){ // ui/open-link → {url}
+  if(!url)return;
+  rpc('ui/open-link',{url:String(url)});
+}
+function sendMessage(text){ // ui/message
+  rpc('ui/message',{role:'user',content:[{type:'text',text:String(text)}]});
+}
+function callServerTool(name,args){ // tools/call → {name, arguments}
+  rpc('tools/call',{name:String(name),arguments:args||{}});
+}
+function oai(){try{return window.openai||null;}catch(_){return null;}}
+function requestFullscreen(){
+  var o=oai();
+  if(o&&typeof o.requestDisplayMode==='function'){
+    try{o.requestDisplayMode({mode:document.body.classList.contains('fs')?'inline':'fullscreen'});}catch(_){}
+  }else{
+    // Host without window.openai: fall back to the ui/request-display-mode RPC.
+    rpc('ui/request-display-mode',{mode:document.body.classList.contains('fs')?'inline':'fullscreen'});
+  }
+  document.body.classList.toggle('fs');
+  saveState({expanded:document.body.classList.contains('fs')});
+}
+/* Persisted widget state (ChatGPT). No-ops gracefully when window.openai absent. */
+var localState={};
+function readState(){
+  var o=oai();
+  if(o&&o.widgetState&&typeof o.widgetState==='object')return o.widgetState;
+  return localState;
+}
+function saveState(patch){
+  localState=Object.assign({},localState,readState(),patch);
+  var o=oai();
+  if(o&&typeof o.setWidgetState==='function'){try{o.setWidgetState(localState);}catch(_){}}
+}
 
 function setStatus(text,tone){
   statusText.textContent=text||'Ready';
@@ -180,6 +264,11 @@ function copyChip(label,value){
 }
 function section(title,body,count){
   return '<section class="sect"><h2>'+esc(title)+(count!=null?'<span class="count">'+esc(count)+'</span>':'')+'</h2>'+body+'</section>';
+}
+// Section with an "Expand" control that toggles fullscreen display mode.
+function sectionX(title,body,count,expandable){
+  var ctrl=expandable?'<button class="expand" data-expand="1" title="Toggle fullscreen"><span class="ic">⤢</span>Expand</button>':'';
+  return '<section class="sect"><h2>'+esc(title)+(count!=null?'<span class="count">'+esc(count)+'</span>':'')+'<span class="grow"></span>'+ctrl+'</h2>'+body+'</section>';
 }
 function stat(n,label,tone){return '<div class="stat'+(tone?' '+tone:'')+'"><div class="n">'+esc(n)+'</div><div class="l">'+esc(label)+'</div></div>';}
 function actionBtn(text,message,secondary){
@@ -245,22 +334,46 @@ function renderEvidence(v){
       '. Resolve or explicitly accept these before passing the review.</div></div>';
   }
 
-  var cells=ev.map(function(c,i){
-    var route=(c.route&&(c.route.path||c.route.selection))||c.path||('view '+(i+1));
-    var vp=c.observedViewport||c.viewport;
-    var vpLabel=vp&&vp.width?vp.width+'×'+vp.height:(c.viewport&&c.viewport.id)||'';
-    var st=c.state||(c.route&&c.route.state)||'';
-    var findings=findingCount(c);
-    var badge=findings>0
-      ? '<span class="badge warn">'+findings+' finding'+(findings===1?'':'s')+'</span>'
-      : '<span class="badge ok">clean</span>';
-    return '<div class="card"><div class="row1"><span class="title">'+esc(route)+'</span>'+badge+'</div>'+
-      '<div class="metaline">'+
-      (vpLabel?'<span class="badge mono">'+esc(vpLabel)+'</span>':'')+
-      (st?'<span class="badge">'+esc(st)+'</span>':'')+
-      '</div></div>';
-  }).join('');
-  if(has(ev))out+=section('Parallax evidence','<div class="grid">'+cells+'</div>',ev.length);
+  // Prefer the _meta widget screenshot gallery (JPEG dataUris) when present; the
+  // structuredContent evidence keeps the same per-cell metadata WITHOUT base64.
+  var shots=(WIDGET&&has(WIDGET.screenshots)&&WIDGET.screenshots)||(has(v.screenshots)&&v.screenshots)||null;
+  var withImages=shots&&shots.some(function(s){return s&&s.dataUri;});
+  if(withImages){
+    var tiles=shots.map(function(s,i){
+      var route=s.route||(s.path)||('view '+(i+1));
+      var vp=s.viewport;var vpLabel=vp&&vp.width?vp.width+'×'+vp.height:'';
+      var st=s.state||'';
+      var fc=typeof s.findingCount==='number'?s.findingCount:0;
+      var url=s.url||s.href||'';
+      var ov=fc>0?'<span class="ov badge warn">'+fc+' finding'+(fc===1?'':'s')+'</span>':'<span class="ov badge ok">clean</span>';
+      var img=s.dataUri?'<img src="'+esc(s.dataUri)+'" alt="'+esc(route)+'" loading="lazy">':'';
+      return '<div class="shot" data-shot="'+i+'"'+(url?' data-open="'+esc(url)+'"':'')+'>'+
+        '<span class="frame">'+img+ov+'<span class="zoom">'+(url?'↗ open':'⤢ enlarge')+'</span></span>'+
+        '<div class="cap"><span class="r">'+esc(route)+'</span><span class="m">'+
+        (vpLabel?'<span class="badge mono">'+esc(vpLabel)+'</span>':'')+
+        (st?'<span class="badge">'+esc(st)+'</span>':'')+'</span></div></div>';
+    }).join('');
+    out+=sectionX('Parallax evidence','<div class="gallery" id="shot-gallery">'+tiles+'</div>',shots.length,true);
+  }else{
+    var cells=ev.map(function(c,i){
+      var route=(c.route&&(c.route.path||c.route.selection))||c.path||('view '+(i+1));
+      var vp=c.observedViewport||c.viewport;
+      var vpLabel=vp&&vp.width?vp.width+'×'+vp.height:(c.viewport&&c.viewport.id)||'';
+      var st=c.state||(c.route&&c.route.state)||'';
+      var findings=findingCount(c);
+      var badge=findings>0
+        ? '<span class="badge warn">'+findings+' finding'+(findings===1?'':'s')+'</span>'
+        : '<span class="badge ok">clean</span>';
+      return '<div class="card"><div class="row1"><span class="title">'+esc(route)+'</span>'+badge+'</div>'+
+        '<div class="metaline">'+
+        (vpLabel?'<span class="badge mono">'+esc(vpLabel)+'</span>':'')+
+        (st?'<span class="badge">'+esc(st)+'</span>':'')+
+        '</div></div>';
+    }).join('');
+    if(has(ev))out+=section('Parallax evidence','<div class="grid">'+cells+'</div>',ev.length);
+  }
+  // Stash the active gallery data for the lightbox.
+  GALLERY=withImages?shots:null;
 
   if(has(v.limitations)){
     out+='<div class="note bad"><span class="ic">◈</span><div><strong>Limitations</strong><ul>'+
@@ -307,7 +420,7 @@ function renderDiff(v){
       (rest>0?'<div class="more">+'+rest+' more lines — ask to see the full diff for this file</div>':'')+
       '</div>';
   }).join('');
-  out+=section('Working changes',blocks,files.length);
+  out+=sectionX('Working changes',blocks,files.length,true);
   out+=actions([
     'Run the tests and lint for these changes and report the result.',
     'Prepare a draft PR for these changes once tests pass.'
@@ -438,7 +551,36 @@ function render(value){
   else if('clean'in value)html=renderStatus(value);
   else if((value.workspace_id||value.workspaceId)&&value.state)html=renderWorkspace(value);
   else html=renderGeneric(value);
-  content.innerHTML=html;
+  content.innerHTML=hostActions(value)+html;
+  restoreState();
+}
+
+/* Approval / preview / PR action bar. Reads structuredContent AND the _meta widget
+   bulk data. Uses ui/open-link to open urls, and a host tool call (tools/call) to
+   retry after approval, falling back to a ui/message instruction when no retry
+   descriptor is available. */
+function pick(v,keys){for(var i=0;i<keys.length;i++){if(v&&v[keys[i]]!=null)return v[keys[i]];if(WIDGET&&WIDGET[keys[i]]!=null)return WIDGET[keys[i]];}return null;}
+function hostActions(v){
+  v=v||{};
+  var approvalUrl=pick(v,['approval_url','approvalUrl']);
+  var approvalId=pick(v,['approval_id','approvalId']);
+  var previewUrl=pick(v,['preview_url','previewUrl']);
+  // PR result is {number,url,state}; also accept explicit pr fields.
+  var prUrl=pick(v,['pull_request_url','pr_url','prUrl','html_url']);
+  if(!prUrl&&(v.number!=null||(WIDGET&&WIDGET.number!=null))){var u=pick(v,['url']);if(u&&/\\/pull\\//.test(String(u)))prUrl=u;}
+  var btns=[],lead='';
+  if(approvalUrl||approvalId){
+    lead='<strong>Approval required.</strong> Review and approve, then retry the action.';
+    if(approvalUrl)btns.push('<button data-open="'+esc(approvalUrl)+'">Approve</button>');
+    // Retry: prefer a host tool call using the _meta retry descriptor; else instruct via ui/message.
+    var retry=WIDGET&&WIDGET.retry;
+    if(retry&&retry.name)btns.push('<button class="secondary" data-retry="'+esc(retry.name)+'" data-retryid="'+esc(approvalId||'')+'">Retry</button>');
+    else btns.push('<button class="secondary" data-retrymsg="Retry the previous action'+(approvalId?' with approval id '+esc(approvalId):'')+' now that it is approved.">Retry</button>');
+  }
+  if(previewUrl){if(!lead)lead='<strong>Preview ready.</strong>';btns.push('<button'+(btns.length?' class="secondary"':'')+' data-open="'+esc(previewUrl)+'">Open preview</button>');}
+  if(prUrl){if(!lead)lead='<strong>Pull request ready.</strong>';btns.push('<button'+(btns.length?' class="secondary"':'')+' data-open="'+esc(prUrl)+'">Open PR</button>');}
+  if(!btns.length)return '';
+  return '<div class="hostbar"><div class="hb-lead">'+lead+'</div>'+btns.join('')+'</div>';
 }
 
 function showWorking(){
@@ -446,24 +588,83 @@ function showWorking(){
   content.innerHTML='<div class="sk"><div class="bar w1"></div><div class="bar w2"></div><div class="bar w2"></div><div class="bar w3"></div></div>';
 }
 
+/* ---- lightbox (in-widget screenshot enlarge) ---- */
+function openLightbox(i){
+  if(!GALLERY||!GALLERY[i]||!GALLERY[i].dataUri)return;
+  closeLightbox();
+  var s=GALLERY[i];
+  var vp=s.viewport;var vpLabel=vp&&vp.width?vp.width+'×'+vp.height:'';
+  var box=document.createElement('div');
+  box.className='lightbox';box.id='lightbox';
+  box.innerHTML='<button class="lb-close" aria-label="Close">✕</button>'+
+    '<img src="'+esc(s.dataUri)+'" alt="'+esc(s.route||'')+'">'+
+    '<div class="lb-cap"><strong>'+esc(s.route||'')+'</strong>'+
+    (vpLabel?'<span class="badge mono">'+esc(vpLabel)+'</span>':'')+
+    (s.state?'<span class="badge">'+esc(s.state)+'</span>':'')+
+    (typeof s.findingCount==='number'&&s.findingCount>0?'<span class="badge warn">'+s.findingCount+' finding'+(s.findingCount===1?'':'s')+'</span>':'')+
+    '</div>';
+  document.body.appendChild(box);
+}
+function closeLightbox(){var b=document.getElementById('lightbox');if(b)b.parentNode.removeChild(b);}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLightbox();});
+
 /* ---- events ---- */
 window.addEventListener('message',function(event){
   var m=event.data;if(!m)return;
-  if(m.method==='ui/notifications/tool-result')render(m.params&&(m.params.structuredContent||m.params.content));
+  if(m.method==='ui/notifications/tool-result'){
+    var p=m.params||{};
+    // Standardize on _meta["forge/widget"] for component-only bulk data (screenshot
+    // dataUris, retry descriptor, approval/preview/PR urls), fall back to structuredContent.
+    WIDGET=(p._meta&&p._meta['forge/widget'])||{};
+    render(p.structuredContent||p.content||WIDGET);
+  }
   if(m.method==='ui/notifications/tool-input')showWorking();
 });
+function applyRepoFilter(q){
+  q=(q||'').toLowerCase();
+  var cards=document.querySelectorAll('#repo-grid .card');
+  for(var i=0;i<cards.length;i++){
+    var k=cards[i].getAttribute('data-key')||'';
+    cards[i].style.display=k.indexOf(q)>=0?'':'none';
+  }
+}
 document.addEventListener('input',function(e){
   if(e.target&&e.target.id==='repo-filter'){
-    var q=e.target.value.toLowerCase();
-    var cards=document.querySelectorAll('#repo-grid .card');
-    for(var i=0;i<cards.length;i++){
-      var k=cards[i].getAttribute('data-key')||'';
-      cards[i].style.display=k.indexOf(q)>=0?'':'none';
-    }
+    applyRepoFilter(e.target.value);
+    saveState({repoFilter:e.target.value}); // persist across re-renders (ChatGPT)
   }
 });
+// Restore persisted repo-filter text after each render.
+function restoreState(){
+  var st=readState()||{};
+  var inp=document.getElementById('repo-filter');
+  if(inp&&st.repoFilter){inp.value=st.repoFilter;applyRepoFilter(st.repoFilter);}
+}
+function closestData(t,attr){var el=t;while(el&&el!==document&&!(el.dataset&&el.dataset[attr]!=null))el=el.parentNode;return (el&&el.dataset&&el.dataset[attr]!=null)?el:null;}
+
 document.addEventListener('click',function(e){
   var t=e.target;
+  // Lightbox close / backdrop
+  if(t&&t.id==='lightbox'||t&&t.classList&&t.classList.contains('lb-close')){closeLightbox();return;}
+  // Expand → toggle fullscreen display mode
+  var exEl=closestData(t,'expand');
+  if(exEl){requestFullscreen();return;}
+  // Screenshot tile → open url (ui/open-link) or enlarge in lightbox
+  var shotEl=closestData(t,'shot');
+  if(shotEl){
+    if(shotEl.dataset.open){openLink(shotEl.dataset.open);}
+    else{openLightbox(parseInt(shotEl.dataset.shot,10));}
+    return;
+  }
+  // Open external link (approval / preview / PR)
+  var openEl=closestData(t,'open');
+  if(openEl&&!openEl.dataset.shot){openLink(openEl.dataset.open);return;}
+  // Retry via host tool call, or via ui/message fallback
+  var retryEl=closestData(t,'retry');
+  if(retryEl){callServerTool(retryEl.dataset.retry,retryEl.dataset.retryid?{approval_id:retryEl.dataset.retryid}:{});return;}
+  var retryMsgEl=closestData(t,'retrymsg');
+  if(retryMsgEl){sendMessage(retryMsgEl.dataset.retrymsg);return;}
+
   var copyEl=t;while(copyEl&&copyEl!==document&&!(copyEl.dataset&&copyEl.dataset.copy))copyEl=copyEl.parentNode;
   if(copyEl&&copyEl.dataset&&copyEl.dataset.copy){
     var val=copyEl.dataset.copy;
@@ -481,11 +682,25 @@ parent.postMessage({jsonrpc:'2.0',id:'forge-init',method:'ui/initialize',params:
 })();
 </script></body></html>`;
 
+// The widget is fully inline and network-free, so the CSP is maximally strict:
+// every origin allowlist is empty (no external connect/resource/frame/base-uri).
+// Screenshots arrive as embedded data: URIs, which do not require any host.
+const FORGE_CONSOLE_UI_META = {
+  prefersBorder: true,
+  csp: {
+    connectDomains: [] as string[],
+    resourceDomains: [] as string[],
+    frameDomains: [] as string[],
+    baseUriDomains: [] as string[]
+  },
+  permissions: { clipboardWrite: {} }
+} as const;
+
 export function registerForgeConsole(server: McpServer): void {
   registerAppResource(server, 'Forge Console', FORGE_CONSOLE_URI, {
     description: 'Workspace, screenshot evidence, changes and approval state for Forge tasks.',
-    _meta: { ui: { prefersBorder: true } }
+    _meta: { ui: FORGE_CONSOLE_UI_META }
   }, async () => ({
-    contents: [{ uri: FORGE_CONSOLE_URI, mimeType: RESOURCE_MIME_TYPE, text: html, _meta: { ui: { prefersBorder: true } } }]
+    contents: [{ uri: FORGE_CONSOLE_URI, mimeType: RESOURCE_MIME_TYPE, text: html, _meta: { ui: FORGE_CONSOLE_UI_META } }]
   }));
 }
