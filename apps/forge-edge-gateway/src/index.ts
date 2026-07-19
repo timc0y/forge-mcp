@@ -3,6 +3,7 @@ import { ForgeError, type WorkspaceId } from '@forge/core';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { reclaimStaleSlots, slotTtlMs } from './capacity';
 import { snapshotsEnabled, snapshotKey, recordSnapshot } from './snapshots';
+import { handleMultipartUpload } from './multipart-upload';
 import { parseDepsCacheKey, recordDepsCache } from './deps-cache';
 import { verifyCapability } from '@forge/capabilities';
 import openapi from '../../../openapi/forge.openapi.json';
@@ -329,6 +330,12 @@ async function snapshotEndpoint(request: Request, env: Env, url: URL): Promise<R
     return new Response('Unauthorized', { status: 401 });
   }
   const key = snapshotKey(claims.tenantId, workspaceId);
+  const mpAction = url.searchParams.get('mp');
+  if (mpAction && (request.method === 'PUT' || request.method === 'POST')) {
+    return await handleMultipartUpload(mpAction, env.ARTIFACTS, key, url, request, async (sizeBytes) => {
+      await recordSnapshot(env.METADATA, { workspaceId, tenantId: claims.tenantId, r2Key: key, sizeBytes, createdAt: new Date().toISOString() });
+    });
+  }
   if (request.method === 'PUT' && request.body) {
     const object = await env.ARTIFACTS.put(key, request.body);
     await recordSnapshot(env.METADATA, { workspaceId, tenantId: claims.tenantId, r2Key: key, sizeBytes: object?.size ?? 0, createdAt: new Date().toISOString() });
@@ -360,6 +367,20 @@ async function depsEndpoint(request: Request, env: Env, url: URL): Promise<Respo
     await verifyCapability(token, env.FORGE_CAPABILITY_SIGNING_KEY, { workspaceId, action: `deps:${cacheKey}` });
   } catch {
     return new Response('Unauthorized', { status: 401 });
+  }
+  const mpAction = url.searchParams.get('mp');
+  if (mpAction && (request.method === 'PUT' || request.method === 'POST')) {
+    return await handleMultipartUpload(mpAction, env.ARTIFACTS, parsed.r2Key, url, request, async (sizeBytes) => {
+      await recordDepsCache(env.METADATA, {
+        cacheKey,
+        repoSlug: parsed.repoSlug,
+        lockfileHash: parsed.lockfileHash,
+        runtime: parsed.runtime,
+        r2Key: parsed.r2Key,
+        sizeBytes,
+        createdAt: new Date().toISOString()
+      });
+    });
   }
   if (request.method === 'PUT' && request.body) {
     const object = await env.ARTIFACTS.put(parsed.r2Key, request.body);
