@@ -481,6 +481,27 @@ function renderGeneric(v){
   return out;
 }
 
+/* Approval-required or error result. The Approve/Retry bar is rendered
+   separately by hostActions(); this draws the status + explanatory body. */
+function renderIssue(v,approval){
+  var err=v.error&&typeof v.error==='object'?v.error:null;
+  var details=(err&&err.details)||v;
+  var action=details.action||v.action;
+  var expires=details.expires_at||v.expires_at;
+  var msg=(err&&err.message)||v.message||(approval?'Approval required before this action can run.':'The action could not be completed.');
+  setStatus(approval?'Approval required':'Blocked',approval?'warn':'bad');
+  var out='<div class="note '+(approval?'warn':'bad')+'"><span class="ic">'+(approval?'⚠':'✕')+'</span><div><strong>'+
+    esc(approval?'Approval required':((err&&err.code)?String(err.code).replace(/_/g,' '):'Action failed'))+'</strong><br>'+esc(msg)+'</div></div>';
+  var chips=[];
+  var repo=repoLabel(v.repository);
+  if(repo)chips.push(chip('Repository',repo));
+  if(action)chips.push(chip('Action',String(action).replace(/[._]/g,' ')));
+  if(expires)chips.push(chip('Expires',formatWhen(expires)));
+  if(chips.length)out+='<div class="chips">'+chips.join('')+'</div>';
+  return out;
+}
+function formatWhen(v){var s=String(v||'');var m=s.match(/T(\\d{2}:\\d{2})/);return m?m[1]+' UTC':s;}
+
 /* ---- helpers ---- */
 function repoLabel(r){
   if(!r)return '';
@@ -545,7 +566,9 @@ function parseDiff(raw){
 function render(value){
   if(!value||typeof value!=='object'){setStatus('Ready');return;}
   var html;
-  if(has(value.repositories))html=renderRepositories(value);
+  var approval=value.kind==='approval'||value.approval_url||value.approvalUrl||(value.error&&value.error.details&&value.error.details.kind==='approval');
+  if(value.error||approval)html=renderIssue(value,approval);
+  else if(has(value.repositories))html=renderRepositories(value);
   else if(has(value.evidence)||value.executionMode||value.execution_mode||value.structureSummary)html=renderEvidence(value);
   else if(typeof value.stdout==='string'&&/diff --git|^@@/m.test(value.stdout)||typeof value.diff==='string'&&value.diff.trim())html=renderDiff(value);
   else if('clean'in value)html=renderStatus(value);

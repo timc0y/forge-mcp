@@ -156,11 +156,20 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
           };
         } catch (error) {
           const shape = toForgeError(error).toJSON();
-          const result = { error: shape };
+          // Hoist structured error details (e.g. an approval requirement's
+          // { kind, action, approval_id, approval_url, expires_at }) to the top
+          // level so the widget's action bar can render an Approve button —
+          // the widget reads approval_url/approval_id from structuredContent,
+          // not from the nested error.details.
+          const details =
+            shape.details && typeof shape.details === 'object'
+              ? (shape.details as Record<string, unknown>)
+              : {};
+          const result = { error: shape, ...details };
           return {
             isError: true,
             structuredContent: result,
-            content: [{ type: 'text' as const, text: JSON.stringify(result) }]
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: shape }) }]
           };
         }
       }
