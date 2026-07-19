@@ -1,80 +1,56 @@
 #!/usr/bin/env node
-// Forge Node Agent (reference implementation) — no Docker required.
+// Forge Node Agent (reference implementation)
 // ------------------------------------------------------------------
-// Runs on a machine you own (Mac mini, Linux box, …) and exposes the HTTP
-// contract that Forge's SelfHostedSandboxProvider / SelfHostedBrowserProvider
-// call. A workspace is simply a FOLDER under a work root; commands run in it
-// with the tools you installed (Homebrew node/git/etc.). No containers, nothing
-// to learn — it's a folder and a shell.
+// Runs Forge workspaces + browser evidence on a machine you own (Mac mini,
+// Linux box). Same model as Forge Cloud: every workspace is a container. Forge
+// health-checks this agent and routes work here only when it's up and has spare
+// capacity, otherwise it falls back to Cloudflare — transparent to the caller.
 //
-// Isolation is by the OS user. For a personal machine that's fine; for stronger
-// isolation set FORGE_AGENT_USER to a dedicated low-privilege account (commands
-// run via `sudo -u <user>`), and keep the machine disposable — no personal data.
-//
-// Concurrency: the agent runs up to FORGE_AGENT_MAX_WORKSPACES at once and
-// reports capacity in /v1/health, so Forge routes new work here only when there
-// is room, otherwise it falls back to Cloudflare.
-//
-// Take over: each workspace reports its localPath (GET-style /info), so the
-// Forge app can offer "Open in Finder / Terminal / VS Code" to inspect or steer
-// a running workspace by hand.
-//
-// Forge only routes work here when /v1/health returns { healthy: true } and has
-// spare capacity, so a broken/full machine fails safe.
+// One primitive everywhere: a workspace == a container. Inside it, /workspace is
+// a real path, so there is nothing bespoke to reason about. Containers are run
+// hardened by default (non-root, all Linux capabilities dropped, no host mounts,
+// memory/CPU/pids limits) so agent-authored code is isolated from your machine.
 //
 // Config (env):
 //   FORGE_AGENT_TOKEN          (required) shared secret; = FORGE_SELFHOST_TOKEN in Forge
 //   FORGE_AGENT_PORT           (default 8787)
-//   FORGE_AGENT_WORKROOT       (default ~/forge/workspaces)
+//   FORGE_AGENT_IMAGE          (default forge-workspace:latest) workspace base image
 //   FORGE_AGENT_MAX_WORKSPACES (default 4)
-//   FORGE_AGENT_USER           (optional) run workspace commands as this user
+//   FORGE_AGENT_MEMORY         (default 2g)   per-workspace memory limit
+//   FORGE_AGENT_CPUS           (default 2)    per-workspace CPU limit
+//   FORGE_AGENT_IDLE_MINUTES   (default 240)  local idle-container reaper
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdir, rm, readFile, writeFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
-import path from 'node:path';
 
 const TOKEN = process.env.FORGE_AGENT_TOKEN;
 const PORT = Number(process.env.FORGE_AGENT_PORT || 8787);
-const WORKROOT = process.env.FORGE_AGENT_WORKROOT || path.join(homedir(), 'forge', 'workspaces');
+const IMAGE = process.env.FORGE_AGENT_IMAGE || 'forge-workspace:latest';
 const MAX = Number(process.env.FORGE_AGENT_MAX_WORKSPACES || 4);
-const RUN_AS = process.env.FORGE_AGENT_USER || '';
-const WS_TOKEN = '/workspace';
+const MEMORY = process.env.FORGE_AGENT_MEMORY || '2g';
+const CPUS = process.env.FORGE_AGENT_CPUS || '2';
+const IDLE_MS = Number(process.env.FORGE_AGENT_IDLE_MINUTES || 240) * 60_000;
 
 if (!TOKEN) {
   console.error('FORGE_AGENT_TOKEN is required.');
   process.exit(1);
 }
 
-/** @type {Map<string, { dir: string, createdAt: number, lastActive: number }>} */
+/** @type {Map<string, { name: string, lastActive: number }>} */
 const workspaces = new Map();
-const dirFor = (providerId) => path.join(WORKROOT, String(providerId).replace(/[^a-z0-9_.-]/gi, '').slice(0, 80));
+const nameFor = (providerId) => `forge-${String(providerId).replace(/[^a-z0-9_.-]/gi, '').slice(0, 60)}`;
 const touch = (id) => {
   const w = workspaces.get(id);
   if (w) w.lastActive = Date.now();
 };
+const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
 
-// Forge speaks in /workspace-rooted paths; map them onto the workspace folder
-// and refuse anything that escapes it.
-function mapPath(dir, p) {
-  const s = String(p ?? '');
-  if (!s.startsWith(WS_TOKEN)) return s;
-  const full = path.resolve(dir, `.${s.slice(WS_TOKEN.length)}`);
-  if (full !== dir && !full.startsWith(dir + path.sep)) throw httpError(400, `Path escapes workspace: ${p}`);
-  return full;
-}
-
-// Run a shell command inside a workspace, rewriting the /workspace convention to
-// the real folder. Optionally as a dedicated user.
-function shell(dir, command, { cwd, timeoutMs = 120_000, stdin } = {}) {
-  const realCommand = String(command).split(WS_TOKEN).join(dir);
-  const realCwd = cwd ? mapPath(dir, cwd) : dir;
-  const argv = RUN_AS ? ['sudo', '-n', '-u', RUN_AS, 'bash', '-lc', realCommand] : ['bash', '-lc', realCommand];
+// Run a process, capture output, never reject (callers inspect exitCode).
+function spawnCapture(argv, { stdin, timeoutMs = 120_000 } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(argv[0], argv.slice(1), { cwd: realCwd });
+    const child = spawn(argv[0], argv.slice(1));
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
@@ -83,16 +59,29 @@ function shell(dir, command, { cwd, timeoutMs = 120_000, stdin } = {}) {
     if (stdin !== undefined) child.stdin.end(stdin);
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ exitCode: code ?? 0, stdout, stderr, truncated: false, durationMs: Date.now() - started, artifactRefs: [] });
+      resolve({ exitCode: code ?? 0, stdout, stderr, durationMs: Date.now() - started });
     });
     child.on('error', (err) => {
       clearTimeout(timer);
-      resolve({ exitCode: 127, stdout, stderr: String(err.message), truncated: false, durationMs: Date.now() - started, artifactRefs: [] });
+      resolve({ exitCode: 127, stdout, stderr: String(err.message), durationMs: Date.now() - started });
     });
   });
 }
+const docker = (args, opts) => spawnCapture(['docker', ...args], opts);
 
-const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
+// Run a shell command inside a workspace container. /workspace is real inside,
+// so no path rewriting — cwd and paths pass through unchanged.
+function dexec(id, command, { cwd = '/workspace', timeoutMs = 120_000, stdin } = {}) {
+  const argv = ['exec', '-w', cwd, ...(stdin !== undefined ? ['-i'] : []), nameFor(id), 'bash', '-lc', command];
+  return docker(argv, { stdin, timeoutMs }).then((r) => ({
+    exitCode: r.exitCode,
+    stdout: r.stdout,
+    stderr: r.stderr,
+    truncated: false,
+    durationMs: r.durationMs,
+    artifactRefs: []
+  }));
+}
 
 // ---- browser (Playwright) ---------------------------------------------------
 let browserPromise = null;
@@ -142,34 +131,48 @@ async function health() {
       checks.push({ name, ok: false, detail: String(error.message ?? error).slice(0, 200) });
     }
   };
-  await check('workroot', async () => {
-    await mkdir(WORKROOT, { recursive: true });
-    return WORKROOT;
+  await check('docker', async () => {
+    const r = await docker(['version', '--format', '{{.Server.Version}}']);
+    if (r.exitCode !== 0) throw new Error(r.stderr.trim() || 'docker not reachable');
+    return r.stdout.trim();
   });
-  await check('git', async () => (await shell(WORKROOT, 'git --version')).stdout.trim());
-  await check('node', async () => (await shell(WORKROOT, 'node --version')).stdout.trim());
-  await check('exec', async () => {
-    const r = await shell(WORKROOT, 'echo ok');
-    if (!r.stdout.includes('ok')) throw new Error('shell self-test failed');
-    return 'shell works';
+  await check('image', async () => {
+    const r = await docker(['image', 'inspect', IMAGE]);
+    if (r.exitCode !== 0) throw new Error(`image ${IMAGE} not built`);
+    return IMAGE;
+  });
+  await check('container-run', async () => {
+    const r = await docker(['run', '--rm', ...HARDENING, IMAGE, 'bash', '-lc', 'echo ok'], { timeoutMs: 60_000 });
+    if (!r.stdout.includes('ok')) throw new Error(r.stderr.trim() || 'self-test container failed');
+    return 'ran hardened throwaway container';
   });
   await check('chromium', async () => {
-    const b = await chromium();
-    const ctx = await b.newContext();
+    const ctx = await (await chromium()).newContext();
     await ctx.close();
     return 'launched';
   });
-  await check('disk', async () => (await shell(WORKROOT, 'df -h . | tail -1')).stdout.trim());
-  // `chromium`/`disk` are advisory; core readiness is workroot + git + node + exec.
-  const coreOk = checks.filter((c) => ['workroot', 'git', 'node', 'exec'].includes(c.name)).every((c) => c.ok);
+  await check('disk', async () => (await spawnCapture(['df', '-h', '/'])).stdout.trim().split('\n').pop());
+  const coreOk = checks.filter((c) => ['docker', 'image', 'container-run'].includes(c.name)).every((c) => c.ok);
   return { healthy: coreOk, checks, capacity: { max: MAX, inUse: workspaces.size } };
 }
 
+// Security baseline for every workspace container: unprivileged, no capabilities,
+// no privilege escalation, no host mounts, bounded resources.
+const HARDENING = [
+  '--user', '1000:1000',
+  '--cap-drop', 'ALL',
+  '--security-opt', 'no-new-privileges',
+  '--pids-limit', '512',
+  '--memory', MEMORY,
+  '--cpus', CPUS,
+  '--label', 'forge=1'
+];
+
 // ---- routing ----------------------------------------------------------------
 async function handle(method, url, body) {
-  const path0 = url.split('?')[0];
-  if (path0 === '/v1/health') return health();
-  if (path0 === '/v1/browser/health') {
+  const p = url.split('?')[0];
+  if (p === '/v1/health') return health();
+  if (p === '/v1/browser/health') {
     try {
       const ctx = await (await chromium()).newContext();
       await ctx.close();
@@ -179,63 +182,59 @@ async function handle(method, url, body) {
     }
   }
 
-  if (path0 === '/v1/sandboxes') {
+  if (p === '/v1/sandboxes') {
     const { input } = body;
-    if (workspaces.size >= MAX && !workspaces.has(input.providerId)) {
-      throw httpError(503, `At capacity (${workspaces.size}/${MAX} workspaces).`);
-    }
-    const dir = dirFor(input.providerId);
-    await mkdir(path.join(dir, 'repo'), { recursive: true });
-    await mkdir(path.join(dir, 'tmp'), { recursive: true });
-    workspaces.set(input.providerId, { dir, createdAt: Date.now(), lastActive: Date.now() });
-    return { providerId: input.providerId, localPath: dir };
+    if (workspaces.size >= MAX && !workspaces.has(input.providerId)) throw httpError(503, `At capacity (${workspaces.size}/${MAX}).`);
+    const name = nameFor(input.providerId);
+    await docker(['rm', '-f', name]);
+    const run = await docker(['run', '-d', '--name', name, ...HARDENING, IMAGE, 'sleep', 'infinity']);
+    if (run.exitCode !== 0) throw httpError(500, `docker run failed: ${run.stderr.slice(0, 300)}`);
+    await dexec(input.providerId, 'mkdir -p /workspace/repo /workspace/tmp');
+    workspaces.set(input.providerId, { name, lastActive: Date.now() });
+    return { providerId: input.providerId };
   }
 
-  const m = path0.match(/^\/v1\/sandboxes\/([^/]+)\/(.+)$/);
+  const m = p.match(/^\/v1\/sandboxes\/([^/]+)\/(.+)$/);
   if (m) {
-    const providerId = decodeURIComponent(m[1]);
+    const id = decodeURIComponent(m[1]);
     const action = m[2];
-    const ws = workspaces.get(providerId);
-    const dir = ws?.dir ?? dirFor(providerId);
-    touch(providerId);
-
-    if (action === 'info') return { providerId, localPath: dir, open: { finder: `open ${dir}`, terminal: `cd ${dir}`, vscode: `code ${dir}` } };
+    touch(id);
+    if (action === 'info') {
+      // Take over by attaching a shell to the live container.
+      return { providerId: id, container: nameFor(id), open: { shell: `docker exec -it ${nameFor(id)} bash`, logs: `docker logs ${nameFor(id)}` } };
+    }
     if (action === 'destroy') {
-      await rm(dir, { recursive: true, force: true });
-      workspaces.delete(providerId);
+      await docker(['rm', '-f', nameFor(id)]);
+      workspaces.delete(id);
       return {};
     }
-    if (action === 'suspend' || action === 'resume') return {}; // local folders need no pause
+    if (action === 'suspend') return void (await docker(['pause', nameFor(id)])) ?? {};
+    if (action === 'resume') return void (await docker(['unpause', nameFor(id)])) ?? {};
     if (action === 'exec') {
       const i = body.input;
-      return shell(dir, i.command, { cwd: i.cwd, timeoutMs: i.timeoutMs, stdin: i.stdin });
+      return dexec(id, i.command, { cwd: i.cwd, timeoutMs: i.timeoutMs, stdin: i.stdin });
     }
     if (action === 'files/read') {
       const i = body.input;
-      let content;
-      try {
-        content = await readFile(mapPath(dir, i.path), 'utf8');
-      } catch {
-        throw httpError(404, `File not found: ${i.path}`);
-      }
-      const sliced = i.startLine || i.endLine ? content.split('\n').slice((i.startLine ?? 1) - 1, i.endLine).join('\n') : content;
-      return { path: i.path, content: sliced, sha256: sha256(content), sizeBytes: Buffer.byteLength(content), truncated: false };
+      const r = await dexec(id, `cat ${shq(i.path)}`);
+      if (r.exitCode !== 0) throw httpError(404, `File not found: ${i.path}`);
+      const content = i.startLine || i.endLine ? r.stdout.split('\n').slice((i.startLine ?? 1) - 1, i.endLine).join('\n') : r.stdout;
+      return { path: i.path, content, sha256: sha256(r.stdout), sizeBytes: Buffer.byteLength(r.stdout), truncated: false };
     }
     if (action === 'files/write') {
       const i = body.input;
-      const target = mapPath(dir, i.path);
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, i.content, 'utf8');
+      const r = await dexec(id, `mkdir -p "$(dirname ${shq(i.path)})" && cat > ${shq(i.path)}`, { stdin: i.content });
+      if (r.exitCode !== 0) throw httpError(500, r.stderr.slice(0, 300));
       return { path: i.path, sha256: sha256(i.content), sizeBytes: Buffer.byteLength(i.content) };
     }
     if (action === 'files/patch') {
       const i = body.input;
-      const r = await shell(dir, `git apply --whitespace=nowarn -`, { cwd: i.cwd, stdin: i.patch });
+      const r = await dexec(id, `git apply --whitespace=nowarn -`, { cwd: i.cwd, stdin: i.patch });
       return { applied: r.exitCode === 0, output: r.stderr || r.stdout, changedFiles: [], rejectedFiles: r.exitCode === 0 ? [] : ['(see output)'], rolledBack: r.exitCode !== 0 };
     }
     if (action === 'files/tree') {
       const i = body.input;
-      const r = await shell(dir, `cd ${JSON.stringify(mapPath(dir, i.path))} 2>/dev/null && find . -maxdepth ${i.depth ?? 4} -printf '%y %p\\n' 2>/dev/null | head -n ${i.limit ?? 1000}`);
+      const r = await dexec(id, `cd ${shq(i.path)} 2>/dev/null && find . -maxdepth ${i.depth ?? 4} -printf '%y %p\\n' 2>/dev/null | head -n ${i.limit ?? 1000}`);
       const entries = r.stdout.trim().split('\n').filter(Boolean).map((line) => {
         const [t, ...rest] = line.split(' ');
         return { path: rest.join(' ').replace(/^\.\//, ''), type: t === 'd' ? 'directory' : t === 'l' ? 'symlink' : 'file' };
@@ -247,25 +246,25 @@ async function handle(method, url, body) {
     if (action === 'snapshot') throw httpError(501, 'Snapshots are not supported by the self-hosted backend.');
   }
 
-  if (path0 === '/v1/browser/capture' || path0 === '/v1/browser/screenshot' || path0 === '/v1/browser/accessibility') return render({ input: body.input });
-  if (path0 === '/v1/browser/act') return render({ input: body.input, steps: body.input.steps });
-  throw httpError(404, `Unknown route ${method} ${path0}`);
+  if (p === '/v1/browser/capture' || p === '/v1/browser/screenshot' || p === '/v1/browser/accessibility') return render({ input: body.input });
+  if (p === '/v1/browser/act') return render({ input: body.input, steps: body.input.steps });
+  throw httpError(404, `Unknown route ${method} ${p}`);
 }
 
+const shq = (v) => `'${String(v).replaceAll("'", "'\\''")}'`;
 function httpError(status, message) {
   const e = new Error(message);
   e.status = status;
   return e;
 }
 
-// Reap idle workspace folders so a crashed session doesn't hold capacity forever
-// (Forge also destroys them via its TTL; this is a local backstop).
-const IDLE_MS = Number(process.env.FORGE_AGENT_IDLE_MINUTES || 60) * 60_000;
+// Reap idle containers so a crashed session doesn't hold capacity (Forge's TTL
+// also destroys them; this is a local backstop).
 setInterval(() => {
   const now = Date.now();
   for (const [id, w] of workspaces) {
     if (now - w.lastActive > IDLE_MS) {
-      rm(w.dir, { recursive: true, force: true }).catch(() => undefined);
+      docker(['rm', '-f', w.name]);
       workspaces.delete(id);
       console.log('forge_agent_reaped_idle', { providerId: id });
     }
@@ -302,5 +301,5 @@ if (process.argv.includes('--selftest')) {
     process.exit(h.healthy ? 0 : 1);
   });
 } else {
-  server.listen(PORT, () => console.log(`Forge Node Agent on :${PORT} — workroot ${WORKROOT}, max ${MAX} workspaces, no Docker`));
+  server.listen(PORT, () => console.log(`Forge Node Agent on :${PORT} — image ${IMAGE}, max ${MAX} workspaces (hardened containers)`));
 }

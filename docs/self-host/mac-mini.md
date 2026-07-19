@@ -8,7 +8,7 @@ using the MCP sees no difference either way — **Forge chooses the route**.
 
 ```
 MCP agent ──▶ Forge (Cloudflare Worker) ──▶ health check ──▶ your Mac mini (healthy?)
-                                                   │ yes ──▶ Mac mini (folders + local tools + Chrome)
+                                                   │ yes ──▶ Mac mini (containers + Chrome)
                                                    │ no  ──▶ Cloudflare containers + Browser Run
 ```
 
@@ -18,26 +18,29 @@ metering. Trade-offs: uptime and security are now yours — read [Security](#sec
 
 ---
 
-> **No Docker.** A workspace is just a folder under a work root, and commands run
-> with the tools you installed via Homebrew. There is nothing container-shaped to
-> learn. (If you ever want VM-grade isolation you can opt into Apple's native
-> `container` runtime, but it's off by default and not required.)
+> **Same model as the cloud.** A workspace is a **container**, exactly like Forge
+> Cloud — one primitive everywhere. You install a container engine once (Colima,
+> a light Docker on macOS); after that, everything is a container whether it runs
+> on Cloudflare or your mini. Containers are run hardened (non-root, no
+> capabilities, no host mounts, resource limits) so agent code is isolated from
+> your machine.
 
 ## 1. One-time setup on the Mac mini
 
 ### Install prerequisites
 ```bash
-# Homebrew + whatever your repos actually need to build
-brew install node git            # add python, go, … as needed
-node -v && git --version         # sanity
+brew install colima docker node   # container engine (Colima) + docker CLI + Node
+colima start --cpu 4 --memory 8 --disk 60   # the container engine
+docker version && node -v         # sanity
 ```
 
-### Install the agent
+### Install the agent + build the workspace image
 ```bash
 mkdir -p ~/forge-node-agent && cd ~/forge-node-agent
 # copy self-host/forge-node-agent/* from this repo into here
 npm install
-npx playwright install chromium  # optional: local browser evidence
+npx playwright install chromium   # optional: local browser evidence
+docker build -f Dockerfile.workspace -t forge-workspace:latest .   # the workspace image
 ```
 
 ### Generate a shared secret
@@ -48,9 +51,9 @@ openssl rand -hex 32     # this is your FORGE_AGENT_TOKEN — keep it secret
 ### Run the self-test (the "check if it's not buggy" step)
 ```bash
 FORGE_AGENT_TOKEN=xxx npm run selftest
-# Prints each check (workroot writable, git, node, a throwaway shell command,
-# chromium, disk) plus capacity. Exit 0 = healthy. Forge runs this same check
-# before routing work to you.
+# Prints each check (docker up, workspace image present, a throwaway hardened
+# container, chromium, disk) plus capacity. Exit 0 = healthy. Forge runs this
+# same check before routing work to you.
 ```
 
 ---
@@ -73,8 +76,8 @@ sudo systemsetup -setrestartfreeze on
   ```
   `KeepAlive` restarts the agent if it crashes; `RunAtLoad` starts it at login.
   Enable **automatic login** (System Settings → Users & Groups) so a reboot
-  comes all the way back up unattended. Nothing else needs to start — there is no
-  container engine to launch.
+  comes all the way back up unattended. Start the container engine at login too:
+  `brew services start colima`.
 - **Power cut**: `autorestart 1` above boots the mini back up when power returns.
 
 ---
@@ -107,26 +110,22 @@ Unset/false ⇒ Forge stays Cloudflare-only. No redeploy of your workspaces need
 
 ## 4. Pre-install your GitHub repos (ready to go)
 
-Warm a shared cache so new workspaces start from a local clone instead of a cold
-fetch. Keep it fresh with a cron/launchd job:
+Bake the repos you use most into the **workspace image** so every container
+starts with a warm copy already on disk (no host mounts needed — it's part of the
+image, which keeps the hardened isolation intact). Add to `Dockerfile.workspace`:
 
-```bash
-# ~/forge-cache/refresh.sh
-for repo in timcoy47/forge-mcp timcoy47/parallax-review; do
-  dir=~/forge-cache/$(echo "$repo" | tr / _)
-  if [ -d "$dir" ]; then git -C "$dir" fetch --all --prune
-  else git clone --mirror "https://github.com/$repo.git" "$dir"; fi
-done
+```dockerfile
+# warm clones baked into the image; refreshed each time you rebuild it
+RUN git clone --depth 1 https://github.com/timcoy47/forge-mcp.git   /workspace/warm/forge-mcp \
+ && git clone --depth 1 https://github.com/timcoy47/parallax-review.git /workspace/warm/parallax-review \
+ && chown -R 1000:1000 /workspace/warm
 ```
-```bash
-# refresh every 15 min
-(crontab -l 2>/dev/null; echo "*/15 * * * * ~/forge-cache/refresh.sh") | crontab -
-```
-Clone new workspaces from this local mirror (`git clone --reference`), so they
-start from a warm copy instead of a cold fetch. For **any authorised person**, grant access
-by adding their repos to this list and giving their Forge account access to the
-same repositories through the Forge GitHub App — the agent runs whatever repos
-Forge is authorised for; the cache just makes them fast.
+Rebuild the image (e.g. nightly via launchd) to keep the warm copies fresh, and
+have your provision step `git clone --reference /workspace/warm/<repo>` for a fast
+local checkout. For **any authorised person**, access is granted the normal way —
+give their Forge account access to the repositories through the Forge GitHub App;
+the agent runs whatever repos Forge is authorised for, and the baked copies just
+make them fast.
 
 > Auth to private repos still flows through Forge's short-lived GitHub App
 > credential — the agent never stores your GitHub token.
@@ -147,8 +146,8 @@ compute.
 
 ## 6. Concurrency
 
-The agent runs up to `FORGE_AGENT_MAX_WORKSPACES` (default 4) at once. Each is a
-separate folder and separate processes, so the OS handles the parallelism; the
+The agent runs up to `FORGE_AGENT_MAX_WORKSPACES` (default 4) containers at once,
+each with its own memory/CPU limit (`FORGE_AGENT_MEMORY`, `FORGE_AGENT_CPUS`); the
 practical limit is your mini's RAM/CPU (a 16 GB mini is comfortable with a few
 concurrent light workspaces or one heavy build).
 
@@ -162,35 +161,36 @@ Tune `FORGE_AGENT_MAX_WORKSPACES` to your hardware; raise it on a bigger box.
 
 ## 7. Take over a workspace by hand
 
-Because a workspace is just a folder, you can jump in and drive it yourself — to
-debug a stuck agent, fix something manually, or look before approving a push. The
-agent reports the folder and ready-made open commands:
+A workspace is a live container, so you can attach a shell and drive it yourself —
+to debug a stuck agent, fix something manually, or look before approving a push.
+The agent reports ready-made commands:
 
 ```bash
-# ask the agent where a workspace lives (providerId from forge_workspace_get)
+# ask the agent about a workspace (providerId from forge_workspace_get)
 curl -s -X POST https://forge-mini.yourdomain.com/v1/sandboxes/<providerId>/info \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
-# → { localPath, open: { finder, terminal, vscode } }
-open <localPath>          # Finder
-cd <localPath> && $SHELL  # Terminal
-code <localPath>          # VS Code
+# → { container, open: { shell, logs } }
+docker exec -it forge-<id> bash   # attach a shell inside the workspace
+docker logs forge-<id>            # see what it's been doing
 ```
 
-The Forge app surfaces these as **Open in Finder / Terminal / VS Code** on any
-workspace running on your mini. When would you actually need it? Rarely on the
-happy path — it earns its keep for **debugging, manual intervention, and building
-trust** while you're getting comfortable letting an agent run. Changes you make
-in the folder are exactly what the agent sees next, since it's the same directory.
+The Forge app surfaces this as **Attach shell / View logs** on any workspace
+running on your mini. When would you actually need it? Rarely on the happy path —
+it earns its keep for **debugging, manual intervention, and building trust** while
+you're getting comfortable letting an agent run. What you do in the shell is
+exactly what the agent sees next — it's the same container.
 
 ## 8. Security
 
-You're running untrusted, agent-authored code on your hardware. Minimum bar:
+You're running untrusted, agent-authored code on your hardware. The agent runs
+every workspace container **hardened by default**, and you should keep the mini
+disposable:
 
-- **Isolation**: workspaces are isolated by the OS user. Set `FORGE_AGENT_USER`
-  to a **dedicated low-privilege macOS account** so agent commands run as that
-  user (via `sudo -u`), not as you, and keep the mini disposable — no personal
-  data, a machine you'd be fine wiping. Want VM-grade isolation? Opt into Apple's
-  native `container` runtime — but it's not required.
+- **Isolation**: each workspace is a container started with `--user 1000`
+  (non-root), `--cap-drop ALL`, `--security-opt no-new-privileges`, **no host
+  mounts**, and memory/CPU/pids limits — so agent code can't escalate or touch
+  your machine. Keep the mini disposable anyway: no personal data, a machine
+  you'd be fine wiping.
 - **No secrets on the box**: the only secret is `FORGE_AGENT_TOKEN`. GitHub auth
   comes per-clone from Forge; don't log in to `gh` or store PATs on the mini.
 - **Network**: the mini dials out through the tunnel; nothing inbound is opened.
@@ -206,7 +206,7 @@ You're running untrusted, agent-authored code on your hardware. Minimum bar:
 On `forge_workspace_create`, Forge calls your agent's `POST /v1/health`. If it
 returns `{ healthy: true }` **and has spare capacity**, the workspace is created
 on the mini and **stays** on the mini for its whole life. If the check fails
-(mini asleep, git/node missing, tunnel dropped) or the mini is full, Forge
+(mini asleep, Docker down, tunnel dropped) or the mini is full, Forge
 silently creates it on Cloudflare instead. Browser calls are gated the same way,
 cached for ~60s. Watch it live:
 
@@ -222,7 +222,7 @@ wrangler tail --format pretty | grep forge_sandbox_route
 
 `self-host/forge-node-agent/` is a runnable reference: health/self-test, and the
 core workspace loop (create / exec / read / write / patch / tree / destroy) as
-plain folders + processes (no Docker), plus browser capture over Playwright.
+hardened containers, plus browser capture over Playwright.
 Background processes, preview-port exposure, and snapshots return an explicit
 "unsupported" error — extend them for your setup. It is deliberately small so you
 can read the whole thing before trusting it with code execution.
