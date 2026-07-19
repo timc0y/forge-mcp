@@ -1,6 +1,14 @@
 import { ForgeError } from '@forge/core';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
 
+// IMPORTANT: this is NOT a security boundary. These regexes classify commands to
+// decide approval prompting and network policy — they are trivially bypassed
+// (`cu''rl`, `python -c '...'`, pipes, `$()`), so they must never be relied on to
+// *contain* a command. Real isolation comes from the sandbox container (non-root,
+// dropped capabilities, no host mounts) and the network egress policy. Treat this
+// as best-effort friction that surfaces obviously-risky commands to the human,
+// not as a wall.
+
 export type CommandClass = 'read_only' | 'local_mutation' | 'dependency_install' | 'network_access' | 'external_side_effect' | 'privileged' | 'destructive' | 'prohibited';
 
 const prohibited = [

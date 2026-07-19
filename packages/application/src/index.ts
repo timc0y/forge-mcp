@@ -516,6 +516,7 @@ export class ForgeApplicationService {
         }
       });
     }
+    record.workspace.hasUnpushedWork = true;
     return {
       value,
       operationId: operation.operationId,
@@ -538,6 +539,7 @@ export class ForgeApplicationService {
     }
     try {
       const value = await (await this.handle(record)).writeFile(input);
+      record.workspace.hasUnpushedWork = true;
       return { value, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
     } catch (error) {
       if (error instanceof Error && error.message === 'FILE_HASH_CONFLICT') {
@@ -790,6 +792,7 @@ export class ForgeApplicationService {
     });
     if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the branch.', retryable: false });
     record.workspace.currentBranch = branch;
+    record.workspace.hasUnpushedWork = true;
     return { branch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -826,6 +829,7 @@ export class ForgeApplicationService {
     if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
     const head = await handle.exec({ command: 'git rev-parse HEAD', cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' });
     record.workspace.currentCommit = head.stdout.trim();
+    record.workspace.hasUnpushedWork = true;
     return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -865,6 +869,8 @@ export class ForgeApplicationService {
     } finally {
       await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
     }
+    // Work is now pushed to GitHub — safe for the reaper to reclaim on idle.
+    record.workspace.hasUnpushedWork = false;
     return { branch: input.branch, commit: record.workspace.currentCommit, diffHash: outgoing.diffHash, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 

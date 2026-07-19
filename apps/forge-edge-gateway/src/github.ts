@@ -337,7 +337,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
   };
   const occupantRows = occupants.length
     ? `<ul>${occupants.map(occupantRow).join('')}</ul>`
-    : '<p class="note">Both slots are free.</p>';
+    : `<p class="note">All ${caps.perTenant} workspace slots are free.</p>`;
   const repositoryRow = (repo: Record<string, unknown>) => `<li><span><strong>${escapeHtml(String(repo.owner))}/${escapeHtml(String(repo.name))}</strong><small>${escapeHtml(String(repo.visibility))} · ${escapeHtml(String(repo.default_branch))}</small></span></li>`;
   const rows = repositories.length
     ? repositories.slice(0, 6).map(repositoryRow).join('')
@@ -524,6 +524,20 @@ export async function requestApproval(
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string }> {
+  const requestPayload = JSON.stringify({ ...payload, requestedBy: identity.subject });
+  const nowIso = new Date().toISOString();
+  // Reuse an existing pending, non-expired approval for the identical request
+  // instead of minting a new row — otherwise an agent retry-loop spams the human
+  // with N identical approval pages.
+  const existing = await env.METADATA.prepare(
+    `SELECT id, expires_at FROM approvals
+      WHERE tenant_id=?1 AND workspace_id=?2 AND requested_action=?3 AND request_payload=?4
+        AND state='pending' AND expires_at > ?5
+      ORDER BY expires_at DESC LIMIT 1`
+  ).bind(identity.tenantId, workspaceId, action, requestPayload, nowIso).first<{ id: string; expires_at: string }>();
+  if (existing) {
+    return { approval_id: existing.id, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${existing.id}`, expires_at: existing.expires_at };
+  }
   const approvalId = ids.approval();
   // A real build+push cycle easily exceeds a few minutes, so a short approval
   // window forces re-approval. Default 60 min; tune with FORGE_APPROVAL_TTL_MINUTES.
@@ -534,7 +548,7 @@ export async function requestApproval(
     `INSERT INTO approvals
       (id, tenant_id, workspace_id, requested_action, reason, risk_category, request_payload, state, expires_at)
      VALUES (?1, ?2, ?3, ?4, ?5, 'external_write', ?6, 'pending', ?7)`
-  ).bind(approvalId, identity.tenantId, workspaceId, action, reason, JSON.stringify({ ...payload, requestedBy: identity.subject }), expiresAt).run();
+  ).bind(approvalId, identity.tenantId, workspaceId, action, reason, requestPayload, expiresAt).run();
   return { approval_id: approvalId, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}`, expires_at: expiresAt };
 }
 
@@ -550,12 +564,20 @@ export async function requireApproval(
     `SELECT request_payload, state, expires_at FROM approvals
       WHERE id=?1 AND tenant_id=?2 AND workspace_id=?3 AND requested_action=?4`
   ).bind(approvalId, identity.tenantId, workspaceId, action).first<{ request_payload: string; state: string; expires_at: string }>();
-  if (!row || row.state !== 'approved' || Date.parse(row.expires_at) <= Date.now()) {
-    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'A current user approval is required.', retryable: false });
+  // Distinct, actionable failures so an agent knows whether to wait, re-request,
+  // or rebuild the diff — instead of one ambiguous "approval required" for all.
+  if (!row) {
+    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'No matching approval. Request one, open the approval URL, then retry with approval_id.', retryable: false });
+  }
+  if (Date.parse(row.expires_at) <= Date.now()) {
+    throw new ForgeError({ code: 'FORGE_APPROVAL_EXPIRED', message: 'This approval expired. Request a new one and have it approved, then retry.', retryable: false });
+  }
+  if (row.state !== 'approved') {
+    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: row.state === 'pending' ? 'Approval is still pending — wait for it to be approved in the browser, then retry.' : 'This approval was already used. Request a new one.', retryable: false });
   }
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
   for (const [key, value] of Object.entries(expected)) {
-    if (payload[key] !== value) throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'The approved Git operation no longer matches the request.', retryable: false });
+    if (payload[key] !== value) throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'The operation changed since it was approved (e.g. a new commit changed the diff). Re-run forge_git_outgoing_diff and request a fresh approval.', retryable: false });
   }
   const claimed = await env.METADATA.prepare("UPDATE approvals SET state='executing' WHERE id=?1 AND state='approved'")
     .bind(approvalId).run();
@@ -563,8 +585,11 @@ export async function requireApproval(
 }
 
 export async function completeApproval(env: Env, approvalId: string, succeeded: boolean): Promise<void> {
+  // One approval = one execution attempt. On failure the approval is spent
+  // ('failed'), not re-armed — so a failing risky command can't be retried
+  // indefinitely inside the TTL window without the human seeing it again.
   await env.METADATA.prepare('UPDATE approvals SET state=?1 WHERE id=?2 AND state=\'executing\'')
-    .bind(succeeded ? 'consumed' : 'approved', approvalId).run();
+    .bind(succeeded ? 'consumed' : 'failed', approvalId).run();
 }
 
 export async function approvalPage(request: Request, env: Env, approvalId: string): Promise<Response> {

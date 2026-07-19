@@ -12,13 +12,8 @@ import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
 
 const RECORD_KEY = 'workspace-runtime';
+// Legacy key from a removed mutation-lease mechanism; still cleared on destroy.
 const LEASE_KEY = 'mutation-lease';
-
-interface MutationLease {
-  holder: string;
-  token: string;
-  expiresAt: string;
-}
 
 export class WorkspaceCoordinator extends DurableObject<Env> {
   private readonly app: ForgeApplicationService;
@@ -79,7 +74,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     const workspace = record.workspace;
     // Fields the reaper/dashboard actually read. A change to any of these — or a
     // stale debounce window — forces the D1 write; otherwise it is skipped.
-    const signature = `${workspace.state}|${workspace.currentCommit ?? ''}|${workspace.currentBranch ?? ''}`;
+    const signature = `${workspace.state}|${workspace.currentCommit ?? ''}|${workspace.currentBranch ?? ''}|${workspace.hasUnpushedWork ? 1 : 0}`;
     const now = Date.now();
     const writeD1 =
       this.lastD1 === null ||
@@ -93,73 +88,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     await Promise.all(work);
   }
 
-  async acquireLease(input: {
-    holder: string;
-    ttlSeconds: number;
-  }): Promise<MutationLease> {
-    return this.serializeMutation(async () => {
-      const current = await this.ctx.storage.get<MutationLease>(LEASE_KEY);
-      if (
-        current &&
-        Date.parse(current.expiresAt) > Date.now() &&
-        current.holder !== input.holder
-      ) {
-        throw new ForgeError({
-          code: 'FORGE_WORKSPACE_CONFLICT',
-          message: 'Another actor currently holds the workspace mutation lease.',
-          retryable: true,
-          details: { holder: current.holder, expiresAt: current.expiresAt }
-        });
-      }
-      const lease = {
-        holder: input.holder,
-        token: crypto.randomUUID(),
-        expiresAt: new Date(
-          Date.now() + Math.min(input.ttlSeconds, 300) * 1000
-        ).toISOString()
-      };
-      await this.ctx.storage.put(LEASE_KEY, lease);
-      return lease;
-    });
-  }
-
-  async renewLease(input: {
-    holder: string;
-    token: string;
-    ttlSeconds: number;
-  }): Promise<MutationLease> {
-    return this.serializeMutation(async () => {
-      const current = await this.ctx.storage.get<MutationLease>(LEASE_KEY);
-      if (
-        !current ||
-        current.holder !== input.holder ||
-        current.token !== input.token
-      ) {
-        throw new ForgeError({
-          code: 'FORGE_LEASE_REQUIRED',
-          message: 'A valid workspace mutation lease is required.',
-          retryable: false
-        });
-      }
-      const lease = {
-        ...current,
-        expiresAt: new Date(
-          Date.now() + Math.min(input.ttlSeconds, 300) * 1000
-        ).toISOString()
-      };
-      await this.ctx.storage.put(LEASE_KEY, lease);
-      return lease;
-    });
-  }
-
-  async releaseLease(input: { holder: string; token: string }): Promise<void> {
-    return this.serializeMutation(async () => {
-      const current = await this.ctx.storage.get<MutationLease>(LEASE_KEY);
-      if (current?.holder === input.holder && current.token === input.token) {
-        await this.ctx.storage.delete(LEASE_KEY);
-      }
-    });
-  }
 
   async initialize(input: CreateWorkspaceInput): Promise<{
     workspaceId: string;
@@ -279,7 +207,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
 
   async getState() {
     const record = await this.getRecord();
-    const lease = await this.ctx.storage.get<MutationLease>(LEASE_KEY);
     return {
       ...record.workspace,
       processes: record.processes,
@@ -293,11 +220,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
             expiresAt: value.expiresAt
           }
         ])
-      ),
-      lease:
-        lease && Date.parse(lease.expiresAt) > Date.now()
-          ? { holder: lease.holder, expiresAt: lease.expiresAt }
-          : null
+      )
     };
   }
 
@@ -363,9 +286,10 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     idempotencyKey?: string;
     approved: boolean;
   }) {
-    const decisionRequiresSerialization = input.idempotencyKey !== undefined;
+    // idempotency_key is required by the tool schema, so every shellExec
+    // serializes — no dead "fast path".
     const touchesRepo = input.cwd === '/workspace/repo' || input.cwd.startsWith('/workspace/repo/');
-    const action = async () => {
+    return this.serializeMutation(async () => {
       const record = touchesRepo ? await this.repoRecord() : await this.getRecord();
       const before = record.workspace.revision;
       const value = await this.app.exec(record, {
@@ -381,8 +305,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       });
       if (record.workspace.revision !== before) await this.save(record);
       return value;
-    };
-    return decisionRequiresSerialization ? this.serializeMutation(action) : action();
+    });
   }
 
   async processStart(input: {

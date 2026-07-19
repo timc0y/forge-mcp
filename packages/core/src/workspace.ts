@@ -39,6 +39,10 @@ export interface Workspace {
   requestedRef: string;
   currentCommit?: string;
   currentBranch?: string;
+  // True once local work exists that hasn't been pushed (a forge branch, a
+  // commit, an applied patch or file write). The idle reaper refuses to destroy
+  // such a workspace so an agent's unpushed work is never silently lost.
+  hasUnpushedWork?: boolean;
   state: WorkspaceLifecycleState;
   persistenceMode: PersistenceMode;
   runtimeProfile: string;
