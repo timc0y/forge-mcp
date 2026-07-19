@@ -2,13 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { sandboxRouter } from '../../apps/forge-edge-gateway/src/sandbox-router';
 import type { SandboxProvider, SandboxHealth } from '@forge/sandbox-core';
 
-function provider(kind: SandboxProvider['kind'], health?: boolean): SandboxProvider {
+function provider(
+  kind: SandboxProvider['kind'],
+  health?: boolean,
+  capacity?: { max: number; inUse: number }
+): SandboxProvider {
   return {
     kind,
     version: 'test',
     ...(health === undefined
       ? {}
-      : { healthCheck: async (): Promise<SandboxHealth> => ({ healthy: health, kind, checks: [] }) }),
+      : { healthCheck: async (): Promise<SandboxHealth> => ({ healthy: health, kind, checks: [], capacity }) }),
     create: async () => ({}) as never,
     get: async () => ({}) as never,
     suspend: async () => undefined,
@@ -34,6 +38,13 @@ describe('sandbox router selection and fallback', () => {
   it('falls back to Cloudflare when the self-hosted backend is unhealthy', async () => {
     const router = sandboxRouter({ cloudflare: provider('cloudflare'), selfHosted: provider('self-hosted', false) });
     expect((await router.selectForCreate()).kind).toBe('cloudflare');
+  });
+
+  it('falls back to Cloudflare when the self-hosted backend is at capacity', async () => {
+    const full = sandboxRouter({ cloudflare: provider('cloudflare'), selfHosted: provider('self-hosted', true, { max: 4, inUse: 4 }) });
+    expect((await full.selectForCreate()).kind).toBe('cloudflare');
+    const room = sandboxRouter({ cloudflare: provider('cloudflare'), selfHosted: provider('self-hosted', true, { max: 4, inUse: 1 }) });
+    expect((await room.selectForCreate()).kind).toBe('self-hosted');
   });
 
   it('resolves an existing workspace to the backend it was created on', () => {

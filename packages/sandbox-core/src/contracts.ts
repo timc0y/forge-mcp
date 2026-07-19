@@ -9,8 +9,11 @@ import type {
 export interface SandboxHealth {
   healthy: boolean;
   kind: SandboxProvider['kind'];
-  // Human-readable checks that ran (docker up, disk free, self-test passed…).
+  // Human-readable checks that ran (tools present, disk free, self-test passed…).
   checks: Array<{ name: string; ok: boolean; detail?: string }>;
+  // Optional concurrency signal. When present and inUse >= max the backend is at
+  // capacity, so Forge routes the new workspace elsewhere rather than overload it.
+  capacity?: { max: number; inUse: number };
   detail?: string;
 }
 

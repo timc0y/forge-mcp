@@ -23,13 +23,15 @@ export function sandboxRouter(providers: {
     async selectForCreate() {
       if (!selfHosted?.healthCheck) return cloudflare;
       const health = await selfHosted.healthCheck();
-      if (health.healthy) {
-        console.log('forge_sandbox_route', { chosen: 'self-hosted' });
+      const atCapacity = health.capacity !== undefined && health.capacity.inUse >= health.capacity.max;
+      if (health.healthy && !atCapacity) {
+        console.log('forge_sandbox_route', { chosen: 'self-hosted', capacity: health.capacity });
         return selfHosted;
       }
       console.warn('forge_sandbox_route_fallback', {
         chosen: 'cloudflare',
-        reason: health.detail ?? 'self-hosted health check failed',
+        reason: atCapacity ? 'self-hosted at capacity' : health.detail ?? 'self-hosted health check failed',
+        capacity: health.capacity,
         checks: health.checks
       });
       return cloudflare;
