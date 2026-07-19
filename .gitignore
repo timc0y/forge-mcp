@@ -12,3 +12,6 @@ artifacts/
 apps/forge-edge-gateway/src/worker-configuration.d.ts
 
 *.tsbuildinfo
+
+# Claude Code local state and agent worktrees
+.claude/
