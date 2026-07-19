@@ -8,7 +8,7 @@ using the MCP sees no difference either way — **Forge chooses the route**.
 
 ```
 MCP agent ──▶ Forge (Cloudflare Worker) ──▶ health check ──▶ your Mac mini (healthy?)
-                                                   │ yes ──▶ Mac mini (Docker + Chrome)
+                                                   │ yes ──▶ Mac mini (folders + local tools + Chrome)
                                                    │ no  ──▶ Cloudflare containers + Browser Run
 ```
 
@@ -18,14 +18,18 @@ metering. Trade-offs: uptime and security are now yours — read [Security](#sec
 
 ---
 
+> **No Docker.** A workspace is just a folder under a work root, and commands run
+> with the tools you installed via Homebrew. There is nothing container-shaped to
+> learn. (If you ever want VM-grade isolation you can opt into Apple's native
+> `container` runtime, but it's off by default and not required.)
+
 ## 1. One-time setup on the Mac mini
 
 ### Install prerequisites
 ```bash
-# Homebrew, Docker (Colima is a light option), Node 20+, git
-brew install node git colima docker
-colima start --cpu 4 --memory 8 --disk 60   # the Docker engine
-node -v && docker version                    # sanity
+# Homebrew + whatever your repos actually need to build
+brew install node git            # add python, go, … as needed
+node -v && git --version         # sanity
 ```
 
 ### Install the agent
@@ -33,8 +37,7 @@ node -v && docker version                    # sanity
 mkdir -p ~/forge-node-agent && cd ~/forge-node-agent
 # copy self-host/forge-node-agent/* from this repo into here
 npm install
-npx playwright install chromium            # local Chrome for browser evidence
-docker build -f Dockerfile.workspace -t forge-workspace:latest .
+npx playwright install chromium  # optional: local browser evidence
 ```
 
 ### Generate a shared secret
@@ -45,8 +48,9 @@ openssl rand -hex 32     # this is your FORGE_AGENT_TOKEN — keep it secret
 ### Run the self-test (the "check if it's not buggy" step)
 ```bash
 FORGE_AGENT_TOKEN=xxx npm run selftest
-# Prints each check (docker, image, throwaway container, chromium, disk).
-# Exit 0 = healthy. Forge runs this same check before routing work to you.
+# Prints each check (workroot writable, git, node, a throwaway shell command,
+# chromium, disk) plus capacity. Exit 0 = healthy. Forge runs this same check
+# before routing work to you.
 ```
 
 ---
@@ -61,7 +65,7 @@ sudo pmset -c sleep 0 disksleep 0 womp 1 autorestart 1
 sudo systemsetup -setrestartfreeze on
 ```
 
-- **Auto-start Colima + the agent at boot/login**: install the launchd service.
+- **Auto-start the agent at boot/login**: install the launchd service.
   ```bash
   cp com.forge.agent.plist ~/Library/LaunchAgents/com.forge.agent.plist
   # edit paths, token, and port inside the plist first
@@ -69,8 +73,8 @@ sudo systemsetup -setrestartfreeze on
   ```
   `KeepAlive` restarts the agent if it crashes; `RunAtLoad` starts it at login.
   Enable **automatic login** (System Settings → Users & Groups) so a reboot
-  comes all the way back up unattended. Make Colima start at login too:
-  `brew services start colima` (or a second launchd item).
+  comes all the way back up unattended. Nothing else needs to start — there is no
+  container engine to launch.
 - **Power cut**: `autorestart 1` above boots the mini back up when power returns.
 
 ---
@@ -118,8 +122,8 @@ done
 # refresh every 15 min
 (crontab -l 2>/dev/null; echo "*/15 * * * * ~/forge-cache/refresh.sh") | crontab -
 ```
-Mount the cache into the base image / containers and clone from it (`git clone
---reference`), so builds start fast. For **any authorised person**, grant access
+Clone new workspaces from this local mirror (`git clone --reference`), so they
+start from a warm copy instead of a cold fetch. For **any authorised person**, grant access
 by adding their repos to this list and giving their Forge account access to the
 same repositories through the Forge GitHub App — the agent runs whatever repos
 Forge is authorised for; the cache just makes them fast.
@@ -141,31 +145,70 @@ compute.
 
 ---
 
-## 6. Security
+## 6. Concurrency
+
+The agent runs up to `FORGE_AGENT_MAX_WORKSPACES` (default 4) at once. Each is a
+separate folder and separate processes, so the OS handles the parallelism; the
+practical limit is your mini's RAM/CPU (a 16 GB mini is comfortable with a few
+concurrent light workspaces or one heavy build).
+
+The agent reports `capacity: { max, inUse }` in `/v1/health`, and **Forge only
+routes a new workspace to the mini when it's healthy *and* under capacity** —
+otherwise that workspace goes to Cloudflare instead of thrashing your machine.
+Idle workspaces are reaped locally after `FORGE_AGENT_IDLE_MINUTES` (default 60),
+and Forge's own slot TTL destroys them too, so capacity frees itself.
+
+Tune `FORGE_AGENT_MAX_WORKSPACES` to your hardware; raise it on a bigger box.
+
+## 7. Take over a workspace by hand
+
+Because a workspace is just a folder, you can jump in and drive it yourself — to
+debug a stuck agent, fix something manually, or look before approving a push. The
+agent reports the folder and ready-made open commands:
+
+```bash
+# ask the agent where a workspace lives (providerId from forge_workspace_get)
+curl -s -X POST https://forge-mini.yourdomain.com/v1/sandboxes/<providerId>/info \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}'
+# → { localPath, open: { finder, terminal, vscode } }
+open <localPath>          # Finder
+cd <localPath> && $SHELL  # Terminal
+code <localPath>          # VS Code
+```
+
+The Forge app surfaces these as **Open in Finder / Terminal / VS Code** on any
+workspace running on your mini. When would you actually need it? Rarely on the
+happy path — it earns its keep for **debugging, manual intervention, and building
+trust** while you're getting comfortable letting an agent run. Changes you make
+in the folder are exactly what the agent sees next, since it's the same directory.
+
+## 8. Security
 
 You're running untrusted, agent-authored code on your hardware. Minimum bar:
 
-- **Isolation**: every workspace runs in its own container. For stronger
-  isolation than Docker (agent code could try a container escape), run the Docker
-  engine inside a VM (Colima already does this on macOS) and treat the mini as
-  disposable — no personal data on it, a dedicated macOS user account.
+- **Isolation**: workspaces are isolated by the OS user. Set `FORGE_AGENT_USER`
+  to a **dedicated low-privilege macOS account** so agent commands run as that
+  user (via `sudo -u`), not as you, and keep the mini disposable — no personal
+  data, a machine you'd be fine wiping. Want VM-grade isolation? Opt into Apple's
+  native `container` runtime — but it's not required.
 - **No secrets on the box**: the only secret is `FORGE_AGENT_TOKEN`. GitHub auth
   comes per-clone from Forge; don't log in to `gh` or store PATs on the mini.
-- **Network egress**: consider firewalling the container network
-  (`--network` policies) so workspaces can reach package registries but not your
-  LAN.
+- **Network**: the mini dials out through the tunnel; nothing inbound is opened.
+  Optionally firewall outbound so workspaces reach package registries but not the
+  rest of your LAN.
 - **The tunnel** authenticates every request with the bearer token; rotate it if
   leaked (`wrangler secret put` + restart the agent with the new value).
 
 ---
 
-## 7. How Forge decides (so you can reason about it)
+## 9. How Forge decides (so you can reason about it)
 
 On `forge_workspace_create`, Forge calls your agent's `POST /v1/health`. If it
-returns `{ healthy: true }`, the workspace is created on the mini and **stays**
-on the mini for its whole life. If the check fails (mini asleep, Docker down,
-tunnel dropped), Forge silently creates it on Cloudflare instead. Browser calls
-are gated the same way, cached for ~60s. Watch it live:
+returns `{ healthy: true }` **and has spare capacity**, the workspace is created
+on the mini and **stays** on the mini for its whole life. If the check fails
+(mini asleep, git/node missing, tunnel dropped) or the mini is full, Forge
+silently creates it on Cloudflare instead. Browser calls are gated the same way,
+cached for ~60s. Watch it live:
 
 ```bash
 wrangler tail --format pretty | grep forge_sandbox_route
@@ -178,8 +221,8 @@ wrangler tail --format pretty | grep forge_sandbox_route
 ## Reference agent
 
 `self-host/forge-node-agent/` is a runnable reference: health/self-test, and the
-core workspace loop (create / exec / read / write / patch / tree / destroy) over
-Docker plus browser capture over Playwright. Background processes, preview-port
-exposure, and snapshots return an explicit "unsupported" error — extend them for
-your setup. It is deliberately small so you can read the whole thing before
-trusting it with code execution.
+core workspace loop (create / exec / read / write / patch / tree / destroy) as
+plain folders + processes (no Docker), plus browser capture over Playwright.
+Background processes, preview-port exposure, and snapshots return an explicit
+"unsupported" error — extend them for your setup. It is deliberately small so you
+can read the whole thing before trusting it with code execution.
