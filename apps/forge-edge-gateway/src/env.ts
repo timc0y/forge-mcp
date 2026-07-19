@@ -34,6 +34,9 @@ export interface Env {
   // How long an approval (push / PR / gated shell) stays valid. Optional; default
   // 60 minutes — long enough to survive an install+build before using it.
   FORGE_APPROVAL_TTL_MINUTES?: string;
+  // Persist a workspace's /workspace to R2 before the idle reaper destroys it,
+  // and restore it on next use (snapshot_on_idle). Optional; off unless 'true'.
+  FORGE_SNAPSHOT_ENABLED?: string;
   // Self-hosted compute route (e.g. a Mac mini running the Forge Node Agent).
   // When enabled and healthy, new workspaces run there; otherwise Forge falls
   // back to Cloudflare containers. All optional — unset means Cloudflare only.

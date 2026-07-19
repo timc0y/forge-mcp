@@ -7,9 +7,11 @@ import {
 import { ForgeError, type ProcessId } from '@forge/core';
 import { D1MetadataStore } from '@forge/metadata-d1';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
+import { issueCapability } from '@forge/capabilities';
 import type { Env } from './env';
 import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
+import { snapshotsEnabled, getSnapshot } from './snapshots';
 
 const RECORD_KEY = 'workspace-runtime';
 // Legacy key from a removed mutation-lease mechanism; still cleared on destroy.
@@ -222,6 +224,65 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         ])
       )
     };
+  }
+
+  // Mint a short-lived capability scoped to this workspace's snapshot endpoint,
+  // so untrusted container code can only PUT/GET its own snapshot.
+  private async snapshotToken(workspaceId: string, tenantId: string): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    return issueCapability(
+      { version: 1, subject: 'forge-snapshot', tenantId, workspaceId, action: `snapshot:${workspaceId}`, nonce: crypto.randomUUID(), issuedAt: now, expiresAt: now + 900 },
+      this.env.FORGE_CAPABILITY_SIGNING_KEY
+    );
+  }
+
+  // snapshot_on_idle: tar /workspace and stream it (from inside the container) to
+  // the Worker's R2 snapshot gateway. Best-effort and gated — a failure never
+  // blocks teardown. Must run while the workspace is still ready (before destroy).
+  async snapshotToR2(): Promise<{ snapshotted: boolean; reason?: string }> {
+    if (!snapshotsEnabled(this.env)) return { snapshotted: false, reason: 'disabled' };
+    let record: WorkspaceRuntimeRecord;
+    try {
+      record = await this.getRecord();
+    } catch {
+      return { snapshotted: false, reason: 'no-record' };
+    }
+    if (!['ready', 'busy'].includes(record.workspace.state)) return { snapshotted: false, reason: `state ${record.workspace.state}` };
+    try {
+      const workspaceId = record.workspace.id;
+      const token = await this.snapshotToken(workspaceId, record.workspace.tenantId);
+      const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_snapshot/${workspaceId}`;
+      const handle = await this.app.handle(record);
+      const command = `tar czf - -C /workspace --exclude=./tmp --exclude='./repo/node_modules/.cache' . | curl -sf -T - -H ${JSON.stringify(`authorization: Bearer ${token}`)} ${JSON.stringify(url)}`;
+      const result = await handle.exec({ command, cwd: '/workspace', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
+      return { snapshotted: result.exitCode === 0, reason: result.exitCode === 0 ? undefined : result.stderr.slice(0, 200) };
+    } catch (error) {
+      return { snapshotted: false, reason: error instanceof Error ? error.message.slice(0, 200) : 'error' };
+    }
+  }
+
+  // Restore a prior snapshot over a freshly provisioned workspace (best-effort).
+  async restoreFromR2(): Promise<{ restored: boolean }> {
+    if (!snapshotsEnabled(this.env)) return { restored: false };
+    let record: WorkspaceRuntimeRecord;
+    try {
+      record = await this.getRecord();
+    } catch {
+      return { restored: false };
+    }
+    const snap = await getSnapshot(this.env.METADATA, record.workspace.id).catch(() => null);
+    if (!snap) return { restored: false };
+    try {
+      const workspaceId = record.workspace.id;
+      const token = await this.snapshotToken(workspaceId, record.workspace.tenantId);
+      const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_snapshot/${workspaceId}`;
+      const handle = await this.app.handle(record);
+      const command = `curl -sf -H ${JSON.stringify(`authorization: Bearer ${token}`)} ${JSON.stringify(url)} | tar xzf - -C /workspace`;
+      const result = await handle.exec({ command, cwd: '/workspace', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
+      return { restored: result.exitCode === 0 };
+    } catch {
+      return { restored: false };
+    }
   }
 
   async filesTree(input: { path: string; depth: number; limit: number }) {

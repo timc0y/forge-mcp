@@ -21,6 +21,7 @@ import type { Env } from './env';
 import { registerForgeConsole } from './forge-console';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
 import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, slotTtlMs, workspaceCaps } from './capacity';
+import { snapshotsEnabled } from './snapshots';
 import {
   authorizeRepository,
   completeApproval,
@@ -238,11 +239,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   private async reclaimStaleWorkspaceSlots(): Promise<number> {
     const env = this.env;
     try {
-      const reclaimed = await reclaimStaleSlots(env.METADATA, slotTtlMs(env));
+      const reclaimed = await reclaimStaleSlots(env.METADATA, slotTtlMs(env), Date.now(), !snapshotsEnabled(env));
       for (const slot of reclaimed) {
         const reapedId = slot.workspaceId as WorkspaceId;
         try {
           const destroyId = workflowInstanceId('destroy', reapedId);
+          // Save the workspace before teardown (best-effort, no-op if disabled).
+          await coordinator(env, reapedId).snapshotToR2().catch(() => undefined);
           await coordinator(env, reapedId).requestDestroy({ idempotencyKey: `reap-${destroyId}` });
           await env.DESTROY_WORKFLOW.create({
             id: destroyId,
@@ -757,6 +760,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 observedViewport: { width: result.screenshot.width, height: result.screenshot.height },
                 screenshot: screenshotRef,
                 accessibility: result.accessibility,
+                // Audit trail: the exact interaction this evidence proves, so a
+                // Parallax reviewer can see what was actually done, not just the
+                // resulting frame.
+                executedSteps: capture.steps ?? null,
                 inspected: false,
                 limitations: []
               };

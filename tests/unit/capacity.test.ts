@@ -17,6 +17,7 @@ interface SlotRow {
 interface WorkspaceRow {
   state: string;
   updated_at: string;
+  has_unpushed_work?: number;
 }
 
 // Minimal in-memory D1 that understands only the statements capacity.ts issues.
@@ -60,7 +61,8 @@ function fakeD1(slots: SlotRow[], workspaces: Record<string, WorkspaceRow>) {
                 workspace_id: slot.workspace_id,
                 claimed_at: slot.claimed_at,
                 state: workspaces[slot.workspace_id]?.state ?? null,
-                updated_at: workspaces[slot.workspace_id]?.updated_at ?? null
+                updated_at: workspaces[slot.workspace_id]?.updated_at ?? null,
+                has_unpushed_work: workspaces[slot.workspace_id]?.has_unpushed_work ?? null
               }));
             return { results: rows as T[] };
           }
@@ -187,6 +189,27 @@ describe('workspace slot capacity (per-tenant)', () => {
     expect(db.slots.map((s) => s.workspace_id)).toEqual(['wsp_busy']);
     // Freed slot is immediately reusable.
     expect(await reserveWorkspaceSlot(db, 'ten_a', 'wsp_new', { global: 8, perTenant: 8 })).toBe(2);
+  });
+
+  it('protects an idle workspace with unpushed work from idle-reaping by default', async () => {
+    const db = fakeD1(
+      [{ slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_dirty', claimed_at: minutesAgo(600) }],
+      { wsp_dirty: { state: 'ready', updated_at: minutesAgo(600), has_unpushed_work: 1 } }
+    );
+    // Default protectUnpushed=true: idle past TTL, but dirty work keeps the slot.
+    expect(await reclaimStaleSlots(db, slotTtlMs({}), NOW)).toEqual([]);
+    expect(db.slots.map((s) => s.workspace_id)).toEqual(['wsp_dirty']);
+  });
+
+  it('reaps an idle dirty workspace when protection is dropped (snapshots on)', async () => {
+    const db = fakeD1(
+      [{ slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_dirty', claimed_at: minutesAgo(600) }],
+      { wsp_dirty: { state: 'ready', updated_at: minutesAgo(600), has_unpushed_work: 1 } }
+    );
+    // protectUnpushed=false: the caller snapshots to R2 first, so idle-reaping is safe.
+    const reclaimed = await reclaimStaleSlots(db, slotTtlMs({}), NOW, false);
+    expect(reclaimed.map((r) => r.workspaceId)).toEqual(['wsp_dirty']);
+    expect(db.slots.length).toBe(0);
   });
 
   it('scopes occupant listing to a single tenant', async () => {

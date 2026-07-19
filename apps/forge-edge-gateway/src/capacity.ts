@@ -76,7 +76,11 @@ export async function listSlotOccupants(
   database: D1Database,
   ttlMs: number,
   now: number = Date.now(),
-  tenantId?: string
+  tenantId?: string,
+  // When true (default), an idle workspace with unpushed work is protected from
+  // reaping. When snapshots are enabled the caller passes false — the reaper
+  // snapshots the workspace to R2 first, so idle-reaping it is safe.
+  protectUnpushed = true
 ): Promise<SlotOccupant[]> {
   const rows = await database.prepare(
     `SELECT s.slot AS slot, s.tenant_id AS tenant_id, s.workspace_id AS workspace_id, s.claimed_at AS claimed_at,
@@ -94,10 +98,12 @@ export async function listSlotOccupants(
     const idle = ageMinutes(lastActive, now);
     const terminal = row.state === null || (row.state !== null && TERMINAL_STATES.includes(row.state));
     const idleExpired = idle !== null && idle >= ttlMinutes;
-    // A workspace with unpushed work is never reclaimed for mere idleness —
-    // pushes need human approval and humans sleep longer than the TTL. It is
-    // still reclaimed if orphaned/terminal (the work is already gone).
-    const stale = terminal || (idleExpired && row.has_unpushed_work !== 1);
+    // A workspace with unpushed work is never idle-reaped while `protectUnpushed`
+    // holds (pushes need human approval and humans sleep longer than the TTL);
+    // with snapshots on, the caller drops that protection because the reaper
+    // saves the work to R2 first. Orphaned/terminal are always reclaimed.
+    const dirtyProtected = protectUnpushed && row.has_unpushed_work === 1;
+    const stale = terminal || (idleExpired && !dirtyProtected);
     return {
       slot: row.slot,
       tenantId: row.tenant_id,
@@ -118,9 +124,10 @@ export async function listSlotOccupants(
 export async function reclaimStaleSlots(
   database: D1Database,
   ttlMs: number,
-  now: number = Date.now()
+  now: number = Date.now(),
+  protectUnpushed = true
 ): Promise<ReclaimedSlot[]> {
-  const occupants = await listSlotOccupants(database, ttlMs, now);
+  const occupants = await listSlotOccupants(database, ttlMs, now, undefined, protectUnpushed);
   const stale = occupants.filter((occupant) => occupant.stale);
   if (stale.length === 0) return [];
   // One batched DELETE instead of a round trip per row. RETURNING confirms
