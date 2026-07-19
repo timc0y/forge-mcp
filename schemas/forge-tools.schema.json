@@ -6,7 +6,7 @@
   "tools": {
     "forge_repository_list": {
       "title": "List authorized repositories",
-      "description": "List GitHub repositories currently authorized through the Forge GitHub App for this account.",
+      "description": "List the GitHub repositories authorized for this account through the Forge GitHub App. Container-free — use it to pick a repository before starting a task or workspace.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -17,8 +17,8 @@
       }
     },
     "forge_task_start": {
-      "title": "Start a durable task",
-      "description": "Create a durable coding-session record that survives MCP reconnects, context compression and container sleep. Cheap: creates NO container. Call this first for any coherent piece of work, then attach one workspace later only when execution is needed.",
+      "title": "Start a task",
+      "description": "Create a durable task record that survives MCP reconnects, context compression and container sleep. Container-free — start a task first for any coherent piece of work, then attach one workspace later only when you need to run or edit code.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -29,18 +29,13 @@
             "type": "object",
             "properties": {
               "provider": {
-                "type": "string",
-                "const": "github"
+                "$ref": "#/$defs/__schema0"
               },
               "owner": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
+                "$ref": "#/$defs/__schema1"
               },
               "name": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
+                "$ref": "#/$defs/__schema2"
               }
             },
             "required": [
@@ -48,42 +43,34 @@
               "owner",
               "name"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Authorized GitHub repository to act on."
           },
           "base_ref": {
             "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
+            "description": "The branch or ref the task branches from.",
+            "$ref": "#/$defs/__schema3"
           },
           "goal": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 2000
+            "maxLength": 2000,
+            "description": "What this task should achieve."
           },
           "decisions": {
             "default": [],
-            "maxItems": 40,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema0"
-            }
+            "description": "Durable decisions that must survive context compression.",
+            "$ref": "#/$defs/__schema4"
           },
           "non_goals": {
             "default": [],
-            "maxItems": 40,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema1"
-            }
+            "description": "Things this task deliberately will not do.",
+            "$ref": "#/$defs/__schema6"
           },
           "likely_paths": {
             "default": [],
-            "maxItems": 40,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema2"
-            }
+            "description": "Files or directories the work is expected to touch.",
+            "$ref": "#/$defs/__schema8"
           }
         },
         "required": [
@@ -98,15 +85,55 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 500
+            "const": "github"
           },
           "__schema1": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 500
+            "maxLength": 100
           },
           "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "__schema3": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "__schema4": {
+            "maxItems": 40,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema5"
+            }
+          },
+          "__schema5": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema6": {
+            "maxItems": 40,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema7"
+            }
+          },
+          "__schema7": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema8": {
+            "maxItems": 40,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema9"
+            }
+          },
+          "__schema9": {
             "type": "string",
             "minLength": 1,
             "maxLength": 500
@@ -115,8 +142,8 @@
       }
     },
     "forge_task_get": {
-      "title": "Get a durable task",
-      "description": "Return the full durable task record including branch, workspace, previews, files read and changed, checks and evidence ids. Read-only and container-free.",
+      "title": "Get a task",
+      "description": "Get the full task record: branch, workspace, previews, files read and changed, checks and evidence ids. Read-only and container-free.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -125,7 +152,8 @@
         "properties": {
           "task_id": {
             "type": "string",
-            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
           }
         },
         "required": [
@@ -135,8 +163,8 @@
       }
     },
     "forge_task_summary": {
-      "title": "Summarize a durable task",
-      "description": "Return a compact reconnect summary that lets a fresh turn resume without replaying the session: goal, decisions, non-goals, state, files, checks, evidence, outstanding work and the next recommended action. Excludes source, full logs, diffs and secrets. Container-free.",
+      "title": "Summarize a task",
+      "description": "Get a compact resume summary for a task — goal, decisions, non-goals, state, files, checks, evidence, outstanding work and the next recommended action — so a fresh turn can continue without replaying the session. Excludes source, logs, diffs and secrets. Container-free.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -145,7 +173,8 @@
         "properties": {
           "task_id": {
             "type": "string",
-            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
           }
         },
         "required": [
@@ -155,8 +184,8 @@
       }
     },
     "forge_task_list": {
-      "title": "List durable tasks",
-      "description": "List recent durable tasks for the account, most recently updated first, optionally filtered by state. Container-free.",
+      "title": "List tasks",
+      "description": "List recent tasks for the account, most recently updated first, optionally filtered by state. Container-free.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -164,6 +193,21 @@
         "type": "object",
         "properties": {
           "state": {
+            "description": "Only return tasks in this state.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum number of tasks to return.",
+            "$ref": "#/$defs/__schema1"
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
             "type": "string",
             "enum": [
               "planning",
@@ -178,22 +222,17 @@
               "cancelled"
             ]
           },
-          "limit": {
-            "default": 20,
+          "__schema1": {
             "type": "integer",
             "minimum": 1,
             "maximum": 100
           }
-        },
-        "required": [
-          "limit"
-        ],
-        "additionalProperties": false
+        }
       }
     },
     "forge_task_finish": {
-      "title": "Finish a durable task",
-      "description": "Move a durable task to a terminal state (complete, failed or cancelled). The task record and its evidence remain retrievable afterwards.",
+      "title": "Finish a task",
+      "description": "Move a task to a terminal state (complete, failed or cancelled). The record and its evidence stay retrievable afterwards. Container-free.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -202,7 +241,8 @@
         "properties": {
           "task_id": {
             "type": "string",
-            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
           },
           "outcome": {
             "type": "string",
@@ -210,28 +250,39 @@
               "complete",
               "failed",
               "cancelled"
-            ]
+            ],
+            "description": "The terminal state to move the task to."
           },
           "note": {
-            "type": "string",
-            "maxLength": 2000
+            "description": "Optional closing note added to the task.",
+            "$ref": "#/$defs/__schema0"
           },
           "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
           "task_id",
           "outcome"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "__schema1": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
       }
     },
     "forge_review": {
-      "title": "Review a site with Parallax",
-      "description": "The easiest and cheapest Forge path. Capture screenshot and accessibility evidence from an existing URL without starting a container, ready for a strict Parallax review. Each cell carries a structure-health signal (structureSummary and evidence[].accessibility.structure) that flags heading defects the screenshot hides — stacked title-on-title headings, empty or duplicated headings and skipped levels — so those must be resolved or explicitly accepted before the review passes.",
+      "title": "Review a deployed URL",
+      "description": "Capture screenshot and accessibility evidence from a live public URL for a strict Parallax review, without starting a container — the cheapest review path. Each cell reports a structure-health signal (structureSummary and evidence[].accessibility.structure) that flags heading defects a screenshot hides — stacked, empty, duplicate or skipped-level headings — which must be resolved or explicitly accepted before the review passes.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -240,7 +291,8 @@
         "properties": {
           "url": {
             "type": "string",
-            "format": "uri"
+            "format": "uri",
+            "description": "The public URL to review."
           },
           "captures": {
             "minItems": 1,
@@ -248,7 +300,8 @@
             "type": "array",
             "items": {
               "$ref": "#/$defs/__schema0"
-            }
+            },
+            "description": "Routes to capture."
           },
           "viewports": {
             "default": [
@@ -263,16 +316,13 @@
                 "height": 900
               }
             ],
-            "minItems": 1,
-            "maxItems": 2,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema1"
-            }
+            "description": "Viewports to capture each route at.",
+            "$ref": "#/$defs/__schema3"
           },
           "full_page": {
             "default": false,
-            "type": "boolean"
+            "description": "Capture the full scrollable page instead of just the viewport.",
+            "$ref": "#/$defs/__schema5"
           }
         },
         "required": [
@@ -288,18 +338,17 @@
             "properties": {
               "path": {
                 "type": "string",
-                "pattern": "^\\/.*"
+                "pattern": "^\\/.*",
+                "description": "Route path to capture, e.g. /pricing."
               },
               "state": {
                 "default": "entry",
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
+                "description": "Label for the page state being captured.",
+                "$ref": "#/$defs/__schema1"
               },
               "selection": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 200
+                "description": "Optional label for what this evidence covers.",
+                "$ref": "#/$defs/__schema2"
               }
             },
             "required": [
@@ -309,6 +358,24 @@
             "additionalProperties": false
           },
           "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "__schema3": {
+            "minItems": 1,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema4"
+            }
+          },
+          "__schema4": {
             "type": "object",
             "properties": {
               "id": {
@@ -333,13 +400,16 @@
               "height"
             ],
             "additionalProperties": false
+          },
+          "__schema5": {
+            "type": "boolean"
           }
         }
       }
     },
     "forge_workspace_create": {
-      "title": "Create Forge workspace",
-      "description": "Create a disposable isolated workspace from an authorized repository. Returns immediately with state 'requested'; poll forge_workspace_get until state is 'ready' (usually under a minute) before using it. idempotency_key must be unique per distinct workspace.",
+      "title": "Create a workspace",
+      "description": "Create a disposable, isolated workspace (a container) from an authorized repository. Costly — create one only when you need to run or edit code; decide with the container-free task and read tools first. Returns immediately in state 'requested'; poll forge_workspace_get until state is 'ready' (usually under a minute) before use. idempotency_key must be unique per distinct workspace.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -350,18 +420,13 @@
             "type": "object",
             "properties": {
               "provider": {
-                "type": "string",
-                "const": "github"
+                "$ref": "#/$defs/__schema0"
               },
               "owner": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
+                "$ref": "#/$defs/__schema1"
               },
               "name": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
+                "$ref": "#/$defs/__schema2"
               }
             },
             "required": [
@@ -369,35 +434,34 @@
               "owner",
               "name"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Authorized GitHub repository to act on."
           },
           "ref": {
             "default": "main",
-            "type": "string"
+            "description": "Branch or ref to check out.",
+            "$ref": "#/$defs/__schema3"
           },
           "runtime": {
             "default": "node-22",
-            "type": "string",
-            "enum": [
-              "node-22",
-              "node-24",
-              "python-3.13",
-              "general-purpose"
-            ]
+            "description": "Runtime image for the container.",
+            "$ref": "#/$defs/__schema4"
           },
           "persistence": {
             "default": "ephemeral",
-            "type": "string",
-            "const": "ephemeral"
+            "description": "Workspaces are always ephemeral.",
+            "$ref": "#/$defs/__schema5"
           },
           "bootstrap": {
             "default": true,
-            "type": "boolean"
+            "description": "Install dependencies on create.",
+            "$ref": "#/$defs/__schema6"
           },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         },
         "required": [
@@ -408,12 +472,47 @@
           "bootstrap",
           "idempotency_key"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "const": "github"
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "__schema3": {
+            "type": "string"
+          },
+          "__schema4": {
+            "type": "string",
+            "enum": [
+              "node-22",
+              "node-24",
+              "python-3.13",
+              "general-purpose"
+            ]
+          },
+          "__schema5": {
+            "type": "string",
+            "const": "ephemeral"
+          },
+          "__schema6": {
+            "type": "boolean"
+          }
+        }
       }
     },
     "forge_workspace_get": {
-      "title": "Get Forge workspace",
-      "description": "Return lifecycle, repository, revision, processes, previews, snapshot and outstanding state for one workspace.",
+      "title": "Get a workspace",
+      "description": "Get a workspace's lifecycle state, repository, revision, processes and previews. Read-only and container-free — poll it after forge_workspace_create until state is 'ready'.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -422,7 +521,8 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           }
         },
         "required": [
@@ -432,8 +532,8 @@
       }
     },
     "forge_context_get": {
-      "title": "Select bounded repository context",
-      "description": "Rank the most relevant repository files for a goal deterministically (no embeddings, no model). Returns paths with reasons, governing instructions, adjacent tests, package context and warnings — never file contents. The client decides what to read. Cheap.",
+      "title": "Select repository context",
+      "description": "Rank the repository files most relevant to a goal, deterministically (no embeddings, no model). Returns paths with reasons, governing instructions, adjacent tests, package context and warnings — never file contents; you decide what to read. Cheap.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -442,34 +542,32 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "goal": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 2000
+            "maxLength": 2000,
+            "description": "What you are trying to do; drives the ranking."
           },
           "task_id": {
-            "type": "string",
-            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "description": "Optional task to associate the lookup with.",
+            "$ref": "#/$defs/__schema0"
           },
           "root": {
             "default": "/workspace/repo",
-            "type": "string",
-            "pattern": "^\\/workspace.*"
+            "description": "Subtree to rank within.",
+            "$ref": "#/$defs/__schema1"
           },
           "max_results": {
             "default": 12,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
+            "description": "Maximum number of files to return.",
+            "$ref": "#/$defs/__schema2"
           },
           "categories": {
-            "maxItems": 4,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema0"
-            }
+            "description": "Restrict results to these file categories.",
+            "$ref": "#/$defs/__schema3"
           }
         },
         "required": [
@@ -481,6 +579,27 @@
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
+          },
+          "__schema1": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema2": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "__schema3": {
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema4"
+            }
+          },
+          "__schema4": {
             "type": "string",
             "enum": [
               "source",
@@ -494,7 +613,7 @@
     },
     "forge_diff_metadata": {
       "title": "Summarize the outgoing diff",
-      "description": "Return deterministic compact metadata over the outgoing diff (changed files, additions/deletions, changed exports, tests, config, migrations, possible secret exposure, risk areas and suggested hunks) plus targeted verification suggestions. Syntax-only: inspect the raw diff via forge_git_outgoing_diff before any Git mutation.",
+      "description": "Summarize the outgoing diff into deterministic, compact metadata: changed files, additions/deletions, changed exports, tests, config, migrations, possible secret exposure, risk areas and the files worth reading first, plus targeted verification suggestions. Syntax-only and cheap — inspect the raw diff with forge_git_outgoing_diff before any Git mutation.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -503,25 +622,32 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "base": {
             "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
+            "description": "Base branch to diff the current branch against.",
+            "$ref": "#/$defs/__schema0"
           }
         },
         "required": [
           "workspace_id",
           "base"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        }
       }
     },
     "forge_files_tree": {
       "title": "List workspace files",
-      "description": "Return a bounded, Git-aware file tree rooted inside /workspace.",
+      "description": "List a bounded, Git-aware file tree under /workspace. Read-only; needs a ready workspace.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -530,24 +656,23 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "path": {
             "default": "/workspace/repo",
-            "type": "string",
-            "pattern": "^\\/workspace.*"
+            "description": "Directory to list.",
+            "$ref": "#/$defs/__schema0"
           },
           "depth": {
             "default": 4,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 20
+            "description": "How many levels deep to descend.",
+            "$ref": "#/$defs/__schema1"
           },
           "limit": {
             "default": 1000,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 10000
+            "description": "Maximum number of entries to return.",
+            "$ref": "#/$defs/__schema2"
           }
         },
         "required": [
@@ -556,12 +681,28 @@
           "depth",
           "limit"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema1": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "__schema2": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          }
+        }
       }
     },
     "forge_files_read": {
-      "title": "Read workspace file(s)",
-      "description": "Read one file (path) or several at once (paths) as bounded text, each with a content hash for conflict-safe edits. Reading several in one call saves round trips. start_line/end_line and max_bytes apply to each file.",
+      "title": "Read workspace files",
+      "description": "Read one file (path) or several at once (paths) as bounded text, each with a content hash for conflict-safe edits. Reading several in one call saves round trips; start_line/end_line and max_bytes apply to each file. Needs a ready workspace.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -570,35 +711,29 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "path": {
-            "type": "string",
-            "pattern": "^\\/workspace.*"
+            "description": "Single file to read.",
+            "$ref": "#/$defs/__schema0"
           },
           "paths": {
-            "minItems": 1,
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema0"
-            }
+            "description": "Several files to read in one call.",
+            "$ref": "#/$defs/__schema1"
           },
           "start_line": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "First line to include (1-based).",
+            "$ref": "#/$defs/__schema3"
           },
           "end_line": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Last line to include (1-based).",
+            "$ref": "#/$defs/__schema4"
           },
           "max_bytes": {
             "default": 200000,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 500000
+            "description": "Per-file byte ceiling.",
+            "$ref": "#/$defs/__schema5"
           }
         },
         "required": [
@@ -610,13 +745,40 @@
           "__schema0": {
             "type": "string",
             "pattern": "^\\/workspace.*"
+          },
+          "__schema1": {
+            "minItems": 1,
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema2"
+            }
+          },
+          "__schema2": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema3": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "__schema4": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "__schema5": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500000
           }
         }
       }
     },
     "forge_files_write": {
       "title": "Write workspace file",
-      "description": "Create or overwrite a file with its full content — simpler and more reliable than a unified diff for whole-file changes. Pass expected_sha256 (from forge_files_read) for a conflict-safe overwrite; omit it to create a new file. Parent directories are created automatically. idempotency_key must be unique per distinct write.",
+      "description": "Create or overwrite a whole file with its full content — simpler and more reliable than a diff for full-file changes. Pass expected_sha256 (from forge_files_read) for a conflict-safe overwrite; omit it to create a new file. Parent directories are created automatically; idempotency_key must be unique per distinct write.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -625,24 +787,28 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "path": {
             "type": "string",
-            "pattern": "^\\/workspace.*"
+            "pattern": "^\\/workspace.*",
+            "description": "File to create or overwrite."
           },
           "content": {
             "type": "string",
-            "maxLength": 1000000
+            "maxLength": 1000000,
+            "description": "Full new file content."
           },
           "expected_sha256": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
+            "description": "Hash the file must currently have, for a conflict-safe overwrite; omit to create.",
+            "$ref": "#/$defs/__schema0"
           },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         },
         "required": [
@@ -651,12 +817,18 @@
           "content",
           "idempotency_key"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
       }
     },
     "forge_files_patch": {
-      "title": "Apply file patch",
-      "description": "Apply a unified diff inside the repository. Best for surgical multi-hunk edits; for whole-file rewrites prefer forge_files_write (agents often miscount diff context). idempotency_key must be unique per distinct patch.",
+      "title": "Apply a file patch",
+      "description": "Apply a unified diff to the repository. Best for surgical multi-hunk edits; for whole-file rewrites prefer forge_files_write (agents often miscount diff context). idempotency_key must be unique per distinct patch.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -665,17 +837,20 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "patch": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 1000000
+            "maxLength": 1000000,
+            "description": "Unified diff to apply."
           },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         },
         "required": [
@@ -687,8 +862,8 @@
       }
     },
     "forge_shell_exec": {
-      "title": "Execute bounded command",
-      "description": "Execute a foreground command in an explicit directory with timeout, output and network-policy bounds. Risky commands return a real user approval URL. idempotency_key must be unique per distinct command.",
+      "title": "Run a command",
+      "description": "Run a foreground command in the workspace with timeout, output and network-policy bounds. Risky commands return a real user approval URL; idempotency_key must be unique per distinct command.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -697,64 +872,53 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "command": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 16384
+            "maxLength": 16384,
+            "description": "Command to run."
           },
           "cwd": {
             "default": "/workspace/repo",
-            "type": "string",
-            "pattern": "^\\/workspace.*"
+            "description": "Working directory inside the workspace; must start with /workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "timeout_ms": {
             "default": 300000,
-            "type": "integer",
-            "minimum": 100,
-            "maximum": 900000
+            "description": "Kill the command after this many milliseconds.",
+            "$ref": "#/$defs/__schema1"
           },
           "environment": {
             "default": {},
-            "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
-            "additionalProperties": {
-              "type": "string"
-            }
+            "description": "Extra environment variables.",
+            "$ref": "#/$defs/__schema2"
           },
           "network_policy": {
             "default": "development",
-            "type": "string",
-            "enum": [
-              "deny_all",
-              "package_install",
-              "development",
-              "custom_allowlist",
-              "unrestricted_with_approval"
-            ]
+            "description": "Outbound network policy for this command.",
+            "$ref": "#/$defs/__schema3"
           },
           "output_limit_bytes": {
             "default": 200000,
-            "type": "integer",
-            "minimum": 1000,
-            "maximum": 1000000
+            "description": "Truncate captured output past this many bytes.",
+            "$ref": "#/$defs/__schema4"
           },
           "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema5"
           },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           },
           "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
+            "description": "Approval id returned by a prior blocked call.",
+            "$ref": "#/$defs/__schema6"
           }
         },
         "required": [
@@ -767,34 +931,18 @@
           "output_limit_bytes",
           "idempotency_key"
         ],
-        "additionalProperties": false
-      }
-    },
-    "forge_process_start": {
-      "title": "Start background process",
-      "description": "Start a long-running process such as a development server and return a Forge process identifier immediately. idempotency_key must be unique per distinct process.",
-      "sideEffect": "workspace",
-      "approval": "policy",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
-          },
-          "command": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 16384
-          },
-          "cwd": {
-            "default": "/workspace/repo",
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
             "type": "string",
             "pattern": "^\\/workspace.*"
           },
-          "environment": {
-            "default": {},
+          "__schema1": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 900000
+          },
+          "__schema2": {
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -803,25 +951,77 @@
               "type": "string"
             }
           },
-          "network_policy": {
-            "default": "development",
+          "__schema3": {
             "type": "string",
             "enum": [
               "deny_all",
               "package_install",
               "development",
-              "custom_allowlist"
+              "custom_allowlist",
+              "unrestricted_with_approval"
             ]
           },
-          "expected_revision": {
+          "__schema4": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 1000000
+          },
+          "__schema5": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
+          "__schema6": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          }
+        }
+      }
+    },
+    "forge_process_start": {
+      "title": "Start a background process",
+      "description": "Start a long-running background process such as a development server and return its Forge process id immediately. idempotency_key must be unique per distinct process.",
+      "sideEffect": "workspace",
+      "approval": "policy",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "description": "Command to run in the background."
+          },
+          "cwd": {
+            "default": "/workspace/repo",
+            "description": "Working directory inside the workspace; must start with /workspace.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "environment": {
+            "default": {},
+            "description": "Extra environment variables.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "network_policy": {
+            "default": "development",
+            "description": "Outbound network policy for this process.",
+            "$ref": "#/$defs/__schema2"
+          },
+          "expected_revision": {
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema3"
+          },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         },
         "required": [
@@ -832,12 +1032,41 @@
           "network_policy",
           "idempotency_key"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema1": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "__schema2": {
+            "type": "string",
+            "enum": [
+              "deny_all",
+              "package_install",
+              "development",
+              "custom_allowlist"
+            ]
+          },
+          "__schema3": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
       }
     },
     "forge_process_logs": {
       "title": "Read process logs",
-      "description": "Read a bounded process-log page using an opaque cursor.",
+      "description": "Read a bounded page of a background process's logs using an opaque cursor. Read-only.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -846,26 +1075,34 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "process_id": {
             "type": "string",
-            "pattern": "^proc_.*"
+            "pattern": "^proc_.*",
+            "description": "Process id from forge_process_start."
           },
           "cursor": {
-            "type": "string"
+            "description": "Opaque cursor from a prior page.",
+            "$ref": "#/$defs/__schema0"
           }
         },
         "required": [
           "workspace_id",
           "process_id"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string"
+          }
+        }
       }
     },
     "forge_git_status": {
       "title": "Read Git status",
-      "description": "Return structured working-tree and branch status for the workspace repository.",
+      "description": "Get the workspace repository's working-tree and branch status. Read-only.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -874,7 +1111,8 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           }
         },
         "required": [
@@ -885,7 +1123,7 @@
     },
     "forge_git_diff": {
       "title": "Read Git diff",
-      "description": "Return a bounded unified diff for the working tree or staged changes.",
+      "description": "Get a bounded unified diff of the working tree, or of staged changes. Read-only.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -894,22 +1132,29 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "staged": {
             "default": false,
-            "type": "boolean"
+            "description": "Diff staged changes instead of the working tree.",
+            "$ref": "#/$defs/__schema0"
           }
         },
         "required": [
           "workspace_id",
           "staged"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "boolean"
+          }
+        }
       }
     },
     "forge_git_branch_create": {
-      "title": "Create Forge branch",
+      "title": "Create a branch",
       "description": "Create and check out a local branch under the required forge/ namespace.",
       "sideEffect": "workspace",
       "approval": "none",
@@ -919,22 +1164,24 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "branch": {
             "type": "string",
             "maxLength": 107,
-            "pattern": "^forge\\/.*"
+            "pattern": "^forge\\/.*",
+            "description": "Branch name; must start with forge/."
           },
           "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema0"
           },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         },
         "required": [
@@ -942,12 +1189,19 @@
           "branch",
           "idempotency_key"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
       }
     },
     "forge_git_commit": {
-      "title": "Commit workspace changes",
-      "description": "Stage selected repository paths and create a commit attributed to forge-mcp[bot]. Omit message to auto-generate a conventional-commit message from the diff.",
+      "title": "Commit changes",
+      "description": "Stage the given repository paths and commit them, attributed to forge-mcp[bot]. Omit message to auto-generate a conventional-commit message from the diff.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -956,30 +1210,27 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "message": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
+            "description": "Commit message; omit to auto-generate.",
+            "$ref": "#/$defs/__schema0"
           },
           "paths": {
             "default": [],
-            "maxItems": 100,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema0"
-            }
+            "description": "Paths to stage; empty stages all changes.",
+            "$ref": "#/$defs/__schema1"
           },
           "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema3"
           },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         },
         "required": [
@@ -993,13 +1244,30 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          },
+          "__schema1": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema2"
+            }
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema3": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
           }
         }
       }
     },
     "forge_git_outgoing_diff": {
-      "title": "Inspect outgoing Git change",
-      "description": "Return the exact bounded diff and hash between the base branch and current Forge branch before approval.",
+      "title": "Inspect the outgoing change",
+      "description": "Get the exact bounded diff and its hash between the base branch and the current forge/ branch. Read-only — inspect this before requesting a push.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1008,25 +1276,32 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "base": {
             "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
+            "description": "Base branch to compare against.",
+            "$ref": "#/$defs/__schema0"
           }
         },
         "required": [
           "workspace_id",
           "base"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        }
       }
     },
     "forge_git_push": {
-      "title": "Push Forge branch",
-      "description": "Push a non-default forge/ branch through the GitHub App credential proxy. A real user approval page is required.",
+      "title": "Push a branch",
+      "description": "Push a non-default forge/ branch through the GitHub App credential proxy. Requires a real user approval page and the expected diff hash.",
       "sideEffect": "external",
       "approval": "required",
       "inputSchema": {
@@ -1035,36 +1310,38 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "branch": {
             "type": "string",
             "maxLength": 107,
-            "pattern": "^forge\\/.*"
+            "pattern": "^forge\\/.*",
+            "description": "forge/ branch to push."
           },
           "base": {
             "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
+            "description": "Base branch the push targets.",
+            "$ref": "#/$defs/__schema0"
           },
           "expected_diff_hash": {
             "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "diffHash from forge_git_outgoing_diff; the push fails if the diff changed."
           },
           "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
+            "description": "Approval id from the approval page.",
+            "$ref": "#/$defs/__schema1"
           },
           "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema2"
           },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         },
         "required": [
@@ -1074,12 +1351,28 @@
           "expected_diff_hash",
           "idempotency_key"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "__schema1": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          },
+          "__schema2": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
       }
     },
     "forge_pull_request_create": {
-      "title": "Create draft pull request",
-      "description": "Create a draft GitHub pull request for an already pushed Forge branch. A real user approval page is required. Omit title to auto-generate a title and body from the branch diff.",
+      "title": "Open a draft pull request",
+      "description": "Open a draft GitHub pull request for an already-pushed forge/ branch. Requires a real user approval page. Omit title to auto-generate the title and body from the branch diff.",
       "sideEffect": "external",
       "approval": "required",
       "inputSchema": {
@@ -1088,32 +1381,32 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "head": {
             "type": "string",
             "maxLength": 107,
-            "pattern": "^forge\\/.*"
+            "pattern": "^forge\\/.*",
+            "description": "forge/ branch to open the PR from."
           },
           "base": {
             "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
+            "description": "Branch to merge into.",
+            "$ref": "#/$defs/__schema0"
           },
           "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256
+            "description": "PR title; omit to auto-generate.",
+            "$ref": "#/$defs/__schema1"
           },
           "body": {
             "default": "",
-            "type": "string",
-            "maxLength": 60000
+            "description": "PR body.",
+            "$ref": "#/$defs/__schema2"
           },
           "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
+            "description": "Approval id from the approval page.",
+            "$ref": "#/$defs/__schema3"
           }
         },
         "required": [
@@ -1122,12 +1415,32 @@
           "base",
           "body"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "__schema2": {
+            "type": "string",
+            "maxLength": 60000
+          },
+          "__schema3": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          }
+        }
       }
     },
     "forge_preview_expose": {
-      "title": "Expose private preview",
-      "description": "Expose a running process through a short-lived Forge preview capability. Private is the default; public requires approval.",
+      "title": "Expose a preview",
+      "description": "Expose a running process through a short-lived Forge preview capability. Private by default; public access requires approval.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -1136,42 +1449,39 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "process_id": {
             "type": "string",
-            "pattern": "^proc_.*"
+            "pattern": "^proc_.*",
+            "description": "Process to expose."
           },
           "port": {
             "type": "integer",
             "minimum": 1024,
-            "maximum": 65535
+            "maximum": 65535,
+            "description": "Port the process listens on."
           },
           "access": {
             "default": "private",
-            "type": "string",
-            "enum": [
-              "private",
-              "tenant",
-              "share-link",
-              "public"
-            ]
+            "description": "Who can reach the preview.",
+            "$ref": "#/$defs/__schema0"
           },
           "ttl_seconds": {
             "default": 3600,
-            "type": "integer",
-            "minimum": 60,
-            "maximum": 86400
+            "description": "How long the preview stays open.",
+            "$ref": "#/$defs/__schema1"
           },
           "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema2"
           },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         },
         "required": [
@@ -1182,12 +1492,33 @@
           "ttl_seconds",
           "idempotency_key"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "enum": [
+              "private",
+              "tenant",
+              "share-link",
+              "public"
+            ]
+          },
+          "__schema1": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400
+          },
+          "__schema2": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
       }
     },
     "forge_review_capture": {
-      "title": "Capture Parallax review evidence",
-      "description": "Capture screenshot + accessibility evidence of a running Forge preview: one packet for bounded routes, states and viewports. Optionally give a capture `steps` to drive a real interaction (click/fill/press/wait) before the shot — that proves multi-step flows (open a menu, submit a form) a static screenshot cannot. Use forge_artifact_get to inspect each stored image. This is the only preview-evidence tool; there is no separate screenshot/accessibility/act tool.",
+      "title": "Capture preview review evidence",
+      "description": "Capture screenshot and accessibility evidence from a running Forge preview — one packet across bounded routes, states and viewports. Give a capture `steps` to drive a real interaction (click/fill/press/wait) before the shot, proving multi-step flows a static screenshot cannot. Inspect each image with forge_artifact_get; this is the only preview-evidence tool.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -1196,11 +1527,13 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "preview_id": {
             "type": "string",
-            "pattern": "^prv_.*"
+            "pattern": "^prv_.*",
+            "description": "Preview id from forge_preview_expose."
           },
           "captures": {
             "minItems": 1,
@@ -1208,15 +1541,17 @@
             "type": "array",
             "items": {
               "$ref": "#/$defs/__schema0"
-            }
+            },
+            "description": "Routes to capture."
           },
           "viewports": {
             "minItems": 1,
             "maxItems": 4,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema2"
-            }
+              "$ref": "#/$defs/__schema5"
+            },
+            "description": "Viewports to capture each route at."
           }
         },
         "required": [
@@ -1232,26 +1567,21 @@
             "properties": {
               "route": {
                 "type": "string",
-                "pattern": "^\\/.*"
+                "pattern": "^\\/.*",
+                "description": "Route path to capture, e.g. /cart."
               },
               "state": {
                 "default": "entry",
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
+                "description": "Label for the page state being captured.",
+                "$ref": "#/$defs/__schema1"
               },
               "selection": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 200
+                "description": "Optional label for what this evidence covers.",
+                "$ref": "#/$defs/__schema2"
               },
               "steps": {
-                "minItems": 1,
-                "maxItems": 20,
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/__schema1"
-                }
+                "description": "Interaction to drive before the shot.",
+                "$ref": "#/$defs/__schema3"
               }
             },
             "required": [
@@ -1261,6 +1591,24 @@
             "additionalProperties": false
           },
           "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "__schema3": {
+            "minItems": 1,
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema4"
+            }
+          },
+          "__schema4": {
             "type": "object",
             "properties": {
               "kind": {
@@ -1310,7 +1658,7 @@
             ],
             "additionalProperties": false
           },
-          "__schema2": {
+          "__schema5": {
             "type": "object",
             "properties": {
               "id": {
@@ -1340,8 +1688,8 @@
       }
     },
     "forge_artifact_get": {
-      "title": "Get browser artifact",
-      "description": "Return a stored Forge artifact to the MCP client. Image artifacts are returned as MCP image content for direct model inspection.",
+      "title": "Get an artifact",
+      "description": "Fetch a stored Forge artifact. Image artifacts are returned as MCP image content for direct model inspection. Read-only.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1350,17 +1698,18 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "artifact_id": {
             "type": "string",
-            "pattern": "^art_.*"
+            "pattern": "^art_.*",
+            "description": "Artifact id, e.g. from evidence[].screenshot.artifactId."
           },
           "max_bytes": {
             "default": 2500000,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 4000000
+            "description": "Maximum bytes to return.",
+            "$ref": "#/$defs/__schema0"
           }
         },
         "required": [
@@ -1368,12 +1717,19 @@
           "artifact_id",
           "max_bytes"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4000000
+          }
+        }
       }
     },
     "forge_workspace_destroy": {
-      "title": "Destroy Forge workspace",
-      "description": "Revoke previews and capabilities, stop processes, destroy the sandbox and mark the workspace destroyed.",
+      "title": "Destroy a workspace",
+      "description": "Destroy a workspace: revoke previews and capabilities, stop processes and tear down the container. Do this once the task or review is complete.",
       "sideEffect": "destructive",
       "approval": "policy",
       "inputSchema": {
@@ -1382,21 +1738,23 @@
         "properties": {
           "workspace_id": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "preserve_artifacts": {
             "default": true,
-            "type": "boolean"
+            "description": "Keep captured artifacts after teardown.",
+            "$ref": "#/$defs/__schema0"
           },
           "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         },
         "required": [
@@ -1404,7 +1762,17 @@
           "preserve_artifacts",
           "idempotency_key"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "boolean"
+          },
+          "__schema1": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
       }
     }
   }

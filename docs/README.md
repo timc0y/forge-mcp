@@ -1,35 +1,51 @@
 # Forge documentation
 
-> Forge gives compatible AI clients a safe remote development computer. The
-> client supplies reasoning; Forge supplies repository state, execution,
-> previews, browser evidence, Git operations and durable task context.
+Forge gives ChatGPT, Claude, and any MCP client a safe remote development
+computer. The client supplies reasoning; Forge supplies the repository, runtime,
+files, commands, previews, browser evidence, Git operations, and durable task
+context.
 
-## Map
+## Start here
 
-- [`RECONCILIATION.md`](./RECONCILIATION.md) — current branch/PR/doc state.
-- `product/` and [`PRODUCT-PLAN.md`](./PRODUCT-PLAN.md) — what Forge is, the
-  target user, product boundaries, terminology and supported workflows.
-- `architecture/` — the architecture as implemented: packages, Cloudflare
-  bindings, workspace lifecycle, preview routing, browser, Git/credential flow,
-  persistence and evidence format.
-- `plans/` — active implementation programmes only.
-- `operations/` — deployment, production config, budget/cleanup runbooks,
-  incident response, GitHub App and Cloudflare operations, acceptance testing.
-- `security/` — threat model, capability tokens, OAuth, Git credentials, shell
-  policy, preview access, secret handling, approval boundaries.
-- `research/` — dated investigations, rejected alternatives and experimental
-  Cloudflare features (gated by `feature-flags.json`).
-- `mcp/` — tool catalog, client compatibility and error codes.
-- `adr/` — architecture decision records.
+- [Architecture](./architecture.md) — how an MCP request becomes a workspace.
+- [Tool reference](./tools.md) — every tool, verbatim from `packages/mcp-core`.
+- [Connectors & setup](./connectors.md) — add Forge to ChatGPT or Claude.
+- [Operations](./operations.md) — deploy, D1 migrations, config, runbook.
+- [Security](./security/README.md) — approvals, capability tokens, tenancy.
+- [Self-hosting](./self-host.md) — run Forge compute on your own box.
+- [Parallax](./architecture/parallax.md) — the review contract and evidence rules.
 
-## Terminology
+## Terminology (one word per concept)
 
 **Task** a durable coding-session record · **Workspace** a temporary Linux
 execution environment · **Process** a command in a workspace · **Preview** a
-private live URL for a process · **Browser session** an interactive browser
-visiting a preview · **Evidence** a stored, verifiable output · **Artifact** a
-stored binary/large object referenced by id · **Approval** an explicit user
-authorization.
+private live URL for a process · **Evidence** a stored, verifiable review output
+· **Artifact** a stored binary/large object referenced by id · **Capability** a
+scoped, short-lived signed token · **Approval** an explicit human authorization.
 
 "Preview" never means screenshot; "workspace" never means task; "browser" never
 means application preview.
+
+## Deep dives & reference
+
+- [`architecture/`](./architecture/) — per-subsystem detail (runtime, github,
+  persistence, security, sequences, workspace-state).
+- [`security/`](./security/) — threat model, capability tokens, network policy,
+  trust boundaries, approval model.
+- [`operations/`](./operations/) — incident response, provider upgrades,
+  workspace cleanup, cost runbook.
+- [`mcp/`](./mcp/) — error codes, client compatibility, the agent execution
+  playbook.
+- [`adr/`](./adr/) — architecture decision records.
+
+## Vision & research (not all shipped)
+
+These capture direction and investigation, and may describe features that are
+not yet built. Treat them as background, not current behavior.
+
+- [`plans/`](./plans/) and [`PRODUCT-PLAN.md`](./PRODUCT-PLAN.md),
+  [`PLAN-0.5.md`](./PLAN-0.5.md),
+  [`CHATGPT-FIRST-MASTER-PLAN.md`](./CHATGPT-FIRST-MASTER-PLAN.md) — product and
+  roadmap thinking.
+- [`research/`](./research/) — dated investigations and rejected alternatives.
+- [`RECONCILIATION.md`](./RECONCILIATION.md) — a point-in-time branch/doc audit.
