@@ -202,6 +202,10 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           revision: record.workspace.revision
         };
       }
+      // The D1 snapshot lookup and the GitHub token fetch are independent of each
+      // other and of container boot — start them together. The token fetch can throw,
+      // so it is only awaited inside the try below where its failure is handled.
+      const cloneSourcePromise = repositoryCloneSource(this.env, record.workspace);
       // If a prior snapshot exists, let provisioning restore it and skip the slow
       // clone+install. Best-effort — a failed restore falls back to full bootstrap.
       const priorSnapshot = await getSnapshot(this.env.METADATA, record.workspace.id).catch(() => null);
@@ -230,7 +234,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           }
         : undefined;
       try {
-        const cloneSource = await repositoryCloneSource(this.env, record.workspace);
+        const cloneSource = await cloneSourcePromise;
         await this.app.provisionWorkspace(
           record,
           input.bootstrap,

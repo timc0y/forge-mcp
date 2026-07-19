@@ -13,7 +13,7 @@ import {
   type WorkspaceId
 } from '@forge/core';
 import { assertCommandAllowed, classifyCommand } from '@forge/policy';
-import { detectProject, type ProjectDetection } from '@forge/project-detection';
+import { parseDetection, DETECTION_SCRIPT, type ProjectDetection } from '@forge/project-detection';
 import type {
   ExecInput,
   FileReadInput,
@@ -90,6 +90,60 @@ function lockfileFor(packageManager: ProjectDetection['packageManager']): string
     default:
       return null;
   }
+}
+
+// Candidate lockfiles hashed by the combined provision probe, ordered so a single
+// pass covers every package manager `lockfileFor` can name.
+const LOCKFILE_CANDIDATES = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'uv.lock', 'requirements.txt'];
+
+// One post-clone exec that emits HEAD, branch, per-lockfile sha256, and the project
+// detection JSON in a single delimited block — folding four container round-trips
+// (git rev-parse, git branch, sha256sum, detection) into one. Parsed Worker-side by
+// `parseProvisionProbe`.
+const PROVISION_PROBE_COMMAND = [
+  'echo ===FORGE_HEAD===',
+  'git rev-parse HEAD',
+  'echo ===FORGE_BRANCH===',
+  'git branch --show-current',
+  'echo ===FORGE_LOCKFILE===',
+  `for f in ${LOCKFILE_CANDIDATES.join(' ')}; do [ -f "$f" ] && echo "$f $(sha256sum "$f" | cut -d' ' -f1)"; done`,
+  'echo ===FORGE_DETECTION===',
+  DETECTION_SCRIPT
+].join('\n');
+
+export interface ProvisionProbe {
+  head: string;
+  branch: string;
+  lockfileHashes: Record<string, string>;
+  detection: ProjectDetection;
+}
+
+// Pure parser for the combined probe's stdout. Splits on the sentinel markers and
+// reuses `parseDetection` for the trailing JSON section.
+export function parseProvisionProbe(stdout: string): ProvisionProbe {
+  const markers = ['===FORGE_HEAD===', '===FORGE_BRANCH===', '===FORGE_LOCKFILE===', '===FORGE_DETECTION==='];
+  const section = (name: string): string => {
+    const start = stdout.indexOf(name);
+    if (start === -1) return '';
+    const from = start + name.length;
+    let end = stdout.length;
+    for (const m of markers) {
+      const i = stdout.indexOf(m, from);
+      if (i !== -1 && i < end) end = i;
+    }
+    return stdout.slice(from, end).trim();
+  };
+  const lockfileHashes: Record<string, string> = {};
+  for (const line of section('===FORGE_LOCKFILE===').split('\n')) {
+    const [name, hash] = line.trim().split(/\s+/);
+    if (name && hash) lockfileHashes[name] = hash;
+  }
+  return {
+    head: section('===FORGE_HEAD==='),
+    branch: section('===FORGE_BRANCH==='),
+    lockfileHashes,
+    detection: parseDetection(section('===FORGE_DETECTION==='))
+  };
 }
 
 function repositorySlug(repository: RepositoryRef): string {
@@ -251,7 +305,7 @@ export class ForgeApplicationService {
       });
     }
     const clone = await handle.exec({
-      command: `git clone --depth 1 --branch ${quoted(record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
+      command: `git clone --depth 1 --no-tags --branch ${quoted(record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
       cwd: '/workspace',
       timeoutMs: 180_000,
       outputLimitBytes: 200_000,
@@ -436,7 +490,20 @@ export class ForgeApplicationService {
       record.workspace.revision = nextRevision(record.workspace.revision);
       record.workspace.updatedAt = new Date().toISOString();
       await onStateChange(record);
-      const detection = await detectProject(handle);
+
+      // One combined exec reads everything the post-clone happy path needs: HEAD,
+      // branch, project detection, and per-lockfile hashes — folding four container
+      // round-trips into a single one.
+      const probe = await handle.exec({
+        command: PROVISION_PROBE_COMMAND,
+        cwd: '/workspace/repo',
+        timeoutMs: 30_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      const parsedProbe = parseProvisionProbe(probe.stdout);
+      const detection = parsedProbe.detection;
       record.detection = detection;
 
       // Per-repo dependency cache: when this was a cold provision (no
@@ -444,27 +511,16 @@ export class ForgeApplicationService {
       // node_modules from the shared, content-keyed cache before installing. A hit
       // turns the install into a fast --prefer-offline verify; a miss populates the
       // cache after a successful install. Best-effort — never blocks provisioning.
+      // The lockfile hash comes from the combined probe above (no extra exec).
       let depsRestored = false;
       let lockfileHash: string | null = null;
       if (bootstrap && detection.installCommand && depsCache && !usedSnapshot) {
         const lockfile = lockfileFor(detection.packageManager);
         if (lockfile) {
-          try {
-            const hashed = await handle.exec({
-              command: `sha256sum ${quoted(lockfile)} | cut -d' ' -f1`,
-              cwd: '/workspace/repo',
-              timeoutMs: 30_000,
-              outputLimitBytes: 1_000,
-              sessionId: 'system',
-              networkPolicy: 'deny_all'
-            });
-            const out = hashed.stdout.trim();
-            if (hashed.exitCode === 0 && /^[a-f0-9]{64}$/.test(out)) {
-              lockfileHash = out;
-              depsRestored = await depsCache.restore(out).catch(() => false);
-            }
-          } catch {
-            // fall through to a normal install
+          const out = parsedProbe.lockfileHashes[lockfile];
+          if (out && /^[a-f0-9]{64}$/.test(out)) {
+            lockfileHash = out;
+            depsRestored = await depsCache.restore(out).catch(() => false);
           }
         }
       }
@@ -507,17 +563,10 @@ export class ForgeApplicationService {
         }
       }
 
-      const gitState = await handle.exec({
-        command: 'git rev-parse HEAD && git branch --show-current',
-        cwd: '/workspace/repo',
-        timeoutMs: 30_000,
-        outputLimitBytes: 10_000,
-        sessionId: 'system',
-        networkPolicy: 'deny_all'
-      });
-      const [currentCommit = '', currentBranch = ''] = gitState.stdout.trim().split('\n');
-      record.workspace.currentCommit = currentCommit;
-      record.workspace.currentBranch = currentBranch || record.workspace.requestedRef;
+      // HEAD/branch were captured by the combined probe above; install never moves
+      // them, so no extra exec is needed here.
+      record.workspace.currentCommit = parsedProbe.head;
+      record.workspace.currentBranch = parsedProbe.branch || record.workspace.requestedRef;
       record.workspace.state = 'ready';
       record.workspace.failure = undefined;
       record.workspace.revision = nextRevision(record.workspace.revision);
