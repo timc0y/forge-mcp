@@ -12,7 +12,11 @@ import type {
 } from '@forge/browser-core';
 import { analyzeStructureHealth } from '@forge/browser-core';
 import { ids, type TenantId } from '@forge/core';
-import puppeteer, { type Page } from '@cloudflare/puppeteer';
+import puppeteer, {
+  type Page,
+  type Page as PuppeteerPage,
+  type Browser as PuppeteerBrowser
+} from '@cloudflare/puppeteer';
 
 interface SnapshotResponse {
   success: boolean;
@@ -270,17 +274,36 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     };
   }
 
+  // Reuse a warm Browser Rendering session when one is free (far faster than a
+  // cold launch, and avoids leaking a new session per call), else launch one
+  // with a short keep-alive so idle sessions self-close.
+  private async acquireBrowser(): Promise<PuppeteerBrowser> {
+    const binding = this.browserBinding as unknown as Parameters<typeof puppeteer.launch>[0];
+    try {
+      const sessions = await puppeteer.sessions(binding);
+      const free = sessions.find((session) => !session.connectionId);
+      if (free) return await puppeteer.connect(binding, free.sessionId);
+    } catch {
+      // No reusable session (or the API is unavailable) — fall through to launch.
+    }
+    return await puppeteer.launch(binding, { keep_alive: 60_000 });
+  }
+
   async act(input: BrowserActInput): Promise<BrowserActResult> {
     const base = new URL(input.url.endsWith('/') ? input.url : `${input.url}/`);
     const { contentType } = imageType(input);
     // Interaction steps require a real driven page — run them through the
     // Puppeteer binding, then capture the screenshot + accessibility tree from
-    // the resulting post-interaction state.
-    const browser = await puppeteer.launch(
-      this.browserBinding as unknown as Parameters<typeof puppeteer.launch>[0]
+    // the resulting post-interaction state. Bounded so a bad selector can never
+    // hang the whole capture; the session is kept warm (disconnect, not close).
+    const budgetMs = Math.max(
+      5_000,
+      Math.min(45_000, input.deadlineAt ? input.deadlineAt - Date.now() : 45_000)
     );
-    try {
-      const page = await browser.newPage();
+    const browser = await this.acquireBrowser();
+    let page: PuppeteerPage | undefined;
+    const drive = async (): Promise<BrowserActResult> => {
+      page = await browser.newPage();
       await page.setViewport({ width: input.viewport.width, height: input.viewport.height });
       if (input.headers) await page.setExtraHTTPHeaders(input.headers);
       await page.goto(base.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -294,16 +317,25 @@ export class CloudflareBrowserProvider implements BrowserProvider {
       const finalUrl = page.url();
       return {
         screenshot: await this.storeScreenshot(input, toArrayBuffer(shot)),
-        accessibility: {
-          tree: tree ?? null,
-          truncated: false,
-          structure: analyzeStructureHealth(tree)
-        },
+        accessibility: { tree: tree ?? null, truncated: false, structure: analyzeStructureHealth(tree) },
         stepsExecuted: input.steps.length,
         finalUrl
       };
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        drive(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Interaction run exceeded ${budgetMs}ms.`)), budgetMs);
+        })
+      ]);
     } finally {
-      await browser.close();
+      if (timer) clearTimeout(timer);
+      if (page) await page.close().catch(() => undefined);
+      // Keep the remote session alive for the next capture rather than tearing
+      // it down; idle sessions self-close after keep_alive.
+      browser.disconnect();
     }
   }
 
