@@ -17,6 +17,7 @@ import { detectProject, type ProjectDetection } from '@forge/project-detection';
 import type {
   ExecInput,
   FileReadInput,
+  FileWriteInput,
   ListFilesInput,
   NetworkPolicyMode,
   PatchInput,
@@ -452,14 +453,15 @@ export class ForgeApplicationService {
       throw new ForgeError({
         code: 'FORGE_PATCH_REJECTED',
         message: rejectedFiles.length
-          ? `The patch did not apply to ${rejectedFiles.join(', ')}. The working tree was left unchanged.`
-          : 'The patch could not be applied cleanly. The working tree was left unchanged.',
+          ? `The patch did not apply to ${rejectedFiles.join(', ')}. The working tree was left unchanged. Re-read the file (forge_files_read) to get its current content and hash, then retry with a diff built against that content — or use forge_files_write to replace the whole file.`
+          : 'The patch could not be applied cleanly. The working tree was left unchanged. Re-read the file (forge_files_read) for its current content, then rebuild the diff — or use forge_files_write to replace the whole file.',
         retryable: false,
         operationId: operation.operationId,
         details: {
           output: value.output.slice(0, 4_000),
           ...(rejectedFiles.length ? { rejectedFiles } : {}),
-          rolledBack: value.rolledBack ?? true
+          rolledBack: value.rolledBack ?? true,
+          hint: 'forge_files_write replaces an entire file and avoids diff-context mismatches.'
         }
       });
     }
@@ -468,6 +470,35 @@ export class ForgeApplicationService {
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision
     };
+  }
+
+  // Full-file create/overwrite. Far easier for a headless agent than crafting a
+  // unified diff, and conflict-safe when `expectedSha256` is supplied (from a
+  // prior forge_files_read).
+  async write(
+    record: WorkspaceRuntimeRecord,
+    input: FileWriteInput,
+    expectedRevision: number | undefined,
+    idempotencyKey: string
+  ) {
+    const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
+    if (operation.replay) {
+      return { replay: true, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+    }
+    try {
+      const value = await (await this.handle(record)).writeFile(input);
+      return { value, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'FILE_HASH_CONFLICT') {
+        throw new ForgeError({
+          code: 'FORGE_FILE_CONFLICT',
+          message: 'The file changed since it was read (expected_sha256 no longer matches). Re-read it and retry with the new hash.',
+          retryable: false,
+          operationId: operation.operationId
+        });
+      }
+      throw error;
+    }
   }
 
   async exec(

@@ -3,7 +3,7 @@
 The first vertical slice exposes thirteen tools:
 
 - `forge_workspace_create`, `forge_workspace_get`, `forge_workspace_destroy`
-- `forge_files_tree`, `forge_files_read`, `forge_files_patch`
+- `forge_files_tree`, `forge_files_read` (single or multi-file), `forge_files_write`, `forge_files_patch`
 - `forge_shell_exec`
 - `forge_process_start`, `forge_process_logs`
 - `forge_git_status`, `forge_git_diff`

@@ -261,6 +261,13 @@ class CloudflareSandboxHandle implements SandboxHandle {
         const current = await this.readFile({ path, maxBytes: Number.MAX_SAFE_INTEGER });
         if (current.sha256 !== input.expectedSha256) throw new Error('FILE_HASH_CONFLICT');
       }
+      // Create the parent directory so a headless agent can write a brand-new
+      // file (e.g. a new module) without a separate mkdir step.
+      const parent = path.slice(0, path.lastIndexOf('/'));
+      if (parent && parent !== ROOT) {
+        const session = await this.session('system', ROOT);
+        await session.exec(`mkdir -p ${shellQuote(parent)}`, { cwd: ROOT, timeout: 10_000 });
+      }
       await this.sandbox.writeFile(path, input.content, { sessionId: 'system' });
       return {
         path,

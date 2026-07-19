@@ -332,6 +332,26 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
+  async filesWrite(input: {
+    path: string;
+    content: string;
+    expectedSha256?: string;
+    expectedRevision?: number;
+    idempotencyKey: string;
+  }) {
+    return this.serializeMutation(async () => {
+      const record = await this.repoRecord();
+      const value = await this.app.write(
+        record,
+        { path: input.path, content: input.content, expectedSha256: input.expectedSha256 },
+        input.expectedRevision,
+        input.idempotencyKey
+      );
+      await this.save(record);
+      return value;
+    });
+  }
+
   async shellExec(input: {
     command: string;
     cwd: string;

@@ -260,8 +260,8 @@
       }
     },
     "forge_files_read": {
-      "title": "Read workspace file",
-      "description": "Read a bounded text range with a content hash for conflict-safe edits.",
+      "title": "Read workspace file(s)",
+      "description": "Read one file (path) or several at once (paths) as bounded text, each with a content hash for conflict-safe edits. Reading several in one call saves round trips. start_line/end_line and max_bytes apply to each file.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -275,6 +275,14 @@
           "path": {
             "type": "string",
             "pattern": "^\\/workspace.*"
+          },
+          "paths": {
+            "minItems": 1,
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema0"
+            }
           },
           "start_line": {
             "type": "integer",
@@ -295,15 +303,65 @@
         },
         "required": [
           "workspace_id",
-          "path",
           "max_bytes"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          }
+        }
+      }
+    },
+    "forge_files_write": {
+      "title": "Write workspace file",
+      "description": "Create or overwrite a file inside the repository with its full content — simpler and more reliable than a unified diff for whole-file changes. Pass expected_sha256 (from forge_files_read) for a conflict-safe overwrite; omit it to create a new file. Parent directories are created automatically.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 1000000
+          },
+          "expected_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "path",
+          "content",
+          "idempotency_key"
         ],
         "additionalProperties": false
       }
     },
     "forge_files_patch": {
       "title": "Apply file patch",
-      "description": "Apply a unified diff inside the repository. Requires an idempotency key and optional expected workspace revision.",
+      "description": "Apply a unified diff inside the repository. Best for surgical multi-hunk edits; for whole-file rewrites prefer forge_files_write. Requires an idempotency key and optional expected workspace revision.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {

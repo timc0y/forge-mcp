@@ -53,7 +53,10 @@
       "class_name": "Sandbox",
       "image": "../../Dockerfile",
       "instance_type": "basic",
-      "max_instances": 2
+      // Keep in step with FORGE_MAX_WORKSPACES. Idle instances sleep at 90s and
+      // bill per active-second, so headroom is cheap; this is the hard cost
+      // bound on concurrent workspaces.
+      "max_instances": 8
     }
   ],
   "durable_objects": {

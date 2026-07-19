@@ -20,7 +20,7 @@ import { classifyCommand } from '@forge/policy';
 import type { Env } from './env';
 import { registerForgeConsole } from './forge-console';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
-import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, slotTtlMs } from './capacity';
+import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, slotTtlMs, workspaceCaps } from './capacity';
 import {
   authorizeRepository,
   completeApproval,
@@ -382,13 +382,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // Claim a slot on the fast path with no reaper cost. Only if the claim
         // hits the quota do we reclaim stale slots (missing, terminal, or idle
         // past the TTL), tear those workspaces down, and retry once.
+        const caps = workspaceCaps(env);
         try {
-          await reserveWorkspaceSlot(env.METADATA, workspaceId);
+          await reserveWorkspaceSlot(env.METADATA, identity.tenantId, workspaceId, caps);
         } catch (reserveError) {
           if (reserveError instanceof ForgeError && reserveError.code === 'FORGE_QUOTA_EXCEEDED') {
             const freed = await this.reclaimStaleWorkspaceSlots();
             if (freed === 0) throw reserveError;
-            await reserveWorkspaceSlot(env.METADATA, workspaceId);
+            await reserveWorkspaceSlot(env.METADATA, identity.tenantId, workspaceId, caps);
           } else {
             throw reserveError;
           }
@@ -455,11 +456,44 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_files_read: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).filesRead({
-          path: text(input.path),
+        const paths = Array.isArray(input.paths) && input.paths.length > 0
+          ? (input.paths as unknown[]).map((value) => text(value))
+          : input.path !== undefined
+            ? [text(input.path)]
+            : [];
+        if (paths.length === 0) {
+          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Provide a path or a non-empty paths array.', retryable: false });
+        }
+        const workspace = await authorizedCoordinator(env, identity, text(input.workspace_id));
+        const readOne = {
           startLine: optionalNumber(input.start_line),
           endLine: optionalNumber(input.end_line),
           maxBytes: number(input.max_bytes)
+        };
+        // Single path keeps the original flat shape; multiple returns a files
+        // array with per-file errors so one missing file does not fail the batch.
+        if (paths.length === 1) {
+          return asRecord(await workspace.filesRead({ path: paths[0] as string, ...readOne }));
+        }
+        const files = await Promise.all(
+          paths.map(async (path) => {
+            try {
+              return { ...(await workspace.filesRead({ path, ...readOne })), path };
+            } catch (error) {
+              return { path, error: error instanceof ForgeError ? error.code : 'FORGE_READ_FAILED', message: error instanceof Error ? error.message.slice(0, 300) : 'Read failed.' };
+            }
+          })
+        );
+        return { files };
+      },
+      forge_files_write: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).filesWrite({
+          path: text(input.path),
+          content: text(input.content),
+          expectedSha256: input.expected_sha256 ? text(input.expected_sha256) : undefined,
+          expectedRevision: optionalNumber(input.expected_revision),
+          idempotencyKey: text(input.idempotency_key)
         }));
       },
       forge_files_patch: async (input) => {
