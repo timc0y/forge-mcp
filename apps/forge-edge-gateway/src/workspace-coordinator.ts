@@ -331,7 +331,21 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const token = await this.snapshotToken(workspaceId, record.workspace.tenantId);
       const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_snapshot/${workspaceId}`;
       const handle = await this.app.handle(record);
-      const command = `tar czf - -C /workspace --exclude=./tmp --exclude='./repo/node_modules/.cache' . | curl -sf -T - -H ${JSON.stringify(`authorization: Bearer ${token}`)} ${JSON.stringify(url)}`;
+      // Chunked multipart upload: split the tar into <100MB parts so each
+      // request stays under the Cloudflare edge inbound-body limit. The single
+      // -shot PUT path still exists on the gateway as a fallback for small tars.
+      const command = [
+        'set -e',
+        `U=${JSON.stringify(url)}`,
+        `T=${JSON.stringify(token)}`,
+        'D=$(mktemp -d)',
+        `tar czf - -C /workspace --exclude=./tmp --exclude='./repo/node_modules/.cache' . | split -b 80m -d -a 4 - "$D/p"`,
+        `UP=$(curl -sf -X POST -H "authorization: Bearer $T" "$U?mp=create")`,
+        'i=0; PARTS=""',
+        `for f in "$D"/p*; do i=$((i+1)); E=$(curl -sf -X PUT --data-binary @"$f" -H "authorization: Bearer $T" "$U?mp=part&uploadId=$UP&part=$i"); PARTS="$PARTS$i:$E\\n"; done`,
+        `printf "%b" "$PARTS" | curl -sf -X POST --data-binary @- -H "authorization: Bearer $T" "$U?mp=complete&uploadId=$UP"`,
+        'rm -rf "$D"'
+      ].join('\n');
       const result = await handle.exec({ command, cwd: '/workspace', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
       return { snapshotted: result.exitCode === 0, reason: result.exitCode === 0 ? undefined : result.stderr.slice(0, 200) };
     } catch (error) {
@@ -416,7 +430,24 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const token = await this.depsToken(workspaceId, record.workspace.tenantId, cacheKey);
       const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_deps/${workspaceId}`;
       const handle = await this.app.handle(record);
-      const command = `paths=$(find . -type d -name node_modules -prune 2>/dev/null); [ -d .venv ] && paths="$paths .venv"; if [ -z "$paths" ]; then exit 0; fi; tar czf - $paths | curl -sf -T - -H ${JSON.stringify(`authorization: Bearer ${token}`)} -H ${JSON.stringify(`x-forge-deps-key: ${cacheKey}`)} ${JSON.stringify(url)}`;
+      // Same chunked multipart flow as snapshotToR2, preserving the node_modules
+      // /.venv path discovery. Each part is its own <100MB request.
+      const command = [
+        'set -e',
+        `U=${JSON.stringify(url)}`,
+        `T=${JSON.stringify(token)}`,
+        `K=${JSON.stringify(cacheKey)}`,
+        'paths=$(find . -type d -name node_modules -prune 2>/dev/null)',
+        'if [ -d .venv ]; then paths="$paths .venv"; fi',
+        'if [ -z "$paths" ]; then exit 0; fi',
+        'D=$(mktemp -d)',
+        'tar czf - $paths | split -b 80m -d -a 4 - "$D/p"',
+        `UP=$(curl -sf -X POST -H "authorization: Bearer $T" -H "x-forge-deps-key: $K" "$U?mp=create")`,
+        'i=0; PARTS=""',
+        `for f in "$D"/p*; do i=$((i+1)); E=$(curl -sf -X PUT --data-binary @"$f" -H "authorization: Bearer $T" -H "x-forge-deps-key: $K" "$U?mp=part&uploadId=$UP&part=$i"); PARTS="$PARTS$i:$E\\n"; done`,
+        `printf "%b" "$PARTS" | curl -sf -X POST --data-binary @- -H "authorization: Bearer $T" -H "x-forge-deps-key: $K" "$U?mp=complete&uploadId=$UP"`,
+        'rm -rf "$D"'
+      ].join('\n');
       const result = await handle.exec({ command, cwd: '/workspace/repo', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
       return { cached: result.exitCode === 0, reason: result.exitCode === 0 ? undefined : result.stderr.slice(0, 200) };
     } catch (error) {
