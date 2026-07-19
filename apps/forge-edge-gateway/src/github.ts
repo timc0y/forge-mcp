@@ -4,6 +4,7 @@ import { issueCapability, verifyCapability } from '@forge/capabilities';
 import { assertReceivePackScope, parseReceivePackCommands } from '@forge/git-core';
 import type { AuthenticatedContext } from './auth';
 import type { Env } from './env';
+import { listSlotOccupants, slotTtlMs } from './capacity';
 
 const GITHUB_API_VERSION = '2026-03-10';
 const SESSION_SECONDS = 60 * 60 * 24 * 14;
@@ -321,10 +322,21 @@ export async function listAuthorizedRepositories(env: Env, tenantId: string): Pr
 export async function appDashboard(request: Request, env: Env): Promise<Response> {
   const user = await getWebSession(request, env);
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent('/app')}`, 302);
-  const [repositories, active] = await Promise.all([
+  const [repositories, occupants] = await Promise.all([
     listAuthorizedRepositories(env, user.tenant_id),
-    env.METADATA.prepare('SELECT COUNT(*) AS count FROM workspace_slots').first<{ count: number }>()
+    listSlotOccupants(env.METADATA, slotTtlMs(env)).catch(() => [])
   ]);
+  const usedSlots = occupants.length;
+  const ttlMinutes = Math.round(slotTtlMs(env) / 60_000);
+  const occupantRow = (occupant: (typeof occupants)[number]) => {
+    const idle = occupant.idleMinutes === null ? '—' : `${occupant.idleMinutes}m idle`;
+    const state = occupant.state ?? 'unknown';
+    const flag = occupant.stale ? ' · reclaimable' : '';
+    return `<li><span><strong>Slot ${occupant.slot}</strong><small>${escapeHtml(occupant.workspaceId.slice(0, 14))}… · ${escapeHtml(state)} · ${escapeHtml(idle)}${flag}</small></span></li>`;
+  };
+  const occupantRows = occupants.length
+    ? `<ul>${occupants.map(occupantRow).join('')}</ul>`
+    : '<p class="note">Both slots are free.</p>';
   const repositoryRow = (repo: Record<string, unknown>) => `<li><span><strong>${escapeHtml(String(repo.owner))}/${escapeHtml(String(repo.name))}</strong><small>${escapeHtml(String(repo.visibility))} · ${escapeHtml(String(repo.default_branch))}</small></span></li>`;
   const rows = repositories.length
     ? repositories.slice(0, 6).map(repositoryRow).join('')
@@ -339,7 +351,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
 <div class="layout"><div><section class="section"><h2>Start in your AI client</h2><p>Connect this MCP URL once, then use ordinary language. Forge chooses the smallest capable path.</p><code id="mcp">${mcpUrl}</code><a class="button" href="#" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied';return false">Copy MCP URL</a></section>
 <section class="section"><h2>Good first prompts</h2><div class="prompt">Review https://example.com with Parallax on phone and desktop. Inspect every screenshot.</div><div class="prompt">Open ${escapeHtml(user.github_login)}/parallax-review, run the checks, explain the architecture, and do not change anything yet.</div><div class="prompt">Build my project, fix the most important issue, verify it with screenshots, then ask before creating a draft PR.</div></section>
 <section class="section"><h2>How Forge keeps cost down</h2><p>Live URLs use Browser Run without a container. Repository inspection uses GitHub. A container starts only for install, build, edit, test or preview work, and sleeps after 90 seconds idle.</p></section></div>
-<aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots"><i class="slot ${(active?.count ?? 0)>0?'used':''}"></i><i class="slot ${(active?.count ?? 0)>1?'used':''}"></i></div><span>${active?.count ?? 0} of 2 active</span></div><p class="note">Shared across this Forge Cloud pilot.</p></section>
+<aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots"><i class="slot ${usedSlots>0?'used':''}"></i><i class="slot ${usedSlots>1?'used':''}"></i></div><span>${usedSlots} of 2 active</span></div>${occupantRows}<p class="note">Shared across this Forge Cloud pilot. Idle workspaces are reclaimed automatically after ${ttlMinutes} minutes; destroy one sooner to free a slot immediately.</p></section>
 <section class="section"><h2>GitHub repositories</h2><a class="button" href="/github/install">Manage access</a><ul>${rows}</ul>${moreRows}</section></aside></div></main>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }
 

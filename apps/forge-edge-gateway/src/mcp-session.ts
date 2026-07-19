@@ -20,7 +20,7 @@ import { classifyCommand } from '@forge/policy';
 import type { Env } from './env';
 import { registerForgeConsole } from './forge-console';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
-import { reserveWorkspaceSlot, releaseWorkspaceSlot } from './capacity';
+import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, slotTtlMs } from './capacity';
 import {
   authorizeRepository,
   completeApproval,
@@ -284,6 +284,36 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           `${identity.tenantId}:${identity.projectId}`,
           idempotencyKey
         );
+        // Before claiming, reclaim any slot whose workspace is gone, terminal,
+        // or idle past the TTL, then tear that workspace down for real so the
+        // next reservation is not blocked by an abandoned one. Best-effort: a
+        // reaper hiccup must never block a legitimate create.
+        try {
+          const reclaimed = await reclaimStaleSlots(env.METADATA, slotTtlMs(env));
+          for (const slot of reclaimed) {
+            const reapedId = slot.workspaceId as WorkspaceId;
+            try {
+              const destroyId = workflowInstanceId('destroy', reapedId);
+              await coordinator(env, reapedId).requestDestroy({
+                idempotencyKey: `reap-${destroyId}`
+              });
+              await env.DESTROY_WORKFLOW.create({
+                id: destroyId,
+                params: { workspaceId: reapedId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true }
+              });
+            } catch (reapError) {
+              // Slot is already freed; teardown of the orphan can lag safely.
+              console.warn('forge_slot_reap_teardown_failed', {
+                workspaceId: slot.workspaceId,
+                reason: reapError instanceof Error ? reapError.message.slice(0, 300) : 'unknown'
+              });
+            }
+          }
+        } catch (reclaimError) {
+          console.warn('forge_slot_reclaim_failed', {
+            reason: reclaimError instanceof Error ? reclaimError.message.slice(0, 300) : 'unknown'
+          });
+        }
         await reserveWorkspaceSlot(env.METADATA, workspaceId);
         let result;
         try {
