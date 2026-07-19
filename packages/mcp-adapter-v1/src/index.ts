@@ -23,6 +23,23 @@ const OPEN_WORLD = new Set([
   'forge_review'
 ]);
 
+// Tools whose result is worth rendering in the interactive console widget —
+// reviews (screenshots), diffs/status, workspace state, and the repo list.
+// Every other tool returns a plain text/structured result with NO widget, so
+// the panel does not eat space on high-frequency, low-visual calls (file reads,
+// shell exec, logs, commits, etc.). Only tools in this set carry the
+// resourceUri / outputTemplate that makes the host mount the console.
+const WIDGET_TOOLS = new Set([
+  'forge_review', 'forge_review_capture',
+  'forge_git_diff', 'forge_git_outgoing_diff', 'forge_git_status',
+  'forge_workspace_create', 'forge_workspace_get', 'forge_repository_list'
+]);
+
+/** Whether a tool's result renders the interactive console widget. */
+export function showsWidget(name: string): boolean {
+  return WIDGET_TOOLS.has(name);
+}
+
 // Short (<=64 char) ChatGPT status strings surfaced through result/tool _meta.
 // NOTE: these are adapter-side defaults. The per-tool source of truth should
 // move to ForgeToolDefinition in @forge/mcp-core (see report).
@@ -109,8 +126,12 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
         ...(outputSchema ? { outputSchema } : {}),
         annotations: toolAnnotations(definition.name, definition.sideEffect),
         _meta: {
-          ui: { resourceUri: FORGE_CONSOLE_URI, visibility: ['model', 'app'] },
-          'openai/outputTemplate': FORGE_CONSOLE_URI,
+          ...(showsWidget(definition.name)
+            ? {
+                ui: { resourceUri: FORGE_CONSOLE_URI, visibility: ['model', 'app'] },
+                'openai/outputTemplate': FORGE_CONSOLE_URI
+              }
+            : {}),
           ...(status
             ? {
                 'openai/toolInvocation/invoking': status.invoking,

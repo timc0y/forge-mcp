@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { forgeTools } from '@forge/mcp-core';
-import { toolAnnotations } from '../../packages/mcp-adapter-v1/src/index';
+import { toolAnnotations, showsWidget } from '../../packages/mcp-adapter-v1/src/index';
 
 function tool(name: string) {
   const result = forgeTools.find((candidate) => candidate.name === name);
@@ -19,6 +19,17 @@ describe('Forge MCP public contracts', () => {
     const shell = tool('forge_shell_exec').inputSchema as Record<string, unknown>;
     expect(shell).not.toHaveProperty('approved');
     expect(shell).toHaveProperty('approval_id');
+  });
+
+  it('renders the console widget only for visual tools, not high-frequency ones', () => {
+    // Visual results worth a panel.
+    for (const name of ['forge_review', 'forge_review_capture', 'forge_git_diff', 'forge_git_status', 'forge_workspace_get', 'forge_repository_list']) {
+      expect(showsWidget(name)).toBe(true);
+    }
+    // High-frequency / low-visual results must NOT mount the widget.
+    for (const name of ['forge_files_read', 'forge_files_write', 'forge_shell_exec', 'forge_process_logs', 'forge_git_commit', 'forge_artifact_get']) {
+      expect(showsWidget(name)).toBe(false);
+    }
   });
 
   it('marks only retry-safe tools idempotent and true reads read-only', () => {
