@@ -29,6 +29,23 @@ describe('Forge MCP public contracts', () => {
     expect(toolAnnotations('forge_workspace_create', 'workspace')).toMatchObject({ idempotentHint: true });
   });
 
+  it('exposes a full-file write tool and multi-file read for headless agents', () => {
+    const write = tool('forge_files_write');
+    expect(write.sideEffect).toBe('workspace');
+    const writeSchema = write.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    // expected_sha256 is optional (create vs conflict-safe overwrite).
+    expect(writeSchema.expected_sha256.safeParse(undefined).success).toBe(true);
+    expect(writeSchema.expected_sha256.safeParse('a'.repeat(64)).success).toBe(true);
+    expect(writeSchema.expected_sha256.safeParse('nothex').success).toBe(false);
+    expect(writeSchema.path.safeParse('/workspace/repo/src/new.ts').success).toBe(true);
+    // A write mutates, so it must be non-idempotent unless replayed with a key.
+    expect(toolAnnotations('forge_files_write', 'none')).toMatchObject({ readOnlyHint: false });
+
+    const readSchema = tool('forge_files_read').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(readSchema.paths.safeParse(['/workspace/a', '/workspace/b']).success).toBe(true);
+    expect(readSchema.paths.safeParse([]).success).toBe(false);
+  });
+
   it('exposes bounded interactive browser steps that are not retry-safe', () => {
     const act = tool('forge_browser_act');
     expect(act.sideEffect).toBe('workspace');

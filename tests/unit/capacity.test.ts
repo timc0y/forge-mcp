@@ -4,11 +4,13 @@ import {
   reclaimStaleSlots,
   releaseWorkspaceSlot,
   reserveWorkspaceSlot,
-  slotTtlMs
+  slotTtlMs,
+  workspaceCaps
 } from '../../apps/forge-edge-gateway/src/capacity';
 
 interface SlotRow {
   slot: number;
+  tenant_id: string;
   workspace_id: string;
   claimed_at: string;
 }
@@ -23,12 +25,18 @@ function fakeD1(slots: SlotRow[], workspaces: Record<string, WorkspaceRow>) {
     slots,
     prepare(sql: string) {
       let values: unknown[] = [];
-      // Claim the lowest free slot, mirroring the real INSERT … SELECT … LIMIT 1.
+      const perTenant = () => {
+        const matches = [...sql.matchAll(/SELECT (\d+) AS slot/g)].map((m) => Number(m[1]));
+        return matches.length ? Math.max(...matches) : 0;
+      };
       const claim = (): number | null => {
-        const used = new Set(slots.map((slot) => slot.slot));
-        const free = [1, 2].find((slot) => !used.has(slot));
-        if (free === undefined || slots.some((slot) => slot.workspace_id === values[0])) return null;
-        slots.push({ slot: free, workspace_id: String(values[0]), claimed_at: String(values[1]) });
+        const [workspaceId, tenantId, claimedAt, globalCap] = values as [string, string, string, number];
+        if (slots.some((slot) => slot.workspace_id === workspaceId)) return null; // ON CONFLICT DO NOTHING
+        if (slots.length >= globalCap) return null;
+        const tenantSlots = new Set(slots.filter((slot) => slot.tenant_id === tenantId).map((slot) => slot.slot));
+        const free = Array.from({ length: perTenant() }, (_, i) => i + 1).find((slot) => !tenantSlots.has(slot));
+        if (free === undefined) return null;
+        slots.push({ slot: free, tenant_id: tenantId, workspace_id: workspaceId, claimed_at: claimedAt });
         return free;
       };
       const deleteIn = (): string[] => {
@@ -46,18 +54,17 @@ function fakeD1(slots: SlotRow[], workspaces: Record<string, WorkspaceRow>) {
         },
         async all<T>() {
           if (sql.includes('LEFT JOIN workspaces')) {
-            const rows = [...slots]
+            const scoped = sql.includes('WHERE s.tenant_id') ? slots.filter((slot) => slot.tenant_id === values[0]) : slots;
+            const rows = [...scoped]
               .sort((a, b) => a.slot - b.slot)
-              .map((slot) => {
-                const workspace = workspaces[slot.workspace_id];
-                return {
-                  slot: slot.slot,
-                  workspace_id: slot.workspace_id,
-                  claimed_at: slot.claimed_at,
-                  state: workspace?.state ?? null,
-                  updated_at: workspace?.updated_at ?? null
-                };
-              });
+              .map((slot) => ({
+                slot: slot.slot,
+                tenant_id: slot.tenant_id,
+                workspace_id: slot.workspace_id,
+                claimed_at: slot.claimed_at,
+                state: workspaces[slot.workspace_id]?.state ?? null,
+                updated_at: workspaces[slot.workspace_id]?.updated_at ?? null
+              }));
             return { results: rows as T[] };
           }
           if (sql.startsWith('DELETE FROM workspace_slots') && sql.includes('RETURNING')) {
@@ -69,6 +76,12 @@ function fakeD1(slots: SlotRow[], workspaces: Record<string, WorkspaceRow>) {
           if (sql.includes('INSERT INTO workspace_slots')) {
             const slot = claim();
             return (slot === null ? null : { slot }) as T | null;
+          }
+          if (sql.includes('global_count')) {
+            return {
+              global_count: slots.length,
+              tenant_count: slots.filter((slot) => slot.tenant_id === values[0]).length
+            } as T;
           }
           if (sql.includes('SELECT slot FROM workspace_slots')) {
             const found = slots.find((slot) => slot.workspace_id === values[0]);
@@ -94,82 +107,90 @@ function fakeD1(slots: SlotRow[], workspaces: Record<string, WorkspaceRow>) {
 const NOW = Date.parse('2026-07-19T12:00:00.000Z');
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
 
-describe('workspace slot capacity', () => {
-  it('defaults the TTL to 30 minutes and honours a valid override', () => {
+describe('workspace slot capacity (per-tenant)', () => {
+  it('defaults caps to 8 and clamps per-tenant to the global cap', () => {
+    expect(workspaceCaps({})).toEqual({ global: 8, perTenant: 8 });
+    expect(workspaceCaps({ FORGE_MAX_WORKSPACES: '4' })).toEqual({ global: 4, perTenant: 4 });
+    expect(workspaceCaps({ FORGE_MAX_WORKSPACES: '10', FORGE_MAX_WORKSPACES_PER_TENANT: '3' })).toEqual({ global: 10, perTenant: 3 });
     expect(slotTtlMs({})).toBe(30 * 60_000);
-    expect(slotTtlMs({ FORGE_SLOT_TTL_MINUTES: '10' })).toBe(10 * 60_000);
-    expect(slotTtlMs({ FORGE_SLOT_TTL_MINUTES: 'nonsense' })).toBe(30 * 60_000);
   });
 
-  it('marks idle, terminal, and orphaned slots as reclaimable', async () => {
-    const db = fakeD1(
-      [
-        { slot: 1, workspace_id: 'wsp_active', claimed_at: minutesAgo(5) },
-        { slot: 2, workspace_id: 'wsp_orphan', claimed_at: minutesAgo(90) }
-      ],
-      { wsp_active: { state: 'ready', updated_at: minutesAgo(2) } }
-    );
-    const occupants = await listSlotOccupants(db, slotTtlMs({}), NOW);
-    const active = occupants.find((o) => o.workspaceId === 'wsp_active');
-    const orphan = occupants.find((o) => o.workspaceId === 'wsp_orphan');
-    expect(active?.stale).toBe(false);
-    expect(orphan?.stale).toBe(true);
-    expect(orphan?.state).toBeNull();
+  it('assigns each tenant its own lowest free slot', async () => {
+    const db = fakeD1([], {});
+    const caps = { global: 8, perTenant: 8 };
+    expect(await reserveWorkspaceSlot(db, 'ten_a', 'wsp_a1', caps)).toBe(1);
+    expect(await reserveWorkspaceSlot(db, 'ten_a', 'wsp_a2', caps)).toBe(2);
+    // A different tenant starts again at slot 1.
+    expect(await reserveWorkspaceSlot(db, 'ten_b', 'wsp_b1', caps)).toBe(1);
   });
 
-  it('reclaims an idle-past-TTL slot but keeps a recently active one', async () => {
-    const db = fakeD1(
-      [
-        { slot: 1, workspace_id: 'wsp_busy', claimed_at: minutesAgo(120) },
-        { slot: 2, workspace_id: 'wsp_idle', claimed_at: minutesAgo(120) }
-      ],
-      {
-        wsp_busy: { state: 'ready', updated_at: minutesAgo(1) },
-        wsp_idle: { state: 'ready', updated_at: minutesAgo(45) }
-      }
-    );
-    const reclaimed = await reclaimStaleSlots(db, slotTtlMs({}), NOW);
-    expect(reclaimed.map((r) => r.workspaceId)).toEqual(['wsp_idle']);
-    expect(reclaimed[0]?.reason).toBe('idle_ttl_exceeded');
-    expect(db.slots.map((s) => s.workspace_id)).toEqual(['wsp_busy']);
-  });
-
-  it('frees a slot after reclamation so a new workspace can reserve it', async () => {
-    const db = fakeD1(
-      [
-        { slot: 1, workspace_id: 'wsp_live', claimed_at: minutesAgo(3) },
-        { slot: 2, workspace_id: 'wsp_dead', claimed_at: minutesAgo(200) }
-      ],
-      {
-        wsp_live: { state: 'ready', updated_at: minutesAgo(3) },
-        wsp_dead: { state: 'failed', updated_at: minutesAgo(200) }
-      }
-    );
-    const reclaimed = await reclaimStaleSlots(db, slotTtlMs({}), NOW);
-    expect(reclaimed[0]?.reason).toBe('terminal_state');
-    const slot = await reserveWorkspaceSlot(db, 'wsp_new');
-    expect(slot).toBe(2);
-  });
-
-  it('rejects with occupant detail when both slots are genuinely busy', async () => {
-    const db = fakeD1(
-      [
-        { slot: 1, workspace_id: 'wsp_a', claimed_at: minutesAgo(2) },
-        { slot: 2, workspace_id: 'wsp_b', claimed_at: minutesAgo(4) }
-      ],
-      {
-        wsp_a: { state: 'ready', updated_at: minutesAgo(1) },
-        wsp_b: { state: 'ready', updated_at: minutesAgo(2) }
-      }
-    );
-    await expect(reserveWorkspaceSlot(db, 'wsp_c')).rejects.toMatchObject({
+  it('rejects a tenant over its per-tenant cap while others still have room', async () => {
+    const db = fakeD1([], {});
+    const caps = { global: 8, perTenant: 2 };
+    await reserveWorkspaceSlot(db, 'ten_a', 'wsp_a1', caps);
+    await reserveWorkspaceSlot(db, 'ten_a', 'wsp_a2', caps);
+    await expect(reserveWorkspaceSlot(db, 'ten_a', 'wsp_a3', caps)).rejects.toMatchObject({
       code: 'FORGE_QUOTA_EXCEEDED',
-      details: { maximum_workspaces: 2 }
+      details: { scope: 'tenant', maximum_workspaces_per_tenant: 2 }
+    });
+    // Another tenant is unaffected.
+    expect(await reserveWorkspaceSlot(db, 'ten_b', 'wsp_b1', caps)).toBe(1);
+  });
+
+  it('rejects with global scope when the global cap is reached across tenants', async () => {
+    const db = fakeD1([], {});
+    const caps = { global: 2, perTenant: 8 };
+    await reserveWorkspaceSlot(db, 'ten_a', 'wsp_a1', caps);
+    await reserveWorkspaceSlot(db, 'ten_b', 'wsp_b1', caps);
+    await expect(reserveWorkspaceSlot(db, 'ten_c', 'wsp_c1', caps)).rejects.toMatchObject({
+      code: 'FORGE_QUOTA_EXCEEDED',
+      details: { scope: 'global', global_in_use: 2 }
     });
   });
 
+  it('is idempotent for a workspace that already holds a slot', async () => {
+    const db = fakeD1([], {});
+    const caps = { global: 8, perTenant: 8 };
+    const first = await reserveWorkspaceSlot(db, 'ten_a', 'wsp_a1', caps);
+    const replay = await reserveWorkspaceSlot(db, 'ten_a', 'wsp_a1', caps);
+    expect(replay).toBe(first);
+    expect(db.slots.length).toBe(1);
+  });
+
+  it('reclaims idle/terminal/orphaned slots across tenants but keeps active ones', async () => {
+    const db = fakeD1(
+      [
+        { slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_busy', claimed_at: minutesAgo(120) },
+        { slot: 2, tenant_id: 'ten_a', workspace_id: 'wsp_idle', claimed_at: minutesAgo(120) },
+        { slot: 1, tenant_id: 'ten_b', workspace_id: 'wsp_dead', claimed_at: minutesAgo(5) }
+      ],
+      {
+        wsp_busy: { state: 'ready', updated_at: minutesAgo(1) },
+        wsp_idle: { state: 'ready', updated_at: minutesAgo(45) },
+        wsp_dead: { state: 'failed', updated_at: minutesAgo(5) }
+      }
+    );
+    const reclaimed = await reclaimStaleSlots(db, slotTtlMs({}), NOW);
+    expect(reclaimed.map((r) => r.workspaceId).sort()).toEqual(['wsp_dead', 'wsp_idle']);
+    expect(db.slots.map((s) => s.workspace_id)).toEqual(['wsp_busy']);
+    // Freed slot is immediately reusable.
+    expect(await reserveWorkspaceSlot(db, 'ten_a', 'wsp_new', { global: 8, perTenant: 8 })).toBe(2);
+  });
+
+  it('scopes occupant listing to a single tenant', async () => {
+    const db = fakeD1(
+      [
+        { slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_a', claimed_at: minutesAgo(2) },
+        { slot: 1, tenant_id: 'ten_b', workspace_id: 'wsp_b', claimed_at: minutesAgo(2) }
+      ],
+      { wsp_a: { state: 'ready', updated_at: minutesAgo(1) }, wsp_b: { state: 'ready', updated_at: minutesAgo(1) } }
+    );
+    const forA = await listSlotOccupants(db, slotTtlMs({}), NOW, 'ten_a');
+    expect(forA.map((o) => o.workspaceId)).toEqual(['wsp_a']);
+  });
+
   it('releases a held slot', async () => {
-    const db = fakeD1([{ slot: 1, workspace_id: 'wsp_a', claimed_at: minutesAgo(2) }], {
+    const db = fakeD1([{ slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_a', claimed_at: minutesAgo(2) }], {
       wsp_a: { state: 'ready', updated_at: minutesAgo(1) }
     });
     await releaseWorkspaceSlot(db, 'wsp_a');

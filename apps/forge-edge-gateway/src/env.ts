@@ -26,6 +26,11 @@ export interface Env {
   // Minutes a workspace may hold a slot without activity before the lazy reaper
   // reclaims it. Optional; defaults to 30 when unset or invalid.
   FORGE_SLOT_TTL_MINUTES?: string;
+  // Concurrency caps. FORGE_MAX_WORKSPACES bounds the global total (keep in step
+  // with the container max_instances); FORGE_MAX_WORKSPACES_PER_TENANT bounds a
+  // single account. Optional; default 8 each.
+  FORGE_MAX_WORKSPACES?: string;
+  FORGE_MAX_WORKSPACES_PER_TENANT?: string;
   FORGE_ENVIRONMENT:
     | 'local'
     | 'development'
