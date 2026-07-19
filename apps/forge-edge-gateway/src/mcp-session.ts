@@ -109,7 +109,19 @@ async function mapWithConcurrency<T, R>(
 // retrievable via forge_artifact_get, keeping response size (Worker CPU + client
 // tokens) bounded on large review grids.
 const MAX_INLINE_IMAGES = 4;
+// How many screenshots to inline as data: URIs into the widget-only _meta
+// gallery. Kept small so the _meta payload (never seen by the model) stays
+// bounded on large review grids.
+const MAX_GALLERY_IMAGES = 6;
 const REVIEW_CAPTURE_CONCURRENCY = 3;
+
+// Roll a single evidence cell's heading-defect count up from its accessibility
+// structure signal, so structuredContent can carry a flat findingCount without
+// shipping the whole accessibility tree.
+function findingCountOf(cell: Record<string, unknown>): number {
+  const accessibility = cell.accessibility as { structure?: { findingCount?: number } } | undefined;
+  return accessibility?.structure?.findingCount ?? 0;
+}
 
 // Map a capture's raw interaction steps to the provider's bounded action vocabulary.
 function toActionSteps(
@@ -417,11 +429,25 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             }
           }
         );
+        // Widget-only screenshot gallery: small JPEG data: URIs the console can
+        // render inline. Reuses the same inline bytes the model receives via
+        // MCP content, capped so the _meta payload stays bounded. This never
+        // enters structuredContent (base64 stays out of what the model reads).
+        const screenshots: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; dataUri: string }> = [];
         for (const outcome of outcomes) {
           if (outcome.kind === 'evidence') {
             evidence.push(outcome.value);
             if (outcome.inline && content.filter((item) => item.type === 'image').length < MAX_INLINE_IMAGES) {
               content.push({ type: 'image', data: outcome.inline.base64, mimeType: outcome.inline.contentType });
+            }
+            if (outcome.inline && screenshots.length < MAX_GALLERY_IMAGES) {
+              screenshots.push({
+                route: outcome.value.route,
+                viewport: outcome.value.observedViewport ?? outcome.value.requestedViewport,
+                state: outcome.value.state,
+                findingCount: findingCountOf(outcome.value),
+                dataUri: `data:${outcome.inline.contentType};base64,${outcome.inline.base64}`
+              });
             }
           } else if (outcome.kind === 'failure') {
             failures.push(outcome.value);
@@ -441,6 +467,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const structureSummary = summarizeStructure(
           evidence as Array<{ accessibility?: { structure?: { findingCount?: number; countsByKind?: Record<string, number>; truncated?: boolean } }; route?: unknown; environment?: unknown }>
         );
+        // Concise per-cell rows for structuredContent: what the model needs to
+        // reason about the review, with no base64 and no heavy accessibility
+        // trees. The full evidence (screenshot refs, accessibility structure)
+        // moves into _meta["forge/widget"] for the component to render.
+        const evidenceCells = evidence.map((cell) => ({
+          selection: cell.selection,
+          route: cell.route,
+          environment: cell.environment,
+          state: cell.state,
+          requestedViewport: cell.requestedViewport,
+          observedViewport: cell.observedViewport,
+          findingCount: findingCountOf(cell),
+          inspected: cell.inspected
+        }));
         const packet = {
           schemaVersion: 1,
           provider: 'forge',
@@ -452,12 +492,23 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           requestedCaptures: cells.length,
           capturedCount: evidence.length,
           complete,
-          evidence,
+          evidence: evidenceCells,
           failures,
           skipped,
           structureSummary,
           limitations: ['Static screenshot evidence does not prove interactions that were not executed.'],
           inlineImageCount: content.filter((item) => item.type === 'image').length,
+          _meta: {
+            'forge/widget': {
+              schemaVersion: 1,
+              executionMode: 'url_review',
+              screenshots,
+              evidence,
+              failures,
+              skipped,
+              structureSummary
+            }
+          },
           nextStep: complete
             ? `Inspect the returned MCP images (the first ${MAX_INLINE_IMAGES} cells are inlined; retrieve any others with forge_artifact_get on evidence[].screenshot.artifactId), then pass the evidence to Parallax with inspected set to true.`
             : 'Inspect the returned images, retrieve any others with forge_artifact_get, then re-run forge_review for the routes listed in failures and skipped (fewer routes per call captures more reliably).'
