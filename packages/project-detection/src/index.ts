@@ -4,6 +4,11 @@ export interface ProjectDetection {
   packageManager: 'pnpm' | 'npm' | 'yarn' | 'bun' | 'pip' | 'uv' | 'unknown';
   framework: string | null;
   installCommand: string | null;
+  // Lenient install used only if `installCommand` (which pins to the committed
+  // lockfile) fails because the lockfile is out of sync with the manifest — a
+  // common cause is an `overrides`/`resolutions` mismatch. null when the manager
+  // has no meaningfully different lenient mode (e.g. pip).
+  installFallbackCommand: string | null;
   devCommand: string | null;
   buildCommand: string | null;
   expectedPorts: number[];
@@ -13,6 +18,7 @@ const UNKNOWN_DETECTION: ProjectDetection = {
   packageManager: 'unknown',
   framework: null,
   installCommand: null,
+  installFallbackCommand: null,
   devCommand: null,
   buildCommand: null,
   expectedPorts: []
@@ -35,8 +41,14 @@ export function parseDetection(stdout: string): ProjectDetection {
   const install: Record<ProjectDetection['packageManager'], string | null> = {
     pnpm: 'pnpm install --frozen-lockfile --prefer-offline', npm: 'npm ci', yarn: 'yarn install --immutable', bun: 'bun install --frozen-lockfile', pip: 'pip install -r requirements.txt', uv: 'uv sync --frozen', unknown: null
   };
+  // Lenient fallback: drop the frozen/immutable pin so an out-of-sync lockfile
+  // (a classic `overrides` mismatch) does not hard-fail the whole bootstrap. pip
+  // has no distinct lenient mode, so it has no fallback.
+  const installFallback: Record<ProjectDetection['packageManager'], string | null> = {
+    pnpm: 'pnpm install --no-frozen-lockfile --prefer-offline', npm: 'npm install', yarn: 'yarn install', bun: 'bun install', pip: null, uv: 'uv sync', unknown: null
+  };
   const expected = parsed.framework === 'astro' ? [4321] : parsed.framework === 'vite' ? [5173] : parsed.framework === 'nextjs' ? [3000] : [];
-  return { packageManager: parsed.pm, framework: parsed.framework, installCommand: install[parsed.pm], devCommand: parsed.scripts.dev ? `${parsed.pm === 'unknown' ? 'npm' : parsed.pm} run dev` : null, buildCommand: parsed.scripts.build ? `${parsed.pm === 'unknown' ? 'npm' : parsed.pm} run build` : null, expectedPorts: expected };
+  return { packageManager: parsed.pm, framework: parsed.framework, installCommand: install[parsed.pm], installFallbackCommand: installFallback[parsed.pm], devCommand: parsed.scripts.dev ? `${parsed.pm === 'unknown' ? 'npm' : parsed.pm} run dev` : null, buildCommand: parsed.scripts.build ? `${parsed.pm === 'unknown' ? 'npm' : parsed.pm} run build` : null, expectedPorts: expected };
 }
 
 export async function detectProject(handle: SandboxHandle, cwd = '/workspace/repo'): Promise<ProjectDetection> {

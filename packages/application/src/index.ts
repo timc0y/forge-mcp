@@ -586,36 +586,49 @@ export class ForgeApplicationService {
       // A corrupt/partial restore makes restoreDepsFromR2 return false, so we only
       // skip when the warm tree really landed; otherwise the full install runs.
       if (bootstrap && detection.installCommand && !depsRestored) {
-        const install = await handle.exec({
-          command: detection.installCommand,
+        const runInstall = (command: string) => handle.exec({
+          command,
           cwd: '/workspace/repo',
           timeoutMs: 600_000,
           outputLimitBytes: 500_000,
           sessionId: 'system',
           networkPolicy: 'package_install'
         });
-        if (install.exitCode !== 0) {
-          throw new ForgeError({
-            code: 'FORGE_PROVIDER_UNAVAILABLE',
-            message: 'Project bootstrap failed.',
-            retryable: false,
-            details: {
-              stage: 'bootstrap',
-              phase: 'dependency_install',
-              command: detection.installCommand,
-              packageManager: detection.packageManager,
-              exitCode: install.exitCode,
-              durationMs: install.durationMs,
-              truncated: install.truncated,
-              stderr: install.stderr.slice(0, 4_000),
-              stdout: install.stdout.slice(0, 2_000)
-            }
-          });
+
+        let install = await runInstall(detection.installCommand);
+        let installedCommand = detection.installCommand;
+        // A --frozen-lockfile / --immutable install refuses when the lockfile is
+        // out of sync with the manifest (a classic `overrides` mismatch). Rather
+        // than fail the whole workspace, retry once with the lenient command so
+        // dependencies still land (it may update the lockfile in-tree).
+        if (install.exitCode !== 0 && detection.installFallbackCommand) {
+          const fallback = await runInstall(detection.installFallbackCommand);
+          if (fallback.exitCode === 0) {
+            install = fallback;
+            installedCommand = detection.installFallbackCommand;
+          } else {
+            install = fallback;
+          }
         }
-        // Cache miss: install just built node_modules from scratch — hand it to
-        // the shared cache so the next workspace of this repo+lockfile skips it.
-        if (depsCache && !depsRestored && lockfileHash) {
-          depsCache.populate(lockfileHash);
+
+        if (install.exitCode !== 0) {
+          // Dependency install is best-effort: a bootstrap that cannot resolve
+          // deps must NOT sink the workspace. Bring it up `ready` with a
+          // non-fatal warning so the agent can inspect the checkout, fix the
+          // lockfile, and re-run the install — exactly what a human would do.
+          record.workspace.bootstrapWarning = {
+            phase: 'dependency_install',
+            message: 'Dependency install did not complete; the workspace is usable but node_modules may be incomplete.',
+            detail: (install.stderr || install.stdout || '').slice(0, 2_000)
+          };
+        } else {
+          // Cache miss: install just built node_modules from scratch — hand it to
+          // the shared cache so the next workspace of this repo+lockfile skips it.
+          // Only cache a tree built by the strict, lockfile-pinned command; a
+          // lenient fallback may not match the committed lockfile hash.
+          if (depsCache && !depsRestored && lockfileHash && installedCommand === detection.installCommand) {
+            depsCache.populate(lockfileHash);
+          }
         }
       }
 
