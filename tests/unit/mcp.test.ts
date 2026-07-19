@@ -28,4 +28,38 @@ describe('Forge MCP public contracts', () => {
     expect(toolAnnotations('forge_files_read', 'none')).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     expect(toolAnnotations('forge_workspace_create', 'workspace')).toMatchObject({ idempotentHint: true });
   });
+
+  it('exposes a full-file write tool and multi-file read for headless agents', () => {
+    const write = tool('forge_files_write');
+    expect(write.sideEffect).toBe('workspace');
+    const writeSchema = write.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    // expected_sha256 is optional (create vs conflict-safe overwrite).
+    expect(writeSchema.expected_sha256.safeParse(undefined).success).toBe(true);
+    expect(writeSchema.expected_sha256.safeParse('a'.repeat(64)).success).toBe(true);
+    expect(writeSchema.expected_sha256.safeParse('nothex').success).toBe(false);
+    expect(writeSchema.path.safeParse('/workspace/repo/src/new.ts').success).toBe(true);
+    // A write mutates, so it must be non-idempotent unless replayed with a key.
+    expect(toolAnnotations('forge_files_write', 'none')).toMatchObject({ readOnlyHint: false });
+
+    const readSchema = tool('forge_files_read').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(readSchema.paths.safeParse(['/workspace/a', '/workspace/b']).success).toBe(true);
+    expect(readSchema.paths.safeParse([]).success).toBe(false);
+  });
+
+  it('folds interactive steps into forge_review_capture (no separate browser tools)', () => {
+    // The standalone screenshot/accessibility/act tools were collapsed into one.
+    expect(forgeTools.find((t) => t.name === 'forge_browser_act')).toBeUndefined();
+    expect(forgeTools.find((t) => t.name === 'forge_browser_screenshot')).toBeUndefined();
+    expect(forgeTools.find((t) => t.name === 'forge_browser_accessibility_tree')).toBeUndefined();
+
+    const capture = tool('forge_review_capture');
+    expect(capture.sideEffect).toBe('workspace');
+    const captures = (capture.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>).captures;
+    // A plain capture works, and an optional steps array drives an interaction.
+    expect(captures.safeParse([{ route: '/' }]).success).toBe(true);
+    expect(captures.safeParse([{ route: '/', steps: [{ kind: 'click', selector: '#add-to-cart' }] }]).success).toBe(true);
+    expect(captures.safeParse([{ route: '/', steps: [{ kind: 'not_a_real_action' }] }]).success).toBe(false);
+    // Capture mutates the workspace and is not silently replayed.
+    expect(toolAnnotations('forge_review_capture', 'workspace')).toMatchObject({ readOnlyHint: false });
+  });
 });

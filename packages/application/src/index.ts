@@ -9,13 +9,15 @@ import {
   type RepositoryRef,
   type TenantId,
   type Workspace,
+  type WorkspaceFailureDetails,
   type WorkspaceId
 } from '@forge/core';
 import { assertCommandAllowed, classifyCommand } from '@forge/policy';
-import { detectProject, type ProjectDetection } from '@forge/project-detection';
+import { parseDetection, DETECTION_SCRIPT, type ProjectDetection } from '@forge/project-detection';
 import type {
   ExecInput,
   FileReadInput,
+  FileWriteInput,
   ListFilesInput,
   NetworkPolicyMode,
   PatchInput,
@@ -57,6 +59,91 @@ export interface CreateWorkspaceInput {
 export interface RepositoryCloneSource {
   url: string;
   authorizationHeader?: string;
+}
+
+// Callbacks that plug the per-repo dependency cache into provisioning without
+// pulling D1/R2/coordinator specifics into this package (same pattern as the
+// snapshot `restore` callback). `restore` returns true when it warmed the
+// dependency dirs from the shared cache; `populate` is fire-and-forget (the
+// coordinator schedules it on waitUntil) and is only called on a cache miss.
+export interface DepsCacheHooks {
+  restore: (lockfileHash: string) => Promise<boolean>;
+  populate: (lockfileHash: string) => void;
+}
+
+// The lockfile whose hash keys the dependency cache, per detected package
+// manager. Returns null when there is nothing stable to key on (skip the cache).
+function lockfileFor(packageManager: ProjectDetection['packageManager']): string | null {
+  switch (packageManager) {
+    case 'pnpm':
+      return 'pnpm-lock.yaml';
+    case 'npm':
+      return 'package-lock.json';
+    case 'yarn':
+      return 'yarn.lock';
+    case 'bun':
+      return 'bun.lock';
+    case 'uv':
+      return 'uv.lock';
+    case 'pip':
+      return 'requirements.txt';
+    default:
+      return null;
+  }
+}
+
+// Candidate lockfiles hashed by the combined provision probe, ordered so a single
+// pass covers every package manager `lockfileFor` can name.
+const LOCKFILE_CANDIDATES = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'uv.lock', 'requirements.txt'];
+
+// One post-clone exec that emits HEAD, branch, per-lockfile sha256, and the project
+// detection JSON in a single delimited block — folding four container round-trips
+// (git rev-parse, git branch, sha256sum, detection) into one. Parsed Worker-side by
+// `parseProvisionProbe`.
+const PROVISION_PROBE_COMMAND = [
+  'echo ===FORGE_HEAD===',
+  'git rev-parse HEAD',
+  'echo ===FORGE_BRANCH===',
+  'git branch --show-current',
+  'echo ===FORGE_LOCKFILE===',
+  `for f in ${LOCKFILE_CANDIDATES.join(' ')}; do [ -f "$f" ] && echo "$f $(sha256sum "$f" | cut -d' ' -f1)"; done`,
+  'echo ===FORGE_DETECTION===',
+  DETECTION_SCRIPT
+].join('\n');
+
+export interface ProvisionProbe {
+  head: string;
+  branch: string;
+  lockfileHashes: Record<string, string>;
+  detection: ProjectDetection;
+}
+
+// Pure parser for the combined probe's stdout. Splits on the sentinel markers and
+// reuses `parseDetection` for the trailing JSON section.
+export function parseProvisionProbe(stdout: string): ProvisionProbe {
+  const markers = ['===FORGE_HEAD===', '===FORGE_BRANCH===', '===FORGE_LOCKFILE===', '===FORGE_DETECTION==='];
+  const section = (name: string): string => {
+    const start = stdout.indexOf(name);
+    if (start === -1) return '';
+    const from = start + name.length;
+    let end = stdout.length;
+    for (const m of markers) {
+      const i = stdout.indexOf(m, from);
+      if (i !== -1 && i < end) end = i;
+    }
+    return stdout.slice(from, end).trim();
+  };
+  const lockfileHashes: Record<string, string> = {};
+  for (const line of section('===FORGE_LOCKFILE===').split('\n')) {
+    const [name, hash] = line.trim().split(/\s+/);
+    if (name && hash) lockfileHashes[name] = hash;
+  }
+  return {
+    head: section('===FORGE_HEAD==='),
+    branch: section('===FORGE_BRANCH==='),
+    lockfileHashes,
+    detection: parseDetection(section('===FORGE_DETECTION==='))
+  };
 }
 
 function repositorySlug(repository: RepositoryRef): string {
@@ -111,8 +198,40 @@ async function sha256Text(value: string): Promise<string> {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+// Routes sandbox work across backends (e.g. a self-hosted box vs Cloudflare).
+// `selectForCreate` decides which backend a new workspace lands on (with its own
+// health-check + fallback); `forKind` resolves the backend a workspace is
+// already bound to, read from its persisted provider.kind.
+export interface SandboxRouter {
+  readonly default: SandboxProvider;
+  selectForCreate(): Promise<SandboxProvider>;
+  forKind(kind: SandboxProvider['kind']): SandboxProvider;
+}
+
+// Wrap a single provider so the app can always talk to a router internally,
+// keeping the common (Cloudflare-only) case and existing tests unchanged.
+function singleProviderRouter(provider: SandboxProvider): SandboxRouter {
+  return {
+    default: provider,
+    async selectForCreate() {
+      return provider;
+    },
+    forKind() {
+      return provider;
+    }
+  };
+}
+
 export class ForgeApplicationService {
-  constructor(private readonly sandboxProvider: SandboxProvider) {}
+  private readonly router: SandboxRouter;
+
+  constructor(sandbox: SandboxProvider | SandboxRouter) {
+    this.router = 'selectForCreate' in sandbox ? sandbox : singleProviderRouter(sandbox);
+  }
+
+  private providerFor(record: WorkspaceRuntimeRecord): SandboxProvider {
+    return this.router.forKind(record.workspace.provider.kind);
+  }
 
   initializeWorkspace(input: CreateWorkspaceInput): WorkspaceRuntimeRecord {
     assertRef(input.ref);
@@ -130,8 +249,10 @@ export class ForgeApplicationService {
         persistenceMode: input.persistence,
         runtimeProfile: input.runtimeProfile,
         provider: {
-          kind: this.sandboxProvider.kind,
-          version: this.sandboxProvider.version
+          // Provisional; provisionWorkspace() selects the real backend (with a
+          // health-check) and rewrites this before the sandbox is created.
+          kind: this.router.default.kind,
+          version: this.router.default.version
         },
         revision: 1,
         createdBy: input.actor,
@@ -147,41 +268,103 @@ export class ForgeApplicationService {
     };
   }
 
-  async provisionWorkspace(
+  private defaultCloneSource(record: WorkspaceRuntimeRecord): RepositoryCloneSource {
+    return { url: `https://github.com/${repositorySlug(record.workspace.repository)}.git` };
+  }
+
+  // Make pnpm available up front, otherwise `pnpm install` fails the whole
+  // bootstrap with "pnpm: command not found". corepack ships with node but
+  // isn't always on PATH in the sandbox image, so try it first and fall back
+  // to a global npm install (npm is always present). `command -v pnpm` short-
+  // circuits when it is already there. Best-effort — never fail provisioning.
+  private async preparePackageManager(handle: SandboxHandle): Promise<void> {
+    await handle.exec({
+      command:
+        'command -v pnpm >/dev/null 2>&1 || corepack prepare pnpm@9 --activate 2>/dev/null || npm install -g pnpm@9',
+      cwd: '/workspace',
+      timeoutMs: 120_000,
+      outputLimitBytes: 20_000,
+      sessionId: 'system',
+      networkPolicy: 'package_install'
+    }).catch(() => undefined);
+  }
+
+  // Clone the repository checkout into /workspace/repo. Shared by first-time
+  // provisioning and by in-place checkout recovery.
+  private async checkoutRepository(
     record: WorkspaceRuntimeRecord,
-    bootstrap: boolean,
-    onStateChange: (record: WorkspaceRuntimeRecord) => Promise<void> = async () => undefined,
+    handle: SandboxHandle,
     cloneSource?: RepositoryCloneSource
-  ): Promise<WorkspaceRuntimeRecord> {
-    if (record.workspace.state === 'ready') return record;
-    if (!['requested', 'provisioning'].includes(record.workspace.state)) {
-      throw new ForgeError({
-        code: 'FORGE_WORKSPACE_CONFLICT',
-        message: `Workspace cannot be provisioned from ${record.workspace.state}.`,
-        retryable: false
+  ): Promise<void> {
+    const source = cloneSource ?? this.defaultCloneSource(record);
+    const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
+    if (source.authorizationHeader) {
+      await handle.writeFile({
+        path: gitConfigPath,
+        content: `[http]\n\textraHeader = ${source.authorizationHeader}\n`
       });
     }
-
-    record.workspace.state = 'provisioning';
-    record.workspace.revision = nextRevision(record.workspace.revision);
-    record.workspace.updatedAt = new Date().toISOString();
-    await onStateChange(record);
-
-    try {
-      const handle = await this.sandboxProvider.create({
-        providerId: record.providerId,
-        runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
-        labels: {
-          workspaceId: record.workspace.id,
-          tenantId: record.workspace.tenantId,
-          repository: repositorySlug(record.workspace.repository)
-        },
-        idleTimeout: '90s'
+    const clone = await handle.exec({
+      command: `git clone --depth 1 --no-tags --branch ${quoted(record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
+      cwd: '/workspace',
+      timeoutMs: 180_000,
+      outputLimitBytes: 200_000,
+      sessionId: 'system',
+      networkPolicy: 'development',
+      environment: source.authorizationHeader
+        ? { GIT_CONFIG_GLOBAL: gitConfigPath, GIT_TERMINAL_PROMPT: '0' }
+        : { GIT_TERMINAL_PROMPT: '0' }
+    });
+    if (source.authorizationHeader) {
+      await handle.exec({
+        command: `rm -f ${quoted(gitConfigPath)}`,
+        cwd: '/workspace',
+        timeoutMs: 10_000,
+        outputLimitBytes: 1_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      }).catch(() => undefined);
+    }
+    if (clone.exitCode !== 0) {
+      throw new ForgeError({
+        code: 'FORGE_PROVIDER_UNAVAILABLE',
+        message: 'Repository clone failed.',
+        retryable: false,
+        details: {
+          stage: 'clone',
+          phase: 'checkout',
+          exitCode: clone.exitCode,
+          durationMs: clone.durationMs,
+          stderr: clone.stderr.slice(0, 4_000),
+          stdout: clone.stdout.slice(0, 1_000)
+        }
       });
+    }
+  }
 
-      const source = cloneSource ?? {
-        url: `https://github.com/${repositorySlug(record.workspace.repository)}.git`
-      };
+  // Snapshot-first fast path: let the caller restore a prior /workspace tar, then
+  // confirm the checkout is present and cheaply advance it to the requested ref.
+  // Returns true only when the restored checkout is usable; any failure returns
+  // false so the caller falls back to a full clone. Best-effort throughout.
+  private async restoreCheckout(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    source: RepositoryCloneSource,
+    restore: () => Promise<boolean>
+  ): Promise<boolean> {
+    try {
+      const restored = await restore();
+      if (!restored) return false;
+      const probe = await handle.exec({
+        command: 'test -d /workspace/repo/.git && echo forge_checkout_present || echo forge_checkout_missing',
+        cwd: '/workspace',
+        timeoutMs: 10_000,
+        outputLimitBytes: 1_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      if (!probe.stdout.includes('forge_checkout_present')) return false;
+      const ref = record.workspace.requestedRef;
       const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
       if (source.authorizationHeader) {
         await handle.writeFile({
@@ -189,11 +372,11 @@ export class ForgeApplicationService {
           content: `[http]\n\textraHeader = ${source.authorizationHeader}\n`
         });
       }
-      const clone = await handle.exec({
-        command: `git clone --depth 1 --branch ${quoted(record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
-        cwd: '/workspace',
-        timeoutMs: 180_000,
-        outputLimitBytes: 200_000,
+      const advance = await handle.exec({
+        command: `git fetch --depth 1 origin ${quoted(ref)} && git checkout ${quoted(ref)}`,
+        cwd: '/workspace/repo',
+        timeoutMs: 120_000,
+        outputLimitBytes: 100_000,
         sessionId: 'system',
         networkPolicy: 'development',
         environment: source.authorizationHeader
@@ -210,23 +393,143 @@ export class ForgeApplicationService {
           networkPolicy: 'deny_all'
         }).catch(() => undefined);
       }
-      if (clone.exitCode !== 0) {
-        throw new ForgeError({
-          code: 'FORGE_PROVIDER_UNAVAILABLE',
-          message: 'Repository clone failed.',
-          retryable: false,
-          details: { stage: 'clone', stderr: clone.stderr.slice(0, 2_000) }
-        });
+      return advance.exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Re-establish a missing repository checkout in place (used by self-heal after
+   * an idle recycle dropped /workspace/repo). Re-clones over any partial state
+   * and restores the workspace to `ready`. Bypasses the normal `handle` state
+   * gate because the record has been marked `failed` by the caller.
+   */
+  async recoverCheckout(
+    record: WorkspaceRuntimeRecord,
+    cloneSource?: RepositoryCloneSource
+  ): Promise<void> {
+    const handle = await this.providerFor(record).get(record.providerId);
+    await handle.exec({
+      command: 'rm -rf /workspace/repo',
+      cwd: '/workspace',
+      timeoutMs: 30_000,
+      outputLimitBytes: 1_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    }).catch(() => undefined);
+    await this.checkoutRepository(record, handle, cloneSource);
+    await this.preparePackageManager(handle);
+    const checkedAt = new Date().toISOString();
+    record.workspace.state = 'ready';
+    record.workspace.checkout = { healthy: true, checkedAt };
+    record.workspace.failure = undefined;
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = checkedAt;
+  }
+
+  async provisionWorkspace(
+    record: WorkspaceRuntimeRecord,
+    bootstrap: boolean,
+    onStateChange: (record: WorkspaceRuntimeRecord) => Promise<void> = async () => undefined,
+    cloneSource?: RepositoryCloneSource,
+    restore?: () => Promise<boolean>,
+    depsCache?: DepsCacheHooks
+  ): Promise<WorkspaceRuntimeRecord> {
+    if (record.workspace.state === 'ready') return record;
+    if (!['requested', 'provisioning'].includes(record.workspace.state)) {
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_CONFLICT',
+        message: `Workspace cannot be provisioned from ${record.workspace.state}.`,
+        retryable: false
+      });
+    }
+
+    record.workspace.state = 'provisioning';
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = new Date().toISOString();
+    await onStateChange(record);
+
+    try {
+      // Pick the backend now (self-hosted if healthy, else Cloudflare) and
+      // record it so every later operation on this workspace routes to the same
+      // place. Transparent to the caller — Forge chooses.
+      const provider = await this.router.selectForCreate();
+      record.workspace.provider = { kind: provider.kind, version: provider.version };
+      const handle = await provider.create({
+        providerId: record.providerId,
+        runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
+        labels: {
+          workspaceId: record.workspace.id,
+          tenantId: record.workspace.tenantId,
+          repository: repositorySlug(record.workspace.repository)
+        },
+        idleTimeout: '90s'
+      });
+
+      const source = cloneSource ?? this.defaultCloneSource(record);
+
+      // Snapshot-first: if a prior /workspace tar can be restored, skip the ~75s
+      // clone+install and cheaply advance the warm checkout to the requested ref.
+      // Any failure falls through to the full clone+install path below.
+      const usedSnapshot = restore
+        ? await this.restoreCheckout(record, handle, source, restore)
+        : false;
+
+      if (usedSnapshot) {
+        await this.preparePackageManager(handle);
+      } else {
+        // Clone and pnpm pre-activation are independent — run them concurrently.
+        await Promise.all([
+          this.checkoutRepository(record, handle, source),
+          this.preparePackageManager(handle)
+        ]);
       }
 
       record.workspace.state = 'bootstrapping';
       record.workspace.revision = nextRevision(record.workspace.revision);
       record.workspace.updatedAt = new Date().toISOString();
       await onStateChange(record);
-      const detection = await detectProject(handle);
+
+      // One combined exec reads everything the post-clone happy path needs: HEAD,
+      // branch, project detection, and per-lockfile hashes — folding four container
+      // round-trips into a single one.
+      const probe = await handle.exec({
+        command: PROVISION_PROBE_COMMAND,
+        cwd: '/workspace/repo',
+        timeoutMs: 30_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      const parsedProbe = parseProvisionProbe(probe.stdout);
+      const detection = parsedProbe.detection;
       record.detection = detection;
 
-      if (bootstrap && detection.installCommand) {
+      // Per-repo dependency cache: when this was a cold provision (no
+      // per-workspace snapshot restored) and the deps cache is wired, try to warm
+      // node_modules from the shared, content-keyed cache before installing. A hit
+      // turns the install into a fast --prefer-offline verify; a miss populates the
+      // cache after a successful install. Best-effort — never blocks provisioning.
+      // The lockfile hash comes from the combined probe above (no extra exec).
+      let depsRestored = false;
+      let lockfileHash: string | null = null;
+      if (bootstrap && detection.installCommand && depsCache && !usedSnapshot) {
+        const lockfile = lockfileFor(detection.packageManager);
+        if (lockfile) {
+          const out = parsedProbe.lockfileHashes[lockfile];
+          if (out && /^[a-f0-9]{64}$/.test(out)) {
+            lockfileHash = out;
+            depsRestored = await depsCache.restore(out).catch(() => false);
+          }
+        }
+      }
+
+      // A successful deps-cache restore already placed node_modules keyed by this
+      // exact lockfile hash, so the install is redundant — skip it (the ~75s win).
+      // A corrupt/partial restore makes restoreDepsFromR2 return false, so we only
+      // skip when the warm tree really landed; otherwise the full install runs.
+      if (bootstrap && detection.installCommand && !depsRestored) {
         const install = await handle.exec({
           command: detection.installCommand,
           cwd: '/workspace/repo',
@@ -240,22 +543,30 @@ export class ForgeApplicationService {
             code: 'FORGE_PROVIDER_UNAVAILABLE',
             message: 'Project bootstrap failed.',
             retryable: false,
-            details: { stage: 'bootstrap', stderr: install.stderr.slice(0, 4_000) }
+            details: {
+              stage: 'bootstrap',
+              phase: 'dependency_install',
+              command: detection.installCommand,
+              packageManager: detection.packageManager,
+              exitCode: install.exitCode,
+              durationMs: install.durationMs,
+              truncated: install.truncated,
+              stderr: install.stderr.slice(0, 4_000),
+              stdout: install.stdout.slice(0, 2_000)
+            }
           });
+        }
+        // Cache miss: install just built node_modules from scratch — hand it to
+        // the shared cache so the next workspace of this repo+lockfile skips it.
+        if (depsCache && !depsRestored && lockfileHash) {
+          depsCache.populate(lockfileHash);
         }
       }
 
-      const gitState = await handle.exec({
-        command: 'git rev-parse HEAD && git branch --show-current',
-        cwd: '/workspace/repo',
-        timeoutMs: 30_000,
-        outputLimitBytes: 10_000,
-        sessionId: 'system',
-        networkPolicy: 'deny_all'
-      });
-      const [currentCommit = '', currentBranch = ''] = gitState.stdout.trim().split('\n');
-      record.workspace.currentCommit = currentCommit;
-      record.workspace.currentBranch = currentBranch || record.workspace.requestedRef;
+      // HEAD/branch were captured by the combined probe above; install never moves
+      // them, so no extra exec is needed here.
+      record.workspace.currentCommit = parsedProbe.head;
+      record.workspace.currentBranch = parsedProbe.branch || record.workspace.requestedRef;
       record.workspace.state = 'ready';
       record.workspace.failure = undefined;
       record.workspace.revision = nextRevision(record.workspace.revision);
@@ -263,20 +574,26 @@ export class ForgeApplicationService {
       await onStateChange(record);
       return record;
     } catch (error) {
-      await this.sandboxProvider.destroy(record.providerId).catch(() => undefined);
+      await this.providerFor(record).destroy(record.providerId).catch(() => undefined);
       const forgeError = error instanceof ForgeError
         ? error
         : new ForgeError({
             code: 'FORGE_PROVIDER_UNAVAILABLE',
             message: 'Workspace provisioning failed.',
-            retryable: true
+            retryable: true,
+            details: {
+              stage: 'provision',
+              reason: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000),
+              cause: error instanceof Error ? error.name : 'unknown'
+            }
           });
       record.workspace.state = forgeError.retryable ? 'provisioning' : 'failed';
       record.workspace.failure = {
         stage: String(forgeError.details?.stage ?? 'provision'),
         code: forgeError.code,
         message: forgeError.message,
-        retryable: forgeError.retryable
+        retryable: forgeError.retryable,
+        ...(forgeError.details ? { details: forgeError.details as WorkspaceFailureDetails } : {})
       };
       record.workspace.revision = nextRevision(record.workspace.revision);
       record.workspace.updatedAt = new Date().toISOString();
@@ -332,7 +649,55 @@ export class ForgeApplicationService {
         retryable: record.workspace.state === 'suspended'
       });
     }
-    return this.sandboxProvider.get(record.providerId);
+    return this.providerFor(record).get(record.providerId);
+  }
+
+  /**
+   * Confirm the repository checkout is still present before a repository-scoped
+   * operation runs. A `ready` workspace whose `/workspace/repo` mount has
+   * vanished is transitioned to `failed` with a clear checkout failure instead
+   * of letting downstream commands report a bare "No such file or directory".
+   * Returns silently when the workspace is not in a repo-usable state (the
+   * normal state gate in {@link handle} will produce the right error) and
+   * throws {@link ForgeError} `FORGE_WORKSPACE_NOT_READY` when the checkout is
+   * gone. On success it refreshes `workspace.checkout` health in place.
+   */
+  async assertCheckoutPresent(record: WorkspaceRuntimeRecord): Promise<void> {
+    if (!['ready', 'busy'].includes(record.workspace.state)) return;
+    const handle = await this.providerFor(record).get(record.providerId);
+    const probe = await handle.exec({
+      command: 'test -d /workspace/repo/.git && echo forge_checkout_present || echo forge_checkout_missing',
+      cwd: '/workspace',
+      timeoutMs: 10_000,
+      outputLimitBytes: 1_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    });
+    const checkedAt = new Date().toISOString();
+    if (probe.stdout.includes('forge_checkout_present')) {
+      record.workspace.checkout = { healthy: true, checkedAt };
+      return;
+    }
+    record.workspace.state = 'failed';
+    record.workspace.checkout = {
+      healthy: false,
+      checkedAt,
+      detail: 'The repository checkout at /workspace/repo is missing.'
+    };
+    record.workspace.failure = {
+      stage: 'checkout',
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      message: 'The repository checkout is no longer available in the workspace.',
+      retryable: false
+    };
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = checkedAt;
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_NOT_READY',
+      message: 'The repository checkout is missing; the workspace has been marked failed. Create a new workspace to continue.',
+      retryable: false,
+      details: { checkout: 'missing' }
+    });
   }
 
   beginMutation(
@@ -376,19 +741,58 @@ export class ForgeApplicationService {
     }
     const value = await (await this.handle(record)).applyPatch(input);
     if (!value.applied) {
+      const rejectedFiles = value.rejectedFiles ?? [];
       throw new ForgeError({
         code: 'FORGE_PATCH_REJECTED',
-        message: 'The patch could not be applied cleanly.',
+        message: rejectedFiles.length
+          ? `The patch did not apply to ${rejectedFiles.join(', ')}. The working tree was left unchanged. Re-read the file (forge_files_read) to get its current content and hash, then retry with a diff built against that content — or use forge_files_write to replace the whole file.`
+          : 'The patch could not be applied cleanly. The working tree was left unchanged. Re-read the file (forge_files_read) for its current content, then rebuild the diff — or use forge_files_write to replace the whole file.',
         retryable: false,
         operationId: operation.operationId,
-        details: { output: value.output.slice(0, 4_000) }
+        details: {
+          output: value.output.slice(0, 4_000),
+          ...(rejectedFiles.length ? { rejectedFiles } : {}),
+          rolledBack: value.rolledBack ?? true,
+          hint: 'forge_files_write replaces an entire file and avoids diff-context mismatches.'
+        }
       });
     }
+    record.workspace.hasUnpushedWork = true;
     return {
       value,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision
     };
+  }
+
+  // Full-file create/overwrite. Far easier for a headless agent than crafting a
+  // unified diff, and conflict-safe when `expectedSha256` is supplied (from a
+  // prior forge_files_read).
+  async write(
+    record: WorkspaceRuntimeRecord,
+    input: FileWriteInput,
+    expectedRevision: number | undefined,
+    idempotencyKey: string
+  ) {
+    const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
+    if (operation.replay) {
+      return { replay: true, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+    }
+    try {
+      const value = await (await this.handle(record)).writeFile(input);
+      record.workspace.hasUnpushedWork = true;
+      return { value, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'FILE_HASH_CONFLICT') {
+        throw new ForgeError({
+          code: 'FORGE_FILE_CONFLICT',
+          message: 'The file changed since it was read (expected_sha256 no longer matches). Re-read it and retry with the new hash.',
+          retryable: false,
+          operationId: operation.operationId
+        });
+      }
+      throw error;
+    }
   }
 
   async exec(
@@ -629,6 +1033,7 @@ export class ForgeApplicationService {
     });
     if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the branch.', retryable: false });
     record.workspace.currentBranch = branch;
+    record.workspace.hasUnpushedWork = true;
     return { branch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -645,14 +1050,13 @@ export class ForgeApplicationService {
     const operation = this.beginMutation(record, input.expectedRevision, input.idempotencyKey);
     if (operation.replay) return { replay: true, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
     const handle = await this.handle(record);
-    const stage = await handle.exec({
-      command: `git add -- ${paths.map(quoted).join(' ')}`,
-      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 50_000,
-      sessionId: 'system', networkPolicy: 'deny_all'
-    });
-    if (stage.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not stage the selected files.', retryable: false });
+    // Fuse stage + commit + rev-parse into a single container round-trip. The
+    // `&&` chain preserves ordering and short-circuits, so a failed stage still
+    // surfaces before the commit runs. HEAD is the last line of stdout.
     const commit = await handle.exec({
-      command: `git commit -m ${quoted(input.message.trim())}`,
+      command: `sh -c ${quoted(
+        `git add -- ${paths.map(quoted).join(' ')} && git commit -m ${quoted(input.message.trim())} && git rev-parse HEAD`
+      )}`,
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 100_000,
       sessionId: 'system', networkPolicy: 'deny_all',
       environment: {
@@ -663,8 +1067,8 @@ export class ForgeApplicationService {
       }
     });
     if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
-    const head = await handle.exec({ command: 'git rev-parse HEAD', cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' });
-    record.workspace.currentCommit = head.stdout.trim();
+    record.workspace.currentCommit = commit.stdout.trim().split('\n').pop()?.trim() ?? '';
+    record.workspace.hasUnpushedWork = true;
     return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -704,6 +1108,8 @@ export class ForgeApplicationService {
     } finally {
       await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
     }
+    // Work is now pushed to GitHub — safe for the reaper to reclaim on idle.
+    record.workspace.hasUnpushedWork = false;
     return { branch: input.branch, commit: record.workspace.currentCommit, diffHash: outgoing.diffHash, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -743,14 +1149,14 @@ export class ForgeApplicationService {
         retryable: false
       });
     }
-    const handle = await this.sandboxProvider.get(record.providerId);
+    const handle = await this.providerFor(record).get(record.providerId);
     for (const preview of Object.values(record.previews)) {
       await handle.revokePort(preview.port).catch(() => undefined);
     }
     for (const processId of Object.keys(record.processes) as ProcessId[]) {
       await handle.stopProcess(processId).catch(() => undefined);
     }
-    await this.sandboxProvider.destroy(record.providerId);
+    await this.providerFor(record).destroy(record.providerId);
     record.workspace.state = 'destroyed';
     record.workspace.revision = nextRevision(record.workspace.revision);
     record.workspace.updatedAt = new Date().toISOString();

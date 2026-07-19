@@ -4,6 +4,7 @@ import { issueCapability, verifyCapability } from '@forge/capabilities';
 import { assertReceivePackScope, parseReceivePackCommands } from '@forge/git-core';
 import type { AuthenticatedContext } from './auth';
 import type { Env } from './env';
+import { listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
 
 const GITHUB_API_VERSION = '2026-03-10';
 const SESSION_SECONDS = 60 * 60 * 24 * 14;
@@ -321,10 +322,22 @@ export async function listAuthorizedRepositories(env: Env, tenantId: string): Pr
 export async function appDashboard(request: Request, env: Env): Promise<Response> {
   const user = await getWebSession(request, env);
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent('/app')}`, 302);
-  const [repositories, active] = await Promise.all([
+  const caps = workspaceCaps(env);
+  const [repositories, occupants] = await Promise.all([
     listAuthorizedRepositories(env, user.tenant_id),
-    env.METADATA.prepare('SELECT COUNT(*) AS count FROM workspace_slots').first<{ count: number }>()
+    listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), user.tenant_id).catch(() => [])
   ]);
+  const usedSlots = occupants.length;
+  const ttlMinutes = Math.round(slotTtlMs(env) / 60_000);
+  const occupantRow = (occupant: (typeof occupants)[number]) => {
+    const idle = occupant.idleMinutes === null ? '—' : `${occupant.idleMinutes}m idle`;
+    const state = occupant.state ?? 'unknown';
+    const flag = occupant.stale ? ' · reclaimable' : '';
+    return `<li><span><strong>Slot ${occupant.slot}</strong><small>${escapeHtml(occupant.workspaceId.slice(0, 14))}… · ${escapeHtml(state)} · ${escapeHtml(idle)}${flag}</small></span></li>`;
+  };
+  const occupantRows = occupants.length
+    ? `<ul>${occupants.map(occupantRow).join('')}</ul>`
+    : `<p class="note">All ${caps.perTenant} workspace slots are free.</p>`;
   const repositoryRow = (repo: Record<string, unknown>) => `<li><span><strong>${escapeHtml(String(repo.owner))}/${escapeHtml(String(repo.name))}</strong><small>${escapeHtml(String(repo.visibility))} · ${escapeHtml(String(repo.default_branch))}</small></span></li>`;
   const rows = repositories.length
     ? repositories.slice(0, 6).map(repositoryRow).join('')
@@ -339,7 +352,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
 <div class="layout"><div><section class="section"><h2>Start in your AI client</h2><p>Connect this MCP URL once, then use ordinary language. Forge chooses the smallest capable path.</p><code id="mcp">${mcpUrl}</code><a class="button" href="#" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied';return false">Copy MCP URL</a></section>
 <section class="section"><h2>Good first prompts</h2><div class="prompt">Review https://example.com with Parallax on phone and desktop. Inspect every screenshot.</div><div class="prompt">Open ${escapeHtml(user.github_login)}/parallax-review, run the checks, explain the architecture, and do not change anything yet.</div><div class="prompt">Build my project, fix the most important issue, verify it with screenshots, then ask before creating a draft PR.</div></section>
 <section class="section"><h2>How Forge keeps cost down</h2><p>Live URLs use Browser Run without a container. Repository inspection uses GitHub. A container starts only for install, build, edit, test or preview work, and sleeps after 90 seconds idle.</p></section></div>
-<aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots"><i class="slot ${(active?.count ?? 0)>0?'used':''}"></i><i class="slot ${(active?.count ?? 0)>1?'used':''}"></i></div><span>${active?.count ?? 0} of 2 active</span></div><p class="note">Shared across this Forge Cloud pilot.</p></section>
+<aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots">${Array.from({ length: caps.perTenant }, (_, index) => `<i class="slot ${usedSlots > index ? 'used' : ''}"></i>`).join('')}</div><span>${usedSlots} of ${caps.perTenant} active</span></div>${occupantRows}<p class="note">Each account runs up to ${caps.perTenant} workspaces (${caps.global} across all accounts). Idle workspaces are reclaimed automatically after ${ttlMinutes} minutes; destroy one sooner to free a slot immediately.</p></section>
 <section class="section"><h2>GitHub repositories</h2><a class="button" href="/github/install">Manage access</a><ul>${rows}</ul>${moreRows}</section></aside></div></main>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }
 
@@ -511,13 +524,31 @@ export async function requestApproval(
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string }> {
+  const requestPayload = JSON.stringify({ ...payload, requestedBy: identity.subject });
+  const nowIso = new Date().toISOString();
+  // Reuse an existing pending, non-expired approval for the identical request
+  // instead of minting a new row — otherwise an agent retry-loop spams the human
+  // with N identical approval pages.
+  const existing = await env.METADATA.prepare(
+    `SELECT id, expires_at FROM approvals
+      WHERE tenant_id=?1 AND workspace_id=?2 AND requested_action=?3 AND request_payload=?4
+        AND state='pending' AND expires_at > ?5
+      ORDER BY expires_at DESC LIMIT 1`
+  ).bind(identity.tenantId, workspaceId, action, requestPayload, nowIso).first<{ id: string; expires_at: string }>();
+  if (existing) {
+    return { approval_id: existing.id, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${existing.id}`, expires_at: existing.expires_at };
+  }
   const approvalId = ids.approval();
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  // A real build+push cycle easily exceeds a few minutes, so a short approval
+  // window forces re-approval. Default 60 min; tune with FORGE_APPROVAL_TTL_MINUTES.
+  const ttlMinutes = Number(env.FORGE_APPROVAL_TTL_MINUTES);
+  const minutes = Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 60;
+  const expiresAt = new Date(Date.now() + minutes * 60 * 1000).toISOString();
   await env.METADATA.prepare(
     `INSERT INTO approvals
       (id, tenant_id, workspace_id, requested_action, reason, risk_category, request_payload, state, expires_at)
      VALUES (?1, ?2, ?3, ?4, ?5, 'external_write', ?6, 'pending', ?7)`
-  ).bind(approvalId, identity.tenantId, workspaceId, action, reason, JSON.stringify({ ...payload, requestedBy: identity.subject }), expiresAt).run();
+  ).bind(approvalId, identity.tenantId, workspaceId, action, reason, requestPayload, expiresAt).run();
   return { approval_id: approvalId, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}`, expires_at: expiresAt };
 }
 
@@ -533,12 +564,20 @@ export async function requireApproval(
     `SELECT request_payload, state, expires_at FROM approvals
       WHERE id=?1 AND tenant_id=?2 AND workspace_id=?3 AND requested_action=?4`
   ).bind(approvalId, identity.tenantId, workspaceId, action).first<{ request_payload: string; state: string; expires_at: string }>();
-  if (!row || row.state !== 'approved' || Date.parse(row.expires_at) <= Date.now()) {
-    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'A current user approval is required.', retryable: false });
+  // Distinct, actionable failures so an agent knows whether to wait, re-request,
+  // or rebuild the diff — instead of one ambiguous "approval required" for all.
+  if (!row) {
+    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'No matching approval. Request one, open the approval URL, then retry with approval_id.', retryable: false });
+  }
+  if (Date.parse(row.expires_at) <= Date.now()) {
+    throw new ForgeError({ code: 'FORGE_APPROVAL_EXPIRED', message: 'This approval expired. Request a new one and have it approved, then retry.', retryable: false });
+  }
+  if (row.state !== 'approved') {
+    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: row.state === 'pending' ? 'Approval is still pending — wait for it to be approved in the browser, then retry.' : 'This approval was already used. Request a new one.', retryable: false });
   }
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
   for (const [key, value] of Object.entries(expected)) {
-    if (payload[key] !== value) throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'The approved Git operation no longer matches the request.', retryable: false });
+    if (payload[key] !== value) throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'The operation changed since it was approved (e.g. a new commit changed the diff). Re-run forge_git_outgoing_diff and request a fresh approval.', retryable: false });
   }
   const claimed = await env.METADATA.prepare("UPDATE approvals SET state='executing' WHERE id=?1 AND state='approved'")
     .bind(approvalId).run();
@@ -546,8 +585,48 @@ export async function requireApproval(
 }
 
 export async function completeApproval(env: Env, approvalId: string, succeeded: boolean): Promise<void> {
+  // One approval = one execution attempt. On failure the approval is spent
+  // ('failed'), not re-armed — so a failing risky command can't be retried
+  // indefinitely inside the TTL window without the human seeing it again.
   await env.METADATA.prepare('UPDATE approvals SET state=?1 WHERE id=?2 AND state=\'executing\'')
-    .bind(succeeded ? 'consumed' : 'approved', approvalId).run();
+    .bind(succeeded ? 'consumed' : 'failed', approvalId).run();
+}
+
+// Render a unified diff as color-coded, escaped HTML lines. Bounded so a huge
+// diff can't blow up the page; the diffHash (not this) is the integrity check.
+function renderDiffHtml(diff: string): string {
+  const MAX_LINES = 4000;
+  const lines = diff.split('\n');
+  const shown = lines.slice(0, MAX_LINES);
+  const rows = shown
+    .map((line) => {
+      const cls = line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---')
+        ? 'df-meta'
+        : line.startsWith('@@')
+          ? 'df-hunk'
+          : line.startsWith('+')
+            ? 'df-add'
+            : line.startsWith('-')
+              ? 'df-del'
+              : 'df-ctx';
+      return `<span class="${cls}">${escapeHtml(line) || ' '}</span>`;
+    })
+    .join('\n');
+  const trailer = lines.length > MAX_LINES ? `\n<span class="df-meta">… ${lines.length - MAX_LINES} more lines truncated</span>` : '';
+  return rows + trailer;
+}
+
+// Cheap +adds / -dels / files summary for the approval header.
+function diffStats(diff: string): { files: number; added: number; removed: number } {
+  let files = 0;
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git')) files += 1;
+    else if (line.startsWith('+') && !line.startsWith('+++')) added += 1;
+    else if (line.startsWith('-') && !line.startsWith('---')) removed += 1;
+  }
+  return { files, added, removed };
 }
 
 export async function approvalPage(request: Request, env: Env, approvalId: string): Promise<Response> {
@@ -568,9 +647,27 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}`, 303);
   }
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
+  // Pull out the display-only diff/body; show the rest as a small key/value
+  // list so the human approves what they can actually read, not a raw hash blob.
+  const { diff, body, ...meta } = payload as { diff?: string; body?: string; [key: string]: unknown };
+  const metaRows = Object.entries(meta)
+    .filter(([, value]) => value !== '' && value !== undefined && value !== null)
+    .map(([key, value]) => `<div class="kv"><span>${escapeHtml(key)}</span><code>${escapeHtml(String(value))}</code></div>`)
+    .join('');
+  const hasDiff = typeof diff === 'string' && diff.trim() !== '';
+  const stats = hasDiff ? diffStats(diff) : null;
+  const statsLine = stats
+    ? `<p class="stats"><b>${stats.files}</b> file${stats.files === 1 ? '' : 's'} · <span class="s-add">+${stats.added}</span> <span class="s-del">−${stats.removed}</span></p>`
+    : '';
+  const bodyBlock = typeof body === 'string' && body.trim() !== '' ? `<pre class="body">${escapeHtml(body)}</pre>` : '';
+  const contentBlock = hasDiff
+    ? `<pre class="diff">${renderDiffHtml(diff)}</pre>`
+    : metaRows === ''
+      ? `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
+      : '';
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge approval</title><style>:root{--bg:#f2f4f1;--surface:#fff;--ink:#151a16;--muted:#5c665f;--line:#cfd5d0;--accent:#23784b}*{box-sizing:border-box}body{width:min(100% - 2.5rem,38rem);margin:0 auto;padding:clamp(3rem,10vw,6rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}h1{margin:0 0 1rem;font-size:clamp(2.2rem,8vw,3.4rem);line-height:1;letter-spacing:-.035em}p{color:var(--muted);overflow-wrap:anywhere}pre{max-width:100%;max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font-size:.84rem}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.25rem}button{min-height:46px;padding:.7rem 1rem;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer}.approve{background:var(--ink);color:#fff;border-color:var(--ink)}button:hover{border-color:var(--accent)}.approve:hover{background:var(--accent);border-color:var(--accent)}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
-<h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+<title>Forge approval</title><style>:root{--bg:#f2f4f1;--surface:#fff;--ink:#151a16;--muted:#5c665f;--line:#cfd5d0;--accent:#23784b;--add:#e5f4ea;--add-ink:#0f6b39;--del:#fdecec;--del-ink:#b0201a;--hunk:#eef2f7;--hunk-ink:#3757a6}*{box-sizing:border-box}body{width:min(100% - 2.5rem,60rem);margin:0 auto;padding:clamp(2.5rem,8vw,5rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}h1{margin:0 0 1rem;font-size:clamp(1.9rem,6vw,2.8rem);line-height:1.02;letter-spacing:-.03em}p{color:var(--muted);overflow-wrap:anywhere}.stats{color:var(--ink);font-weight:600}.s-add{color:var(--add-ink)}.s-del{color:var(--del-ink)}.kv{display:flex;gap:.75rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)}.kv span{flex:0 0 6.5rem;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.kv code{overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre.body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem}pre.diff{max-height:32rem;padding:.5rem 0}pre.diff span{display:block;padding:0 1rem;white-space:pre;overflow-wrap:normal}.df-add{background:var(--add);color:var(--add-ink)}.df-del{background:var(--del);color:var(--del-ink)}.df-hunk{background:var(--hunk);color:var(--hunk-ink);font-weight:600}.df-meta{color:var(--muted)}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:1rem}button{min-height:46px;padding:.7rem 1.2rem;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer}.approve{background:var(--ink);color:#fff;border-color:var(--ink)}button:hover{border-color:var(--accent)}.approve:hover{background:var(--accent);border-color:var(--accent)}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
+<h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p>${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
 ${row.state === 'pending' ? `<form method="post"><button class="approve" name="decision" value="approved">Approve once</button><button name="decision" value="denied">Deny</button></form>` : ''}`,
   { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }

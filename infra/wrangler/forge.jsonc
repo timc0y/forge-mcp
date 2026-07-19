@@ -7,6 +7,11 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  // Global slot reaper: recovers capacity even when no one is creating a
+  // workspace (the lazy reaper only fires on forge_workspace_create).
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
   "observability": {
     "enabled": true,
     "logs": {
@@ -24,10 +29,15 @@
     "FORGE_DEFAULT_PROJECT_ID": "prj_00000000000000000000000001",
     "GITHUB_APP_ID": "4281819",
     "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
-    "GITHUB_APP_SLUG": "forge-mcp-cloud"
+    "GITHUB_APP_SLUG": "forge-mcp-cloud",
+    "FORGE_AUTO_APPROVE_SHELL": "true",
+    "FORGE_SNAPSHOT_ENABLED": "true"
   },
   "browser": {
     "binding": "BROWSER"
+  },
+  "ai": {
+    "binding": "AI"
   },
   "d1_databases": [
     {
@@ -48,7 +58,10 @@
       "class_name": "Sandbox",
       "image": "../../Dockerfile",
       "instance_type": "basic",
-      "max_instances": 2
+      // Keep in step with FORGE_MAX_WORKSPACES. Idle instances sleep at 90s and
+      // bill per active-second, so headroom is cheap; this is the hard cost
+      // bound on concurrent workspaces.
+      "max_instances": 8
     }
   ],
   "durable_objects": {

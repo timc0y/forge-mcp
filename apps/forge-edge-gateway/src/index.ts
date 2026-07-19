@@ -1,5 +1,10 @@
 import { getSandbox, Sandbox, ContainerProxy } from '@cloudflare/sandbox';
-import { ForgeError } from '@forge/core';
+import { ForgeError, type WorkspaceId } from '@forge/core';
+import { workflowInstanceId } from '@forge/workflows-cloudflare';
+import { reclaimStaleSlots, slotTtlMs } from './capacity';
+import { snapshotsEnabled, snapshotKey, recordSnapshot } from './snapshots';
+import { handleMultipartUpload } from './multipart-upload';
+import { parseDepsCacheKey, recordDepsCache } from './deps-cache';
 import { verifyCapability } from '@forge/capabilities';
 import openapi from '../../../openapi/forge.openapi.json';
 import { ForgeMcpSession } from './mcp-session';
@@ -147,6 +152,33 @@ async function sandboxPreviewFetch(
   path: string,
   search: string
 ): Promise<{ response: Response; target: URL }> {
+  // Self-hosted workspaces serve their preview from the user's own machine, so
+  // proxy through the agent's preview route (over the tunnel) instead of the
+  // Cloudflare sandbox binding. Gated on the persisted provider kind, so the
+  // Cloudflare path below is untouched for cloud workspaces.
+  if (detail.workspace.provider.kind === 'self-hosted') {
+    if (!env.FORGE_SELFHOST_URL || !env.FORGE_SELFHOST_TOKEN) {
+      throw new ForgeError({
+        code: 'FORGE_PREVIEW_UNAVAILABLE',
+        message: 'Self-hosted preview backend is not configured.',
+        retryable: false
+      });
+    }
+    const base = env.FORGE_SELFHOST_URL.replace(/\/+$/, '');
+    const target = new URL(
+      `${base}/preview/${encodeURIComponent(detail.providerId)}/${detail.preview.port}${path}`
+    );
+    target.search = search;
+    const headers = cleanPreviewHeaders(request);
+    headers.set('authorization', `Bearer ${env.FORGE_SELFHOST_TOKEN}`);
+    const response = await fetch(target, {
+      method: request.method,
+      headers,
+      body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
+      redirect: 'manual'
+    });
+    return { response, target };
+  }
   const target = new URL(path, 'http://forge-container.internal');
   target.search = search;
   const upstreamRequest = new Request(target, {
@@ -282,11 +314,141 @@ async function preview(request: Request, env: Env, url: URL): Promise<Response> 
   });
 }
 
+// Authenticated R2 gateway for workspace snapshots. Untrusted container code
+// streams `tar czf -` here on PUT and reads it back on GET, scoped by a
+// short-lived capability so it can only touch its own workspace's snapshot.
+async function snapshotEndpoint(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!snapshotsEnabled(env)) return new Response('Snapshots disabled', { status: 404 });
+  const match = url.pathname.match(/^\/__forge_snapshot\/(ws_[0-9a-hjkmnp-tv-z]{20,32})$/);
+  const workspaceId = match?.[1];
+  if (!workspaceId) return new Response('Not found', { status: 404 });
+  const token = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
+  let claims;
+  try {
+    claims = await verifyCapability(token, env.FORGE_CAPABILITY_SIGNING_KEY, { workspaceId, action: `snapshot:${workspaceId}` });
+  } catch {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  const key = snapshotKey(claims.tenantId, workspaceId);
+  const mpAction = url.searchParams.get('mp');
+  if (mpAction && (request.method === 'PUT' || request.method === 'POST')) {
+    return await handleMultipartUpload(mpAction, env.ARTIFACTS, key, url, request, async (sizeBytes) => {
+      await recordSnapshot(env.METADATA, { workspaceId, tenantId: claims.tenantId, r2Key: key, sizeBytes, createdAt: new Date().toISOString() });
+    });
+  }
+  if (request.method === 'PUT' && request.body) {
+    const object = await env.ARTIFACTS.put(key, request.body);
+    await recordSnapshot(env.METADATA, { workspaceId, tenantId: claims.tenantId, r2Key: key, sizeBytes: object?.size ?? 0, createdAt: new Date().toISOString() });
+    return Response.json({ ok: true, size: object?.size ?? 0 });
+  }
+  if (request.method === 'GET') {
+    const object = await env.ARTIFACTS.get(key);
+    if (!object) return new Response('No snapshot', { status: 404 });
+    return new Response(object.body, { headers: { 'content-type': 'application/gzip', 'cache-control': 'no-store' } });
+  }
+  return new Response('Method not allowed', { status: 405 });
+}
+
+// Authenticated R2 gateway for the per-repo dependency cache. Mirrors
+// snapshotEndpoint, but the object is scoped by CONTENT (cache_key) instead of by
+// workspace, so any workspace of the same repo at the same lockfile shares it.
+// The cache_key travels in the x-forge-deps-key header; the capability is scoped
+// to `deps:<cache_key>` so a container can only touch the exact key it was handed.
+async function depsEndpoint(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!snapshotsEnabled(env)) return new Response('Deps cache disabled', { status: 404 });
+  const match = url.pathname.match(/^\/__forge_deps\/(ws_[0-9a-hjkmnp-tv-z]{20,32})$/);
+  const workspaceId = match?.[1];
+  if (!workspaceId) return new Response('Not found', { status: 404 });
+  const cacheKey = request.headers.get('x-forge-deps-key') ?? '';
+  const parsed = parseDepsCacheKey(cacheKey);
+  if (!parsed) return new Response('Bad deps key', { status: 400 });
+  const token = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
+  try {
+    await verifyCapability(token, env.FORGE_CAPABILITY_SIGNING_KEY, { workspaceId, action: `deps:${cacheKey}` });
+  } catch {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  const mpAction = url.searchParams.get('mp');
+  if (mpAction && (request.method === 'PUT' || request.method === 'POST')) {
+    return await handleMultipartUpload(mpAction, env.ARTIFACTS, parsed.r2Key, url, request, async (sizeBytes) => {
+      await recordDepsCache(env.METADATA, {
+        cacheKey,
+        repoSlug: parsed.repoSlug,
+        lockfileHash: parsed.lockfileHash,
+        runtime: parsed.runtime,
+        r2Key: parsed.r2Key,
+        sizeBytes,
+        createdAt: new Date().toISOString()
+      });
+    });
+  }
+  if (request.method === 'PUT' && request.body) {
+    const object = await env.ARTIFACTS.put(parsed.r2Key, request.body);
+    await recordDepsCache(env.METADATA, {
+      cacheKey,
+      repoSlug: parsed.repoSlug,
+      lockfileHash: parsed.lockfileHash,
+      runtime: parsed.runtime,
+      r2Key: parsed.r2Key,
+      sizeBytes: object?.size ?? 0,
+      createdAt: new Date().toISOString()
+    });
+    return Response.json({ ok: true, size: object?.size ?? 0 });
+  }
+  if (request.method === 'GET') {
+    const object = await env.ARTIFACTS.get(parsed.r2Key);
+    if (!object) return new Response('No deps cache', { status: 404 });
+    return new Response(object.body, { headers: { 'content-type': 'application/gzip', 'cache-control': 'no-store' } });
+  }
+  return new Response('Method not allowed', { status: 405 });
+}
+
+// Scheduled global reaper: recovers capacity even when nobody is calling
+// forge_workspace_create (the lazy reaper only fires on that path). Frees stale
+// slots and tears their workspaces down. Best-effort per workspace.
+async function reapAbandonedSlots(env: Env): Promise<void> {
+  let reclaimed;
+  try {
+    // With snapshots on, dirty workspaces are eligible for reaping (we snapshot
+    // them first); otherwise they stay protected.
+    reclaimed = await reclaimStaleSlots(env.METADATA, slotTtlMs(env), Date.now(), !snapshotsEnabled(env));
+  } catch (error) {
+    console.warn('forge_slot_scheduled_reclaim_failed', {
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+    });
+    return;
+  }
+  for (const slot of reclaimed) {
+    const workspaceId = slot.workspaceId as WorkspaceId;
+    try {
+      const destroyId = workflowInstanceId('destroy', workspaceId);
+      const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
+      // Save the workspace before tearing it down (best-effort, no-op if disabled).
+      await stub.snapshotToR2().catch(() => undefined);
+      await stub.requestDestroy({ idempotencyKey: `reap-${destroyId}` });
+      await env.DESTROY_WORKFLOW.create({
+        id: destroyId,
+        params: { workspaceId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true }
+      });
+    } catch (error) {
+      console.warn('forge_slot_scheduled_teardown_failed', {
+        workspaceId: slot.workspaceId,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+      });
+    }
+  }
+}
+
 export default {
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(reapAbandonedSlots(env));
+  },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
       if (url.pathname === '/favicon.ico' && request.method === 'GET') return favicon();
+      if (url.pathname.startsWith('/__forge_snapshot/')) return await snapshotEndpoint(request, env, url);
+      if (url.pathname.startsWith('/__forge_deps/')) return await depsEndpoint(request, env, url);
       if (url.pathname.startsWith('/git/')) return await gitCredentialProxy(request, env);
       if (
         url.pathname.startsWith('/__forge_browser/') ||

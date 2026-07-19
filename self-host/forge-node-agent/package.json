@@ -1,0 +1,16 @@
+{
+  "name": "forge-node-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference Forge Node Agent — runs Forge workspaces and browser evidence on a self-hosted machine (e.g. a Mac mini). Forge health-checks this agent and routes work to it, falling back to Cloudflare when it is down.",
+  "bin": { "forge-node-agent": "server.mjs" },
+  "scripts": {
+    "start": "node server.mjs",
+    "selftest": "node server.mjs --selftest"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  },
+  "engines": { "node": ">=20" }
+}

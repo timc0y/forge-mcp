@@ -8,23 +8,33 @@ pnpm install --frozen-lockfile
 pnpm check
 pnpm cf:typegen
 pnpm --filter @forge/edge-gateway exec wrangler deploy --dry-run \
-  --config ../../infra/wrangler/forge.development.jsonc
+  --config ../../infra/wrangler/forge.jsonc
 ```
 
 A dry run proves bundling and configuration shape only. It does not prove Sandbox allocation, Browser Run, OAuth, D1, R2, Workflows or preview routing.
 
-## Shared development deployment
+## Deployment
 
-1. Create isolated development D1 and R2 resources and replace placeholder IDs.
+Forge has a single deployable environment defined by `infra/wrangler/forge.jsonc`.
+
+```bash
+pnpm deploy
+```
+
+Local iteration runs the same config with an auth-relaxed identity:
+
+```bash
+pnpm dev
+```
+
+1. Ensure the D1 (`forge-production`) and R2 (`forge-production-artifacts`) resources exist and match the IDs in `forge.jsonc`.
 2. configure `FORGE_DEV_AUTH_TOKEN`, `FORGE_CAPABILITY_SIGNING_KEY` and `FORGE_INTERNAL_PREVIEW_KEY` as Worker secrets;
-3. deploy the development Worker and apply D1 migrations;
-4. invoke `/health` and the RFC 9728 metadata endpoint;
+3. deploy the Worker and apply D1 migrations;
+4. invoke `/health` and `/ready`, plus the RFC 9728 metadata endpoint;
 5. run the public Astro/Vite acceptance path through a real MCP client;
 6. capture workflow IDs, workspace state transitions, screenshot artifact hash and teardown evidence;
 7. verify the preview and capability fail after destruction;
-8. record the deployment date, Worker version, Sandbox SDK version and Cloudflare account/environment in the PR evidence.
-
-Production deployment is blocked until the egress-policy spike demonstrates private-range and metadata blocking in the real Sandbox environment.
+8. record the deployment date, Worker version, Sandbox SDK version and Cloudflare account in the PR evidence.
 
 ## Incident handling
 

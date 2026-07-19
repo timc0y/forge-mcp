@@ -27,7 +27,7 @@ export interface RepositoryRef {
 }
 
 export interface SandboxProviderRef {
-  kind: 'cloudflare' | 'local-docker';
+  kind: 'cloudflare' | 'local-docker' | 'self-hosted';
   version: string;
 }
 
@@ -39,6 +39,10 @@ export interface Workspace {
   requestedRef: string;
   currentCommit?: string;
   currentBranch?: string;
+  // True once local work exists that hasn't been pushed (a forge branch, a
+  // commit, an applied patch or file write). The idle reaper refuses to destroy
+  // such a workspace so an agent's unpushed work is never silently lost.
+  hasUnpushedWork?: boolean;
   state: WorkspaceLifecycleState;
   persistenceMode: PersistenceMode;
   runtimeProfile: string;
@@ -49,8 +53,23 @@ export interface Workspace {
   updatedAt: string;
   idleDeadline?: string;
   activeSnapshotId?: SnapshotId;
-  failure?: { stage: string; code: string; message: string; retryable: boolean };
+  failure?: {
+    stage: string;
+    code: string;
+    message: string;
+    retryable: boolean;
+    details?: WorkspaceFailureDetails;
+  };
+  checkout?: { healthy: boolean; checkedAt: string; detail?: string };
 }
+
+// Kept structured-clone serializable so it survives the Durable Object RPC
+// boundary in forge_workspace_get (a Record<string, unknown> would collapse the
+// stub return type to never).
+export type WorkspaceFailureDetails = Record<
+  string,
+  string | number | boolean | null | string[]
+>;
 
 export interface WorkspaceMutationInput {
   workspaceId: WorkspaceId;
