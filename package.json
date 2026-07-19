@@ -27,6 +27,7 @@
     "@cloudflare/workers-types": "5.20260712.1",
     "@forge/application": "workspace:*",
     "@forge/audit": "workspace:*",
+    "@forge/browser-core": "workspace:*",
     "@forge/capabilities": "workspace:*",
     "@forge/core": "workspace:*",
     "@forge/mcp-core": "workspace:*",

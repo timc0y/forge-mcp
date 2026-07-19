@@ -17,6 +17,9 @@ importers:
       '@forge/audit':
         specifier: workspace:*
         version: link:packages/audit
+      '@forge/browser-core':
+        specifier: workspace:*
+        version: link:packages/browser-core
       '@forge/capabilities':
         specifier: workspace:*
         version: link:packages/capabilities

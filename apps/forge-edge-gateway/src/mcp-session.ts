@@ -37,6 +37,40 @@ interface SessionProps extends Record<string, unknown> {
   clientId: string;
 }
 
+// Roll the per-cell heading-defect signal up to the packet level so a review
+// verdict cannot be reached without confronting it: a clean-looking screenshot
+// no longer buys silence over structurally broken content.
+function summarizeStructure(
+  evidence: Array<{ accessibility?: { structure?: { findingCount?: number; countsByKind?: Record<string, number>; truncated?: boolean } }; route?: unknown; environment?: unknown }>
+): {
+  totalFindings: number;
+  affectedCells: number;
+  countsByKind: Record<string, number>;
+  truncated: boolean;
+  routesWithFindings: Array<{ route: unknown; environment: unknown; findingCount: number }>;
+} {
+  const countsByKind: Record<string, number> = {};
+  const routesWithFindings: Array<{ route: unknown; environment: unknown; findingCount: number }> = [];
+  let totalFindings = 0;
+  let affectedCells = 0;
+  let truncated = false;
+  for (const cell of evidence) {
+    const structure = cell.accessibility?.structure;
+    if (!structure) continue;
+    const findingCount = structure.findingCount ?? 0;
+    if (structure.truncated) truncated = true;
+    if (findingCount > 0) {
+      totalFindings += findingCount;
+      affectedCells += 1;
+      routesWithFindings.push({ route: cell.route, environment: cell.environment, findingCount });
+      for (const [kind, count] of Object.entries(structure.countsByKind ?? {})) {
+        countsByKind[kind] = (countsByKind[kind] ?? 0) + count;
+      }
+    }
+  }
+  return { totalFindings, affectedCells, countsByKind, truncated, routesWithFindings };
+}
+
 function coordinator(env: Env, workspaceId: string): DurableObjectStub<WorkspaceCoordinator> {
   return env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
 }
@@ -208,6 +242,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
         }
         const complete = failures.length === 0 && skipped.length === 0;
+        const structureSummary = summarizeStructure(
+          evidence as Array<{ accessibility?: { structure?: { findingCount?: number; countsByKind?: Record<string, number>; truncated?: boolean } }; route?: unknown; environment?: unknown }>
+        );
         const packet = {
           schemaVersion: 1,
           provider: 'forge',
@@ -222,14 +259,19 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           evidence,
           failures,
           skipped,
+          structureSummary,
           limitations: ['Static screenshot evidence does not prove interactions that were not executed.'],
           nextStep: complete
             ? 'Inspect every returned MCP image, then pass the evidence to Parallax with inspected set to true.'
             : 'Inspect the returned images, then re-run forge_review for the routes listed in failures and skipped (fewer routes per call captures more reliably).'
         };
+        const structureNote =
+          structureSummary.totalFindings > 0
+            ? ` Structure health flagged ${structureSummary.totalFindings} heading defect(s) across ${structureSummary.affectedCells} evidence cell(s) (see structureSummary) — resolve or explicitly accept these before passing the review.`
+            : '';
         const summary = complete
-          ? `Captured ${evidence.length} screenshots without starting a container. Inspect every returned image before marking its evidence inspected.`
-          : `Captured ${evidence.length} of ${cells.length} screenshots without starting a container (${failures.length} failed, ${skipped.length} skipped). Inspect the returned images and re-run the remaining routes in smaller batches.`;
+          ? `Captured ${evidence.length} screenshots without starting a container. Inspect every returned image before marking its evidence inspected.${structureNote}`
+          : `Captured ${evidence.length} of ${cells.length} screenshots without starting a container (${failures.length} failed, ${skipped.length} skipped). Inspect the returned images and re-run the remaining routes in smaller batches.${structureNote}`;
         content.unshift({ type: 'text', text: summary });
         return forgeToolResponse(packet, content);
       },
@@ -542,8 +584,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           capturedAt: new Date().toISOString(),
           previewId,
           evidence,
+          structureSummary: summarizeStructure(
+            evidence as Array<{ accessibility?: { structure?: { findingCount?: number; countsByKind?: Record<string, number>; truncated?: boolean } }; route?: unknown; environment?: unknown }>
+          ),
           limitations: [],
-          nextStep: 'Call forge_artifact_get for each evidence[].screenshot.artifactId, inspect the image, then mark that evidence inspected in Parallax.'
+          nextStep: 'Call forge_artifact_get for each evidence[].screenshot.artifactId, inspect the image, then mark that evidence inspected in Parallax. Resolve or explicitly accept any structureSummary heading defects before passing the review.'
         };
       },
       forge_browser_screenshot: async (input) => {
