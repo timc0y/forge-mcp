@@ -7,6 +7,11 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  // Global slot reaper: recovers capacity even when no one is creating a
+  // workspace (the lazy reaper only fires on forge_workspace_create).
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
   "observability": {
     "enabled": true,
     "logs": {

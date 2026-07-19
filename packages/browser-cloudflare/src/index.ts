@@ -6,6 +6,7 @@ import type {
   BrowserActionStep,
   BrowserEvidenceResult,
   BrowserProvider,
+  ImageContentType,
   ScreenshotInput,
   ScreenshotResult
 } from '@forge/browser-core';
@@ -26,6 +27,28 @@ type SnapshotOptions = BrowserRunSnapshotOptions & {
   formats: Array<'screenshot' | 'markdown' | 'accessibilityTree'>;
 };
 
+// Evidence screenshots default to JPEG: 3-10× smaller than PNG end-to-end (R2
+// storage, response payload, Worker base64 CPU, client tokens) at a fidelity
+// that still supports visual review. Callers pass format: 'image/png' when they
+// need lossless pixels.
+const DEFAULT_IMAGE: ImageContentType = 'image/jpeg';
+const DEFAULT_JPEG_QUALITY = 80;
+// The two evidence formats Forge actually consumes. `markdown` was requested
+// historically but never read, so it is dropped to shrink each snapshot.
+const EVIDENCE_FORMATS: SnapshotOptions['formats'] = ['screenshot', 'accessibilityTree'];
+
+function imageType(input: Pick<ScreenshotInput, 'format'>): { contentType: ImageContentType; type: 'png' | 'jpeg' } {
+  const contentType = input.format ?? DEFAULT_IMAGE;
+  return { contentType, type: contentType === 'image/png' ? 'png' : 'jpeg' };
+}
+
+function screenshotOptions(input: ScreenshotInput): Record<string, unknown> {
+  const { type } = imageType(input);
+  const options: Record<string, unknown> = { type, fullPage: input.fullPage };
+  if (type === 'jpeg') options.quality = input.quality ?? DEFAULT_JPEG_QUALITY;
+  return options;
+}
+
 function targetUrl(input: Pick<ScreenshotInput, 'url' | 'path'>): string {
   const base = new URL(input.url.endsWith('/') ? input.url : `${input.url}/`);
   return new URL(input.path.replace(/^\/+/, ''), base).toString();
@@ -37,7 +60,7 @@ function baseOptions(input: Omit<ScreenshotInput, 'fullPage'>): BrowserRunBaseOp
     setExtraHTTPHeaders: input.headers,
     viewport: input.viewport,
     gotoOptions: { waitUntil: 'domcontentloaded', timeout: 30_000 },
-    cacheTTL: 0,
+    cacheTTL: input.cacheTtlSeconds ?? 0,
     actionTimeout: 60_000
   };
 }
@@ -68,12 +91,27 @@ function toBrowserRunActions(steps: BrowserActionStep[], base: URL): unknown[] {
   });
 }
 
+function stripDataPrefix(value: string): string {
+  return value.replace(/^data:image\/[^;]+;base64,/, '');
+}
+
 function decodeBase64(value: string): ArrayBuffer {
-  const encoded = value.replace(/^data:image\/[^;]+;base64,/, '');
-  const binary = atob(encoded);
+  const binary = atob(stripDataPrefix(value));
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return bytes.buffer;
+}
+
+// Chunked base64 avoids the quadratic per-character string building that a naive
+// loop incurs on multi-MB images running on the CPU-metered Worker isolate.
+function encodeBase64(bytes: ArrayBuffer): string {
+  const view = new Uint8Array(bytes);
+  let binary = '';
+  const chunk = 0x8000;
+  for (let index = 0; index < view.length; index += chunk) {
+    binary += String.fromCharCode(...view.subarray(index, index + chunk));
+  }
+  return btoa(binary);
 }
 
 export class CloudflareBrowserProvider implements BrowserProvider {
@@ -83,14 +121,22 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     private readonly tenantId: TenantId
   ) {}
 
-  private async storeScreenshot(input: ScreenshotInput, bytes: ArrayBuffer): Promise<ScreenshotResult> {
+  // Persist to R2 and attach the freshly captured image inline so the caller can
+  // return it without a second R2 GET. `originalBase64` (as returned by Browser
+  // Run) is reused verbatim for the inline copy — no decode/re-encode round trip.
+  private async storeScreenshot(
+    input: ScreenshotInput,
+    bytes: ArrayBuffer,
+    originalBase64?: string
+  ): Promise<ScreenshotResult> {
     const id = ids.artifact();
+    const { contentType } = imageType(input);
     const ref = await this.artifacts.put({
       id,
       tenantId: this.tenantId,
       workspaceId: input.workspaceId,
       kind: 'browser.screenshot',
-      contentType: 'image/png',
+      contentType,
       bytes,
       metadata: {
         path: input.path,
@@ -103,10 +149,12 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     });
     return {
       artifactId: id,
-      contentType: 'image/png',
+      contentType,
       width: input.viewport.width,
       height: input.viewport.height,
-      sha256: ref.sha256
+      sha256: ref.sha256,
+      sizeBytes: bytes.byteLength,
+      inline: { base64: originalBase64 ? stripDataPrefix(originalBase64) : encodeBase64(bytes), contentType }
     };
   }
 
@@ -117,14 +165,16 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     const options: SnapshotOptions = {
       ...baseOptions(input),
       formats,
-      screenshotOptions: { type: 'png', fullPage: input.fullPage }
+      screenshotOptions: screenshotOptions(input)
     };
-    return this.snapshotWithOptions(options as BrowserRunSnapshotOptions);
+    return this.snapshotWithOptions(options as BrowserRunSnapshotOptions, input.deadlineAt);
   }
 
   private async snapshotWithOptions(
-    options: BrowserRunSnapshotOptions
+    options: BrowserRunSnapshotOptions,
+    deadlineAt?: number
   ): Promise<SnapshotResponse['result']> {
+    const pastDeadline = () => deadlineAt !== undefined && Date.now() >= deadlineAt;
     for (let attempt = 0; attempt < 4; attempt += 1) {
       let response: Response;
       try {
@@ -133,7 +183,7 @@ export class CloudflareBrowserProvider implements BrowserProvider {
           options as BrowserRunSnapshotOptions
         );
       } catch (error) {
-        if (attempt < 3) {
+        if (attempt < 3 && !pastDeadline()) {
           await new Promise((resolve) => setTimeout(resolve, 1_000 * (attempt + 1)));
           continue;
         }
@@ -156,8 +206,10 @@ export class CloudflareBrowserProvider implements BrowserProvider {
         throw new Error('Browser Run snapshot returned an invalid response.');
       }
       if (response.ok && payload.success && payload.result) return payload.result;
+      // Only Browser Run's concurrency-limit error (5006) is worth retrying;
+      // other failures are terminal and retrying just burns the deadline.
       const retryable = payload.errors?.some((error) => error.code === 5006) ?? false;
-      if (retryable && attempt < 3) {
+      if (retryable && attempt < 3 && !pastDeadline()) {
         await new Promise((resolve) => setTimeout(resolve, 1_000 * (attempt + 1)));
         continue;
       }
@@ -172,7 +224,7 @@ export class CloudflareBrowserProvider implements BrowserProvider {
   }
 
   async captureEvidence(input: ScreenshotInput): Promise<BrowserEvidenceResult> {
-    const result = await this.snapshot(input, ['screenshot', 'markdown', 'accessibilityTree']);
+    const result = await this.snapshot(input, EVIDENCE_FORMATS);
     if (!result?.screenshot || result.accessibilityTree === undefined) {
       console.error('forge_browser_snapshot_missing_formats', {
         resultKeys: result ? Object.keys(result) : []
@@ -180,7 +232,7 @@ export class CloudflareBrowserProvider implements BrowserProvider {
       throw new Error('Browser Run snapshot omitted required evidence formats.');
     }
     return {
-      screenshot: await this.storeScreenshot(input, decodeBase64(result.screenshot)),
+      screenshot: await this.storeScreenshot(input, decodeBase64(result.screenshot), result.screenshot),
       accessibility: {
         tree: result.accessibilityTree,
         truncated: false,
@@ -194,11 +246,11 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     const actions = toBrowserRunActions(input.steps, base);
     const options = {
       ...baseOptions(input),
-      formats: ['screenshot', 'markdown', 'accessibilityTree'] as SnapshotOptions['formats'],
-      screenshotOptions: { type: 'png', fullPage: input.fullPage },
+      formats: EVIDENCE_FORMATS,
+      screenshotOptions: screenshotOptions(input),
       actions
     };
-    const result = await this.snapshotWithOptions(options as unknown as BrowserRunSnapshotOptions);
+    const result = await this.snapshotWithOptions(options as unknown as BrowserRunSnapshotOptions, input.deadlineAt);
     if (!result?.screenshot || result.accessibilityTree === undefined) {
       console.error('forge_browser_act_missing_formats', {
         resultKeys: result ? Object.keys(result) : []
@@ -206,7 +258,7 @@ export class CloudflareBrowserProvider implements BrowserProvider {
       throw new Error('Browser Run action run omitted required evidence formats.');
     }
     return {
-      screenshot: await this.storeScreenshot(input, decodeBase64(result.screenshot)),
+      screenshot: await this.storeScreenshot(input, decodeBase64(result.screenshot), result.screenshot),
       accessibility: {
         tree: result.accessibilityTree,
         truncated: false,
@@ -220,7 +272,7 @@ export class CloudflareBrowserProvider implements BrowserProvider {
   async screenshot(input: ScreenshotInput): Promise<ScreenshotResult> {
     const response = await this.browserBinding.quickAction('screenshot', {
       ...baseOptions(input),
-      screenshotOptions: { type: 'png', fullPage: input.fullPage }
+      screenshotOptions: screenshotOptions(input)
     });
     if (!response.ok) throw new Error(`Browser Run screenshot failed with HTTP ${response.status}.`);
     return this.storeScreenshot(input, await response.arrayBuffer());
@@ -229,7 +281,7 @@ export class CloudflareBrowserProvider implements BrowserProvider {
   async accessibilityTree(
     input: Omit<ScreenshotInput, 'fullPage'>
   ): Promise<AccessibilityResult> {
-    const result = await this.snapshot({ ...input, fullPage: false }, ['accessibilityTree', 'markdown']);
+    const result = await this.snapshot({ ...input, fullPage: false }, ['accessibilityTree']);
     if (result?.accessibilityTree === undefined) {
       console.error('forge_browser_snapshot_missing_accessibility', {
         resultKeys: result ? Object.keys(result) : []

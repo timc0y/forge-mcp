@@ -100,6 +100,9 @@ class CloudflareSandboxHandle implements SandboxHandle {
 
   private async canonicalWorkspacePath(path: string): Promise<string> {
     const lexical = assertWorkspacePath(path);
+    // The workspace root itself cannot symlink-escape, so skip the realpath exec
+    // (a container round trip that can also wake a sleeping sandbox) for it.
+    if (lexical === ROOT) return ROOT;
     const session = await this.session('system', ROOT);
     const result = await session.exec(`realpath -m -- ${shellQuote(lexical)}`, {
       cwd: ROOT,
@@ -115,10 +118,12 @@ class CloudflareSandboxHandle implements SandboxHandle {
     return lexical;
   }
 
-  private async commandWithStdin(input: ExecInput, session: ExecutionSession) {
+  // `cwd` is already canonicalized by the caller; do not resolve it again (that
+  // was a second container round trip per stdin exec).
+  private async commandWithStdin(input: ExecInput, session: ExecutionSession, cwd: string) {
     if (input.stdin === undefined) {
       return session.exec(input.command, {
-        cwd: await this.canonicalWorkspacePath(input.cwd),
+        cwd,
         timeout: input.timeoutMs,
         env: input.environment
       });
@@ -127,7 +132,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
     await this.sandbox.writeFile(path, input.stdin, { sessionId: input.sessionId });
     try {
       return await session.exec(`${input.command} < ${shellQuote(path)}`, {
-        cwd: await this.canonicalWorkspacePath(input.cwd),
+        cwd,
         timeout: input.timeoutMs,
         env: input.environment
       });
@@ -141,7 +146,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
     try {
       const cwd = await this.canonicalWorkspacePath(input.cwd);
       const session = await this.session(input.sessionId, cwd);
-      const result = await this.commandWithStdin(input, session);
+      const result = await this.commandWithStdin(input, session, cwd);
       const stdout = truncate(result.stdout, input.outputLimitBytes);
       const stdoutBytes = new TextEncoder().encode(stdout.value).byteLength;
       const stderr = truncate(result.stderr, Math.max(0, input.outputLimitBytes - stdoutBytes));

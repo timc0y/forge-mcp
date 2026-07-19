@@ -90,46 +90,54 @@ export async function reclaimStaleSlots(
   const occupants = await listSlotOccupants(database, ttlMs, now);
   const stale = occupants.filter((occupant) => occupant.stale);
   if (stale.length === 0) return [];
+  // One batched DELETE (there are at most two slots) instead of a round trip per
+  // row. RETURNING confirms exactly which rows this call removed, so concurrent
+  // reapers do not double-count.
+  const placeholders = stale.map((_, index) => `?${index + 1}`).join(', ');
+  const deleted = await database.prepare(
+    `DELETE FROM workspace_slots WHERE workspace_id IN (${placeholders}) RETURNING workspace_id`
+  ).bind(...stale.map((occupant) => occupant.workspaceId)).all<{ workspace_id: string }>();
+  const removed = new Set((deleted.results ?? []).map((row) => row.workspace_id));
   const reclaimed: ReclaimedSlot[] = [];
   for (const occupant of stale) {
-    const result = await database.prepare(
-      'DELETE FROM workspace_slots WHERE workspace_id = ?1'
-    ).bind(occupant.workspaceId).run();
-    if ((result.meta.changes ?? 0) > 0) {
-      const reason: ReclaimedSlot['reason'] =
-        occupant.state === null
-          ? 'orphaned'
-          : TERMINAL_STATES.includes(occupant.state)
-            ? 'terminal_state'
-            : 'idle_ttl_exceeded';
-      reclaimed.push({
-        slot: occupant.slot,
-        workspaceId: occupant.workspaceId,
-        claimedAt: occupant.claimedAt,
-        reason
-      });
-      console.log('forge_slot_reclaimed', {
-        slot: occupant.slot,
-        workspaceId: occupant.workspaceId,
-        reason,
-        idleMinutes: occupant.idleMinutes,
-        state: occupant.state
-      });
-    }
+    if (!removed.has(occupant.workspaceId)) continue;
+    const reason: ReclaimedSlot['reason'] =
+      occupant.state === null
+        ? 'orphaned'
+        : TERMINAL_STATES.includes(occupant.state)
+          ? 'terminal_state'
+          : 'idle_ttl_exceeded';
+    reclaimed.push({ slot: occupant.slot, workspaceId: occupant.workspaceId, claimedAt: occupant.claimedAt, reason });
+    console.log('forge_slot_reclaimed', {
+      slot: occupant.slot,
+      workspaceId: occupant.workspaceId,
+      reason,
+      idleMinutes: occupant.idleMinutes,
+      state: occupant.state
+    });
   }
   return reclaimed;
 }
 
 export async function reserveWorkspaceSlot(database: D1Database, workspaceId: string): Promise<number> {
-  await database.prepare(
+  // RETURNING collapses the claim into a single round trip on the common path:
+  // a freshly inserted row hands back its slot immediately. A null result means
+  // either both slots are taken or this workspace already holds one (idempotent
+  // replay), which the follow-up SELECT disambiguates.
+  const inserted = await database.prepare(
     `INSERT INTO workspace_slots (slot, workspace_id, claimed_at)
        SELECT candidate.slot, ?1, ?2
          FROM (SELECT 1 AS slot UNION ALL SELECT 2 AS slot) AS candidate
         WHERE NOT EXISTS (SELECT 1 FROM workspace_slots AS claimed WHERE claimed.slot = candidate.slot)
         ORDER BY candidate.slot
         LIMIT 1
-       ON CONFLICT(workspace_id) DO NOTHING`
-  ).bind(workspaceId, new Date().toISOString()).run();
+       ON CONFLICT(workspace_id) DO NOTHING
+       RETURNING slot`
+  ).bind(workspaceId, new Date().toISOString()).first<{ slot: number }>();
+  if (inserted) {
+    console.log('forge_slot_reserved', { slot: inserted.slot, workspaceId });
+    return inserted.slot;
+  }
   const reservation = await database.prepare(
     'SELECT slot FROM workspace_slots WHERE workspace_id = ?1'
   ).bind(workspaceId).first<{ slot: number }>();

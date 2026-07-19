@@ -1,5 +1,7 @@
 import { getSandbox, Sandbox, ContainerProxy } from '@cloudflare/sandbox';
-import { ForgeError } from '@forge/core';
+import { ForgeError, type WorkspaceId } from '@forge/core';
+import { workflowInstanceId } from '@forge/workflows-cloudflare';
+import { reclaimStaleSlots, slotTtlMs } from './capacity';
 import { verifyCapability } from '@forge/capabilities';
 import openapi from '../../../openapi/forge.openapi.json';
 import { ForgeMcpSession } from './mcp-session';
@@ -282,7 +284,42 @@ async function preview(request: Request, env: Env, url: URL): Promise<Response> 
   });
 }
 
+// Scheduled global reaper: recovers capacity even when nobody is calling
+// forge_workspace_create (the lazy reaper only fires on that path). Frees stale
+// slots and tears their workspaces down. Best-effort per workspace.
+async function reapAbandonedSlots(env: Env): Promise<void> {
+  let reclaimed;
+  try {
+    reclaimed = await reclaimStaleSlots(env.METADATA, slotTtlMs(env));
+  } catch (error) {
+    console.warn('forge_slot_scheduled_reclaim_failed', {
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+    });
+    return;
+  }
+  for (const slot of reclaimed) {
+    const workspaceId = slot.workspaceId as WorkspaceId;
+    try {
+      const destroyId = workflowInstanceId('destroy', workspaceId);
+      const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
+      await stub.requestDestroy({ idempotencyKey: `reap-${destroyId}` });
+      await env.DESTROY_WORKFLOW.create({
+        id: destroyId,
+        params: { workspaceId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true }
+      });
+    } catch (error) {
+      console.warn('forge_slot_scheduled_teardown_failed', {
+        workspaceId: slot.workspaceId,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+      });
+    }
+  }
+}
+
 export default {
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(reapAbandonedSlots(env));
+  },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
