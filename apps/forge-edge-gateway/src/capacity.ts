@@ -17,6 +17,13 @@ const DEFAULT_SLOT_TTL_MINUTES = 240;
 const DEFAULT_GLOBAL_CAP = 8;
 const DEFAULT_PER_TENANT_CAP = 8;
 const TERMINAL_STATES = ['suspended', 'failed', 'destroying', 'destroyed'];
+// Non-terminal provisioning states. A workspace should march through these in
+// well under a minute; sitting in one for longer than STUCK_PROVISION_MS means
+// the provision workflow died mid-run (timed out / evicted before its JS catch)
+// and the slot is leaking. Such a slot is reclaimable on the short bound below
+// instead of the generous idle TTL, and the scheduled watchdog force-fails it.
+const PROVISIONING_STATES = ['requested', 'provisioning', 'bootstrapping'];
+export const STUCK_PROVISION_MS = 15 * 60_000;
 
 export interface WorkspaceCaps {
   global: number;
@@ -33,6 +40,10 @@ export interface SlotOccupant {
   ageMinutes: number;
   idleMinutes: number | null;
   stale: boolean;
+  // True when the workspace is wedged in a non-terminal provisioning state past
+  // STUCK_PROVISION_MS. The watchdog reaps these via markProvisioningExhausted
+  // (force `failed`) rather than the normal destroy-workflow teardown.
+  stuckProvisioning: boolean;
 }
 
 export interface ReclaimedSlot {
@@ -40,7 +51,7 @@ export interface ReclaimedSlot {
   tenantId: string;
   workspaceId: string;
   claimedAt: string;
-  reason: 'orphaned' | 'terminal_state' | 'idle_ttl_exceeded';
+  reason: 'orphaned' | 'terminal_state' | 'idle_ttl_exceeded' | 'stuck_provisioning';
 }
 
 function positiveInt(value: string | undefined, fallback: number): number {
@@ -98,12 +109,21 @@ export async function listSlotOccupants(
     const idle = ageMinutes(lastActive, now);
     const terminal = row.state === null || (row.state !== null && TERMINAL_STATES.includes(row.state));
     const idleExpired = idle !== null && idle >= ttlMinutes;
+    // A workspace wedged in a provisioning state (the workflow died before it
+    // could fail cleanly) leaks its slot; reclaim it on the short STUCK bound
+    // instead of the 240-min idle TTL so capacity recovers in minutes. `ready`
+    // and other live states keep the generous idle TTL below.
+    const stuckProvisioning =
+      row.state !== null &&
+      PROVISIONING_STATES.includes(row.state) &&
+      idle !== null &&
+      idle >= STUCK_PROVISION_MS / 60_000;
     // A workspace with unpushed work is never idle-reaped while `protectUnpushed`
     // holds (pushes need human approval and humans sleep longer than the TTL);
     // with snapshots on, the caller drops that protection because the reaper
     // saves the work to R2 first. Orphaned/terminal are always reclaimed.
     const dirtyProtected = protectUnpushed && row.has_unpushed_work === 1;
-    const stale = terminal || (idleExpired && !dirtyProtected);
+    const stale = terminal || stuckProvisioning || (idleExpired && !dirtyProtected);
     return {
       slot: row.slot,
       tenantId: row.tenant_id,
@@ -113,7 +133,8 @@ export async function listSlotOccupants(
       lastActiveAt: row.updated_at,
       ageMinutes: ageMinutes(row.claimed_at, now) ?? 0,
       idleMinutes: idle,
-      stale
+      stale,
+      stuckProvisioning
     };
   });
 }
@@ -145,7 +166,9 @@ export async function reclaimStaleSlots(
         ? 'orphaned'
         : TERMINAL_STATES.includes(occupant.state)
           ? 'terminal_state'
-          : 'idle_ttl_exceeded';
+          : occupant.stuckProvisioning
+            ? 'stuck_provisioning'
+            : 'idle_ttl_exceeded';
     reclaimed.push({ slot: occupant.slot, tenantId: occupant.tenantId, workspaceId: occupant.workspaceId, claimedAt: occupant.claimedAt, reason });
     console.log('forge_slot_reclaimed', {
       slot: occupant.slot,

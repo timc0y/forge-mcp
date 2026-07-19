@@ -191,6 +191,31 @@ describe('workspace slot capacity (per-tenant)', () => {
     expect(await reserveWorkspaceSlot(db, 'ten_a', 'wsp_new', { global: 8, perTenant: 8 })).toBe(2);
   });
 
+  it('reclaims a workspace wedged in provisioning past the short stuck bound but spares a fresh one', async () => {
+    const db = fakeD1(
+      [
+        { slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_wedged', claimed_at: minutesAgo(20) },
+        { slot: 2, tenant_id: 'ten_a', workspace_id: 'wsp_fresh', claimed_at: minutesAgo(2) },
+        { slot: 3, tenant_id: 'ten_a', workspace_id: 'wsp_boot', claimed_at: minutesAgo(30) }
+      ],
+      {
+        // Stuck in provisioning for 20 min → reclaimable on the 15-min stuck bound
+        // even though it is far short of the 240-min idle TTL.
+        wsp_wedged: { state: 'provisioning', updated_at: minutesAgo(20) },
+        // Only 2 min in provisioning → still healthy, keep it.
+        wsp_fresh: { state: 'provisioning', updated_at: minutesAgo(2) },
+        // Wedged in bootstrapping counts too.
+        wsp_boot: { state: 'bootstrapping', updated_at: minutesAgo(30) }
+      }
+    );
+    const occupants = await listSlotOccupants(db, slotTtlMs({}), NOW);
+    expect(occupants.filter((o) => o.stuckProvisioning).map((o) => o.workspaceId).sort()).toEqual(['wsp_boot', 'wsp_wedged']);
+    const reclaimed = await reclaimStaleSlots(db, slotTtlMs({}), NOW);
+    expect(reclaimed.map((r) => r.workspaceId).sort()).toEqual(['wsp_boot', 'wsp_wedged']);
+    expect(reclaimed.every((r) => r.reason === 'stuck_provisioning')).toBe(true);
+    expect(db.slots.map((s) => s.workspace_id)).toEqual(['wsp_fresh']);
+  });
+
   it('protects an idle workspace with unpushed work from idle-reaping by default', async () => {
     const db = fakeD1(
       [{ slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_dirty', claimed_at: minutesAgo(600) }],
