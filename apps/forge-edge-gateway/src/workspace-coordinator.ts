@@ -24,6 +24,12 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   private readonly app: ForgeApplicationService;
   private readonly metadata: D1MetadataStore;
   private mutationTail: Promise<void> = Promise.resolve();
+  // The D1 row is a read-model for the capacity reaper and dashboard only. DO
+  // storage is the source of truth, so D1 need not be rewritten on every
+  // mutation — only when a field those readers use changes, or after a debounce
+  // window so `updated_at` stays fresh within the minute-scale slot TTL.
+  private lastD1: { signature: string; atMs: number } | null = null;
+  private static readonly D1_DEBOUNCE_MS = 60_000;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -70,10 +76,21 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   private async save(record: WorkspaceRuntimeRecord): Promise<void> {
-    await Promise.all([
-      this.ctx.storage.put(RECORD_KEY, record),
-      this.metadata.putWorkspace(record.workspace)
-    ]);
+    const workspace = record.workspace;
+    // Fields the reaper/dashboard actually read. A change to any of these — or a
+    // stale debounce window — forces the D1 write; otherwise it is skipped.
+    const signature = `${workspace.state}|${workspace.currentCommit ?? ''}|${workspace.currentBranch ?? ''}`;
+    const now = Date.now();
+    const writeD1 =
+      this.lastD1 === null ||
+      this.lastD1.signature !== signature ||
+      now - this.lastD1.atMs >= WorkspaceCoordinator.D1_DEBOUNCE_MS;
+    const work: Array<Promise<unknown>> = [this.ctx.storage.put(RECORD_KEY, record)];
+    if (writeD1) {
+      work.push(this.metadata.putWorkspace(workspace));
+      this.lastD1 = { signature, atMs: now };
+    }
+    await Promise.all(work);
   }
 
   async acquireLease(input: {

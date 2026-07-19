@@ -23,6 +23,22 @@ function fakeD1(slots: SlotRow[], workspaces: Record<string, WorkspaceRow>) {
     slots,
     prepare(sql: string) {
       let values: unknown[] = [];
+      // Claim the lowest free slot, mirroring the real INSERT … SELECT … LIMIT 1.
+      const claim = (): number | null => {
+        const used = new Set(slots.map((slot) => slot.slot));
+        const free = [1, 2].find((slot) => !used.has(slot));
+        if (free === undefined || slots.some((slot) => slot.workspace_id === values[0])) return null;
+        slots.push({ slot: free, workspace_id: String(values[0]), claimed_at: String(values[1]) });
+        return free;
+      };
+      const deleteIn = (): string[] => {
+        const targets = new Set(values.map(String));
+        const removed = slots.filter((slot) => targets.has(slot.workspace_id)).map((slot) => slot.workspace_id);
+        const remaining = slots.filter((slot) => !targets.has(slot.workspace_id));
+        slots.length = 0;
+        slots.push(...remaining);
+        return removed;
+      };
       return {
         bind(...input: unknown[]) {
           values = input;
@@ -44,9 +60,16 @@ function fakeD1(slots: SlotRow[], workspaces: Record<string, WorkspaceRow>) {
               });
             return { results: rows as T[] };
           }
+          if (sql.startsWith('DELETE FROM workspace_slots') && sql.includes('RETURNING')) {
+            return { results: deleteIn().map((workspace_id) => ({ workspace_id })) as T[] };
+          }
           return { results: [] as T[] };
         },
         async first<T>() {
+          if (sql.includes('INSERT INTO workspace_slots')) {
+            const slot = claim();
+            return (slot === null ? null : { slot }) as T | null;
+          }
           if (sql.includes('SELECT slot FROM workspace_slots')) {
             const found = slots.find((slot) => slot.workspace_id === values[0]);
             return (found ? { slot: found.slot } : null) as T | null;
@@ -60,14 +83,6 @@ function fakeD1(slots: SlotRow[], workspaces: Record<string, WorkspaceRow>) {
             slots.length = 0;
             slots.push(...remaining);
             return { meta: { changes: before - slots.length } };
-          }
-          if (sql.includes('INSERT INTO workspace_slots')) {
-            const used = new Set(slots.map((slot) => slot.slot));
-            const free = [1, 2].find((slot) => !used.has(slot));
-            if (free !== undefined && !slots.some((slot) => slot.workspace_id === values[0])) {
-              slots.push({ slot: free, workspace_id: String(values[0]), claimed_at: String(values[1]) });
-            }
-            return { meta: { changes: 1 } };
           }
           return { meta: { changes: 0 } };
         }
