@@ -66,10 +66,43 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     try {
       await this.app.assertCheckoutPresent(record);
     } catch (error) {
+      // Self-heal: an idle recycle can drop /workspace/repo. Try to bring the
+      // checkout back (snapshot restore, then a fresh clone) before surfacing the
+      // failure. Only propagate when recovery also fails.
+      if (await this.recoverCheckout(record)) {
+        await this.save(record);
+        return record;
+      }
       await this.save(record);
       throw error;
     }
     return record;
+  }
+
+  // Attempt in-place recovery of a missing repository checkout. assertCheckoutPresent
+  // has already flipped the record to `failed`; we optimistically restore `ready`
+  // so the handle-gated restore path can run, and revert on total failure.
+  private async recoverCheckout(record: WorkspaceRuntimeRecord): Promise<boolean> {
+    record.workspace.state = 'ready';
+    // 1. Best-effort snapshot restore of the whole /workspace tar.
+    try {
+      const snap = await this.restoreFromR2();
+      if (snap.restored) {
+        await this.app.assertCheckoutPresent(record);
+        record.workspace.failure = undefined;
+        return true;
+      }
+    } catch {
+      // fall through to a fresh clone
+    }
+    // 2. Fresh clone into /workspace/repo.
+    try {
+      const cloneSource = await repositoryCloneSource(this.env, record.workspace);
+      await this.app.recoverCheckout(record, cloneSource);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async save(record: WorkspaceRuntimeRecord): Promise<void> {
@@ -148,13 +181,20 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           revision: record.workspace.revision
         };
       }
+      // If a prior snapshot exists, let provisioning restore it and skip the slow
+      // clone+install. Best-effort — a failed restore falls back to full bootstrap.
+      const priorSnapshot = await getSnapshot(this.env.METADATA, record.workspace.id).catch(() => null);
+      const restore = priorSnapshot
+        ? () => this.restoreFromR2().then((r) => r.restored).catch(() => false)
+        : undefined;
       try {
         const cloneSource = await repositoryCloneSource(this.env, record.workspace);
         await this.app.provisionWorkspace(
           record,
           input.bootstrap,
           (next) => this.save(next),
-          cloneSource
+          cloneSource,
+          restore
         );
       } catch (error) {
         await this.save(record);
@@ -173,6 +213,12 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           code: forgeError.code,
           message: forgeError.message
         };
+      }
+      // After a full bootstrap (no snapshot to restore from) capture one now so a
+      // mid-life eviction — not just a graceful reap — comes back warm. Fire-and-
+      // forget: never let snapshotting delay or fail readiness.
+      if (!priorSnapshot) {
+        this.ctx.waitUntil(this.snapshotToR2().catch(() => undefined));
       }
       return {
         ok: true,
