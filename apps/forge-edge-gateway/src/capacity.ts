@@ -15,7 +15,12 @@ import { ForgeError } from '@forge/core';
 // governs when the workspace is destroyed and its slot freed.
 const DEFAULT_SLOT_TTL_MINUTES = 240;
 const DEFAULT_GLOBAL_CAP = 8;
-const DEFAULT_PER_TENANT_CAP = 8;
+// Keep the per-tenant default strictly below the global cap so the fairness
+// promise above actually holds by default: a single busy tenant can claim at
+// most this many of the global slots, leaving room for others. Raise it per
+// deployment via FORGE_MAX_WORKSPACES_PER_TENANT; it is always clamped to the
+// global cap in workspaceCaps(). ~3/8 of the pool per tenant.
+const DEFAULT_PER_TENANT_CAP = 3;
 const TERMINAL_STATES = ['suspended', 'failed', 'destroying', 'destroyed'];
 // Non-terminal provisioning states. A workspace should march through these in
 // well under a minute; sitting in one for longer than STUCK_PROVISION_MS means

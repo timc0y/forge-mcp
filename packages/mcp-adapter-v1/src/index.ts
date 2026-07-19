@@ -1,7 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { forgeTools, type ForgeToolHandlers, type ForgeToolResponse } from '@forge/mcp-core';
 import { toForgeError } from '@forge/core';
-import type { ZodRawShape } from 'zod';
 
 const FORGE_CONSOLE_URI = 'ui://forge/workspace-console';
 
@@ -70,12 +69,6 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' }
 };
 
-// Optional output schema plumbing. ForgeToolDefinition does not yet carry an
-// output schema, so this reads a best-effort optional field. When
-// @forge/mcp-core adds `outputSchema?: ZodRawShape` to definitions it flows
-// through here automatically (see report).
-type WithOutputSchema = { outputSchema?: ZodRawShape };
-
 export function toolAnnotations(name: string, sideEffect: 'none' | 'workspace' | 'external' | 'destructive') {
   const readOnly = TRUE_READS.has(name);
   return {
@@ -117,14 +110,12 @@ function summarize(name: string, value: Record<string, unknown>): string {
 export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandlers): void {
   for (const definition of forgeTools) {
     const status = TOOL_INVOCATION_STATUS[definition.name];
-    const outputSchema = (definition as WithOutputSchema).outputSchema;
     server.registerTool(
       definition.name,
       {
         title: definition.title,
         description: definition.description,
         inputSchema: definition.inputSchema,
-        ...(outputSchema ? { outputSchema } : {}),
         annotations: toolAnnotations(definition.name, definition.sideEffect),
         _meta: {
           ...(showsWidget(definition.name)

@@ -200,12 +200,26 @@ const PROVIDER_CREATE_TIMEOUT_MS = 120_000;
 
 // Race a promise against a timeout that rejects with a retryable ForgeError. The
 // underlying promise keeps running (the SandboxProvider contract has no
-// cancellation), but the provision step fails fast instead of hanging.
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, phase: string): Promise<T> {
+// cancellation), but the provision step fails fast instead of hanging. When the
+// timeout fires, `onTimeout` runs so the caller can best-effort reclaim any
+// resource the still-running promise may leak (e.g. an orphaned container).
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  phase: string,
+  onTimeout?: () => void
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () =>
+      () => {
+        if (onTimeout) {
+          try {
+            onTimeout();
+          } catch {
+            // Cleanup is best-effort and must never mask the timeout rejection.
+          }
+        }
         reject(
           new ForgeError({
             code: 'FORGE_PROVIDER_UNAVAILABLE',
@@ -213,7 +227,8 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, phase: string): 
             retryable: true,
             details: { stage: 'provision', phase, timeoutMs }
           })
-        ),
+        );
+      },
       timeoutMs
     );
   });
@@ -485,19 +500,45 @@ export class ForgeApplicationService {
       // place. Transparent to the caller — Forge chooses.
       const provider = await this.router.selectForCreate();
       record.workspace.provider = { kind: provider.kind, version: provider.version };
+      // container_create is deterministically keyed on record.providerId, so a
+      // create that times out (the underlying promise keeps running, since the
+      // SandboxProvider contract has no cancellation) can still finish and leave a
+      // live container at that exact id — orphaned, because provisioning aborts
+      // before anything records success. When the timeout fires we best-effort
+      // destroy(record.providerId): destroy is idempotent and no-ops on an id that
+      // never materialized, and the deterministic id also lets the reaper reclaim
+      // it later if this destroy is itself lost. See withTimeout's onTimeout hook.
+      const createPromise = provider.create({
+        providerId: record.providerId,
+        runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
+        labels: {
+          workspaceId: record.workspace.id,
+          tenantId: record.workspace.tenantId,
+          repository: repositorySlug(record.workspace.repository)
+        },
+        idleTimeout: '90s'
+      });
       const handle = await withTimeout(
-        provider.create({
-          providerId: record.providerId,
-          runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
-          labels: {
-            workspaceId: record.workspace.id,
-            tenantId: record.workspace.tenantId,
-            repository: repositorySlug(record.workspace.repository)
-          },
-          idleTimeout: '90s'
-        }),
+        createPromise,
         PROVIDER_CREATE_TIMEOUT_MS,
-        'container_create'
+        'container_create',
+        () => {
+          console.warn('forge_provision_create_timeout_orphan', {
+            workspaceId: record.workspace.id,
+            providerId: record.providerId,
+            provider: provider.kind
+          });
+          // Attach cleanup to the still-running create so we destroy whatever it
+          // eventually produces; also fire an immediate destroy in case the
+          // container is already up. Both are best-effort and must never throw.
+          createPromise
+            .then(
+              () => provider.destroy(record.providerId).catch(() => undefined),
+              () => undefined
+            )
+            .catch(() => undefined);
+          provider.destroy(record.providerId).catch(() => undefined);
+        }
       );
 
       const source = cloneSource ?? this.defaultCloneSource(record);
@@ -1121,7 +1162,8 @@ export class ForgeApplicationService {
     const handle = await this.handle(record);
     // Fuse stage + commit + rev-parse into a single container round-trip. The
     // `&&` chain preserves ordering and short-circuits, so a failed stage still
-    // surfaces before the commit runs. HEAD is the last line of stdout.
+    // surfaces before the commit runs. rev-parse is last in the chain, so the
+    // real SHA is the final bare object-name line of stdout.
     const commit = await handle.exec({
       command: `sh -c ${quoted(
         `git add -- ${paths.map(quoted).join(' ')} && git commit -m ${quoted(input.message.trim())} && git rev-parse HEAD`
@@ -1136,7 +1178,25 @@ export class ForgeApplicationService {
       }
     });
     if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
-    record.workspace.currentCommit = commit.stdout.trim().split('\n').pop()?.trim() ?? '';
+    // Parse HEAD defensively instead of blindly taking the last stdout line: a
+    // commit-msg / post-commit hook that echoes to stdout runs DURING `git commit`
+    // (before rev-parse), so the genuine object name is the LAST line that is a
+    // bare 40-hex (or 64-hex, sha256 repos) object name. Require a clean match or
+    // fail loudly — never persist a hook-poisoned currentCommit.
+    const head = commit.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(line))
+      .pop();
+    if (!head) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_DIRTY',
+        message: 'Forge created the commit but could not resolve a valid HEAD SHA.',
+        retryable: false,
+        details: { stderr: commit.stderr.slice(0, 2_000) }
+      });
+    }
+    record.workspace.currentCommit = head;
     record.workspace.hasUnpushedWork = true;
     return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }

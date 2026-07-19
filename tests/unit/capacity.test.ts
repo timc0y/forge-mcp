@@ -108,8 +108,11 @@ const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
 
 describe('workspace slot capacity (per-tenant)', () => {
   it('defaults caps to 8 and clamps per-tenant to the global cap', () => {
-    expect(workspaceCaps({})).toEqual({ global: 8, perTenant: 8 });
-    expect(workspaceCaps({ FORGE_MAX_WORKSPACES: '4' })).toEqual({ global: 4, perTenant: 4 });
+    // Per-tenant default (3) is strictly below the global cap (8) so one tenant
+    // cannot claim the whole pool by default.
+    expect(workspaceCaps({})).toEqual({ global: 8, perTenant: 3 });
+    // Clamped to the global cap when the global cap is below the per-tenant default.
+    expect(workspaceCaps({ FORGE_MAX_WORKSPACES: '2' })).toEqual({ global: 2, perTenant: 2 });
     expect(workspaceCaps({ FORGE_MAX_WORKSPACES: '10', FORGE_MAX_WORKSPACES_PER_TENANT: '3' })).toEqual({ global: 10, perTenant: 3 });
     expect(slotTtlMs({})).toBe(240 * 60_000);
     expect(slotTtlMs({ FORGE_SLOT_TTL_MINUTES: "30" })).toBe(30 * 60_000);

@@ -19,6 +19,9 @@
     "check": "pnpm boundaries:check && pnpm typecheck && pnpm test && pnpm schemas:check",
     "schemas:generate": "tsx scripts/generate-schemas.ts",
     "schemas:check": "tsx scripts/generate-schemas.ts --check",
+    "migrations:check": "tsx scripts/check-migrations.ts",
+    "db:migrate:prod": "pnpm --filter @forge/edge-gateway exec wrangler d1 migrations apply forge-production --remote --config ../../infra/wrangler/forge.jsonc",
+    "predeploy": "pnpm db:migrate:prod",
     "deploy": "pnpm --filter @forge/edge-gateway deploy",
     "cf:typegen": "pnpm --filter @forge/edge-gateway cf:typegen",
     "boundaries:check": "tsx scripts/check-boundaries.ts"

@@ -24,6 +24,10 @@ export interface Env {
   FORGE_DEV_AUTH_TOKEN?: string;
   FORGE_OWNER_AUTH_TOKEN?: string;
   FORGE_CAPABILITY_SIGNING_KEY: string;
+  // Distinct secret for OAuth session (access/refresh) JWTs. When unset, signing
+  // and verification fall back to FORGE_CAPABILITY_SIGNING_KEY. Set it via
+  // `wrangler secret put FORGE_SESSION_SIGNING_KEY` to split the two key roles.
+  FORGE_SESSION_SIGNING_KEY?: string;
   FORGE_INTERNAL_PREVIEW_KEY: string;
   FORGE_DEFAULT_TENANT_ID: string;
   FORGE_DEFAULT_PROJECT_ID: string;
