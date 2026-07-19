@@ -592,6 +592,43 @@ export async function completeApproval(env: Env, approvalId: string, succeeded: 
     .bind(succeeded ? 'consumed' : 'failed', approvalId).run();
 }
 
+// Render a unified diff as color-coded, escaped HTML lines. Bounded so a huge
+// diff can't blow up the page; the diffHash (not this) is the integrity check.
+function renderDiffHtml(diff: string): string {
+  const MAX_LINES = 4000;
+  const lines = diff.split('\n');
+  const shown = lines.slice(0, MAX_LINES);
+  const rows = shown
+    .map((line) => {
+      const cls = line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---')
+        ? 'df-meta'
+        : line.startsWith('@@')
+          ? 'df-hunk'
+          : line.startsWith('+')
+            ? 'df-add'
+            : line.startsWith('-')
+              ? 'df-del'
+              : 'df-ctx';
+      return `<span class="${cls}">${escapeHtml(line) || ' '}</span>`;
+    })
+    .join('\n');
+  const trailer = lines.length > MAX_LINES ? `\n<span class="df-meta">… ${lines.length - MAX_LINES} more lines truncated</span>` : '';
+  return rows + trailer;
+}
+
+// Cheap +adds / -dels / files summary for the approval header.
+function diffStats(diff: string): { files: number; added: number; removed: number } {
+  let files = 0;
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git')) files += 1;
+    else if (line.startsWith('+') && !line.startsWith('+++')) added += 1;
+    else if (line.startsWith('-') && !line.startsWith('---')) removed += 1;
+  }
+  return { files, added, removed };
+}
+
 export async function approvalPage(request: Request, env: Env, approvalId: string): Promise<Response> {
   const user = await getWebSession(request, env);
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
@@ -610,9 +647,27 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}`, 303);
   }
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
+  // Pull out the display-only diff/body; show the rest as a small key/value
+  // list so the human approves what they can actually read, not a raw hash blob.
+  const { diff, body, ...meta } = payload as { diff?: string; body?: string; [key: string]: unknown };
+  const metaRows = Object.entries(meta)
+    .filter(([, value]) => value !== '' && value !== undefined && value !== null)
+    .map(([key, value]) => `<div class="kv"><span>${escapeHtml(key)}</span><code>${escapeHtml(String(value))}</code></div>`)
+    .join('');
+  const hasDiff = typeof diff === 'string' && diff.trim() !== '';
+  const stats = hasDiff ? diffStats(diff) : null;
+  const statsLine = stats
+    ? `<p class="stats"><b>${stats.files}</b> file${stats.files === 1 ? '' : 's'} · <span class="s-add">+${stats.added}</span> <span class="s-del">−${stats.removed}</span></p>`
+    : '';
+  const bodyBlock = typeof body === 'string' && body.trim() !== '' ? `<pre class="body">${escapeHtml(body)}</pre>` : '';
+  const contentBlock = hasDiff
+    ? `<pre class="diff">${renderDiffHtml(diff)}</pre>`
+    : metaRows === ''
+      ? `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
+      : '';
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge approval</title><style>:root{--bg:#f2f4f1;--surface:#fff;--ink:#151a16;--muted:#5c665f;--line:#cfd5d0;--accent:#23784b}*{box-sizing:border-box}body{width:min(100% - 2.5rem,38rem);margin:0 auto;padding:clamp(3rem,10vw,6rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}h1{margin:0 0 1rem;font-size:clamp(2.2rem,8vw,3.4rem);line-height:1;letter-spacing:-.035em}p{color:var(--muted);overflow-wrap:anywhere}pre{max-width:100%;max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font-size:.84rem}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.25rem}button{min-height:46px;padding:.7rem 1rem;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer}.approve{background:var(--ink);color:#fff;border-color:var(--ink)}button:hover{border-color:var(--accent)}.approve:hover{background:var(--accent);border-color:var(--accent)}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
-<h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+<title>Forge approval</title><style>:root{--bg:#f2f4f1;--surface:#fff;--ink:#151a16;--muted:#5c665f;--line:#cfd5d0;--accent:#23784b;--add:#e5f4ea;--add-ink:#0f6b39;--del:#fdecec;--del-ink:#b0201a;--hunk:#eef2f7;--hunk-ink:#3757a6}*{box-sizing:border-box}body{width:min(100% - 2.5rem,60rem);margin:0 auto;padding:clamp(2.5rem,8vw,5rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}h1{margin:0 0 1rem;font-size:clamp(1.9rem,6vw,2.8rem);line-height:1.02;letter-spacing:-.03em}p{color:var(--muted);overflow-wrap:anywhere}.stats{color:var(--ink);font-weight:600}.s-add{color:var(--add-ink)}.s-del{color:var(--del-ink)}.kv{display:flex;gap:.75rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)}.kv span{flex:0 0 6.5rem;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.kv code{overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre.body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem}pre.diff{max-height:32rem;padding:.5rem 0}pre.diff span{display:block;padding:0 1rem;white-space:pre;overflow-wrap:normal}.df-add{background:var(--add);color:var(--add-ink)}.df-del{background:var(--del);color:var(--del-ink)}.df-hunk{background:var(--hunk);color:var(--hunk-ink);font-weight:600}.df-meta{color:var(--muted)}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:1rem}button{min-height:46px;padding:.7rem 1.2rem;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer}.approve{background:var(--ink);color:#fff;border-color:var(--ink)}button:hover{border-color:var(--accent)}.approve:hover{background:var(--accent);border-color:var(--accent)}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
+<h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p>${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
 ${row.state === 'pending' ? `<form method="post"><button class="approve" name="decision" value="approved">Approve once</button><button name="decision" value="denied">Deny</button></form>` : ''}`,
   { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }

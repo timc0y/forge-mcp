@@ -644,7 +644,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const diffHash = text(input.expected_diff_hash);
         const approvalId = input.approval_id ? text(input.approval_id) : undefined;
         if (!approvalId) {
-          const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash });
+          // Attach the actual outgoing diff so the human approves what they can
+          // see, not an opaque hash. Best-effort — `diff` is display-only; the
+          // diffHash remains the integrity check enforced by requireApproval.
+          const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
+            .gitOutgoingDiff({ base }).catch(() => undefined);
+          const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash, diff: outgoing?.diff ?? '' });
           throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact push, then retry with approval_id.', retryable: false, details: approval });
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'git.push', { branch, base, diffHash });
@@ -668,7 +673,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const body = text(input.body);
         const approvalId = input.approval_id ? text(input.approval_id) : undefined;
         if (!approvalId) {
-          const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body });
+          // Show the branch's diff on the approval page so the PR is reviewed on
+          // its contents, not just a title. Display-only, best-effort.
+          const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
+            .gitOutgoingDiff({ base }).catch(() => undefined);
+          const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body, diff: outgoing?.diff ?? '' });
           throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this draft PR, then retry with approval_id.', retryable: false, details: approval });
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title, body });
