@@ -37,6 +37,11 @@ export interface Env {
   // Persist a workspace's /workspace to R2 before the idle reaper destroys it,
   // and restore it on next use (snapshot_on_idle). Optional; off unless 'true'.
   FORGE_SNAPSHOT_ENABLED?: string;
+  // Operator policy: auto-approve in-workspace shell commands that would
+  // otherwise need a human click (dependency installs and other gated shell).
+  // GitHub writes (git push / PR create) stay gated regardless. Optional; the
+  // gate stays on unless this is 'true'/'1'.
+  FORGE_AUTO_APPROVE_SHELL?: string;
   // Self-hosted compute route (e.g. a Mac mini running the Forge Node Agent).
   // When enabled and healthy, new workspaces run there; otherwise Forge falls
   // back to Cloudflare containers. All optional — unset means Cloudflare only.

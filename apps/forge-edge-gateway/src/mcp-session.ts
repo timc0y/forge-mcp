@@ -38,6 +38,14 @@ interface SessionProps extends Record<string, unknown> {
   clientId: string;
 }
 
+// Operator policy: when on, in-workspace shell commands that would otherwise
+// need a human click (dependency installs and other gated shell) run without an
+// approval round trip. GitHub writes (git push / PR create) are gated on their
+// own path and are intentionally NOT covered here.
+function autoApproveShell(env: Pick<Env, 'FORGE_AUTO_APPROVE_SHELL'>): boolean {
+  return env.FORGE_AUTO_APPROVE_SHELL === 'true' || env.FORGE_AUTO_APPROVE_SHELL === '1';
+}
+
 // Roll the per-cell heading-defect signal up to the packet level so a review
 // verdict cannot be reached without confronting it: a clean-looking screenshot
 // no longer buys silence over structurally broken content.
@@ -553,12 +561,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const approvalPayload = { command, cwd, networkPolicy, environmentHash };
         let claimedApproval = false;
         if (decision.allowed && decision.approvalRequired) {
-          if (!approvalId) {
+          if (autoApproveShell(env)) {
+            // Operator policy auto-approves gated shell (installs etc.). No token
+            // dance; GitHub writes are gated on their own path and unaffected.
+            claimedApproval = true;
+          } else if (!approvalId) {
             const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} command`, approvalPayload);
             throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact command, then retry with approval_id.', retryable: false, details: approval });
+          } else {
+            await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
+            claimedApproval = true;
           }
-          await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
-          claimedApproval = true;
         }
         try {
           const result = await workspace.shellExec({
