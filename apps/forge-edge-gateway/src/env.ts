@@ -31,6 +31,9 @@ export interface Env {
   // single account. Optional; default 8 each.
   FORGE_MAX_WORKSPACES?: string;
   FORGE_MAX_WORKSPACES_PER_TENANT?: string;
+  // How long an approval (push / PR / gated shell) stays valid. Optional; default
+  // 60 minutes — long enough to survive an install+build before using it.
+  FORGE_APPROVAL_TTL_MINUTES?: string;
   // Self-hosted compute route (e.g. a Mac mini running the Forge Node Agent).
   // When enabled and healthy, new workspaces run there; otherwise Forge falls
   // back to Cloudflare containers. All optional — unset means Cloudflare only.

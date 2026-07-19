@@ -267,6 +267,18 @@ export class ForgeApplicationService {
         });
       }
 
+      // Make pnpm available up front. The base image only enables corepack,
+      // which otherwise lazily downloads pnpm mid-build (the friction of a cold
+      // sandbox). Best-effort — never fail provisioning over it.
+      await handle.exec({
+        command: 'corepack prepare pnpm@9 --activate',
+        cwd: '/workspace',
+        timeoutMs: 60_000,
+        outputLimitBytes: 20_000,
+        sessionId: 'system',
+        networkPolicy: 'package_install'
+      }).catch(() => undefined);
+
       record.workspace.state = 'bootstrapping';
       record.workspace.revision = nextRevision(record.workspace.revision);
       record.workspace.updatedAt = new Date().toISOString();

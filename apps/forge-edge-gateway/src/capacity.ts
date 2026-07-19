@@ -8,7 +8,12 @@ import { ForgeError } from '@forge/core';
 // stops compute, never frees the slot, so the lazy + scheduled reaper reclaims
 // slots whose workspace is gone, terminal, or idle past a TTL.
 
-const DEFAULT_SLOT_TTL_MINUTES = 30;
+// Idle workspaces are reclaimed after this long. Generous by default so an
+// in-progress harness (installed deps, built artifacts, a running dev server)
+// is not torn down between bursts of activity. Cost-neutral: the container
+// already sleeps at 90s idle, so a held-but-idle slot bills ~nothing — this only
+// governs when the workspace is destroyed and its slot freed.
+const DEFAULT_SLOT_TTL_MINUTES = 240;
 const DEFAULT_GLOBAL_CAP = 8;
 const DEFAULT_PER_TENANT_CAP = 8;
 const TERMINAL_STATES = ['suspended', 'failed', 'destroying', 'destroyed'];
