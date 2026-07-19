@@ -646,7 +646,7 @@
     },
     "forge_git_commit": {
       "title": "Commit workspace changes",
-      "description": "Stage selected repository paths and create a commit attributed to forge-mcp[bot].",
+      "description": "Stage selected repository paths and create a commit attributed to forge-mcp[bot]. Omit message to auto-generate a conventional-commit message from the diff.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -683,7 +683,6 @@
         },
         "required": [
           "workspace_id",
-          "message",
           "paths",
           "idempotency_key"
         ],
@@ -779,7 +778,7 @@
     },
     "forge_pull_request_create": {
       "title": "Create draft pull request",
-      "description": "Create a draft GitHub pull request for an already pushed Forge branch. A real user approval page is required.",
+      "description": "Create a draft GitHub pull request for an already pushed Forge branch. A real user approval page is required. Omit title to auto-generate a title and body from the branch diff.",
       "sideEffect": "external",
       "approval": "required",
       "inputSchema": {
@@ -820,7 +819,6 @@
           "workspace_id",
           "head",
           "base",
-          "title",
           "body"
         ],
         "additionalProperties": false
