@@ -11,6 +11,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: 5.20260712.1
         version: 5.20260712.1
+      '@forge/app-actions':
+        specifier: workspace:*
+        version: link:packages/app-actions
       '@forge/application':
         specifier: workspace:*
         version: link:packages/application
@@ -26,6 +29,15 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:packages/core
+      '@forge/cost':
+        specifier: workspace:*
+        version: link:packages/cost
+      '@forge/evidence':
+        specifier: workspace:*
+        version: link:packages/evidence
+      '@forge/fixture-catalog':
+        specifier: workspace:*
+        version: link:apps/fixture-catalog
       '@forge/insight':
         specifier: workspace:*
         version: link:packages/insight
@@ -65,6 +77,8 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  apps/fixture-catalog: {}
 
   apps/forge-edge-gateway:
     dependencies:
@@ -148,6 +162,8 @@ importers:
         specifier: 4.110.0
         version: 4.110.0(@cloudflare/workers-types@5.20260712.1)
 
+  packages/app-actions: {}
+
   packages/application:
     dependencies:
       '@forge/capabilities':
@@ -228,11 +244,15 @@ importers:
 
   packages/core: {}
 
+  packages/cost: {}
+
   packages/events:
     dependencies:
       '@forge/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/evidence: {}
 
   packages/git-core:
     dependencies:
