@@ -55,10 +55,32 @@ export async function issueCapability(claims: CapabilityClaims, secret: string):
   return `${payload}.${encode(signature)}`;
 }
 
+/**
+ * Records a capability nonce as consumed and returns whether it was previously
+ * unused. Must return `false` when the nonce has already been claimed so a
+ * capability token can only be redeemed once (replay protection).
+ *
+ * NOTE ON WIRING: this single-use primitive is intentionally NOT applied to the
+ * current capability consumers (git credential proxy, preview proxy, snapshot
+ * and deps R2 gateways). Each of those legitimately redeems ONE capability
+ * across MULTIPLE HTTP requests within the token's short TTL — git's smart
+ * protocol (info/refs GET + receive-pack POST), the preview proxy (one request
+ * per page asset), and multipart snapshot/deps uploads plus their read-back.
+ * Single-use enforcement would break all of them. Replay for these is bounded
+ * by the short expiry + tight (workspace/repo/action/content) scope. `claimNonce`
+ * exists for any FUTURE genuinely single-shot capability, which should pass it.
+ */
+export type ClaimNonce = (
+  nonce: string,
+  action: string,
+  expiresAt: number
+) => Promise<boolean>;
+
 export async function verifyCapability(
   token: string,
   secret: string,
-  expected: Pick<CapabilityClaims, 'workspaceId' | 'action'> & Partial<Pick<CapabilityClaims, 'repository' | 'branchPattern' | 'gitCommit'>>
+  expected: Pick<CapabilityClaims, 'workspaceId' | 'action'> & Partial<Pick<CapabilityClaims, 'repository' | 'branchPattern' | 'gitCommit'>>,
+  claimNonce?: ClaimNonce
 ): Promise<CapabilityClaims> {
   const [payload, signature] = token.split('.');
   if (!payload || !signature) throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Invalid capability token.', retryable: false });
@@ -78,6 +100,14 @@ export async function verifyCapability(
   for (const field of ['repository', 'branchPattern', 'gitCommit'] as const) {
     if (expected[field] !== undefined && claims[field] !== expected[field]) {
       throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Capability is expired or outside its scope.', retryable: false });
+    }
+  }
+  // Single-use enforcement: only after the token is fully validated do we
+  // consume its nonce, so an unrelated/out-of-scope request never burns it.
+  if (claimNonce) {
+    const fresh = await claimNonce(claims.nonce, claims.action, claims.expiresAt);
+    if (!fresh) {
+      throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Capability has already been used.', retryable: false });
     }
   }
   return claims;

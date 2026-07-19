@@ -19,6 +19,8 @@ import { analyzeDiff, selectContext, suggestChecks } from '@forge/insight';
 import {
   applyTaskPatch,
   assertTaskOwnership,
+  assertTaskTransition,
+  isTerminalTaskState,
   createTask,
   summarizeTask,
   type RepositoryRef,
@@ -28,7 +30,8 @@ import {
 import type { BrowserActionStep } from '@forge/browser-core';
 import { selectBrowserProvider } from './browser-router';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
-import { classifyCommand } from '@forge/policy';
+import { classifyCommand, assertPublicHost } from '@forge/policy';
+import type { CommandClass } from '@forge/policy';
 import type { Env } from './env';
 import { registerForgeConsole } from './forge-console';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
@@ -57,6 +60,79 @@ interface SessionProps extends Record<string, unknown> {
 // own path and are intentionally NOT covered here.
 function autoApproveShell(env: Pick<Env, 'FORGE_AUTO_APPROVE_SHELL'>): boolean {
   return env.FORGE_AUTO_APPROVE_SHELL === 'true' || env.FORGE_AUTO_APPROVE_SHELL === '1';
+}
+
+// Which gated (allowed && approvalRequired) shell classes the operator auto-approve
+// flag is permitted to silently approve. Deliberately narrow: only low-risk
+// dependency installs. Anything higher-risk — a destructive command, or network
+// egress under the unrestricted_with_approval policy — must ALWAYS go through a
+// real human approval click even when FORGE_AUTO_APPROVE_SHELL is on.
+const AUTO_APPROVABLE_SHELL_CLASSES: ReadonlySet<CommandClass> = new Set<CommandClass>(['dependency_install']);
+
+// True only when the operator flag is on AND the command is a low-risk gated
+// class AND the caller is not asking for the unrestricted_with_approval network
+// policy (which always demands a human even for an otherwise auto-approvable
+// class).
+function mayAutoApproveShell(
+  env: Pick<Env, 'FORGE_AUTO_APPROVE_SHELL'>,
+  classification: CommandClass,
+  networkPolicy: string
+): boolean {
+  if (!autoApproveShell(env)) return false;
+  if (networkPolicy === 'unrestricted_with_approval') return false;
+  return AUTO_APPROVABLE_SHELL_CLASSES.has(classification);
+}
+
+// A url_review workspace (from forge_review) has no WorkspaceCoordinator record,
+// so its artifacts would otherwise be authorized purely by R2 key shape. Bind the
+// generated workspaceId to its owning (tenant, project) at creation so
+// forge_artifact_get can assert real ownership, not just a well-formed key.
+// Requires the url_review_workspaces(workspace_id PK, tenant_id, project_id,
+// created_at) table (delegated migration). Best-effort: a write failure (e.g.
+// table not yet migrated) must never break a legitimate review capture.
+async function recordUrlReviewOwner(
+  env: Pick<Env, 'METADATA'>,
+  workspaceId: string,
+  tenantId: string,
+  projectId: string
+): Promise<void> {
+  try {
+    await env.METADATA.prepare(
+      `INSERT INTO url_review_workspaces (workspace_id, tenant_id, project_id, created_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(workspace_id) DO NOTHING`
+    ).bind(workspaceId, tenantId, projectId, new Date().toISOString()).run();
+  } catch (error) {
+    console.warn('forge_url_review_binding_write_failed', {
+      workspaceId,
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+    });
+  }
+}
+
+// Assert the caller owns a url_review workspace before its artifacts are read.
+// Returns the recorded (tenant, project) when a binding exists so the caller can
+// distinguish "verified owner" from "no binding on record". If a binding row
+// exists it is authoritative — a tenant/project mismatch is denied outright.
+async function lookupUrlReviewOwner(
+  env: Pick<Env, 'METADATA'>,
+  workspaceId: string
+): Promise<{ tenantId: string; projectId: string } | null> {
+  try {
+    const row = await env.METADATA.prepare(
+      'SELECT tenant_id AS tenant_id, project_id AS project_id FROM url_review_workspaces WHERE workspace_id = ?1'
+    ).bind(workspaceId).first<{ tenant_id: string; project_id: string }>();
+    if (!row) return null;
+    return { tenantId: row.tenant_id, projectId: row.project_id };
+  } catch (error) {
+    // Table not migrated yet, or a transient DB error: fall back to the
+    // (already tenant-scoped) R2 key path rather than failing every read.
+    console.warn('forge_url_review_binding_read_failed', {
+      workspaceId,
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+    });
+    return null;
+  }
 }
 
 // Roll the per-cell heading-defect signal up to the packet level so a review
@@ -424,10 +500,24 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const store = new D1TaskStore(env.METADATA);
         const task = await this.loadTask(text(input.task_id) as TaskId);
         assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
+        const outcome = text(input.outcome) as TaskState;
+        // Enforce the task state machine up front so an illegal finish (e.g.
+        // finishing an already-terminal task, or a transition the lifecycle does
+        // not permit) fails with a clear ForgeError before any store write.
+        // applyTaskPatch re-checks the same invariant as defense in depth.
+        if (isTerminalTaskState(task.state)) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `Task is already in terminal state ${task.state} and cannot be finished again.`,
+            retryable: false,
+            details: { taskId: task.id, state: task.state, outcome }
+          });
+        }
+        assertTaskTransition(task.state, outcome);
         const outstanding = input.note ? [...task.outstanding, text(input.note)] : task.outstanding;
         const updated = applyTaskPatch(
           task,
-          { state: text(input.outcome) as TaskState, outstanding },
+          { state: outcome, outstanding },
           new Date().toISOString(),
           optionalNumber(input.expected_revision)
         );
@@ -471,7 +561,18 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_review: async (input) => {
         const identity = this.identity();
+        // SSRF guard: the caller-supplied URL is fetched by the browser provider,
+        // so reject private, loopback, link-local and metadata hosts BEFORE any
+        // capture is attempted. assertPublicHost throws a ForgeError for blocked
+        // targets (127.x, 10.x, 192.168.x, 172.16-31.x, 169.254.x incl. the cloud
+        // metadata IP, ::1, fc/fd/fe80, localhost, *.local).
+        // URL.hostname wraps IPv6 literals in brackets ("[::1]"); strip them so
+        // the policy's bare-address rules (::1, fc.., fd.., fe80:) still match.
+        assertPublicHost(new URL(text(input.url)).hostname.replace(/^\[|\]$/g, ''));
         const workspaceId = ids.workspace();
+        // Bind this url_review workspace to its owner so forge_artifact_get can
+        // authorize by ownership, not R2 key shape (best-effort; see helper).
+        await recordUrlReviewOwner(env, workspaceId, identity.tenantId, identity.projectId);
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);
         // Arbitrary-URL review always renders on Cloudflare, never the mini (SSRF guard).
         const browser = await selectBrowserProvider(env, artifacts, identity.tenantId as TenantId, false);
@@ -764,11 +865,25 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (paths.length === 0) {
           throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Provide a path or a non-empty paths array.', retryable: false });
         }
+        // Aggregate-work ceiling: the per-file max_bytes (up to 500KB) applied
+        // across up to 20 paths would let a single call pull ~10MB into the
+        // Worker. Cap the total requested bytes so the batch cannot be used to
+        // amplify memory/CPU, independent of the per-file bound.
+        const MAX_TOTAL_READ_BYTES = 2_000_000;
+        const perFileMaxBytes = number(input.max_bytes);
+        if (paths.length * perFileMaxBytes > MAX_TOTAL_READ_BYTES) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `Requested read exceeds the ${MAX_TOTAL_READ_BYTES}-byte aggregate limit (${paths.length} paths × ${perFileMaxBytes} bytes). Reduce max_bytes or the number of paths.`,
+            retryable: false,
+            details: { paths: paths.length, maxBytes: perFileMaxBytes, totalLimit: MAX_TOTAL_READ_BYTES }
+          });
+        }
         const workspace = await authorizedCoordinator(env, identity, text(input.workspace_id));
         const readOne = {
           startLine: optionalNumber(input.start_line),
           endLine: optionalNumber(input.end_line),
-          maxBytes: number(input.max_bytes)
+          maxBytes: perFileMaxBytes
         };
         // Single path keeps the original flat shape; multiple returns a files
         // array with per-file errors so one missing file does not fail the batch.
@@ -816,9 +931,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const approvalPayload = { command, cwd, networkPolicy, environmentHash };
         let claimedApproval = false;
         if (decision.allowed && decision.approvalRequired) {
-          if (autoApproveShell(env)) {
-            // Operator policy auto-approves gated shell (installs etc.). No token
-            // dance; GitHub writes are gated on their own path and unaffected.
+          if (mayAutoApproveShell(env, decision.classification, networkPolicy)) {
+            // Operator policy auto-approves ONLY low-risk gated shell (dependency
+            // installs). Destructive commands and unrestricted_with_approval
+            // network egress fall through to the real human approval URL below,
+            // even when FORGE_AUTO_APPROVE_SHELL is on. GitHub writes are gated on
+            // their own path and unaffected.
             claimedApproval = true;
           } else if (!approvalId) {
             const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} command`, approvalPayload);
@@ -1174,6 +1292,24 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           workspaceRevision = state.revision;
         } else {
           source = 'url_review';
+          // Defense-in-depth: the R2 key below is scoped to the caller's own
+          // tenant, so a cross-tenant read is already impossible — but the key
+          // carries no project, so a same-tenant caller in a different project
+          // could otherwise read a url_review artifact by guessing the (random)
+          // workspace and artifact ids. If a binding was recorded at review
+          // time, it is authoritative: assert both tenant AND project match.
+          const owner = await lookupUrlReviewOwner(env, workspaceId);
+          if (owner && (owner.tenantId !== identity.tenantId || owner.projectId !== identity.projectId)) {
+            throw new ForgeError({
+              code: 'FORGE_PERMISSION_DENIED',
+              message: 'The url_review artifact is owned by a different project.',
+              retryable: false
+            });
+          }
+          // owner === null means no binding on record (pre-migration workspace or
+          // a best-effort write that did not land): fall back to the tenant-scoped
+          // R2 key path. Residual risk: same-tenant cross-project reads of such
+          // legacy/unbound workspaces remain key-shape authorized only.
         }
         const object = await env.ARTIFACTS.get(
           `tenant/${identity.tenantId}/workspace/${workspaceId}/artifacts/${artifactId}`

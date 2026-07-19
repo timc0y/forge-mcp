@@ -22,6 +22,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: D1 migrations are sequentially numbered
+        run: pnpm migrations:check
       - run: pnpm check
       - run: pnpm cf:typegen
       - name: Generated files are committed

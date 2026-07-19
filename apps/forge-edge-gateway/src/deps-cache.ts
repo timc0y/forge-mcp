@@ -19,31 +19,49 @@ export interface DepsCacheKey {
   r2Key: string;
 }
 
-// The cache_key is the content identity (repoSlug|runtime|lockfileHash); the R2
-// key mirrors it as a path. repoSlug is `owner/name` and contains no `|`, so the
-// two are losslessly interconvertible (see parseDepsCacheKey).
-export function depsCacheKey(repoSlug: string, lockfileHash: string, runtime: string): DepsCacheKey {
+// The cache_key is the content identity SCOPED BY TENANT
+// (tenantId|repoSlug|runtime|lockfileHash); the R2 key mirrors it as a path.
+// node_modules trees contain executable code, so the tenantId component is a
+// HARD security boundary: two tenants that clone the same public repo at the
+// same lockfile must NEVER share a cached tree, or tenant B could execute a
+// poisoned tree written by tenant A. tenantId/repoSlug contain no `|`, so the
+// cacheKey and r2Key are losslessly interconvertible (see parseDepsCacheKey).
+export function depsCacheKey(
+  tenantId: string,
+  repoSlug: string,
+  lockfileHash: string,
+  runtime: string
+): DepsCacheKey {
   return {
-    cacheKey: `${repoSlug}|${runtime}|${lockfileHash}`,
-    r2Key: `deps/${repoSlug}/${runtime}/${lockfileHash}.tar.gz`
+    cacheKey: `${tenantId}|${repoSlug}|${runtime}|${lockfileHash}`,
+    r2Key: `deps/${tenantId}/${repoSlug}/${runtime}/${lockfileHash}.tar.gz`
   };
 }
 
 // Reverse a cache_key back into its parts (and the R2 key) with strict
-// validation, so an untrusted header value can never traverse outside deps/.
-// Returns null on any malformed input.
+// validation, so an untrusted header value can never traverse outside deps/ nor
+// cross a tenant boundary. Returns null on any malformed input.
 export function parseDepsCacheKey(
   cacheKey: string
-): { repoSlug: string; runtime: string; lockfileHash: string; r2Key: string } | null {
+): { tenantId: string; repoSlug: string; runtime: string; lockfileHash: string; r2Key: string } | null {
   const parts = cacheKey.split('|');
-  if (parts.length !== 3) return null;
-  const [repoSlug, runtime, lockfileHash] = parts as [string, string, string];
+  if (parts.length !== 4) return null;
+  const [tenantId, repoSlug, runtime, lockfileHash] = parts as [string, string, string, string];
+  // tenantId is an opaque forge id (e.g. `ten_...`): no `/`, `.` or `|`, so it
+  // can neither traverse the R2 path nor collide with the delimiter.
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(tenantId)) return null;
   if (!/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(repoSlug)) return null;
   // Reject `.`/`..` path segments so a cache key can never traverse outside deps/.
   if (repoSlug.split('/').some((segment) => segment === '.' || segment === '..')) return null;
   if (!/^[a-z0-9][a-z0-9.-]{0,40}$/.test(runtime)) return null;
   if (!/^[a-f0-9]{64}$/.test(lockfileHash)) return null;
-  return { repoSlug, runtime, lockfileHash, r2Key: `deps/${repoSlug}/${runtime}/${lockfileHash}.tar.gz` };
+  return {
+    tenantId,
+    repoSlug,
+    runtime,
+    lockfileHash,
+    r2Key: `deps/${tenantId}/${repoSlug}/${runtime}/${lockfileHash}.tar.gz`
+  };
 }
 
 export interface DepsCacheRow {

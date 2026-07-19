@@ -217,12 +217,15 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       // best-effort — a failure in either hook never blocks provisioning.
       const repoSlug = `${record.workspace.repository.owner}/${record.workspace.repository.name}`;
       const runtime = record.workspace.runtimeProfile;
+      // Scope the deps cache to the tenant: node_modules is executable, so a
+      // shared cross-tenant tree would let one tenant run another's code.
+      const tenantId = record.workspace.tenantId;
       const depsCache = snapshotsEnabled(this.env)
         ? {
             restore: (lockfileHash: string) =>
-              this.restoreDepsFromR2(depsCacheKey(repoSlug, lockfileHash, runtime).cacheKey).catch(() => false),
+              this.restoreDepsFromR2(depsCacheKey(tenantId, repoSlug, lockfileHash, runtime).cacheKey).catch(() => false),
             populate: (lockfileHash: string) => {
-              const { cacheKey } = depsCacheKey(repoSlug, lockfileHash, runtime);
+              const { cacheKey } = depsCacheKey(tenantId, repoSlug, lockfileHash, runtime);
               console.log('forge_deps_populate_called', { cacheKey });
               // Chain so the post-bootstrap snapshot uploads after this, not with it.
               this.pendingUpload = this.pendingUpload

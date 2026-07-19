@@ -80,7 +80,10 @@ function constantTimeEqual(leftValue: string, rightValue: string): boolean {
 }
 
 function signingKey(env: Env): Uint8Array {
-  return new TextEncoder().encode(env.FORGE_CAPABILITY_SIGNING_KEY);
+  // OAuth session (access/refresh) JWTs are signed with a secret distinct from
+  // the capability signing key, so a leak of one cannot forge the other. Falls
+  // back to the capability key until the operator sets FORGE_SESSION_SIGNING_KEY.
+  return new TextEncoder().encode(env.FORGE_SESSION_SIGNING_KEY ?? env.FORGE_CAPABILITY_SIGNING_KEY);
 }
 
 function redirectUris(row: OAuthClientRow): string[] {
@@ -94,15 +97,29 @@ function redirectUris(row: OAuthClientRow): string[] {
   }
 }
 
-function redirectUriAllowed(value: string, env: Env): boolean {
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
+
+export function redirectUriAllowed(value: string, env: Env): boolean {
   try {
     const url = new URL(value);
-    const allowed = (env.FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS ?? 'chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1')
+    // Loopback / localhost redirect URIs are a DCR abuse vector, so they are
+    // permitted only outside production. In production they are rejected
+    // outright and stripped from the allowlist even if explicitly configured.
+    const isProduction = env.FORGE_ENVIRONMENT === 'production';
+    const defaultHosts = isProduction
+      ? 'chatgpt.com,openai.com,claude.ai,anthropic.com'
+      : 'chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1';
+    const allowed = (env.FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS ?? defaultHosts)
       .split(',')
       .map((item) => item.trim().toLowerCase())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((host) => !isProduction || !LOOPBACK_HOSTS.includes(host));
     const hostname = url.hostname.toLowerCase();
-    if (url.protocol !== 'https:' && hostname !== 'localhost' && hostname !== '127.0.0.1') return false;
+    const isLoopback = LOOPBACK_HOSTS.includes(hostname);
+    if (isProduction && isLoopback) return false;
+    // http is tolerated only for non-production loopback callbacks; everything
+    // else must be https.
+    if (url.protocol !== 'https:' && !(isLoopback && !isProduction)) return false;
     return allowed.some((host) => hostname === host || hostname.endsWith(`.${host}`));
   } catch {
     return false;

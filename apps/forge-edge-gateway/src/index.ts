@@ -134,14 +134,28 @@ function mcpExecutionContext(ctx: ExecutionContext, props: Record<string, unknow
   } as ExecutionContext;
 }
 
+// The preview upstream is UNTRUSTED user code, so forwarding is allowlist-only:
+// we copy just the minimal set of request headers a normal HTTP client needs and
+// drop everything else. An allowlist (vs. deleting a handful of known-sensitive
+// names) guarantees no inbound header — auth, cookies, forge-* control headers,
+// cf-* edge headers, or anything future — can ever leak into preview content.
+const PREVIEW_FORWARD_HEADERS = new Set([
+  'accept',
+  'accept-encoding',
+  'accept-language',
+  'content-type',
+  'content-length',
+  'user-agent',
+  'range',
+  'if-none-match',
+  'if-modified-since'
+]);
+
 function cleanPreviewHeaders(request: Request): Headers {
-  const headers = new Headers(request.headers);
-  headers.delete('authorization');
-  headers.delete('cookie');
-  headers.delete('x-forge-preview-capability');
-  headers.delete('x-forge-internal-preview');
-  headers.delete('x-forge-browser-workspace');
-  headers.delete('x-forge-browser-preview');
+  const headers = new Headers();
+  request.headers.forEach((value, name) => {
+    if (PREVIEW_FORWARD_HEADERS.has(name.toLowerCase())) headers.set(name, value);
+  });
   return headers;
 }
 

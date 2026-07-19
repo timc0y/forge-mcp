@@ -123,6 +123,41 @@ export class D1MetadataStore implements MetadataStore {
   }
 }
 
+/**
+ * Single-use store for capability-token nonces. Backs the replay protection in
+ * `verifyCapability`: the first `claim` of a nonce wins, every subsequent claim
+ * of the same nonce returns false so a captured token cannot be redeemed twice.
+ */
+export class D1CapabilityNonceStore {
+  constructor(private readonly db: D1Database) {}
+
+  /**
+   * Records `nonce` as consumed. Returns true if it was previously unseen, false
+   * if it had already been claimed. Relies on the PRIMARY KEY conflict being a
+   * no-op so the check-and-set is atomic within D1.
+   */
+  async claim(nonce: string, action: string, expiresAt: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `INSERT INTO capability_nonces (nonce, action, expires_at, seen_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(nonce) DO NOTHING`
+      )
+      .bind(nonce, action, expiresAt, new Date().toISOString())
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
+  /** Deletes rows whose capability has already expired. Safe to run anytime. */
+  async pruneExpired(now: string = new Date().toISOString()): Promise<number> {
+    const result = await this.db
+      .prepare('DELETE FROM capability_nonces WHERE expires_at <= ?1')
+      .bind(now)
+      .run();
+    return result.meta?.changes ?? 0;
+  }
+}
+
 interface TaskRow extends Record<string, unknown> {
   id: string;
   tenant_id: string;

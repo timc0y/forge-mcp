@@ -52,7 +52,7 @@ async function authenticateForgeToken(token: string, env: Env): Promise<Authenti
   try {
     const { payload } = await jwtVerify(
       token,
-      new TextEncoder().encode(env.FORGE_CAPABILITY_SIGNING_KEY),
+      new TextEncoder().encode(env.FORGE_SESSION_SIGNING_KEY ?? env.FORGE_CAPABILITY_SIGNING_KEY),
       { issuer: env.FORGE_PUBLIC_ORIGIN, audience: 'forge-mcp' }
     );
     const subject = typeof payload.sub === 'string' ? payload.sub : '';

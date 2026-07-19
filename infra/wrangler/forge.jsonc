@@ -30,6 +30,17 @@
     "GITHUB_APP_ID": "4281819",
     "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
     "GITHUB_APP_SLUG": "forge-mcp-cloud",
+    // Shell auto-approval policy. Intended semantics (see mcp-session.ts
+    // forge_shell_exec + @forge/policy classifyCommand): with this flag on, ONLY
+    // low-risk approval-gated shell classes (e.g. dependency_install) are
+    // auto-approved so routine installs don't block on a human. Destructive and
+    // unrestricted-network commands are NOT covered here — destructive/prohibited
+    // classes are blocked outright by policy and unrestricted-network access still
+    // requires explicit human approval regardless of this flag. This flag never
+    // touches git-push / pull-request gating, which is enforced on its own path.
+    // NOTE: the nuanced per-class gating is being landed concurrently; until it
+    // merges this flag auto-approves all approval-gated shell, so keep it enabled
+    // only in trusted single-tenant environments.
     "FORGE_AUTO_APPROVE_SHELL": "true",
     "FORGE_SNAPSHOT_ENABLED": "true"
   },

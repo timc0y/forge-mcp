@@ -44,6 +44,7 @@ function fakeD1(rows: DepsCacheRow[] = []) {
 }
 
 const HASH = 'a'.repeat(64);
+const TENANT = 'ten_0123456789abcdefghjkmnpqrs';
 
 describe('deps-cache', () => {
   it('reuses the snapshot flag to gate the feature', () => {
@@ -52,28 +53,32 @@ describe('deps-cache', () => {
     expect(depsEnabled({ FORGE_SNAPSHOT_ENABLED: '1' })).toBe(true);
   });
 
-  it('keys by repo, runtime and lockfile hash', () => {
-    const { cacheKey, r2Key } = depsCacheKey('acme/widgets', HASH, 'node-22');
-    expect(cacheKey).toBe(`acme/widgets|node-22|${HASH}`);
-    expect(r2Key).toBe(`deps/acme/widgets/node-22/${HASH}.tar.gz`);
+  it('keys by tenant, repo, runtime and lockfile hash', () => {
+    const { cacheKey, r2Key } = depsCacheKey(TENANT, 'acme/widgets', HASH, 'node-22');
+    expect(cacheKey).toBe(`${TENANT}|acme/widgets|node-22|${HASH}`);
+    expect(r2Key).toBe(`deps/${TENANT}/acme/widgets/node-22/${HASH}.tar.gz`);
   });
 
   it('round-trips a cache key back into its parts and R2 key', () => {
-    const { cacheKey, r2Key } = depsCacheKey('acme/widgets', HASH, 'node-22');
+    const { cacheKey, r2Key } = depsCacheKey(TENANT, 'acme/widgets', HASH, 'node-22');
     const parsed = parseDepsCacheKey(cacheKey);
-    expect(parsed).toEqual({ repoSlug: 'acme/widgets', runtime: 'node-22', lockfileHash: HASH, r2Key });
+    expect(parsed).toEqual({ tenantId: TENANT, repoSlug: 'acme/widgets', runtime: 'node-22', lockfileHash: HASH, r2Key });
   });
 
   it('rejects malformed or traversal-prone cache keys', () => {
-    expect(parseDepsCacheKey('acme/widgets|node-22')).toBeNull();
-    expect(parseDepsCacheKey('acme/widgets|node-22|nothex')).toBeNull();
-    expect(parseDepsCacheKey(`../evil|node-22|${HASH}`)).toBeNull();
-    expect(parseDepsCacheKey(`acme/widgets|../x|${HASH}`)).toBeNull();
+    expect(parseDepsCacheKey(`${TENANT}|acme/widgets|node-22`)).toBeNull();
+    expect(parseDepsCacheKey(`${TENANT}|acme/widgets|node-22|nothex`)).toBeNull();
+    expect(parseDepsCacheKey(`${TENANT}|../evil|node-22|${HASH}`)).toBeNull();
+    expect(parseDepsCacheKey(`${TENANT}|acme/widgets|../x|${HASH}`)).toBeNull();
+    // Missing tenant component (old 3-part shape) must no longer parse.
+    expect(parseDepsCacheKey(`acme/widgets|node-22|${HASH}`)).toBeNull();
+    // Tenant component with a path separator must be rejected.
+    expect(parseDepsCacheKey(`../evil|acme/widgets|node-22|${HASH}`)).toBeNull();
   });
 
   it('records a cache entry and reads it back', async () => {
     const db = fakeD1();
-    const { cacheKey, r2Key } = depsCacheKey('acme/widgets', HASH, 'node-22');
+    const { cacheKey, r2Key } = depsCacheKey(TENANT, 'acme/widgets', HASH, 'node-22');
     expect(await getDepsCache(db, cacheKey)).toBeNull();
     await recordDepsCache(db, {
       cacheKey,
@@ -90,7 +95,7 @@ describe('deps-cache', () => {
 
   it('replaces an existing entry in place', async () => {
     const db = fakeD1();
-    const { cacheKey, r2Key } = depsCacheKey('acme/widgets', HASH, 'node-22');
+    const { cacheKey, r2Key } = depsCacheKey(TENANT, 'acme/widgets', HASH, 'node-22');
     const base = { cacheKey, repoSlug: 'acme/widgets', lockfileHash: HASH, runtime: 'node-22', r2Key };
     await recordDepsCache(db, { ...base, sizeBytes: 10, createdAt: '2026-07-19T12:00:00.000Z' });
     await recordDepsCache(db, { ...base, sizeBytes: 99, createdAt: '2026-07-19T13:00:00.000Z' });
