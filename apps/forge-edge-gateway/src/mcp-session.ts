@@ -711,7 +711,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             claimedApproval = true;
           } else if (!approvalId) {
             const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} command`, approvalPayload);
-            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact command, then retry with approval_id.', retryable: false, details: approval });
+            // Expose approval_id / approval_url as machine-readable fields so the
+            // widget can render an Approve button; kind discriminates the shape.
+            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact command, then retry with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
           } else {
             await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
             claimedApproval = true;
@@ -804,7 +806,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
             .gitOutgoingDiff({ base }).catch(() => undefined);
           const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash, diff: outgoing?.diff ?? '' });
-          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact push, then retry with approval_id.', retryable: false, details: approval });
+          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact push, then retry with approval_id.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'git.push', { branch, base, diffHash });
         try {
@@ -844,14 +846,15 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
             .gitOutgoingDiff({ base }).catch(() => undefined);
           const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body, diff: outgoing?.diff ?? '' });
-          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this draft PR, then retry with approval_id.', retryable: false, details: approval });
+          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this draft PR, then retry with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title, body });
         try {
           const state = await (await authorizedCoordinator(env, identity, workspaceId)).getState();
           const result = await createDraftPullRequest(env, identity, state.repository, { head, base, title, body });
           await completeApproval(env, approvalId, true);
-          return result;
+          // Expose the PR link under a clearly-named field for the widget.
+          return { ...result, pr_url: result.url };
         } catch (error) {
           await completeApproval(env, approvalId, false);
           throw error;
@@ -938,7 +941,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               const result = capture.steps && capture.steps.length > 0
                 ? await browser.act({ ...browserInput, steps: toActionSteps(capture.steps) })
                 : await browser.captureEvidence(browserInput);
-              const { inline: _inline, ...screenshotRef } = result.screenshot;
+              const { inline, ...screenshotRef } = result.screenshot;
               return {
                 selection: capture.selection ?? capture.route,
                 route: capture.route,
@@ -953,7 +956,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 // resulting frame.
                 executedSteps: capture.steps ?? null,
                 inspected: false,
-                limitations: []
+                limitations: [],
+                // Carried only so the handler can build the widget gallery; it
+                // is stripped from both structuredContent and _meta evidence.
+                _inline: inline
               };
             } catch (error) {
               return { failure: { route: capture.route, environment: viewport.id, reason: error instanceof Error ? error.message.slice(0, 500) : 'Capture failed.' } };
@@ -970,21 +976,66 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             details: { failures }
           });
         }
+        const structureSummary = summarizeStructure(
+          evidence as Array<{ accessibility?: { structure?: { findingCount?: number; countsByKind?: Record<string, number>; truncated?: boolean } }; route?: unknown; environment?: unknown }>
+        );
+        // Widget-only screenshot gallery (small JPEG data: URIs) built from the
+        // inline bytes captured above, capped so _meta stays bounded.
+        const screenshots: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; dataUri: string }> = [];
+        for (const cell of evidence) {
+          const inline = cell._inline as { base64: string; contentType: string } | undefined;
+          if (inline && screenshots.length < MAX_GALLERY_IMAGES) {
+            screenshots.push({
+              route: cell.route,
+              viewport: cell.observedViewport ?? cell.requestedViewport,
+              state: cell.state,
+              findingCount: findingCountOf(cell),
+              dataUri: `data:${inline.contentType};base64,${inline.base64}`
+            });
+          }
+        }
+        // Strip the transient inline bytes out of the full evidence so no base64
+        // leaks into structuredContent or the _meta evidence array.
+        const fullEvidence = evidence.map(({ _inline: _drop, ...rest }) => rest);
+        // Concise per-cell rows for structuredContent — no base64, no heavy
+        // accessibility trees; the component reads the rest from _meta.
+        const evidenceCells = fullEvidence.map((cell) => ({
+          selection: cell.selection,
+          route: cell.route,
+          environment: cell.environment,
+          state: cell.state,
+          requestedViewport: cell.requestedViewport,
+          observedViewport: cell.observedViewport,
+          findingCount: findingCountOf(cell),
+          executedSteps: cell.executedSteps,
+          inspected: cell.inspected
+        }));
         return {
           schemaVersion: 1,
           provider: 'forge',
+          executionMode: 'preview_review',
           workspaceId,
           repository: `${detail.workspace.repository.owner}/${detail.workspace.repository.name}`,
           commit: detail.workspace.currentCommit,
           workspaceRevision: detail.workspace.revision,
           capturedAt: new Date().toISOString(),
           previewId,
-          evidence,
+          requestedCaptures: cells.length,
+          capturedCount: fullEvidence.length,
+          evidence: evidenceCells,
           failures,
-          structureSummary: summarizeStructure(
-            evidence as Array<{ accessibility?: { structure?: { findingCount?: number; countsByKind?: Record<string, number>; truncated?: boolean } }; route?: unknown; environment?: unknown }>
-          ),
+          structureSummary,
           limitations: [],
+          _meta: {
+            'forge/widget': {
+              schemaVersion: 1,
+              executionMode: 'preview_review',
+              screenshots,
+              evidence: fullEvidence,
+              failures,
+              structureSummary
+            }
+          },
           nextStep: 'Call forge_artifact_get for each evidence[].screenshot.artifactId, inspect the image, then mark that evidence inspected in Parallax. Resolve or explicitly accept any structureSummary heading defects before passing the review.'
         };
       },
