@@ -27,7 +27,7 @@ describe('project detection', () => {
     expect(result).toEqual({
       packageManager: 'pnpm',
       framework: 'astro',
-      installCommand: 'pnpm install --frozen-lockfile',
+      installCommand: 'pnpm install --frozen-lockfile --prefer-offline',
       devCommand: 'pnpm run dev',
       buildCommand: 'pnpm run build',
       expectedPorts: [4321]

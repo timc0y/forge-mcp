@@ -17,7 +17,7 @@ export async function detectProject(handle: SandboxHandle, cwd = '/workspace/rep
   if (result.exitCode !== 0) return { packageManager: 'unknown', framework: null, installCommand: null, devCommand: null, buildCommand: null, expectedPorts: [] };
   const parsed = JSON.parse(result.stdout.trim()) as { pm: ProjectDetection['packageManager']; framework: string | null; scripts: Record<string, string> };
   const install: Record<ProjectDetection['packageManager'], string | null> = {
-    pnpm: 'pnpm install --frozen-lockfile', npm: 'npm ci', yarn: 'yarn install --immutable', bun: 'bun install --frozen-lockfile', pip: 'pip install -r requirements.txt', uv: 'uv sync --frozen', unknown: null
+    pnpm: 'pnpm install --frozen-lockfile --prefer-offline', npm: 'npm ci', yarn: 'yarn install --immutable', bun: 'bun install --frozen-lockfile', pip: 'pip install -r requirements.txt', uv: 'uv sync --frozen', unknown: null
   };
   const expected = parsed.framework === 'astro' ? [4321] : parsed.framework === 'vite' ? [5173] : parsed.framework === 'nextjs' ? [3000] : [];
   return { packageManager: parsed.pm, framework: parsed.framework, installCommand: install[parsed.pm], devCommand: parsed.scripts.dev ? `${parsed.pm === 'unknown' ? 'npm' : parsed.pm} run dev` : null, buildCommand: parsed.scripts.build ? `${parsed.pm === 'unknown' ? 'npm' : parsed.pm} run build` : null, expectedPorts: expected };

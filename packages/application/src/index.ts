@@ -183,11 +183,172 @@ export class ForgeApplicationService {
     };
   }
 
+  private defaultCloneSource(record: WorkspaceRuntimeRecord): RepositoryCloneSource {
+    return { url: `https://github.com/${repositorySlug(record.workspace.repository)}.git` };
+  }
+
+  // Make pnpm available up front, otherwise `pnpm install` fails the whole
+  // bootstrap with "pnpm: command not found". corepack ships with node but
+  // isn't always on PATH in the sandbox image, so try it first and fall back
+  // to a global npm install (npm is always present). `command -v pnpm` short-
+  // circuits when it is already there. Best-effort — never fail provisioning.
+  private async preparePackageManager(handle: SandboxHandle): Promise<void> {
+    await handle.exec({
+      command:
+        'command -v pnpm >/dev/null 2>&1 || corepack prepare pnpm@9 --activate 2>/dev/null || npm install -g pnpm@9',
+      cwd: '/workspace',
+      timeoutMs: 120_000,
+      outputLimitBytes: 20_000,
+      sessionId: 'system',
+      networkPolicy: 'package_install'
+    }).catch(() => undefined);
+  }
+
+  // Clone the repository checkout into /workspace/repo. Shared by first-time
+  // provisioning and by in-place checkout recovery.
+  private async checkoutRepository(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    cloneSource?: RepositoryCloneSource
+  ): Promise<void> {
+    const source = cloneSource ?? this.defaultCloneSource(record);
+    const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
+    if (source.authorizationHeader) {
+      await handle.writeFile({
+        path: gitConfigPath,
+        content: `[http]\n\textraHeader = ${source.authorizationHeader}\n`
+      });
+    }
+    const clone = await handle.exec({
+      command: `git clone --depth 1 --branch ${quoted(record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
+      cwd: '/workspace',
+      timeoutMs: 180_000,
+      outputLimitBytes: 200_000,
+      sessionId: 'system',
+      networkPolicy: 'development',
+      environment: source.authorizationHeader
+        ? { GIT_CONFIG_GLOBAL: gitConfigPath, GIT_TERMINAL_PROMPT: '0' }
+        : { GIT_TERMINAL_PROMPT: '0' }
+    });
+    if (source.authorizationHeader) {
+      await handle.exec({
+        command: `rm -f ${quoted(gitConfigPath)}`,
+        cwd: '/workspace',
+        timeoutMs: 10_000,
+        outputLimitBytes: 1_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      }).catch(() => undefined);
+    }
+    if (clone.exitCode !== 0) {
+      throw new ForgeError({
+        code: 'FORGE_PROVIDER_UNAVAILABLE',
+        message: 'Repository clone failed.',
+        retryable: false,
+        details: {
+          stage: 'clone',
+          phase: 'checkout',
+          exitCode: clone.exitCode,
+          durationMs: clone.durationMs,
+          stderr: clone.stderr.slice(0, 4_000),
+          stdout: clone.stdout.slice(0, 1_000)
+        }
+      });
+    }
+  }
+
+  // Snapshot-first fast path: let the caller restore a prior /workspace tar, then
+  // confirm the checkout is present and cheaply advance it to the requested ref.
+  // Returns true only when the restored checkout is usable; any failure returns
+  // false so the caller falls back to a full clone. Best-effort throughout.
+  private async restoreCheckout(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    source: RepositoryCloneSource,
+    restore: () => Promise<boolean>
+  ): Promise<boolean> {
+    try {
+      const restored = await restore();
+      if (!restored) return false;
+      const probe = await handle.exec({
+        command: 'test -d /workspace/repo/.git && echo forge_checkout_present || echo forge_checkout_missing',
+        cwd: '/workspace',
+        timeoutMs: 10_000,
+        outputLimitBytes: 1_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      if (!probe.stdout.includes('forge_checkout_present')) return false;
+      const ref = record.workspace.requestedRef;
+      const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
+      if (source.authorizationHeader) {
+        await handle.writeFile({
+          path: gitConfigPath,
+          content: `[http]\n\textraHeader = ${source.authorizationHeader}\n`
+        });
+      }
+      const advance = await handle.exec({
+        command: `git fetch --depth 1 origin ${quoted(ref)} && git checkout ${quoted(ref)}`,
+        cwd: '/workspace/repo',
+        timeoutMs: 120_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'development',
+        environment: source.authorizationHeader
+          ? { GIT_CONFIG_GLOBAL: gitConfigPath, GIT_TERMINAL_PROMPT: '0' }
+          : { GIT_TERMINAL_PROMPT: '0' }
+      });
+      if (source.authorizationHeader) {
+        await handle.exec({
+          command: `rm -f ${quoted(gitConfigPath)}`,
+          cwd: '/workspace',
+          timeoutMs: 10_000,
+          outputLimitBytes: 1_000,
+          sessionId: 'system',
+          networkPolicy: 'deny_all'
+        }).catch(() => undefined);
+      }
+      return advance.exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Re-establish a missing repository checkout in place (used by self-heal after
+   * an idle recycle dropped /workspace/repo). Re-clones over any partial state
+   * and restores the workspace to `ready`. Bypasses the normal `handle` state
+   * gate because the record has been marked `failed` by the caller.
+   */
+  async recoverCheckout(
+    record: WorkspaceRuntimeRecord,
+    cloneSource?: RepositoryCloneSource
+  ): Promise<void> {
+    const handle = await this.providerFor(record).get(record.providerId);
+    await handle.exec({
+      command: 'rm -rf /workspace/repo',
+      cwd: '/workspace',
+      timeoutMs: 30_000,
+      outputLimitBytes: 1_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    }).catch(() => undefined);
+    await this.checkoutRepository(record, handle, cloneSource);
+    await this.preparePackageManager(handle);
+    const checkedAt = new Date().toISOString();
+    record.workspace.state = 'ready';
+    record.workspace.checkout = { healthy: true, checkedAt };
+    record.workspace.failure = undefined;
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = checkedAt;
+  }
+
   async provisionWorkspace(
     record: WorkspaceRuntimeRecord,
     bootstrap: boolean,
     onStateChange: (record: WorkspaceRuntimeRecord) => Promise<void> = async () => undefined,
-    cloneSource?: RepositoryCloneSource
+    cloneSource?: RepositoryCloneSource,
+    restore?: () => Promise<boolean>
   ): Promise<WorkspaceRuntimeRecord> {
     if (record.workspace.state === 'ready') return record;
     if (!['requested', 'provisioning'].includes(record.workspace.state)) {
@@ -220,67 +381,24 @@ export class ForgeApplicationService {
         idleTimeout: '90s'
       });
 
-      const source = cloneSource ?? {
-        url: `https://github.com/${repositorySlug(record.workspace.repository)}.git`
-      };
-      const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
-      if (source.authorizationHeader) {
-        await handle.writeFile({
-          path: gitConfigPath,
-          content: `[http]\n\textraHeader = ${source.authorizationHeader}\n`
-        });
-      }
-      const clone = await handle.exec({
-        command: `git clone --depth 1 --branch ${quoted(record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
-        cwd: '/workspace',
-        timeoutMs: 180_000,
-        outputLimitBytes: 200_000,
-        sessionId: 'system',
-        networkPolicy: 'development',
-        environment: source.authorizationHeader
-          ? { GIT_CONFIG_GLOBAL: gitConfigPath, GIT_TERMINAL_PROMPT: '0' }
-          : { GIT_TERMINAL_PROMPT: '0' }
-      });
-      if (source.authorizationHeader) {
-        await handle.exec({
-          command: `rm -f ${quoted(gitConfigPath)}`,
-          cwd: '/workspace',
-          timeoutMs: 10_000,
-          outputLimitBytes: 1_000,
-          sessionId: 'system',
-          networkPolicy: 'deny_all'
-        }).catch(() => undefined);
-      }
-      if (clone.exitCode !== 0) {
-        throw new ForgeError({
-          code: 'FORGE_PROVIDER_UNAVAILABLE',
-          message: 'Repository clone failed.',
-          retryable: false,
-          details: {
-            stage: 'clone',
-            phase: 'checkout',
-            exitCode: clone.exitCode,
-            durationMs: clone.durationMs,
-            stderr: clone.stderr.slice(0, 4_000),
-            stdout: clone.stdout.slice(0, 1_000)
-          }
-        });
-      }
+      const source = cloneSource ?? this.defaultCloneSource(record);
 
-      // Make pnpm available up front, otherwise `pnpm install` fails the whole
-      // bootstrap with "pnpm: command not found". corepack ships with node but
-      // isn't always on PATH in the sandbox image, so try it first and fall back
-      // to a global npm install (npm is always present). `command -v pnpm` short-
-      // circuits when it is already there. Best-effort — never fail provisioning.
-      await handle.exec({
-        command:
-          'command -v pnpm >/dev/null 2>&1 || corepack prepare pnpm@9 --activate 2>/dev/null || npm install -g pnpm@9',
-        cwd: '/workspace',
-        timeoutMs: 120_000,
-        outputLimitBytes: 20_000,
-        sessionId: 'system',
-        networkPolicy: 'package_install'
-      }).catch(() => undefined);
+      // Snapshot-first: if a prior /workspace tar can be restored, skip the ~75s
+      // clone+install and cheaply advance the warm checkout to the requested ref.
+      // Any failure falls through to the full clone+install path below.
+      const usedSnapshot = restore
+        ? await this.restoreCheckout(record, handle, source, restore)
+        : false;
+
+      if (usedSnapshot) {
+        await this.preparePackageManager(handle);
+      } else {
+        // Clone and pnpm pre-activation are independent — run them concurrently.
+        await Promise.all([
+          this.checkoutRepository(record, handle, source),
+          this.preparePackageManager(handle)
+        ]);
+      }
 
       record.workspace.state = 'bootstrapping';
       record.workspace.revision = nextRevision(record.workspace.revision);
