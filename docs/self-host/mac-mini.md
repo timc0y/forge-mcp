@@ -221,8 +221,11 @@ wrangler tail --format pretty | grep forge_sandbox_route
 ## Reference agent
 
 `self-host/forge-node-agent/` is a runnable reference: health/self-test, and the
-core workspace loop (create / exec / read / write / patch / tree / destroy) as
-hardened containers, plus browser capture over Playwright.
-Background processes, preview-port exposure, and snapshots return an explicit
-"unsupported" error — extend them for your setup. It is deliberately small so you
-can read the whole thing before trusting it with code execution.
+full workspace loop as hardened containers — create / exec / read / write /
+patch / tree / destroy, **background processes** (`forge_process_start`), **live
+previews** (a dev server on a published port, reachable through the agent's
+`/preview/<id>/<port>/` proxy so `forge_browser_act` can tap and screenshot it),
+and browser capture over Playwright. Only snapshots return "unsupported". Preview
+ports must be published at container start — the common dev ports are by default
+(`FORGE_AGENT_PREVIEW_PORTS` to change). It's deliberately small so you can read
+the whole thing before trusting it with code execution.
