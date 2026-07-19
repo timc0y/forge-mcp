@@ -18,18 +18,23 @@ class FakeProvider implements SandboxProvider {
       if (input.command.startsWith('git clone')) {
         return { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
-      if (input.command.includes("console.log(JSON.stringify")) {
+      if (input.command.includes('===FORGE_HEAD===')) {
         return {
           exitCode: 0,
-          stdout: JSON.stringify({ pm: 'npm', framework: 'vite', scripts: { dev: 'vite', build: 'vite build' } }),
+          stdout: [
+            '===FORGE_HEAD===',
+            'abcdef',
+            '===FORGE_BRANCH===',
+            'main',
+            '===FORGE_LOCKFILE===',
+            '===FORGE_DETECTION===',
+            JSON.stringify({ pm: 'npm', framework: 'vite', scripts: { dev: 'vite', build: 'vite build' } })
+          ].join('\n'),
           stderr: '', truncated: false, durationMs: 1, artifactRefs: []
         };
       }
       if (input.command === 'npm ci') {
         return { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
-      }
-      if (input.command.startsWith('git rev-parse')) {
-        return { exitCode: 0, stdout: 'abcdef\nmain\n', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command === 'git status --porcelain=v2 --branch') {
         return { exitCode: 0, stdout: '# branch.head main\n', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
