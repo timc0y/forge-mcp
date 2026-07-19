@@ -29,6 +29,7 @@ interface WorkspaceRow extends Record<string, unknown> {
   current_branch: string | null;
   idle_deadline: string | null;
   active_snapshot_id: string | null;
+  has_unpushed_work: number | null;
 }
 
 export class D1MetadataStore implements MetadataStore {
@@ -41,8 +42,8 @@ export class D1MetadataStore implements MetadataStore {
           id, tenant_id, project_id, repository, requested_ref, state,
           persistence_mode, runtime_profile, provider_kind, provider_version,
           revision, created_by, created_at, updated_at, current_commit,
-          current_branch, idle_deadline, active_snapshot_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          current_branch, idle_deadline, active_snapshot_id, has_unpushed_work
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           state = excluded.state,
           persistence_mode = excluded.persistence_mode,
@@ -51,7 +52,8 @@ export class D1MetadataStore implements MetadataStore {
           current_commit = excluded.current_commit,
           current_branch = excluded.current_branch,
           idle_deadline = excluded.idle_deadline,
-          active_snapshot_id = excluded.active_snapshot_id
+          active_snapshot_id = excluded.active_snapshot_id,
+          has_unpushed_work = excluded.has_unpushed_work
       `)
       .bind(
         workspace.id,
@@ -71,7 +73,8 @@ export class D1MetadataStore implements MetadataStore {
         workspace.currentCommit ?? null,
         workspace.currentBranch ?? null,
         workspace.idleDeadline ?? null,
-        workspace.activeSnapshotId ?? null
+        workspace.activeSnapshotId ?? null,
+        workspace.hasUnpushedWork ? 1 : 0
       )
       .run();
   }
@@ -104,6 +107,7 @@ export class D1MetadataStore implements MetadataStore {
       updatedAt: row.updated_at,
       ...(row.current_commit ? { currentCommit: row.current_commit } : {}),
       ...(row.current_branch ? { currentBranch: row.current_branch } : {}),
+      hasUnpushedWork: Boolean(row.has_unpushed_work),
       ...(row.idle_deadline ? { idleDeadline: row.idle_deadline } : {}),
       ...(row.active_snapshot_id
         ? { activeSnapshotId: row.active_snapshot_id as Workspace['activeSnapshotId'] }

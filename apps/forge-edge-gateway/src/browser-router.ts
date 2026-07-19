@@ -25,10 +25,14 @@ export async function selectBrowserProvider(
   env: Env,
   artifacts: ArtifactStore,
   tenantId: TenantId,
+  // Only preview captures (a workspace's own Forge preview) may render on the
+  // self-hosted machine. Arbitrary-URL forge_review must NOT — otherwise a
+  // caller could screenshot the owner's LAN (router, NAS) via the mini's Chrome.
+  allowSelfHosted = true,
   now: number = Date.now()
 ): Promise<BrowserProvider> {
   const cloudflare = new CloudflareBrowserProvider(env.BROWSER, artifacts, tenantId);
-  if (!selfHostEnabled(env)) return cloudflare;
+  if (!allowSelfHosted || !selfHostEnabled(env)) return cloudflare;
   const selfHosted = new SelfHostedBrowserProvider(
     { baseUrl: env.FORGE_SELFHOST_URL as string, token: env.FORGE_SELFHOST_TOKEN as string },
     artifacts,

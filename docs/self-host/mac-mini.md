@@ -154,7 +154,7 @@ concurrent light workspaces or one heavy build).
 The agent reports `capacity: { max, inUse }` in `/v1/health`, and **Forge only
 routes a new workspace to the mini when it's healthy *and* under capacity** —
 otherwise that workspace goes to Cloudflare instead of thrashing your machine.
-Idle workspaces are reaped locally after `FORGE_AGENT_IDLE_MINUTES` (default 60),
+Idle workspaces are reaped locally after `FORGE_AGENT_IDLE_MINUTES` (default 240),
 and Forge's own slot TTL destroys them too, so capacity frees itself.
 
 Tune `FORGE_AGENT_MAX_WORKSPACES` to your hardware; raise it on a bigger box.

@@ -80,22 +80,24 @@ export async function listSlotOccupants(
 ): Promise<SlotOccupant[]> {
   const rows = await database.prepare(
     `SELECT s.slot AS slot, s.tenant_id AS tenant_id, s.workspace_id AS workspace_id, s.claimed_at AS claimed_at,
-            w.state AS state, w.updated_at AS updated_at
+            w.state AS state, w.updated_at AS updated_at, w.has_unpushed_work AS has_unpushed_work
        FROM workspace_slots AS s
        LEFT JOIN workspaces AS w ON w.id = s.workspace_id
        ${tenantId ? 'WHERE s.tenant_id = ?1' : ''}
        ORDER BY s.tenant_id, s.slot`
   ).bind(...(tenantId ? [tenantId] : [])).all<{
-    slot: number; tenant_id: string; workspace_id: string; claimed_at: string; state: string | null; updated_at: string | null;
+    slot: number; tenant_id: string; workspace_id: string; claimed_at: string; state: string | null; updated_at: string | null; has_unpushed_work: number | null;
   }>();
   const ttlMinutes = ttlMs / 60_000;
   return (rows.results ?? []).map((row) => {
     const lastActive = row.updated_at ?? row.claimed_at;
     const idle = ageMinutes(lastActive, now);
-    const stale =
-      row.state === null ||
-      (row.state !== null && TERMINAL_STATES.includes(row.state)) ||
-      (idle !== null && idle >= ttlMinutes);
+    const terminal = row.state === null || (row.state !== null && TERMINAL_STATES.includes(row.state));
+    const idleExpired = idle !== null && idle >= ttlMinutes;
+    // A workspace with unpushed work is never reclaimed for mere idleness —
+    // pushes need human approval and humans sleep longer than the TTL. It is
+    // still reclaimed if orphaned/terminal (the work is already gone).
+    const stale = terminal || (idleExpired && row.has_unpushed_work !== 1);
     return {
       slot: row.slot,
       tenantId: row.tenant_id,

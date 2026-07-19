@@ -92,7 +92,25 @@ async function chromium() {
   }
   return browserPromise;
 }
+// Belt-and-braces against SSRF into the owner's LAN. Forge already only routes
+// preview (public-origin) URLs here, but refuse obviously-private targets too.
+function assertPublicTarget(rawUrl) {
+  let host;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    throw httpError(400, 'Invalid preview URL.');
+  }
+  const blocked =
+    host === 'localhost' || host === '0.0.0.0' || host === '::1' ||
+    host.endsWith('.internal') || host.endsWith('.local') ||
+    /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+  if (blocked) throw httpError(403, `Refusing to render a private/loopback address (${host}).`);
+}
+
 async function render({ input, steps }) {
+  assertPublicTarget(input.url);
   const browser = await chromium();
   const context = await browser.newContext({
     viewport: { width: input.viewport?.width ?? 1440, height: input.viewport?.height ?? 900 },
@@ -198,9 +216,15 @@ async function handle(method, url, body) {
 
   if (p === '/v1/sandboxes') {
     const { input } = body;
-    if (workspaces.size >= MAX && !workspaces.has(input.providerId)) throw httpError(503, `At capacity (${workspaces.size}/${MAX}).`);
+    // Idempotent: if this workspace's container is already running, return it —
+    // never destroy live work on a re-create.
+    if (workspaces.has(input.providerId)) {
+      touch(input.providerId);
+      return { providerId: input.providerId };
+    }
+    if (workspaces.size >= MAX) throw httpError(503, `At capacity (${workspaces.size}/${MAX}).`);
     const name = nameFor(input.providerId);
-    await docker(['rm', '-f', name]);
+    await docker(['rm', '-f', name]); // clear any stale/exited container with this name
     const run = await docker(['run', '-d', '--name', name, ...HARDENING, ...PORT_ARGS, IMAGE, 'sleep', 'infinity']);
     if (run.exitCode !== 0) throw httpError(500, `docker run failed: ${run.stderr.slice(0, 300)}`);
     await dexec(input.providerId, 'mkdir -p /workspace/repo /workspace/tmp');
@@ -230,10 +254,20 @@ async function handle(method, url, body) {
     }
     if (action === 'files/read') {
       const i = body.input;
-      const r = await dexec(id, `cat ${shq(i.path)}`);
-      if (r.exitCode !== 0) throw httpError(404, `File not found: ${i.path}`);
-      const content = i.startLine || i.endLine ? r.stdout.split('\n').slice((i.startLine ?? 1) - 1, i.endLine).join('\n') : r.stdout;
-      return { path: i.path, content, sha256: sha256(r.stdout), sizeBytes: Buffer.byteLength(r.stdout), truncated: false };
+      const max = Number(i.maxBytes ?? 200_000);
+      const exists = await dexec(id, `test -f ${shq(i.path)} && echo y || echo n`);
+      if (exists.stdout.trim() !== 'y') throw httpError(404, `File not found: ${i.path}`);
+      // Bounded read: slice lines (if requested) then cap at max+1 bytes so a huge
+      // file can never load into the agent's memory. Hash the full file streaming
+      // in the container so expected_sha256 conflict checks stay accurate.
+      const slicer = i.startLine || i.endLine
+        ? `sed -n '${Number(i.startLine ?? 1)},${i.endLine ? Number(i.endLine) : '$'}p' ${shq(i.path)}`
+        : `cat ${shq(i.path)}`;
+      const r = await dexec(id, `${slicer} | head -c ${max + 1}`);
+      const truncated = Buffer.byteLength(r.stdout) > max;
+      const content = truncated ? r.stdout.slice(0, max) : r.stdout;
+      const shaR = await dexec(id, `sha256sum ${shq(i.path)} 2>/dev/null | cut -d' ' -f1`);
+      return { path: i.path, content, sha256: shaR.stdout.trim() || sha256(content), sizeBytes: Buffer.byteLength(content), truncated };
     }
     if (action === 'files/write') {
       const i = body.input;
@@ -259,7 +293,11 @@ async function handle(method, url, body) {
       const i = body.input;
       const log = `/workspace/tmp/proc-${i.processId}.log`;
       const pidf = `/workspace/tmp/proc-${i.processId}.pid`;
-      const envExports = Object.entries(i.environment ?? {}).map(([k, v]) => `export ${k}=${shq(v)};`).join(' ');
+      // Validate env var NAMES (values are shq-quoted; a malicious key like
+      // `X=1; curl evil; :` would otherwise inject shell outside the quoting).
+      const envExports = Object.entries(i.environment ?? {})
+        .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+        .map(([k, v]) => `export ${k}=${shq(v)};`).join(' ');
       // Launch detached, capture the pid, keep logs in a file the log endpoint tails.
       const r = await dexec(id, `cd ${shq(i.cwd)}; ${envExports} nohup bash -lc ${shq(i.command)} > ${shq(log)} 2>&1 < /dev/null & echo $! | tee ${shq(pidf)}`);
       const pid = Number(r.stdout.trim()) || undefined;
@@ -314,6 +352,18 @@ function httpError(status, message) {
   return e;
 }
 
+// Rebuild the workspace map from running containers on boot. launchd restarts
+// the agent on crash, so without this `inUse` would reset to 0 (capacity
+// over-admission) and orphaned containers would never be reaped.
+async function reconcile() {
+  const r = await docker(['ps', '--filter', 'label=forge=1', '--format', '{{.Names}}']);
+  const running = r.stdout.trim().split('\n').filter(Boolean);
+  for (const name of running) {
+    const providerId = name.replace(/^forge-/, '');
+    if (!workspaces.has(providerId)) workspaces.set(providerId, { name, lastActive: Date.now() });
+  }
+}
+
 // Reap idle containers so a crashed session doesn't hold capacity (Forge's TTL
 // also destroys them; this is a local backstop).
 setInterval(() => {
@@ -361,7 +411,14 @@ const server = createServer((req, res) => {
           redirect: 'manual'
         });
         const buf = Buffer.from(await upstream.arrayBuffer());
-        res.writeHead(upstream.status, Object.fromEntries(upstream.headers));
+        // Strip hop-by-hop headers and preserve multiple set-cookie values
+        // (Object.fromEntries would collapse them into one).
+        const hopByHop = new Set(['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'set-cookie']);
+        const out = {};
+        for (const [k, v] of upstream.headers) if (!hopByHop.has(k.toLowerCase())) out[k] = v;
+        const cookies = upstream.headers.getSetCookie?.() ?? [];
+        if (cookies.length) out['set-cookie'] = cookies;
+        res.writeHead(upstream.status, out);
         res.end(buf);
       } catch (error) {
         send(502, { message: String(error.message ?? error).slice(0, 200) });
@@ -393,5 +450,6 @@ if (process.argv.includes('--selftest')) {
     process.exit(h.healthy ? 0 : 1);
   });
 } else {
+  reconcile().catch(() => undefined);
   server.listen(PORT, () => console.log(`Forge Node Agent on :${PORT} — image ${IMAGE}, max ${MAX} workspaces (hardened containers)`));
 }

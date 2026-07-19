@@ -46,21 +46,20 @@ describe('Forge MCP public contracts', () => {
     expect(readSchema.paths.safeParse([]).success).toBe(false);
   });
 
-  it('exposes bounded interactive browser steps that are not retry-safe', () => {
-    const act = tool('forge_browser_act');
-    expect(act.sideEffect).toBe('workspace');
-    const schema = act.inputSchema as Record<string, unknown>;
-    expect(Object.keys(schema)).toEqual(
-      expect.arrayContaining(['workspace_id', 'preview_id', 'steps', 'viewport'])
-    );
-    const steps = schema.steps as { safeParse(value: unknown): { success: boolean } };
-    expect(steps.safeParse([{ kind: 'click', selector: '#add-to-cart' }]).success).toBe(true);
-    expect(steps.safeParse([{ kind: 'not_a_real_action' }]).success).toBe(false);
-    expect(steps.safeParse([]).success).toBe(false);
-    // Interactions are order-dependent side effects, never silently replayed.
-    expect(toolAnnotations('forge_browser_act', 'workspace')).toMatchObject({
-      readOnlyHint: false,
-      idempotentHint: false
-    });
+  it('folds interactive steps into forge_review_capture (no separate browser tools)', () => {
+    // The standalone screenshot/accessibility/act tools were collapsed into one.
+    expect(forgeTools.find((t) => t.name === 'forge_browser_act')).toBeUndefined();
+    expect(forgeTools.find((t) => t.name === 'forge_browser_screenshot')).toBeUndefined();
+    expect(forgeTools.find((t) => t.name === 'forge_browser_accessibility_tree')).toBeUndefined();
+
+    const capture = tool('forge_review_capture');
+    expect(capture.sideEffect).toBe('workspace');
+    const captures = (capture.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>).captures;
+    // A plain capture works, and an optional steps array drives an interaction.
+    expect(captures.safeParse([{ route: '/' }]).success).toBe(true);
+    expect(captures.safeParse([{ route: '/', steps: [{ kind: 'click', selector: '#add-to-cart' }] }]).success).toBe(true);
+    expect(captures.safeParse([{ route: '/', steps: [{ kind: 'not_a_real_action' }] }]).success).toBe(false);
+    // Capture mutates the workspace and is not silently replayed.
+    expect(toolAnnotations('forge_review_capture', 'workspace')).toMatchObject({ readOnlyHint: false });
   });
 });

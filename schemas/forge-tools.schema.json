@@ -73,11 +73,6 @@
           "__schema0": {
             "type": "object",
             "properties": {
-              "selection": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 200
-              },
               "path": {
                 "type": "string",
                 "pattern": "^\\/.*"
@@ -87,10 +82,14 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100
+              },
+              "selection": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
               }
             },
             "required": [
-              "selection",
               "path",
               "state"
             ],
@@ -127,7 +126,7 @@
     },
     "forge_workspace_create": {
       "title": "Create Forge workspace",
-      "description": "Create a disposable isolated workspace from an authorized repository. Returns immediately with the current lifecycle state and revision.",
+      "description": "Create a disposable isolated workspace from an authorized repository. Returns immediately with state 'requested'; poll forge_workspace_get until state is 'ready' (usually under a minute) before using it. idempotency_key must be unique per distinct workspace.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -316,7 +315,7 @@
     },
     "forge_files_write": {
       "title": "Write workspace file",
-      "description": "Create or overwrite a file inside the repository with its full content — simpler and more reliable than a unified diff for whole-file changes. Pass expected_sha256 (from forge_files_read) for a conflict-safe overwrite; omit it to create a new file. Parent directories are created automatically.",
+      "description": "Create or overwrite a file with its full content — simpler and more reliable than a unified diff for whole-file changes. Pass expected_sha256 (from forge_files_read) for a conflict-safe overwrite; omit it to create a new file. Parent directories are created automatically. idempotency_key must be unique per distinct write.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -339,11 +338,6 @@
             "type": "string",
             "pattern": "^[a-f0-9]{64}$"
           },
-          "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
@@ -361,7 +355,7 @@
     },
     "forge_files_patch": {
       "title": "Apply file patch",
-      "description": "Apply a unified diff inside the repository. Best for surgical multi-hunk edits; for whole-file rewrites prefer forge_files_write. Requires an idempotency key and optional expected workspace revision.",
+      "description": "Apply a unified diff inside the repository. Best for surgical multi-hunk edits; for whole-file rewrites prefer forge_files_write (agents often miscount diff context). idempotency_key must be unique per distinct patch.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -376,11 +370,6 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1000000
-          },
-          "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
           },
           "idempotency_key": {
             "type": "string",
@@ -398,7 +387,7 @@
     },
     "forge_shell_exec": {
       "title": "Execute bounded command",
-      "description": "Execute a foreground command in an explicit directory with timeout, output and network-policy bounds. Risky commands return a real user approval URL.",
+      "description": "Execute a foreground command in an explicit directory with timeout, output and network-policy bounds. Risky commands return a real user approval URL. idempotency_key must be unique per distinct command.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -482,7 +471,7 @@
     },
     "forge_process_start": {
       "title": "Start background process",
-      "description": "Start a long-running process such as a development server and return a Forge process identifier immediately.",
+      "description": "Start a long-running process such as a development server and return a Forge process identifier immediately. idempotency_key must be unique per distinct process.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -899,7 +888,7 @@
     },
     "forge_review_capture": {
       "title": "Capture Parallax review evidence",
-      "description": "Capture a versioned Parallax evidence packet for bounded selections, routes, states and viewports. Use forge_artifact_get to inspect each stored screenshot image.",
+      "description": "Capture screenshot + accessibility evidence of a running Forge preview: one packet for bounded routes, states and viewports. Optionally give a capture `steps` to drive a real interaction (click/fill/press/wait) before the shot — that proves multi-step flows (open a menu, submit a form) a static screenshot cannot. Use forge_artifact_get to inspect each stored image. This is the only preview-evidence tool; there is no separate screenshot/accessibility/act tool.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -927,7 +916,7 @@
             "maxItems": 4,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema1"
+              "$ref": "#/$defs/__schema2"
             }
           }
         },
@@ -942,11 +931,6 @@
           "__schema0": {
             "type": "object",
             "properties": {
-              "selection": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 200
-              },
               "route": {
                 "type": "string",
                 "pattern": "^\\/.*"
@@ -956,219 +940,28 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100
+              },
+              "selection": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "steps": {
+                "minItems": 1,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/__schema1"
+                }
               }
             },
             "required": [
-              "selection",
               "route",
               "state"
             ],
             "additionalProperties": false
           },
           "__schema1": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 40
-              },
-              "width": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 3840
-              },
-              "height": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 2160
-              }
-            },
-            "required": [
-              "id",
-              "width",
-              "height"
-            ],
-            "additionalProperties": false
-          }
-        }
-      }
-    },
-    "forge_browser_screenshot": {
-      "title": "Capture browser screenshot",
-      "description": "Capture browser evidence from a Forge preview and persist it as an artifact bound to workspace revision and viewport.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
-          },
-          "preview_id": {
-            "type": "string",
-            "pattern": "^prv_.*"
-          },
-          "path": {
-            "default": "/",
-            "type": "string",
-            "pattern": "^\\/.*"
-          },
-          "viewport": {
-            "type": "object",
-            "properties": {
-              "width": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 3840
-              },
-              "height": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 2160
-              }
-            },
-            "required": [
-              "width",
-              "height"
-            ],
-            "additionalProperties": false
-          },
-          "full_page": {
-            "default": true,
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "workspace_id",
-          "preview_id",
-          "path",
-          "viewport",
-          "full_page"
-        ],
-        "additionalProperties": false
-      }
-    },
-    "forge_browser_accessibility_tree": {
-      "title": "Read browser accessibility tree",
-      "description": "Capture the bounded accessibility tree for a Forge preview route at a selected viewport, plus a derived structure-health signal that flags heading defects (stacked title-on-title headings, empty or duplicated headings, skipped levels) which a screenshot cannot surface.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
-          },
-          "preview_id": {
-            "type": "string",
-            "pattern": "^prv_.*"
-          },
-          "path": {
-            "default": "/",
-            "type": "string",
-            "pattern": "^\\/.*"
-          },
-          "viewport": {
-            "type": "object",
-            "properties": {
-              "width": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 3840
-              },
-              "height": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 2160
-              }
-            },
-            "required": [
-              "width",
-              "height"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "workspace_id",
-          "preview_id",
-          "path",
-          "viewport"
-        ],
-        "additionalProperties": false
-      }
-    },
-    "forge_browser_act": {
-      "title": "Run bounded browser interactions",
-      "description": "Drive a real user journey against a Forge preview: navigate, click, fill, press keys and wait for selectors or text, then capture a screenshot and accessibility tree of the resulting state. Use this to prove multi-step flows (add to cart, submit a form, open a menu) that a single screenshot cannot.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
-          },
-          "preview_id": {
-            "type": "string",
-            "pattern": "^prv_.*"
-          },
-          "path": {
-            "default": "/",
-            "type": "string",
-            "pattern": "^\\/.*"
-          },
-          "steps": {
-            "minItems": 1,
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema0"
-            }
-          },
-          "viewport": {
-            "type": "object",
-            "properties": {
-              "width": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 3840
-              },
-              "height": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 2160
-              }
-            },
-            "required": [
-              "width",
-              "height"
-            ],
-            "additionalProperties": false
-          },
-          "full_page": {
-            "default": false,
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "workspace_id",
-          "preview_id",
-          "path",
-          "steps",
-          "viewport",
-          "full_page"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
             "type": "object",
             "properties": {
               "kind": {
@@ -1215,6 +1008,32 @@
             },
             "required": [
               "kind"
+            ],
+            "additionalProperties": false
+          },
+          "__schema2": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 3840
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 240,
+                "maximum": 2160
+              }
+            },
+            "required": [
+              "id",
+              "width",
+              "height"
             ],
             "additionalProperties": false
           }
