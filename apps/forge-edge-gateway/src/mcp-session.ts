@@ -22,6 +22,7 @@ import { registerForgeConsole } from './forge-console';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
 import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, slotTtlMs, workspaceCaps } from './capacity';
 import { snapshotsEnabled } from './snapshots';
+import { aiEnabled, generateCommitMessage, summarizeDiffForPr } from './ai';
 import {
   authorizeRepository,
   completeApproval,
@@ -628,8 +629,18 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_git_commit: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).gitCommit({
-          message: text(input.message), paths: input.paths as string[], expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+        const coordinator = await authorizedCoordinator(env, identity, text(input.workspace_id));
+        let message = input.message === undefined ? '' : text(input.message);
+        // Blank message + AI on: synthesise a commit message from the working
+        // diff. Best-effort — generateCommitMessage never throws, and if the
+        // diff is empty we leave the message blank so gitCommit enforces the
+        // existing required-message contract.
+        if (!message.trim() && aiEnabled(env)) {
+          const diff = await coordinator.gitDiff({ staged: false }).then((r) => r.stdout ?? '').catch(() => '');
+          if (diff.trim()) message = await generateCommitMessage(env, diff);
+        }
+        return asRecord(await coordinator.gitCommit({
+          message, paths: input.paths as string[], expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
         }));
       },
       forge_git_outgoing_diff: async (input) => {
@@ -669,9 +680,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const workspaceId = text(input.workspace_id);
         const head = text(input.head);
         const base = text(input.base);
-        const title = text(input.title);
-        const body = text(input.body);
+        let title = input.title === undefined ? '' : text(input.title);
+        let body = input.body === undefined ? '' : text(input.body);
         const approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        // Blank title + AI on: summarise the branch diff into a title (and body
+        // only when the caller left the body blank too). Best-effort — the
+        // summariser never throws; if AI is disabled we keep prior behaviour.
+        if (!title.trim() && aiEnabled(env)) {
+          const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
+            .gitOutgoingDiff({ base }).catch(() => undefined);
+          if (outgoing?.diff?.trim()) {
+            const summary = await summarizeDiffForPr(env, outgoing.diff, { branch: head, base });
+            title = summary.title;
+            if (!body.trim()) body = summary.body;
+          }
+        }
         if (!approvalId) {
           // Show the branch's diff on the approval page so the PR is reviewed on
           // its contents, not just a title. Display-only, best-effort.
