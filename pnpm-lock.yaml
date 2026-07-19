@@ -26,6 +26,9 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:packages/core
+      '@forge/insight':
+        specifier: workspace:*
+        version: link:packages/insight
       '@forge/mcp-core':
         specifier: workspace:*
         version: link:packages/mcp-core
@@ -95,6 +98,9 @@ importers:
       '@forge/git-core':
         specifier: workspace:*
         version: link:../../packages/git-core
+      '@forge/insight':
+        specifier: workspace:*
+        version: link:../../packages/insight
       '@forge/mcp-adapter-v1':
         specifier: workspace:*
         version: link:../../packages/mcp-adapter-v1
@@ -248,6 +254,8 @@ importers:
       jose:
         specifier: 6.2.2
         version: 6.2.2
+
+  packages/insight: {}
 
   packages/mcp-adapter-v1:
     dependencies:

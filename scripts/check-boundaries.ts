@@ -9,6 +9,7 @@ const domainPackages = [
   'core',
   'events',
   'git-core',
+  'insight',
   'policy',
   'project-detection',
   'repo-index',
