@@ -163,18 +163,26 @@ export async function reserveWorkspaceSlot(
   // Atomic claim in a single statement: pick the lowest free slot in the
   // tenant's 1..perTenant range (NOT EXISTS bounds the per-tenant cap) while the
   // global count is under the global cap. RETURNING yields the slot on success.
-  const candidates = Array.from({ length: caps.perTenant }, (_, index) => `SELECT ${index + 1} AS slot`).join(' UNION ALL ');
+  // The candidate range is built with a recursive CTE rather than a UNION ALL
+  // chain — D1 caps the number of terms in a compound SELECT, so an N-term chain
+  // fails ("too many terms in compound SELECT") whereas the two-arm recursive
+  // CTE is unbounded in N.
   const inserted = await database.prepare(
-    `INSERT INTO workspace_slots (workspace_id, tenant_id, slot, claimed_at)
-       SELECT ?1, ?2, candidate.slot, ?3
-         FROM (${candidates}) AS candidate
-        WHERE NOT EXISTS (SELECT 1 FROM workspace_slots s WHERE s.tenant_id = ?2 AND s.slot = candidate.slot)
-          AND (SELECT COUNT(*) FROM workspace_slots) < ?4
-        ORDER BY candidate.slot
-        LIMIT 1
-       ON CONFLICT(workspace_id) DO NOTHING
-       RETURNING slot`
-  ).bind(workspaceId, tenantId, new Date().toISOString(), caps.global).first<{ slot: number }>();
+    `WITH RECURSIVE candidate(slot) AS (
+        SELECT 1
+        UNION ALL
+        SELECT slot + 1 FROM candidate WHERE slot < ?1
+      )
+      INSERT INTO workspace_slots (workspace_id, tenant_id, slot, claimed_at)
+        SELECT ?2, ?3, candidate.slot, ?4
+          FROM candidate
+         WHERE NOT EXISTS (SELECT 1 FROM workspace_slots s WHERE s.tenant_id = ?3 AND s.slot = candidate.slot)
+           AND (SELECT COUNT(*) FROM workspace_slots) < ?5
+         ORDER BY candidate.slot
+         LIMIT 1
+        ON CONFLICT(workspace_id) DO NOTHING
+        RETURNING slot`
+  ).bind(caps.perTenant, workspaceId, tenantId, new Date().toISOString(), caps.global).first<{ slot: number }>();
   if (inserted) {
     console.log('forge_slot_reserved', { slot: inserted.slot, tenantId, workspaceId });
     return inserted.slot;
