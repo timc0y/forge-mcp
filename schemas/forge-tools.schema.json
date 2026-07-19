@@ -16,6 +16,219 @@
         "additionalProperties": false
       }
     },
+    "forge_task_start": {
+      "title": "Start a durable task",
+      "description": "Create a durable coding-session record that survives MCP reconnects, context compression and container sleep. Cheap: creates NO container. Call this first for any coherent piece of work, then attach one workspace later only when execution is needed.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "repository": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "const": "github"
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            },
+            "required": [
+              "provider",
+              "owner",
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "base_ref": {
+            "default": "main",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "decisions": {
+            "default": [],
+            "maxItems": 40,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema0"
+            }
+          },
+          "non_goals": {
+            "default": [],
+            "maxItems": 40,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema1"
+            }
+          },
+          "likely_paths": {
+            "default": [],
+            "maxItems": 40,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema2"
+            }
+          }
+        },
+        "required": [
+          "repository",
+          "base_ref",
+          "goal",
+          "decisions",
+          "non_goals",
+          "likely_paths"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "forge_task_get": {
+      "title": "Get a durable task",
+      "description": "Return the full durable task record including branch, workspace, previews, files read and changed, checks and evidence ids. Read-only and container-free.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_task_summary": {
+      "title": "Summarize a durable task",
+      "description": "Return a compact reconnect summary that lets a fresh turn resume without replaying the session: goal, decisions, non-goals, state, files, checks, evidence, outstanding work and the next recommended action. Excludes source, full logs, diffs and secrets. Container-free.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_task_list": {
+      "title": "List durable tasks",
+      "description": "List recent durable tasks for the account, most recently updated first, optionally filtered by state. Container-free.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "planning",
+              "ready",
+              "coding",
+              "validating",
+              "previewing",
+              "reviewing",
+              "awaiting-approval",
+              "complete",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_task_finish": {
+      "title": "Finish a durable task",
+      "description": "Move a durable task to a terminal state (complete, failed or cancelled). The task record and its evidence remain retrievable afterwards.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "task_id",
+          "outcome"
+        ],
+        "additionalProperties": false
+      }
+    },
     "forge_review": {
       "title": "Review a site with Parallax",
       "description": "The easiest and cheapest Forge path. Capture screenshot and accessibility evidence from an existing URL without starting a container, ready for a strict Parallax review. Each cell carries a structure-health signal (structureSummary and evidence[].accessibility.structure) that flags heading defects the screenshot hides — stacked title-on-title headings, empty or duplicated headings and skipped levels — so those must be resolved or explicitly accepted before the review passes.",

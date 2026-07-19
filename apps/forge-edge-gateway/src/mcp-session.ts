@@ -14,6 +14,16 @@ import { issueCapability } from '@forge/capabilities';
 import { registerForgeToolsV1 } from '@forge/mcp-adapter-v1';
 import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
+import { D1TaskStore } from '@forge/metadata-d1';
+import {
+  applyTaskPatch,
+  assertTaskOwnership,
+  createTask,
+  summarizeTask,
+  type RepositoryRef,
+  type TaskId,
+  type TaskState
+} from '@forge/task-core';
 import type { BrowserActionStep } from '@forge/browser-core';
 import { selectBrowserProvider } from './browser-router';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
@@ -351,12 +361,77 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     }
   }
 
+  private async loadTask(taskId: TaskId) {
+    const task = await new D1TaskStore(this.env.METADATA).get(taskId);
+    if (!task) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: 'Task was not found.',
+        retryable: false,
+        details: { taskId }
+      });
+    }
+    return task;
+  }
+
   private handlers(): ForgeToolHandlers {
     const env = this.env;
     return {
       forge_repository_list: async () => {
         const identity = this.identity();
         return { repositories: await listAuthorizedRepositories(env, identity.tenantId) };
+      },
+      forge_task_start: async (input) => {
+        const identity = this.identity();
+        const store = new D1TaskStore(env.METADATA);
+        const task = createTask(ids.task(), new Date().toISOString(), {
+          tenantId: identity.tenantId as TenantId,
+          projectId: identity.projectId as ProjectId,
+          repository: input.repository as RepositoryRef,
+          baseRef: text(input.base_ref),
+          goal: text(input.goal),
+          decisions: input.decisions as string[],
+          nonGoals: input.non_goals as string[],
+          likelyPaths: input.likely_paths as string[]
+        });
+        await store.put(task);
+        return { task_id: task.id, state: task.state, revision: task.revision, container_used: false };
+      },
+      forge_task_get: async (input) => {
+        const identity = this.identity();
+        const task = await this.loadTask(text(input.task_id) as TaskId);
+        assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
+        return asRecord(task);
+      },
+      forge_task_summary: async (input) => {
+        const identity = this.identity();
+        const task = await this.loadTask(text(input.task_id) as TaskId);
+        assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
+        return asRecord(summarizeTask(task));
+      },
+      forge_task_list: async (input) => {
+        const identity = this.identity();
+        const store = new D1TaskStore(env.METADATA);
+        const tasks = await store.list(identity.tenantId as TenantId, {
+          state: input.state ? (text(input.state) as TaskState) : undefined,
+          limit: number(input.limit)
+        });
+        return { tasks: tasks.map((task) => summarizeTask(task)) };
+      },
+      forge_task_finish: async (input) => {
+        const identity = this.identity();
+        const store = new D1TaskStore(env.METADATA);
+        const task = await this.loadTask(text(input.task_id) as TaskId);
+        assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
+        const outstanding = input.note ? [...task.outstanding, text(input.note)] : task.outstanding;
+        const updated = applyTaskPatch(
+          task,
+          { state: text(input.outcome) as TaskState, outstanding },
+          new Date().toISOString(),
+          optionalNumber(input.expected_revision)
+        );
+        await store.put(updated);
+        return { task_id: updated.id, state: updated.state, revision: updated.revision };
       },
       forge_review: async (input) => {
         const identity = this.identity();

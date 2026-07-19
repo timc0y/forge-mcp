@@ -17,4 +17,25 @@ text, reload) to drive a real interaction before the shot, so multi-step flows
 can be proven rather than only single rendered states — there is no separate
 screenshot / accessibility / act tool.
 
+## Durable task tools
+
+A task is a durable coding-session record that lives above the disposable
+workspace. It survives MCP reconnects, ChatGPT context compression, container
+sleep and client reconnection. None of these tools create a container.
+
+- `forge_task_start` — create a durable task (goal, base ref, decisions,
+  non-goals, likely paths). Call this first for any coherent piece of work.
+- `forge_task_get` — return the full durable task record.
+- `forge_task_summary` — return a compact reconnect summary (goal, decisions,
+  state, files read/changed, checks, evidence, outstanding work and the next
+  recommended action) with secrets redacted and no full source, logs or diffs.
+- `forge_task_list` — list recent tasks for the account, optionally by state.
+- `forge_task_finish` — move a task to a terminal state (complete/failed/
+  cancelled); the record and its evidence remain retrievable afterwards.
+
+The task record is persisted in D1 (`tasks` table, migration `0009_tasks.sql`)
+and modelled in `@forge/task-core`. Resume-relevant context is stored as bounded
+JSON that never holds secrets, full source, complete logs or raw diffs; large
+evidence stays in R2 and is referenced by artifact id.
+
 Machine-readable schemas are generated into `schemas/forge-tools.schema.json`. Later phases add snapshot/resume, process stop, full Git/PR, browser accessibility/inspection, context and approvals without changing the existing names.

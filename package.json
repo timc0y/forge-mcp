@@ -40,6 +40,7 @@
     "tsx": "4.21.0",
     "typescript": "5.9.3",
     "vitest": "4.1.9",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@forge/task-core": "workspace:*"
   }
 }

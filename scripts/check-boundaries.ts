@@ -12,7 +12,8 @@ const domainPackages = [
   'policy',
   'project-detection',
   'repo-index',
-  'sandbox-core'
+  'sandbox-core',
+  'task-core'
 ];
 const forbidden = [
   '@cloudflare/',

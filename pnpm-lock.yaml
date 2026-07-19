@@ -44,6 +44,9 @@ importers:
       '@forge/sandbox-local-docker':
         specifier: workspace:*
         version: link:packages/sandbox-local-docker
+      '@forge/task-core':
+        specifier: workspace:*
+        version: link:packages/task-core
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1
@@ -113,6 +116,9 @@ importers:
       '@forge/sandbox-selfhosted':
         specifier: workspace:*
         version: link:../../packages/sandbox-selfhosted
+      '@forge/task-core':
+        specifier: workspace:*
+        version: link:../../packages/task-core
       '@forge/workflows-cloudflare':
         specifier: workspace:*
         version: link:../../packages/workflows-cloudflare
@@ -278,6 +284,9 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:../core
+      '@forge/task-core':
+        specifier: workspace:*
+        version: link:../task-core
 
   packages/policy:
     dependencies:
@@ -335,6 +344,15 @@ importers:
       '@forge/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
+
+  packages/task-core:
+    dependencies:
+      '@forge/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
   packages/workflows-cloudflare:
     dependencies:
