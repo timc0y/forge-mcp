@@ -15,6 +15,12 @@ export interface Env {
   METADATA: D1Database;
   ARTIFACTS: R2Bucket;
   BROWSER: BrowserRun;
+  // Cloudflare Workers AI binding. Powers best-effort commit-message and PR
+  // summarisation; every call has a deterministic fallback so AI is never on
+  // the critical path.
+  AI: Ai;
+  // Kill switch for the Workers AI features. AI is ON unless this is 'true'/'1'.
+  FORGE_AI_DISABLED?: string;
   FORGE_DEV_AUTH_TOKEN?: string;
   FORGE_OWNER_AUTH_TOKEN?: string;
   FORGE_CAPABILITY_SIGNING_KEY: string;
