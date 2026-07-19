@@ -26,6 +26,9 @@ workspace, security — is in
 [`docs/self-host/mac-mini.md`](../../docs/self-host/mac-mini.md).
 
 Implements: `POST /v1/health` (with `capacity`), `/v1/browser/health`, sandbox
-create/exec/suspend/resume/destroy/info, `files/{read,write,patch,tree}`, and
-browser `capture/screenshot/accessibility/act`. Background processes, preview
-ports, and snapshots return an explicit 501 — extend as needed.
+create/exec/suspend/resume/destroy/info, `files/{read,write,patch,tree}`,
+`process/{start,get,logs,stop}`, `ports/{expose,revoke}`, a `/preview/<id>/<port>/`
+proxy to the live dev server, and browser `capture/screenshot/accessibility/act`.
+Only snapshots return 501. Preview ports must be published at container-create
+time — the common dev ports (3000/4321/5173/8000/8080) are, override with
+`FORGE_AGENT_PREVIEW_PORTS`.

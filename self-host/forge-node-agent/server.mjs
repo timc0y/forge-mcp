@@ -168,6 +168,20 @@ const HARDENING = [
   '--label', 'forge=1'
 ];
 
+// Common dev-server ports published to loopback at container-create time (Docker
+// can only publish ports at run time). A preview on one of these is reachable;
+// override with FORGE_AGENT_PREVIEW_PORTS. Matches the cloud image's EXPOSE set.
+const PREVIEW_PORTS = (process.env.FORGE_AGENT_PREVIEW_PORTS || '3000,4321,5173,8000,8080')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+const PORT_ARGS = PREVIEW_PORTS.flatMap((p) => ['-p', `127.0.0.1::${p}`]);
+
+// Look up the loopback host port Docker mapped a container port to.
+async function hostPortFor(id, containerPort) {
+  const r = await docker(['port', nameFor(id), `${containerPort}/tcp`]);
+  const match = r.stdout.trim().match(/:(\d+)\s*$/m);
+  return match ? Number(match[1]) : null;
+}
+
 // ---- routing ----------------------------------------------------------------
 async function handle(method, url, body) {
   const p = url.split('?')[0];
@@ -187,7 +201,7 @@ async function handle(method, url, body) {
     if (workspaces.size >= MAX && !workspaces.has(input.providerId)) throw httpError(503, `At capacity (${workspaces.size}/${MAX}).`);
     const name = nameFor(input.providerId);
     await docker(['rm', '-f', name]);
-    const run = await docker(['run', '-d', '--name', name, ...HARDENING, IMAGE, 'sleep', 'infinity']);
+    const run = await docker(['run', '-d', '--name', name, ...HARDENING, ...PORT_ARGS, IMAGE, 'sleep', 'infinity']);
     if (run.exitCode !== 0) throw httpError(500, `docker run failed: ${run.stderr.slice(0, 300)}`);
     await dexec(input.providerId, 'mkdir -p /workspace/repo /workspace/tmp');
     workspaces.set(input.providerId, { name, lastActive: Date.now() });
@@ -241,8 +255,50 @@ async function handle(method, url, body) {
       });
       return { entries, truncated: entries.length >= (i.limit ?? 1000) };
     }
-    if (action === 'ports/expose') throw httpError(501, 'Preview port exposure is not implemented in the reference agent.');
-    if (action.startsWith('process/')) throw httpError(501, 'Background processes are not implemented in the reference agent.');
+    if (action === 'process/start') {
+      const i = body.input;
+      const log = `/workspace/tmp/proc-${i.processId}.log`;
+      const pidf = `/workspace/tmp/proc-${i.processId}.pid`;
+      const envExports = Object.entries(i.environment ?? {}).map(([k, v]) => `export ${k}=${shq(v)};`).join(' ');
+      // Launch detached, capture the pid, keep logs in a file the log endpoint tails.
+      const r = await dexec(id, `cd ${shq(i.cwd)}; ${envExports} nohup bash -lc ${shq(i.command)} > ${shq(log)} 2>&1 < /dev/null & echo $! | tee ${shq(pidf)}`);
+      const pid = Number(r.stdout.trim()) || undefined;
+      return { id: i.processId, providerProcessId: i.processId, command: i.command, cwd: i.cwd, status: 'running', pid };
+    }
+    if (action === 'process/get') {
+      const processId = body.processId;
+      const pidf = `/workspace/tmp/proc-${processId}.pid`;
+      const r = await dexec(id, `pid=$(cat ${shq(pidf)} 2>/dev/null); if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "running $pid"; else echo "exited $pid"; fi`);
+      const [status, pid] = r.stdout.trim().split(' ');
+      return status ? { id: processId, providerProcessId: processId, command: '', cwd: '/workspace', status, pid: Number(pid) || undefined } : null;
+    }
+    if (action === 'process/logs') {
+      const i = body.input;
+      const log = `/workspace/tmp/proc-${i.processId}.log`;
+      const cursor = Number(i.cursor ?? 0);
+      const limit = Number(i.limitBytes ?? 100_000);
+      const r = await dexec(id, `tail -c +${cursor + 1} ${shq(log)} 2>/dev/null | head -c ${limit}`);
+      const data = r.stdout;
+      const bytes = Buffer.byteLength(data);
+      return { data, nextCursor: String(cursor + bytes), truncated: bytes >= limit };
+    }
+    if (action === 'process/stop') {
+      const processId = body.processId;
+      const pidf = `/workspace/tmp/proc-${processId}.pid`;
+      await dexec(id, `pid=$(cat ${shq(pidf)} 2>/dev/null); if [ -n "$pid" ]; then pkill -TERM -P "$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null; sleep 0.3; kill -KILL "$pid" 2>/dev/null; fi; true`);
+      return {};
+    }
+    if (action === 'ports/expose') {
+      const i = body.input;
+      const host = await hostPortFor(id, i.port);
+      if (host === null) {
+        throw httpError(400, `Port ${i.port} is not published. Publish it via FORGE_AGENT_PREVIEW_PORTS (currently ${PREVIEW_PORTS.join(', ')}).`);
+      }
+      // The Worker proxies preview traffic to /preview/<providerId>/<port>; the
+      // agent resolves the live host port per request. providerUrl is informational.
+      return { port: i.port, name: i.name, providerUrl: `http://127.0.0.1:${host}` };
+    }
+    if (action === 'ports/revoke') return {}; // published for the container's lifetime; destroy frees them
     if (action === 'snapshot') throw httpError(501, 'Snapshots are not supported by the self-hosted backend.');
   }
 
@@ -278,6 +334,42 @@ const server = createServer((req, res) => {
     res.end(payload);
   };
   if ((req.headers.authorization ?? '') !== `Bearer ${TOKEN}`) return send(401, { message: 'Unauthorized' });
+
+  // Raw preview proxy: /preview/<providerId>/<containerPort>/<rest> → the live
+  // dev server inside the workspace container. Forge (over the tunnel) calls this
+  // so browser_act and human viewing can reach a preview on the mini.
+  if (req.url.startsWith('/preview/')) {
+    const inbound = [];
+    req.on('data', (c) => inbound.push(c));
+    const m = req.url.match(/^\/preview\/([^/]+)\/(\d+)(\/[^?]*)?(\?.*)?$/);
+    if (!m) {
+      req.resume();
+      return send(404, { message: 'Bad preview path' });
+    }
+    req.on('end', async () => {
+      try {
+        const host = await hostPortFor(decodeURIComponent(m[1]), m[2]);
+        if (!host) return send(502, { message: 'Preview port not reachable (is the dev server running on a published port?)' });
+        const headers = { ...req.headers };
+        delete headers.authorization; // never forward the agent token to the app
+        delete headers.host;
+        delete headers['content-length'];
+        const upstream = await fetch(`http://127.0.0.1:${host}${m[3] || '/'}${m[4] || ''}`, {
+          method: req.method,
+          headers,
+          body: req.method === 'GET' || req.method === 'HEAD' ? undefined : Buffer.concat(inbound),
+          redirect: 'manual'
+        });
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(upstream.status, Object.fromEntries(upstream.headers));
+        res.end(buf);
+      } catch (error) {
+        send(502, { message: String(error.message ?? error).slice(0, 200) });
+      }
+    });
+    return;
+  }
+
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', async () => {

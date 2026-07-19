@@ -149,6 +149,33 @@ async function sandboxPreviewFetch(
   path: string,
   search: string
 ): Promise<{ response: Response; target: URL }> {
+  // Self-hosted workspaces serve their preview from the user's own machine, so
+  // proxy through the agent's preview route (over the tunnel) instead of the
+  // Cloudflare sandbox binding. Gated on the persisted provider kind, so the
+  // Cloudflare path below is untouched for cloud workspaces.
+  if (detail.workspace.provider.kind === 'self-hosted') {
+    if (!env.FORGE_SELFHOST_URL || !env.FORGE_SELFHOST_TOKEN) {
+      throw new ForgeError({
+        code: 'FORGE_PREVIEW_UNAVAILABLE',
+        message: 'Self-hosted preview backend is not configured.',
+        retryable: false
+      });
+    }
+    const base = env.FORGE_SELFHOST_URL.replace(/\/+$/, '');
+    const target = new URL(
+      `${base}/preview/${encodeURIComponent(detail.providerId)}/${detail.preview.port}${path}`
+    );
+    target.search = search;
+    const headers = cleanPreviewHeaders(request);
+    headers.set('authorization', `Bearer ${env.FORGE_SELFHOST_TOKEN}`);
+    const response = await fetch(target, {
+      method: request.method,
+      headers,
+      body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
+      redirect: 'manual'
+    });
+    return { response, target };
+  }
   const target = new URL(path, 'http://forge-container.internal');
   target.search = search;
   const upstreamRequest = new Request(target, {
