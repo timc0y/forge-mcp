@@ -68,6 +68,9 @@ importers:
       '@forge/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@forge/artifacts-core':
+        specifier: workspace:*
+        version: link:../../packages/artifacts-core
       '@forge/artifacts-r2':
         specifier: workspace:*
         version: link:../../packages/artifacts-r2
@@ -77,6 +80,9 @@ importers:
       '@forge/browser-core':
         specifier: workspace:*
         version: link:../../packages/browser-core
+      '@forge/browser-selfhosted':
+        specifier: workspace:*
+        version: link:../../packages/browser-selfhosted
       '@forge/capabilities':
         specifier: workspace:*
         version: link:../../packages/capabilities
@@ -104,6 +110,9 @@ importers:
       '@forge/sandbox-core':
         specifier: workspace:*
         version: link:../../packages/sandbox-core
+      '@forge/sandbox-selfhosted':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-selfhosted
       '@forge/workflows-cloudflare':
         specifier: workspace:*
         version: link:../../packages/workflows-cloudflare
@@ -180,6 +189,18 @@ importers:
 
   packages/browser-core:
     dependencies:
+      '@forge/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/browser-selfhosted:
+    dependencies:
+      '@forge/artifacts-core':
+        specifier: workspace:*
+        version: link:../artifacts-core
+      '@forge/browser-core':
+        specifier: workspace:*
+        version: link:../browser-core
       '@forge/core':
         specifier: workspace:*
         version: link:../core
@@ -295,6 +316,15 @@ importers:
         version: link:../core
 
   packages/sandbox-local-docker:
+    dependencies:
+      '@forge/core':
+        specifier: workspace:*
+        version: link:../core
+      '@forge/sandbox-core':
+        specifier: workspace:*
+        version: link:../sandbox-core
+
+  packages/sandbox-selfhosted:
     dependencies:
       '@forge/core':
         specifier: workspace:*

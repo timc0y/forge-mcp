@@ -6,9 +6,9 @@ import {
 } from '@forge/application';
 import { ForgeError, type ProcessId } from '@forge/core';
 import { D1MetadataStore } from '@forge/metadata-d1';
-import { CloudflareSandboxProvider } from '@forge/sandbox-cloudflare';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
 import type { Env } from './env';
+import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
 
 const RECORD_KEY = 'workspace-runtime';
@@ -33,7 +33,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.app = new ForgeApplicationService(new CloudflareSandboxProvider(env));
+    this.app = new ForgeApplicationService(createSandboxRouter(env));
     this.metadata = new D1MetadataStore(env.METADATA);
   }
 
