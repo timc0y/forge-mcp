@@ -30,7 +30,8 @@
     "GITHUB_APP_ID": "4281819",
     "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
     "GITHUB_APP_SLUG": "forge-mcp-cloud",
-    "FORGE_AUTO_APPROVE_SHELL": "true"
+    "FORGE_AUTO_APPROVE_SHELL": "true",
+    "FORGE_SNAPSHOT_ENABLED": "true"
   },
   "browser": {
     "binding": "BROWSER"
