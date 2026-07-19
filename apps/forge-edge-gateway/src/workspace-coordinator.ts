@@ -16,6 +16,11 @@ import { snapshotsEnabled, getSnapshot } from './snapshots';
 const RECORD_KEY = 'workspace-runtime';
 // Legacy key from a removed mutation-lease mechanism; still cleared on destroy.
 const LEASE_KEY = 'mutation-lease';
+// How long a healthy checkout probe result stays trusted before repoRecord()
+// re-runs the `test -d .git` container round-trip. During bursts of repo-scoped
+// tool calls this collapses the redundant PRE-probe; the downstream self-heal
+// still fires if a checkout vanishes within the window.
+const CHECKOUT_PROBE_TTL_MS = 60_000;
 
 export class WorkspaceCoordinator extends DurableObject<Env> {
   private readonly app: ForgeApplicationService;
@@ -63,6 +68,16 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
    */
   private async repoRecord(): Promise<WorkspaceRuntimeRecord> {
     const record = await this.getRecord();
+    // Skip the redundant pre-probe when a recent probe already confirmed the
+    // checkout is healthy. A real missing checkout inside the TTL is still
+    // caught by recoverCheckout when a downstream exec hits it.
+    const checkout = record.workspace.checkout;
+    if (
+      checkout?.healthy &&
+      Date.now() - Date.parse(checkout.checkedAt) < CHECKOUT_PROBE_TTL_MS
+    ) {
+      return record;
+    }
     try {
       await this.app.assertCheckoutPresent(record);
     } catch (error) {

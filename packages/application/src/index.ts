@@ -930,14 +930,13 @@ export class ForgeApplicationService {
     const operation = this.beginMutation(record, input.expectedRevision, input.idempotencyKey);
     if (operation.replay) return { replay: true, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
     const handle = await this.handle(record);
-    const stage = await handle.exec({
-      command: `git add -- ${paths.map(quoted).join(' ')}`,
-      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 50_000,
-      sessionId: 'system', networkPolicy: 'deny_all'
-    });
-    if (stage.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not stage the selected files.', retryable: false });
+    // Fuse stage + commit + rev-parse into a single container round-trip. The
+    // `&&` chain preserves ordering and short-circuits, so a failed stage still
+    // surfaces before the commit runs. HEAD is the last line of stdout.
     const commit = await handle.exec({
-      command: `git commit -m ${quoted(input.message.trim())}`,
+      command: `sh -c ${quoted(
+        `git add -- ${paths.map(quoted).join(' ')} && git commit -m ${quoted(input.message.trim())} && git rev-parse HEAD`
+      )}`,
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 100_000,
       sessionId: 'system', networkPolicy: 'deny_all',
       environment: {
@@ -948,8 +947,7 @@ export class ForgeApplicationService {
       }
     });
     if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
-    const head = await handle.exec({ command: 'git rev-parse HEAD', cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' });
-    record.workspace.currentCommit = head.stdout.trim();
+    record.workspace.currentCommit = commit.stdout.trim().split('\n').pop()?.trim() ?? '';
     record.workspace.hasUnpushedWork = true;
     return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
