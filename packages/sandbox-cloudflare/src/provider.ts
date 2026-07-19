@@ -31,6 +31,7 @@ export interface CloudflareSandboxEnv {
 }
 
 const ROOT = '/workspace';
+const REPO_ROOT = '/workspace/repo';
 const REPO = '/workspace/repo';
 const TRANSPORT = 'rpc' as const;
 
@@ -100,9 +101,12 @@ class CloudflareSandboxHandle implements SandboxHandle {
 
   private async canonicalWorkspacePath(path: string): Promise<string> {
     const lexical = assertWorkspacePath(path);
-    // The workspace root itself cannot symlink-escape, so skip the realpath exec
-    // (a container round trip that can also wake a sleeping sandbox) for it.
-    if (lexical === ROOT) return ROOT;
+    // The workspace root and the repo checkout are both created by Forge itself
+    // (mkdir + git clone), so neither can be a hostile symlink escaping /workspace.
+    // Skip the realpath exec — a container round trip that can also wake a sleeping
+    // sandbox — for these two constants, which cover nearly every tool call and
+    // provisioning step. Arbitrary caller paths still get the check below.
+    if (lexical === ROOT || lexical === REPO_ROOT) return lexical;
     const session = await this.session('system', ROOT);
     const result = await session.exec(`realpath -m -- ${shellQuote(lexical)}`, {
       cwd: ROOT,
