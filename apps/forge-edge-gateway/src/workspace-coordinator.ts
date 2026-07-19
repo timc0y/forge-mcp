@@ -219,8 +219,12 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
               this.restoreDepsFromR2(depsCacheKey(repoSlug, lockfileHash, runtime).cacheKey).catch(() => false),
             populate: (lockfileHash: string) => {
               const { cacheKey } = depsCacheKey(repoSlug, lockfileHash, runtime);
+              console.log('forge_deps_populate_called', { cacheKey });
               // Chain so the post-bootstrap snapshot uploads after this, not with it.
-              this.pendingUpload = this.pendingUpload.then(() => this.depsToR2(cacheKey).catch(() => undefined));
+              this.pendingUpload = this.pendingUpload
+                .then(() => this.depsToR2(cacheKey))
+                .then((r) => console.log('forge_deps_upload_result', { cacheKey, ...r }))
+                .catch((e) => console.log('forge_deps_upload_threw', { cacheKey, error: String(e).slice(0, 200) }));
               this.ctx.waitUntil(this.pendingUpload);
             }
           }
