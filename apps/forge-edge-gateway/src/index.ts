@@ -3,6 +3,7 @@ import { ForgeError, type WorkspaceId } from '@forge/core';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { reclaimStaleSlots, slotTtlMs } from './capacity';
 import { snapshotsEnabled, snapshotKey, recordSnapshot } from './snapshots';
+import { parseDepsCacheKey, recordDepsCache } from './deps-cache';
 import { verifyCapability } from '@forge/capabilities';
 import openapi from '../../../openapi/forge.openapi.json';
 import { ForgeMcpSession } from './mcp-session';
@@ -341,6 +342,46 @@ async function snapshotEndpoint(request: Request, env: Env, url: URL): Promise<R
   return new Response('Method not allowed', { status: 405 });
 }
 
+// Authenticated R2 gateway for the per-repo dependency cache. Mirrors
+// snapshotEndpoint, but the object is scoped by CONTENT (cache_key) instead of by
+// workspace, so any workspace of the same repo at the same lockfile shares it.
+// The cache_key travels in the x-forge-deps-key header; the capability is scoped
+// to `deps:<cache_key>` so a container can only touch the exact key it was handed.
+async function depsEndpoint(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!snapshotsEnabled(env)) return new Response('Deps cache disabled', { status: 404 });
+  const match = url.pathname.match(/^\/__forge_deps\/(ws_[0-9a-hjkmnp-tv-z]{20,32})$/);
+  const workspaceId = match?.[1];
+  if (!workspaceId) return new Response('Not found', { status: 404 });
+  const cacheKey = request.headers.get('x-forge-deps-key') ?? '';
+  const parsed = parseDepsCacheKey(cacheKey);
+  if (!parsed) return new Response('Bad deps key', { status: 400 });
+  const token = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
+  try {
+    await verifyCapability(token, env.FORGE_CAPABILITY_SIGNING_KEY, { workspaceId, action: `deps:${cacheKey}` });
+  } catch {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  if (request.method === 'PUT' && request.body) {
+    const object = await env.ARTIFACTS.put(parsed.r2Key, request.body);
+    await recordDepsCache(env.METADATA, {
+      cacheKey,
+      repoSlug: parsed.repoSlug,
+      lockfileHash: parsed.lockfileHash,
+      runtime: parsed.runtime,
+      r2Key: parsed.r2Key,
+      sizeBytes: object?.size ?? 0,
+      createdAt: new Date().toISOString()
+    });
+    return Response.json({ ok: true, size: object?.size ?? 0 });
+  }
+  if (request.method === 'GET') {
+    const object = await env.ARTIFACTS.get(parsed.r2Key);
+    if (!object) return new Response('No deps cache', { status: 404 });
+    return new Response(object.body, { headers: { 'content-type': 'application/gzip', 'cache-control': 'no-store' } });
+  }
+  return new Response('Method not allowed', { status: 405 });
+}
+
 // Scheduled global reaper: recovers capacity even when nobody is calling
 // forge_workspace_create (the lazy reaper only fires on that path). Frees stale
 // slots and tears their workspaces down. Best-effort per workspace.
@@ -386,6 +427,7 @@ export default {
       const url = new URL(request.url);
       if (url.pathname === '/favicon.ico' && request.method === 'GET') return favicon();
       if (url.pathname.startsWith('/__forge_snapshot/')) return await snapshotEndpoint(request, env, url);
+      if (url.pathname.startsWith('/__forge_deps/')) return await depsEndpoint(request, env, url);
       if (url.pathname.startsWith('/git/')) return await gitCredentialProxy(request, env);
       if (
         url.pathname.startsWith('/__forge_browser/') ||

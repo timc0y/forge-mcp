@@ -61,6 +61,37 @@ export interface RepositoryCloneSource {
   authorizationHeader?: string;
 }
 
+// Callbacks that plug the per-repo dependency cache into provisioning without
+// pulling D1/R2/coordinator specifics into this package (same pattern as the
+// snapshot `restore` callback). `restore` returns true when it warmed the
+// dependency dirs from the shared cache; `populate` is fire-and-forget (the
+// coordinator schedules it on waitUntil) and is only called on a cache miss.
+export interface DepsCacheHooks {
+  restore: (lockfileHash: string) => Promise<boolean>;
+  populate: (lockfileHash: string) => void;
+}
+
+// The lockfile whose hash keys the dependency cache, per detected package
+// manager. Returns null when there is nothing stable to key on (skip the cache).
+function lockfileFor(packageManager: ProjectDetection['packageManager']): string | null {
+  switch (packageManager) {
+    case 'pnpm':
+      return 'pnpm-lock.yaml';
+    case 'npm':
+      return 'package-lock.json';
+    case 'yarn':
+      return 'yarn.lock';
+    case 'bun':
+      return 'bun.lock';
+    case 'uv':
+      return 'uv.lock';
+    case 'pip':
+      return 'requirements.txt';
+    default:
+      return null;
+  }
+}
+
 function repositorySlug(repository: RepositoryRef): string {
   if (
     !/^[A-Za-z0-9_.-]{1,100}$/.test(repository.owner) ||
@@ -348,7 +379,8 @@ export class ForgeApplicationService {
     bootstrap: boolean,
     onStateChange: (record: WorkspaceRuntimeRecord) => Promise<void> = async () => undefined,
     cloneSource?: RepositoryCloneSource,
-    restore?: () => Promise<boolean>
+    restore?: () => Promise<boolean>,
+    depsCache?: DepsCacheHooks
   ): Promise<WorkspaceRuntimeRecord> {
     if (record.workspace.state === 'ready') return record;
     if (!['requested', 'provisioning'].includes(record.workspace.state)) {
@@ -407,6 +439,36 @@ export class ForgeApplicationService {
       const detection = await detectProject(handle);
       record.detection = detection;
 
+      // Per-repo dependency cache: when this was a cold provision (no
+      // per-workspace snapshot restored) and the deps cache is wired, try to warm
+      // node_modules from the shared, content-keyed cache before installing. A hit
+      // turns the install into a fast --prefer-offline verify; a miss populates the
+      // cache after a successful install. Best-effort — never blocks provisioning.
+      let depsRestored = false;
+      let lockfileHash: string | null = null;
+      if (bootstrap && detection.installCommand && depsCache && !usedSnapshot) {
+        const lockfile = lockfileFor(detection.packageManager);
+        if (lockfile) {
+          try {
+            const hashed = await handle.exec({
+              command: `sha256sum ${quoted(lockfile)} | cut -d' ' -f1`,
+              cwd: '/workspace/repo',
+              timeoutMs: 30_000,
+              outputLimitBytes: 1_000,
+              sessionId: 'system',
+              networkPolicy: 'deny_all'
+            });
+            const out = hashed.stdout.trim();
+            if (hashed.exitCode === 0 && /^[a-f0-9]{64}$/.test(out)) {
+              lockfileHash = out;
+              depsRestored = await depsCache.restore(out).catch(() => false);
+            }
+          } catch {
+            // fall through to a normal install
+          }
+        }
+      }
+
       if (bootstrap && detection.installCommand) {
         const install = await handle.exec({
           command: detection.installCommand,
@@ -433,6 +495,11 @@ export class ForgeApplicationService {
               stdout: install.stdout.slice(0, 2_000)
             }
           });
+        }
+        // Cache miss: install just built node_modules from scratch — hand it to
+        // the shared cache so the next workspace of this repo+lockfile skips it.
+        if (depsCache && !depsRestored && lockfileHash) {
+          depsCache.populate(lockfileHash);
         }
       }
 
