@@ -525,7 +525,11 @@ export async function requestApproval(
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string }> {
   const approvalId = ids.approval();
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  // A real build+push cycle easily exceeds a few minutes, so a short approval
+  // window forces re-approval. Default 60 min; tune with FORGE_APPROVAL_TTL_MINUTES.
+  const ttlMinutes = Number(env.FORGE_APPROVAL_TTL_MINUTES);
+  const minutes = Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 60;
+  const expiresAt = new Date(Date.now() + minutes * 60 * 1000).toISOString();
   await env.METADATA.prepare(
     `INSERT INTO approvals
       (id, tenant_id, workspace_id, requested_action, reason, risk_category, request_payload, state, expires_at)

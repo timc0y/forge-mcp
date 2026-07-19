@@ -109,7 +109,8 @@ describe('workspace slot capacity (per-tenant)', () => {
     expect(workspaceCaps({})).toEqual({ global: 8, perTenant: 8 });
     expect(workspaceCaps({ FORGE_MAX_WORKSPACES: '4' })).toEqual({ global: 4, perTenant: 4 });
     expect(workspaceCaps({ FORGE_MAX_WORKSPACES: '10', FORGE_MAX_WORKSPACES_PER_TENANT: '3' })).toEqual({ global: 10, perTenant: 3 });
-    expect(slotTtlMs({})).toBe(30 * 60_000);
+    expect(slotTtlMs({})).toBe(240 * 60_000);
+    expect(slotTtlMs({ FORGE_SLOT_TTL_MINUTES: "30" })).toBe(30 * 60_000);
   });
 
   it('assigns each tenant its own lowest free slot', async () => {
@@ -177,7 +178,7 @@ describe('workspace slot capacity (per-tenant)', () => {
       ],
       {
         wsp_busy: { state: 'ready', updated_at: minutesAgo(1) },
-        wsp_idle: { state: 'ready', updated_at: minutesAgo(45) },
+        wsp_idle: { state: "ready", updated_at: minutesAgo(300) },
         wsp_dead: { state: 'failed', updated_at: minutesAgo(5) }
       }
     );
