@@ -12,6 +12,7 @@ import type { Env } from './env';
 import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
 import { snapshotsEnabled, getSnapshot } from './snapshots';
+import { depsCacheKey, getDepsCache } from './deps-cache';
 
 const RECORD_KEY = 'workspace-runtime';
 // Legacy key from a removed mutation-lease mechanism; still cleared on destroy.
@@ -202,6 +203,21 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const restore = priorSnapshot
         ? () => this.restoreFromR2().then((r) => r.restored).catch(() => false)
         : undefined;
+      // Per-repo dependency cache hooks (content-keyed, shared across workspaces of
+      // the same repo+lockfile). Gated on the same snapshot flag and fully
+      // best-effort — a failure in either hook never blocks provisioning.
+      const repoSlug = `${record.workspace.repository.owner}/${record.workspace.repository.name}`;
+      const runtime = record.workspace.runtimeProfile;
+      const depsCache = snapshotsEnabled(this.env)
+        ? {
+            restore: (lockfileHash: string) =>
+              this.restoreDepsFromR2(depsCacheKey(repoSlug, lockfileHash, runtime).cacheKey).catch(() => false),
+            populate: (lockfileHash: string) => {
+              const { cacheKey } = depsCacheKey(repoSlug, lockfileHash, runtime);
+              this.ctx.waitUntil(this.depsToR2(cacheKey).catch(() => undefined));
+            }
+          }
+        : undefined;
       try {
         const cloneSource = await repositoryCloneSource(this.env, record.workspace);
         await this.app.provisionWorkspace(
@@ -209,7 +225,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.bootstrap,
           (next) => this.save(next),
           cloneSource,
-          restore
+          restore,
+          depsCache
         );
       } catch (error) {
         await this.save(record);
@@ -343,6 +360,67 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       return { restored: result.exitCode === 0 };
     } catch {
       return { restored: false };
+    }
+  }
+
+  // Mint a short-lived capability scoped to one deps cache_key, so untrusted
+  // container code can only PUT/GET that exact content-keyed cache entry.
+  private async depsToken(workspaceId: string, tenantId: string, cacheKey: string): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    return issueCapability(
+      { version: 1, subject: 'forge-deps', tenantId, workspaceId, action: `deps:${cacheKey}`, nonce: crypto.randomUUID(), issuedAt: now, expiresAt: now + 900 },
+      this.env.FORGE_CAPABILITY_SIGNING_KEY
+    );
+  }
+
+  // Restore the shared dependency dirs (node_modules / .venv) for this repo's
+  // lockfile from R2 into /workspace/repo. Best-effort and gated — a miss or
+  // failure just falls back to a normal install.
+  async restoreDepsFromR2(cacheKey: string): Promise<boolean> {
+    if (!snapshotsEnabled(this.env)) return false;
+    let record: WorkspaceRuntimeRecord;
+    try {
+      record = await this.getRecord();
+    } catch {
+      return false;
+    }
+    const row = await getDepsCache(this.env.METADATA, cacheKey).catch(() => null);
+    if (!row) return false;
+    try {
+      const workspaceId = record.workspace.id;
+      const token = await this.depsToken(workspaceId, record.workspace.tenantId, cacheKey);
+      const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_deps/${workspaceId}`;
+      const handle = await this.app.handle(record);
+      const command = `curl -sf -H ${JSON.stringify(`authorization: Bearer ${token}`)} -H ${JSON.stringify(`x-forge-deps-key: ${cacheKey}`)} ${JSON.stringify(url)} | tar xzf - -C /workspace/repo`;
+      const result = await handle.exec({ command, cwd: '/workspace/repo', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
+      return result.exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  // Populate the shared dependency cache from a freshly installed /workspace/repo:
+  // tar every node_modules dir (and .venv if present) and stream it to the deps
+  // gateway, which records the D1 row on PUT. Best-effort and gated.
+  async depsToR2(cacheKey: string): Promise<{ cached: boolean; reason?: string }> {
+    if (!snapshotsEnabled(this.env)) return { cached: false, reason: 'disabled' };
+    let record: WorkspaceRuntimeRecord;
+    try {
+      record = await this.getRecord();
+    } catch {
+      return { cached: false, reason: 'no-record' };
+    }
+    if (!['ready', 'busy', 'bootstrapping'].includes(record.workspace.state)) return { cached: false, reason: `state ${record.workspace.state}` };
+    try {
+      const workspaceId = record.workspace.id;
+      const token = await this.depsToken(workspaceId, record.workspace.tenantId, cacheKey);
+      const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_deps/${workspaceId}`;
+      const handle = await this.app.handle(record);
+      const command = `paths=$(find . -type d -name node_modules -prune 2>/dev/null); [ -d .venv ] && paths="$paths .venv"; if [ -z "$paths" ]; then exit 0; fi; tar czf - $paths | curl -sf -T - -H ${JSON.stringify(`authorization: Bearer ${token}`)} -H ${JSON.stringify(`x-forge-deps-key: ${cacheKey}`)} ${JSON.stringify(url)}`;
+      const result = await handle.exec({ command, cwd: '/workspace/repo', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
+      return { cached: result.exitCode === 0, reason: result.exitCode === 0 ? undefined : result.stderr.slice(0, 200) };
+    } catch (error) {
+      return { cached: false, reason: error instanceof Error ? error.message.slice(0, 200) : 'error' };
     }
   }
 
