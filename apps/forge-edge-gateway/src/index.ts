@@ -2,6 +2,7 @@ import { getSandbox, Sandbox, ContainerProxy } from '@cloudflare/sandbox';
 import { ForgeError, type WorkspaceId } from '@forge/core';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { reclaimStaleSlots, slotTtlMs } from './capacity';
+import { snapshotsEnabled, snapshotKey, recordSnapshot } from './snapshots';
 import { verifyCapability } from '@forge/capabilities';
 import openapi from '../../../openapi/forge.openapi.json';
 import { ForgeMcpSession } from './mcp-session';
@@ -311,13 +312,44 @@ async function preview(request: Request, env: Env, url: URL): Promise<Response> 
   });
 }
 
+// Authenticated R2 gateway for workspace snapshots. Untrusted container code
+// streams `tar czf -` here on PUT and reads it back on GET, scoped by a
+// short-lived capability so it can only touch its own workspace's snapshot.
+async function snapshotEndpoint(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!snapshotsEnabled(env)) return new Response('Snapshots disabled', { status: 404 });
+  const match = url.pathname.match(/^\/__forge_snapshot\/(ws_[0-9a-hjkmnp-tv-z]{20,32})$/);
+  const workspaceId = match?.[1];
+  if (!workspaceId) return new Response('Not found', { status: 404 });
+  const token = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
+  let claims;
+  try {
+    claims = await verifyCapability(token, env.FORGE_CAPABILITY_SIGNING_KEY, { workspaceId, action: `snapshot:${workspaceId}` });
+  } catch {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  const key = snapshotKey(claims.tenantId, workspaceId);
+  if (request.method === 'PUT' && request.body) {
+    const object = await env.ARTIFACTS.put(key, request.body);
+    await recordSnapshot(env.METADATA, { workspaceId, tenantId: claims.tenantId, r2Key: key, sizeBytes: object?.size ?? 0, createdAt: new Date().toISOString() });
+    return Response.json({ ok: true, size: object?.size ?? 0 });
+  }
+  if (request.method === 'GET') {
+    const object = await env.ARTIFACTS.get(key);
+    if (!object) return new Response('No snapshot', { status: 404 });
+    return new Response(object.body, { headers: { 'content-type': 'application/gzip', 'cache-control': 'no-store' } });
+  }
+  return new Response('Method not allowed', { status: 405 });
+}
+
 // Scheduled global reaper: recovers capacity even when nobody is calling
 // forge_workspace_create (the lazy reaper only fires on that path). Frees stale
 // slots and tears their workspaces down. Best-effort per workspace.
 async function reapAbandonedSlots(env: Env): Promise<void> {
   let reclaimed;
   try {
-    reclaimed = await reclaimStaleSlots(env.METADATA, slotTtlMs(env));
+    // With snapshots on, dirty workspaces are eligible for reaping (we snapshot
+    // them first); otherwise they stay protected.
+    reclaimed = await reclaimStaleSlots(env.METADATA, slotTtlMs(env), Date.now(), !snapshotsEnabled(env));
   } catch (error) {
     console.warn('forge_slot_scheduled_reclaim_failed', {
       reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
@@ -329,6 +361,8 @@ async function reapAbandonedSlots(env: Env): Promise<void> {
     try {
       const destroyId = workflowInstanceId('destroy', workspaceId);
       const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
+      // Save the workspace before tearing it down (best-effort, no-op if disabled).
+      await stub.snapshotToR2().catch(() => undefined);
       await stub.requestDestroy({ idempotencyKey: `reap-${destroyId}` });
       await env.DESTROY_WORKFLOW.create({
         id: destroyId,
@@ -351,6 +385,7 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.pathname === '/favicon.ico' && request.method === 'GET') return favicon();
+      if (url.pathname.startsWith('/__forge_snapshot/')) return await snapshotEndpoint(request, env, url);
       if (url.pathname.startsWith('/git/')) return await gitCredentialProxy(request, env);
       if (
         url.pathname.startsWith('/__forge_browser/') ||

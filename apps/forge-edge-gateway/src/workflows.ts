@@ -48,6 +48,13 @@ export class ProvisionWorkspaceWorkflow extends WorkflowEntrypoint<
           return { state: String(remote.state), revision: Number(remote.revision) };
         }
       );
+      // Restore a prior snapshot over the freshly provisioned workspace so a
+      // reaped harness comes back with its deps/build/uncommitted work intact.
+      // Best-effort and gated — a no-op when snapshots are disabled or absent.
+      await step.do('restore snapshot', workflowRetryPolicy, async () => {
+        await coordinator(this.env, event.payload.workspaceId).restoreFromR2();
+        return true;
+      }).catch(() => undefined);
       return {
         workspaceId: event.payload.workspaceId,
         state: result.state,
