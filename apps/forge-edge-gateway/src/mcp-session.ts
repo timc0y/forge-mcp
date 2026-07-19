@@ -261,7 +261,7 @@ async function authorizedCoordinator(
   if (state.tenantId !== identity.tenantId || state.projectId !== identity.projectId) {
     throw new ForgeError({
       code: 'FORGE_PERMISSION_DENIED',
-      message: 'The workspace is outside the authenticated project.',
+      message: 'This workspace belongs to a different project. Use a workspace_id from the current project.',
       retryable: false
     });
   }
@@ -307,14 +307,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     { name: 'Forge MCP', version: '0.1.0' },
     {
       instructions: [
-        'Use Forge as a remote development computer and Parallax as the review contract.',
-        'For an existing deployed URL, call forge_review first: it returns screenshots without starting a container.',
-        'Create one workspace per repository task and reuse its workspace_id.',
-        'Read repository instructions and parallax/ files before choosing routes or making changes.',
-        'Use forge_review_capture for bounded route and viewport evidence, then call forge_artifact_get and inspect every screenshot used in a finding.',
-        'Never claim a multi-step journey passed unless its interactions were executed and recorded.',
-        'Inspect the diff and request explicit approval before any future Git push or pull-request action.',
-        'Destroy the workspace when the review or coding task is complete.'
+        'Forge is a remote development computer; Parallax is its review contract. Work in this order:',
+        '1. Reviewing a deployed URL? Call forge_review first — it captures screenshots without starting a container.',
+        '2. Starting a coding task? Call forge_task_start before creating a workspace, then create one workspace per task and reuse its workspace_id.',
+        '3. Before choosing routes or making changes, read the repository instructions and any parallax/ files.',
+        '4. Capture evidence with forge_review_capture, then call forge_artifact_get and inspect every screenshot before citing it in a finding.',
+        '5. Never claim a multi-step journey passed unless its interactions were actually executed and recorded.',
+        '6. Inspect the diff and get explicit approval before any Git push or pull-request action.',
+        '7. Destroy the workspace once the task or review is complete.'
       ].join(' ')
     }
   );
@@ -345,7 +345,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       ({ url, notes }) =>
         userText(
-          `Review the deployed site at ${url} with Parallax. Call forge_review first (it captures screenshots without starting a container), covering the key routes at phone and desktop viewports. Inspect every returned screenshot before reaching any verdict, and resolve or explicitly accept any structureSummary heading defects.${
+          `Review the deployed site at ${url} with Parallax. Call forge_review first — it captures screenshots without starting a container — covering the key routes at phone and desktop viewports. Inspect every returned screenshot before reaching a verdict, and resolve or explicitly accept any structureSummary heading defects.${
             notes ? ` Focus on: ${notes}.` : ''
           }`
         )
@@ -363,7 +363,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       ({ repository, task }) =>
         userText(
-          `Start a coding task on ${repository}: ${task}. Create one Forge workspace for this task with forge_workspace_create and reuse its workspace_id, poll forge_workspace_get until it is ready, read the repository instructions and any parallax/ files before making changes, then implement and verify the change. Request explicit approval before any Git push or pull-request action, and destroy the workspace when the task is complete.`
+          `Start a coding task on ${repository}: ${task}. Create one Forge workspace for this task with forge_workspace_create and reuse its workspace_id, poll forge_workspace_get until it is ready, then read the repository instructions and any parallax/ files before making changes. Implement and verify the change, request explicit approval before any Git push or pull-request action, and destroy the workspace once the task is complete.`
         )
     );
 
@@ -380,7 +380,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         userText(
           `Prepare a draft pull request${
             workspace_id ? ` for workspace ${workspace_id}` : ''
-          } once the tests pass. First run the tests and confirm they are green, then inspect the outgoing diff with forge_git_outgoing_diff, push the forge/ branch, and create the draft PR — requesting explicit user approval at the push and pull-request steps.`
+          } once tests pass. Run the tests and confirm they are green, inspect the outgoing diff with forge_git_outgoing_diff, push the forge/ branch, then create the draft PR — requesting explicit user approval at both the push and the pull-request step.`
         )
     );
   }
@@ -397,7 +397,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     }
     throw new ForgeError({
       code: 'FORGE_AUTH_REQUIRED',
-      message: 'Authenticated MCP session context is missing.',
+      message: 'No authenticated session was found. Reconnect with a valid Forge session before calling any tool.',
       retryable: false
     });
   }
@@ -443,7 +443,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     if (!task) {
       throw new ForgeError({
         code: 'FORGE_VALIDATION_FAILED',
-        message: 'Task was not found.',
+        message: 'No task exists with this task_id.',
         retryable: false,
         details: { taskId }
       });
@@ -508,7 +508,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (isTerminalTaskState(task.state)) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `Task is already in terminal state ${task.state} and cannot be finished again.`,
+            message: `Task is already in the terminal state "${task.state}" and cannot be finished again.`,
             retryable: false,
             details: { taskId: task.id, state: task.state, outcome }
           });
@@ -556,7 +556,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           branch: outgoing.branch,
           suggestedChecks: suggestChecks(compact.files.map((file) => file.path)),
           rawDiffAvailableVia: 'forge_git_outgoing_diff',
-          note: 'Syntax-only summary. Inspect the raw diff before any Git mutation.'
+          note: 'This is a syntax-only summary. Inspect the raw diff before any Git mutation.'
         };
       },
       forge_review: async (input) => {
@@ -630,13 +630,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                   screenshot: screenshotRef,
                   accessibility: result.accessibility,
                   inspected: false,
-                  limitations: ['Static screenshot evidence does not prove interactions that were not executed.']
+                  limitations: ['A static screenshot only proves what it shows — it does not prove that any unexecuted interaction works.']
                 }
               };
             } catch (error) {
               return {
                 kind: 'failure',
-                value: { route: capture.path, environment: viewport.id, reason: error instanceof Error ? error.message.slice(0, 500) : 'Capture failed.' }
+                value: { route: capture.path, environment: viewport.id, reason: error instanceof Error ? error.message.slice(0, 500) : 'The capture failed for an unknown reason.' }
               };
             }
           }
@@ -670,7 +670,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (evidence.length === 0) {
           throw new ForgeError({
             code: 'FORGE_PREVIEW_UNAVAILABLE',
-            message: 'No screenshots could be captured from the requested URL.',
+            message: 'Could not capture any screenshots from the requested URL. Check that the URL is reachable and the routes exist, then retry.',
             retryable: true,
             details: { failures, skipped }
           });
@@ -708,7 +708,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           failures,
           skipped,
           structureSummary,
-          limitations: ['Static screenshot evidence does not prove interactions that were not executed.'],
+          limitations: ['A static screenshot only proves what it shows — it does not prove that any unexecuted interaction works.'],
           inlineImageCount: content.filter((item) => item.type === 'image').length,
           _meta: {
             'forge/widget': {
@@ -722,16 +722,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             }
           },
           nextStep: complete
-            ? `Inspect the returned MCP images (the first ${MAX_INLINE_IMAGES} cells are inlined; retrieve any others with forge_artifact_get on evidence[].screenshot.artifactId), then pass the evidence to Parallax with inspected set to true.`
-            : 'Inspect the returned images, retrieve any others with forge_artifact_get, then re-run forge_review for the routes listed in failures and skipped (fewer routes per call captures more reliably).'
+            ? `Inspect the returned images (the first ${MAX_INLINE_IMAGES} cells are inlined; fetch any others with forge_artifact_get on evidence[].screenshot.artifactId), then pass the evidence to Parallax with inspected set to true.`
+            : 'Inspect the returned images, fetch any others with forge_artifact_get, then re-run forge_review for the routes listed in failures and skipped — fewer routes per call captures more reliably.'
         };
         const structureNote =
           structureSummary.totalFindings > 0
             ? ` Structure health flagged ${structureSummary.totalFindings} heading defect(s) across ${structureSummary.affectedCells} evidence cell(s) (see structureSummary) — resolve or explicitly accept these before passing the review.`
             : '';
         const summary = complete
-          ? `Captured ${evidence.length} screenshots without starting a container. Inspect every returned image before marking its evidence inspected.${structureNote}`
-          : `Captured ${evidence.length} of ${cells.length} screenshots without starting a container (${failures.length} failed, ${skipped.length} skipped). Inspect the returned images and re-run the remaining routes in smaller batches.${structureNote}`;
+          ? `Captured ${evidence.length} screenshot(s) without starting a container. Inspect every returned image before marking its evidence inspected.${structureNote}`
+          : `Captured ${evidence.length} of ${cells.length} screenshot(s) without starting a container (${failures.length} failed, ${skipped.length} skipped). Inspect the returned images, then re-run the remaining routes in smaller batches.${structureNote}`;
         content.unshift({ type: 'text', text: summary });
         return forgeToolResponse(packet, content);
       },
@@ -863,7 +863,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             ? [text(input.path)]
             : [];
         if (paths.length === 0) {
-          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Provide a path or a non-empty paths array.', retryable: false });
+          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Provide either path or a non-empty paths array.', retryable: false });
         }
         // Aggregate-work ceiling: the per-file max_bytes (up to 500KB) applied
         // across up to 20 paths would let a single call pull ~10MB into the
@@ -874,7 +874,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (paths.length * perFileMaxBytes > MAX_TOTAL_READ_BYTES) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `Requested read exceeds the ${MAX_TOTAL_READ_BYTES}-byte aggregate limit (${paths.length} paths × ${perFileMaxBytes} bytes). Reduce max_bytes or the number of paths.`,
+            message: `This read exceeds the ${MAX_TOTAL_READ_BYTES}-byte aggregate limit (${paths.length} paths x ${perFileMaxBytes} bytes each). Reduce max_bytes or read fewer paths per call.`,
             retryable: false,
             details: { paths: paths.length, maxBytes: perFileMaxBytes, totalLimit: MAX_TOTAL_READ_BYTES }
           });
@@ -895,7 +895,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             try {
               return { ...(await workspace.filesRead({ path, ...readOne })), path };
             } catch (error) {
-              return { path, error: error instanceof ForgeError ? error.code : 'FORGE_READ_FAILED', message: error instanceof Error ? error.message.slice(0, 300) : 'Read failed.' };
+              return { path, error: error instanceof ForgeError ? error.code : 'FORGE_READ_FAILED', message: error instanceof Error ? error.message.slice(0, 300) : 'The read failed for an unknown reason.' };
             }
           })
         );
@@ -942,7 +942,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} command`, approvalPayload);
             // Expose approval_id / approval_url as machine-readable fields so the
             // widget can render an Approve button; kind discriminates the shape.
-            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact command, then retry with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
+            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This command needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
           } else {
             await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
             claimedApproval = true;
@@ -1035,7 +1035,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
             .gitOutgoingDiff({ base }).catch(() => undefined);
           const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash, diff: outgoing?.diff ?? '' });
-          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact push, then retry with approval_id.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
+          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This push needs human approval. Open the approval URL, approve this exact push, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'git.push', { branch, base, diffHash });
         try {
@@ -1075,7 +1075,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
             .gitOutgoingDiff({ base }).catch(() => undefined);
           const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body, diff: outgoing?.diff ?? '' });
-          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this draft PR, then retry with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });
+          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This draft PR needs human approval. Open the approval URL, approve it, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title, body });
         try {
@@ -1131,7 +1131,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (new Date(detail.preview.expiresAt).getTime() <= Date.now()) {
           throw new ForgeError({
             code: 'FORGE_PREVIEW_UNAVAILABLE',
-            message: 'Preview has expired.',
+            message: 'This preview has expired. Call forge_preview_expose again to get a fresh preview_id.',
             retryable: false
           });
         }
@@ -1191,7 +1191,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 _inline: inline
               };
             } catch (error) {
-              return { failure: { route: capture.route, environment: viewport.id, reason: error instanceof Error ? error.message.slice(0, 500) : 'Capture failed.' } };
+              return { failure: { route: capture.route, environment: viewport.id, reason: error instanceof Error ? error.message.slice(0, 500) : 'The capture failed for an unknown reason.' } };
             }
           }
         );
@@ -1200,7 +1200,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (evidence.length === 0) {
           throw new ForgeError({
             code: 'FORGE_PREVIEW_UNAVAILABLE',
-            message: 'No screenshots could be captured from the preview.',
+            message: 'Could not capture any screenshots from the preview. Confirm the preview is still running, then retry.',
             retryable: true,
             details: { failures }
           });
@@ -1265,7 +1265,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               structureSummary
             }
           },
-          nextStep: 'Call forge_artifact_get for each evidence[].screenshot.artifactId, inspect the image, then mark that evidence inspected in Parallax. Resolve or explicitly accept any structureSummary heading defects before passing the review.'
+          nextStep: 'Call forge_artifact_get for each evidence[].screenshot.artifactId and inspect the image, then mark that evidence inspected in Parallax. Resolve or explicitly accept any structureSummary heading defects before passing the review.'
         };
       },
       forge_artifact_get: async (input) => {
@@ -1285,7 +1285,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if (state.tenantId !== identity.tenantId || state.projectId !== identity.projectId) {
             throw new ForgeError({
               code: 'FORGE_PERMISSION_DENIED',
-              message: 'The workspace is outside the authenticated project.',
+              message: 'This workspace belongs to a different project. Use a workspace_id from the current project.',
               retryable: false
             });
           }
@@ -1302,7 +1302,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if (owner && (owner.tenantId !== identity.tenantId || owner.projectId !== identity.projectId)) {
             throw new ForgeError({
               code: 'FORGE_PERMISSION_DENIED',
-              message: 'The url_review artifact is owned by a different project.',
+              message: 'This url_review artifact belongs to a different project.',
               retryable: false
             });
           }
@@ -1317,7 +1317,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (!object) {
           throw new ForgeError({
             code: 'FORGE_ARTIFACT_NOT_FOUND',
-            message: 'Artifact was not found in this workspace.',
+            message: 'No artifact with this artifact_id exists in this workspace.',
             retryable: false
           });
         }
@@ -1325,7 +1325,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (object.size > maxBytes) {
           throw new ForgeError({
             code: 'FORGE_OUTPUT_TRUNCATED',
-            message: 'Artifact is larger than the requested output limit.',
+            message: 'The artifact is larger than the requested max_bytes limit. Raise max_bytes and retry.',
             retryable: false,
             details: { sizeBytes: object.size, maxBytes }
           });

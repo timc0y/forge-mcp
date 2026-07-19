@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { forgeTools, type ForgeToolHandlers, type ForgeToolResponse } from '@forge/mcp-core';
 import { toForgeError } from '@forge/core';
+import type { ZodRawShape } from 'zod';
 
 const FORGE_CONSOLE_URI = 'ui://forge/workspace-console';
 
@@ -116,6 +117,12 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
         title: definition.title,
         description: definition.description,
         inputSchema: definition.inputSchema,
+        // Emit the declared output shape so clients can validate results and
+        // render them structurally. Only the tools that carry one (see mcp-core);
+        // the cast reads the optional field off the literal-typed tool union.
+        ...((definition as { outputSchema?: ZodRawShape }).outputSchema
+          ? { outputSchema: (definition as { outputSchema?: ZodRawShape }).outputSchema }
+          : {}),
         annotations: toolAnnotations(definition.name, definition.sideEffect),
         _meta: {
           ...(showsWidget(definition.name)
