@@ -31,6 +31,12 @@ export interface Env {
   // single account. Optional; default 8 each.
   FORGE_MAX_WORKSPACES?: string;
   FORGE_MAX_WORKSPACES_PER_TENANT?: string;
+  // Self-hosted compute route (e.g. a Mac mini running the Forge Node Agent).
+  // When enabled and healthy, new workspaces run there; otherwise Forge falls
+  // back to Cloudflare containers. All optional — unset means Cloudflare only.
+  FORGE_SELFHOST_ENABLED?: string;
+  FORGE_SELFHOST_URL?: string;
+  FORGE_SELFHOST_TOKEN?: string;
   FORGE_ENVIRONMENT:
     | 'local'
     | 'development'

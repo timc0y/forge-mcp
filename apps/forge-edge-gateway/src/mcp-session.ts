@@ -13,8 +13,8 @@ import { issueCapability } from '@forge/capabilities';
 import { registerForgeToolsV1 } from '@forge/mcp-adapter-v1';
 import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
-import { CloudflareBrowserProvider } from '@forge/browser-cloudflare';
 import type { BrowserActionStep } from '@forge/browser-core';
+import { selectBrowserProvider } from './browser-router';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { classifyCommand } from '@forge/policy';
 import type { Env } from './env';
@@ -249,7 +249,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const workspaceId = ids.workspace();
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);
-        const browser = new CloudflareBrowserProvider(env.BROWSER, artifacts, identity.tenantId as TenantId);
+        const browser = await selectBrowserProvider(env, artifacts, identity.tenantId as TenantId);
         const captures = input.captures as Array<{ selection: string; path: string; state: string }>;
         const viewports = input.viewports as Array<{ id: string; width: number; height: number }>;
         const evidence: Array<Record<string, unknown>> = [];
@@ -681,7 +681,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
         }
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);
-        const browser = new CloudflareBrowserProvider(env.BROWSER, artifacts, detail.workspace.tenantId);
+        const browser = await selectBrowserProvider(env, artifacts, detail.workspace.tenantId);
         const captures = input.captures as Array<{ selection: string; route: string; state: string }>;
         const viewports = input.viewports as Array<{ id: string; width: number; height: number }>;
         const startedAt = Date.now();
@@ -769,7 +769,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
         }
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);
-        const browser = new CloudflareBrowserProvider(env.BROWSER, artifacts, detail.workspace.tenantId);
+        const browser = await selectBrowserProvider(env, artifacts, detail.workspace.tenantId);
         const result = await browser.screenshot({
           workspaceId,
           url: `${env.FORGE_PUBLIC_ORIGIN}/__forge_browser/${workspaceId}/${previewId}/`,
@@ -808,7 +808,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
         }
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);
-        const browser = new CloudflareBrowserProvider(env.BROWSER, artifacts, detail.workspace.tenantId);
+        const browser = await selectBrowserProvider(env, artifacts, detail.workspace.tenantId);
         const result = await browser.accessibilityTree({
           workspaceId,
           url: `${env.FORGE_PUBLIC_ORIGIN}/__forge_browser/${workspaceId}/${previewId}/`,
@@ -868,7 +868,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
         });
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);
-        const browser = new CloudflareBrowserProvider(env.BROWSER, artifacts, detail.workspace.tenantId);
+        const browser = await selectBrowserProvider(env, artifacts, detail.workspace.tenantId);
         const result = await browser.act({
           workspaceId,
           url: `${env.FORGE_PUBLIC_ORIGIN}/__forge_browser/${workspaceId}/${previewId}/`,

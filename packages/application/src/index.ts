@@ -113,8 +113,40 @@ async function sha256Text(value: string): Promise<string> {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+// Routes sandbox work across backends (e.g. a self-hosted box vs Cloudflare).
+// `selectForCreate` decides which backend a new workspace lands on (with its own
+// health-check + fallback); `forKind` resolves the backend a workspace is
+// already bound to, read from its persisted provider.kind.
+export interface SandboxRouter {
+  readonly default: SandboxProvider;
+  selectForCreate(): Promise<SandboxProvider>;
+  forKind(kind: SandboxProvider['kind']): SandboxProvider;
+}
+
+// Wrap a single provider so the app can always talk to a router internally,
+// keeping the common (Cloudflare-only) case and existing tests unchanged.
+function singleProviderRouter(provider: SandboxProvider): SandboxRouter {
+  return {
+    default: provider,
+    async selectForCreate() {
+      return provider;
+    },
+    forKind() {
+      return provider;
+    }
+  };
+}
+
 export class ForgeApplicationService {
-  constructor(private readonly sandboxProvider: SandboxProvider) {}
+  private readonly router: SandboxRouter;
+
+  constructor(sandbox: SandboxProvider | SandboxRouter) {
+    this.router = 'selectForCreate' in sandbox ? sandbox : singleProviderRouter(sandbox);
+  }
+
+  private providerFor(record: WorkspaceRuntimeRecord): SandboxProvider {
+    return this.router.forKind(record.workspace.provider.kind);
+  }
 
   initializeWorkspace(input: CreateWorkspaceInput): WorkspaceRuntimeRecord {
     assertRef(input.ref);
@@ -132,8 +164,10 @@ export class ForgeApplicationService {
         persistenceMode: input.persistence,
         runtimeProfile: input.runtimeProfile,
         provider: {
-          kind: this.sandboxProvider.kind,
-          version: this.sandboxProvider.version
+          // Provisional; provisionWorkspace() selects the real backend (with a
+          // health-check) and rewrites this before the sandbox is created.
+          kind: this.router.default.kind,
+          version: this.router.default.version
         },
         revision: 1,
         createdBy: input.actor,
@@ -170,7 +204,12 @@ export class ForgeApplicationService {
     await onStateChange(record);
 
     try {
-      const handle = await this.sandboxProvider.create({
+      // Pick the backend now (self-hosted if healthy, else Cloudflare) and
+      // record it so every later operation on this workspace routes to the same
+      // place. Transparent to the caller — Forge chooses.
+      const provider = await this.router.selectForCreate();
+      record.workspace.provider = { kind: provider.kind, version: provider.version };
+      const handle = await provider.create({
         providerId: record.providerId,
         runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
         labels: {
@@ -282,7 +321,7 @@ export class ForgeApplicationService {
       await onStateChange(record);
       return record;
     } catch (error) {
-      await this.sandboxProvider.destroy(record.providerId).catch(() => undefined);
+      await this.providerFor(record).destroy(record.providerId).catch(() => undefined);
       const forgeError = error instanceof ForgeError
         ? error
         : new ForgeError({
@@ -357,7 +396,7 @@ export class ForgeApplicationService {
         retryable: record.workspace.state === 'suspended'
       });
     }
-    return this.sandboxProvider.get(record.providerId);
+    return this.providerFor(record).get(record.providerId);
   }
 
   /**
@@ -372,7 +411,7 @@ export class ForgeApplicationService {
    */
   async assertCheckoutPresent(record: WorkspaceRuntimeRecord): Promise<void> {
     if (!['ready', 'busy'].includes(record.workspace.state)) return;
-    const handle = await this.sandboxProvider.get(record.providerId);
+    const handle = await this.providerFor(record).get(record.providerId);
     const probe = await handle.exec({
       command: 'test -d /workspace/repo/.git && echo forge_checkout_present || echo forge_checkout_missing',
       cwd: '/workspace',
@@ -853,14 +892,14 @@ export class ForgeApplicationService {
         retryable: false
       });
     }
-    const handle = await this.sandboxProvider.get(record.providerId);
+    const handle = await this.providerFor(record).get(record.providerId);
     for (const preview of Object.values(record.previews)) {
       await handle.revokePort(preview.port).catch(() => undefined);
     }
     for (const processId of Object.keys(record.processes) as ProcessId[]) {
       await handle.stopProcess(processId).catch(() => undefined);
     }
-    await this.sandboxProvider.destroy(record.providerId);
+    await this.providerFor(record).destroy(record.providerId);
     record.workspace.state = 'destroyed';
     record.workspace.revision = nextRevision(record.workspace.revision);
     record.workspace.updatedAt = new Date().toISOString();

@@ -40,6 +40,7 @@ The Cloudflare Sandbox SDK is isolated in `packages/sandbox-cloudflare`. Domain 
 - `packages/application` — provider-independent use cases
 - `packages/sandbox-core` — stable sandbox contracts
 - `packages/sandbox-cloudflare` — `@cloudflare/sandbox` adapter
+- `packages/sandbox-selfhosted` — self-hosted compute adapter (e.g. a Mac mini); Forge health-checks it and falls back to Cloudflare. See [self-host guide](docs/self-host/mac-mini.md) and `self-host/forge-node-agent`
 - `packages/sandbox-local-docker` — local contract-test provider
 - `packages/mcp-core` — canonical Forge tool definitions
 - `packages/mcp-adapter-v1` — production MCP SDK v1 adapter

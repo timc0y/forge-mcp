@@ -27,7 +27,7 @@ export interface RepositoryRef {
 }
 
 export interface SandboxProviderRef {
-  kind: 'cloudflare' | 'local-docker';
+  kind: 'cloudflare' | 'local-docker' | 'self-hosted';
   version: string;
 }
 
