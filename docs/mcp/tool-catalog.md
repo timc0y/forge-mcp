@@ -52,4 +52,22 @@ no model). See `docs/plans/context-and-diffs.md`.
   raw diff stays available via `forge_git_outgoing_diff` and must be inspected
   before any Git mutation.
 
+## Capability cores with runtime wiring pending
+
+These packages are implemented and unit-tested; their MCP surface is added once
+it can be exercised against live Cloudflare runtime (principle: no experimental
+or unvalidated path presented as production-ready).
+
+- `@forge/browser-core/session` — interactive browser session model behind the
+  intended `forge_browser_open/get/interact/capture/close`.
+- `@forge/app-actions` — generic structured application-action discovery,
+  calling, journeys and assertions with payment/admin/identity guardrails.
+- `@forge/evidence` — versioned evidence model with explicit states and hashing;
+  a screenshot can never be marked `passed`.
+- `@forge/cost` — usage counters, budget thresholds and compute gating for
+  response metadata and `forge_workspace_create`.
+
+The checked-in fixture (`apps/fixture-catalog`) and
+`tests/e2e/acceptance.test.ts` prove the composed workflow repository-locally.
+
 Machine-readable schemas are generated into `schemas/forge-tools.schema.json`. Later phases add snapshot/resume, process stop, full Git/PR, browser accessibility/inspection, context and approvals without changing the existing names.

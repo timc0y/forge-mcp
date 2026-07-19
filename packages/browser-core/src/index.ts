@@ -33,3 +33,4 @@ export type BrowserActionStep =
 export interface BrowserActInput extends ScreenshotInput { steps: BrowserActionStep[]; }
 export interface BrowserActResult extends BrowserEvidenceResult { stepsExecuted: number; finalUrl?: string; }
 export interface BrowserProvider { screenshot(input: ScreenshotInput): Promise<ScreenshotResult>; accessibilityTree(input: Omit<ScreenshotInput,'fullPage'>): Promise<AccessibilityResult>; captureEvidence(input: ScreenshotInput): Promise<BrowserEvidenceResult>; act(input: BrowserActInput): Promise<BrowserActResult>; }
+export * from './session';
