@@ -23,6 +23,9 @@ export interface Env {
   FORGE_DEFAULT_PROJECT_ID: string;
   FORGE_PUBLIC_ORIGIN: string;
   FORGE_PREVIEW_HOSTNAME: string;
+  // Minutes a workspace may hold a slot without activity before the lazy reaper
+  // reclaims it. Optional; defaults to 30 when unset or invalid.
+  FORGE_SLOT_TTL_MINUTES?: string;
   FORGE_ENVIRONMENT:
     | 'local'
     | 'development'
