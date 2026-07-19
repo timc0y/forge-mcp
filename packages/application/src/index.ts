@@ -469,7 +469,11 @@ export class ForgeApplicationService {
         }
       }
 
-      if (bootstrap && detection.installCommand) {
+      // A successful deps-cache restore already placed node_modules keyed by this
+      // exact lockfile hash, so the install is redundant — skip it (the ~75s win).
+      // A corrupt/partial restore makes restoreDepsFromR2 return false, so we only
+      // skip when the warm tree really landed; otherwise the full install runs.
+      if (bootstrap && detection.installCommand && !depsRestored) {
         const install = await handle.exec({
           command: detection.installCommand,
           cwd: '/workspace/repo',
