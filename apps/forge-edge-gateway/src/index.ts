@@ -59,7 +59,7 @@ function html(body: string, status = 200): Response {
 
 function favicon(): Response {
   return new Response(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#0b0d0c"/><path d="M18 14h31v9H28v8h18v9H28v14H18z" fill="#8ee9ac"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5b4cf0"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs><rect width="64" height="64" rx="16" fill="url(#g)"/><text x="32" y="33" font-size="34" text-anchor="middle" dominant-baseline="central" fill="#fff" font-family="system-ui,sans-serif">⚒</text></svg>',
     {
       headers: {
         'cache-control': 'public, max-age=86400',
@@ -76,21 +76,21 @@ function landing(env: Env): Response {
 <title>Forge Cloud — remote workspaces for Parallax Review</title>
 <meta name="description" content="Give ChatGPT, Codex and Claude an isolated repository, terminal and browser for Parallax Review.">
 <style>
-:root{--bg:#0b0d0c;--surface:#151916;--ink:#f4f6f3;--muted:#b8c1ba;--line:#343b35;--signal:#8ee9ac;--max:1120px}
+:root{--bg:#0e0e12;--surface:#1a1a1f;--ink:#f4f4f6;--muted:#a2a2ad;--line:#2c2c33;--signal:#8b7dff;--grad:#a78bfa;--accent-soft:#221f33;--max:1120px}
 *{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}
 a{color:inherit}.skip{position:absolute;left:1rem;top:-5rem;background:var(--ink);color:var(--bg);padding:.75rem 1rem;z-index:2}.skip:focus{top:1rem}
 header,main,footer{width:min(100% - 3rem,var(--max));margin-inline:auto}header{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-block:1.35rem;border-bottom:1px solid var(--line)}
-.brand{font-weight:760;letter-spacing:-.02em}.pilot{color:var(--signal);font-size:.78rem;font-weight:700}
+.mark{display:inline-flex;align-items:center;gap:.6rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--signal),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--signal)}.brand{font-weight:750;letter-spacing:-.02em;font-size:1.1rem}.pilot{color:var(--signal);font-size:.78rem;font-weight:700}
 main{padding-block:clamp(4.5rem,10vw,8rem)}.hero{max-width:940px}.eyebrow{color:var(--signal);font-size:.78rem;font-weight:750;letter-spacing:.08em;text-transform:uppercase}
 h1{max-width:13ch;margin:.28em 0 .32em;font-size:clamp(3rem,7.5vw,6rem);line-height:.94;letter-spacing:-.04em;text-wrap:balance;overflow-wrap:break-word}
 .lede{max-width:65ch;margin:0;color:var(--muted);font-size:clamp(1.08rem,1.6vw,1.3rem);text-wrap:pretty}
-.actions{display:flex;gap:.75rem;flex-wrap:wrap;margin:2rem 0 0}.actions a{display:inline-flex;min-height:46px;align-items:center;padding:.7rem 1rem;background:var(--ink);color:var(--bg);border:1px solid var(--ink);border-radius:6px;text-decoration:none;font-weight:700;transition:background-color 180ms ease-out,color 180ms ease-out,border-color 180ms ease-out}.actions a:hover{background:var(--signal);border-color:var(--signal)}.actions a.secondary{background:transparent;color:var(--ink);border-color:var(--line)}.actions a.secondary:hover{color:var(--bg)}a:focus-visible{outline:3px solid var(--signal);outline-offset:4px}
+.actions{display:flex;gap:.75rem;flex-wrap:wrap;margin:2rem 0 0}.actions a{display:inline-flex;min-height:46px;align-items:center;padding:.7rem 1.1rem;background:linear-gradient(135deg,var(--signal),var(--grad));color:#fff;border:1px solid transparent;border-radius:9px;text-decoration:none;font-weight:700;transition:filter 180ms ease-out,color 180ms ease-out,border-color 180ms ease-out,background-color 180ms ease-out}.actions a:hover{filter:brightness(1.08)}.actions a.secondary{background:transparent;color:var(--ink);border-color:var(--line)}.actions a.secondary:hover{border-color:var(--signal);color:var(--signal);filter:none}a:focus-visible{outline:3px solid var(--signal);outline-offset:4px}
 .capabilities{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:clamp(4rem,8vw,7rem);border-top:1px solid var(--line)}.capability{min-width:0;padding:1.4rem 2rem 0 0}.capability+.capability{padding-left:2rem;border-left:1px solid var(--line)}.capability h2{margin:0 0 .45rem;font-size:1.05rem}.capability p{max-width:34ch;margin:0;color:var(--muted);font-size:.92rem}
 footer{display:flex;justify-content:space-between;gap:1.5rem;padding-block:1.4rem;border-top:1px solid var(--line);color:var(--muted);font-size:.82rem}code{color:var(--signal)}
 @media(max-width:700px){header,main,footer{width:min(100% - 2.5rem,var(--max))}main{padding-block:4rem}h1{font-size:clamp(2.85rem,14vw,4.5rem);line-height:.93}.actions{align-items:stretch;flex-direction:column}.actions a{justify-content:center;width:100%}.capabilities{grid-template-columns:1fr;margin-top:4rem}.capability,.capability+.capability{padding:1.25rem 0;border-left:0;border-bottom:1px solid var(--line)}footer{align-items:flex-start;flex-direction:column}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 </style></head>
-<body><a class="skip" href="#main">Skip to content</a><header><span class="brand">Forge</span><span class="pilot">Cloud private pilot</span></header><main id="main"><section class="hero"><div class="eyebrow">Remote workspace for AI clients</div><h1>Run Parallax Review from any AI coding client.</h1>
+<body><a class="skip" href="#main">Skip to content</a><header><span class="mark"><span class="glyph" aria-hidden="true">⚒</span><span class="brand">Forge</span></span><span class="pilot">Cloud private pilot</span></header><main id="main"><section class="hero"><div class="eyebrow">Remote workspace for AI clients</div><h1>Run Parallax Review from any AI coding client.</h1>
 <p class="lede">Forge gives ChatGPT, Codex and Claude an isolated repository, Linux runtime and browser. Parallax defines what to review and what counts as evidence.</p>
 <div class="actions"><a href="${env.FORGE_PUBLIC_ORIGIN}/login/github">Continue with GitHub</a><a class="secondary" href="${env.FORGE_PUBLIC_ORIGIN}/.well-known/oauth-protected-resource">Connection metadata</a></div></section>
 <section class="capabilities" aria-label="Forge capabilities"><div class="capability"><h2>Repository + terminal</h2><p>Clone, inspect, patch, build and test inside an on-demand workspace.</p></div><div class="capability"><h2>Browser evidence</h2><p>Capture phone and desktop screenshots plus accessibility evidence.</p></div><div class="capability"><h2>Parallax contract</h2><p>Preserve audiences, missions, readiness and honest limitations.</p></div></section></main>
