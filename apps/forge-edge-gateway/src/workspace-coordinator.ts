@@ -33,6 +33,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   // window so `updated_at` stays fresh within the minute-scale slot TTL.
   private lastD1: { signature: string; atMs: number } | null = null;
   private static readonly D1_DEBOUNCE_MS = 60_000;
+  // The full-workspace snapshot and the per-repo deps cache both tar large trees
+  // (~100MB+ each) from the same container after bootstrap. Running them at once
+  // contends on container disk/CPU and one loses, so they chain onto this shared
+  // promise to upload sequentially instead of concurrently.
+  private pendingUpload: Promise<unknown> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -214,7 +219,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
               this.restoreDepsFromR2(depsCacheKey(repoSlug, lockfileHash, runtime).cacheKey).catch(() => false),
             populate: (lockfileHash: string) => {
               const { cacheKey } = depsCacheKey(repoSlug, lockfileHash, runtime);
-              this.ctx.waitUntil(this.depsToR2(cacheKey).catch(() => undefined));
+              // Chain so the post-bootstrap snapshot uploads after this, not with it.
+              this.pendingUpload = this.pendingUpload.then(() => this.depsToR2(cacheKey).catch(() => undefined));
+              this.ctx.waitUntil(this.pendingUpload);
             }
           }
         : undefined;
@@ -250,7 +257,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       // mid-life eviction — not just a graceful reap — comes back warm. Fire-and-
       // forget: never let snapshotting delay or fail readiness.
       if (!priorSnapshot) {
-        this.ctx.waitUntil(this.snapshotToR2().catch(() => undefined));
+        // Chain after any deps-cache upload so the two large tars don't contend.
+        this.pendingUpload = this.pendingUpload.then(() => this.snapshotToR2().catch(() => undefined));
+        this.ctx.waitUntil(this.pendingUpload);
       }
       return {
         ok: true,
