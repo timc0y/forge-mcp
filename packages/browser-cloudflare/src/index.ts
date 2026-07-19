@@ -9,6 +9,7 @@ import type {
   ScreenshotInput,
   ScreenshotResult
 } from '@forge/browser-core';
+import { analyzeStructureHealth } from '@forge/browser-core';
 import { ids, type TenantId } from '@forge/core';
 
 interface SnapshotResponse {
@@ -180,7 +181,11 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     }
     return {
       screenshot: await this.storeScreenshot(input, decodeBase64(result.screenshot)),
-      accessibility: { tree: result.accessibilityTree, truncated: false }
+      accessibility: {
+        tree: result.accessibilityTree,
+        truncated: false,
+        structure: analyzeStructureHealth(result.accessibilityTree)
+      }
     };
   }
 
@@ -202,7 +207,11 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     }
     return {
       screenshot: await this.storeScreenshot(input, decodeBase64(result.screenshot)),
-      accessibility: { tree: result.accessibilityTree, truncated: false },
+      accessibility: {
+        tree: result.accessibilityTree,
+        truncated: false,
+        structure: analyzeStructureHealth(result.accessibilityTree)
+      },
       stepsExecuted: input.steps.length,
       finalUrl: typeof result.url === 'string' ? result.url : undefined
     };
@@ -227,6 +236,10 @@ export class CloudflareBrowserProvider implements BrowserProvider {
       });
       throw new Error('Browser Run snapshot omitted the accessibility tree.');
     }
-    return { tree: result.accessibilityTree, truncated: false };
+    return {
+      tree: result.accessibilityTree,
+      truncated: false,
+      structure: analyzeStructureHealth(result.accessibilityTree)
+    };
   }
 }

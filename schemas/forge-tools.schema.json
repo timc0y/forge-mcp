@@ -18,7 +18,7 @@
     },
     "forge_review": {
       "title": "Review a site with Parallax",
-      "description": "The easiest and cheapest Forge path. Capture screenshot and accessibility evidence from an existing URL without starting a container, ready for a strict Parallax review.",
+      "description": "The easiest and cheapest Forge path. Capture screenshot and accessibility evidence from an existing URL without starting a container, ready for a strict Parallax review. Each cell carries a structure-health signal (structureSummary and evidence[].accessibility.structure) that flags heading defects the screenshot hides — stacked title-on-title headings, empty or duplicated headings and skipped levels — so those must be resolved or explicitly accepted before the review passes.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -995,7 +995,7 @@
     },
     "forge_browser_accessibility_tree": {
       "title": "Read browser accessibility tree",
-      "description": "Capture the bounded accessibility tree for a Forge preview route at a selected viewport.",
+      "description": "Capture the bounded accessibility tree for a Forge preview route at a selected viewport, plus a derived structure-health signal that flags heading defects (stacked title-on-title headings, empty or duplicated headings, skipped levels) which a screenshot cannot surface.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
