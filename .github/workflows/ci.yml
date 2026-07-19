@@ -24,6 +24,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: D1 migrations are sequentially numbered
         run: pnpm migrations:check
+      - name: Adapter sets and D1 tables are wired
+        run: pnpm wiring:check
       - run: pnpm check
       - run: pnpm cf:typegen
       - name: Generated files are committed

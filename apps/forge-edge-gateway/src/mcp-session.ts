@@ -3,6 +3,7 @@ import { McpAgent } from 'agents/mcp';
 import { z } from 'zod';
 import {
   ForgeError,
+  toForgeError,
   ids,
   workspaceIdFromIdempotency,
   type ProcessId,
@@ -442,8 +443,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     const task = await new D1TaskStore(this.env.METADATA).get(taskId);
     if (!task) {
       throw new ForgeError({
-        code: 'FORGE_VALIDATION_FAILED',
-        message: 'No task exists with this task_id.',
+        code: 'FORGE_TASK_NOT_FOUND',
+        message: 'No task exists with this task_id. List tasks with forge_task_list to find a valid id.',
         retryable: false,
         details: { taskId }
       });
@@ -489,11 +490,19 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_task_list: async (input) => {
         const identity = this.identity();
         const store = new D1TaskStore(env.METADATA);
+        const limit = number(input.limit);
+        const q = input.q ? text(input.q) : undefined;
         const tasks = await store.list(identity.tenantId as TenantId, {
           state: input.state ? (text(input.state) as TaskState) : undefined,
-          limit: number(input.limit)
+          q,
+          limit
         });
-        return { tasks: tasks.map((task) => summarizeTask(task)) };
+        // Tell the model when the limit clipped the result so it can narrow
+        // rather than assume it saw everything.
+        const hint = tasks.length === limit
+          ? `Showing ${tasks.length} tasks (limit reached). Narrow with a state or q filter, or raise limit.`
+          : undefined;
+        return { tasks: tasks.map((task) => summarizeTask(task)), returned: tasks.length, ...(hint ? { hint } : {}) };
       },
       forge_task_finish: async (input) => {
         const identity = this.identity();
@@ -849,11 +858,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_files_tree: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).filesTree({
+        const tree = await (await authorizedCoordinator(env, identity, text(input.workspace_id))).filesTree({
           path: text(input.path),
           depth: number(input.depth),
           limit: number(input.limit)
-        }));
+        });
+        // Tell the model the listing was clipped so it narrows (deeper path,
+        // higher limit) instead of assuming it saw the whole tree.
+        const hint = (tree as { truncated?: boolean }).truncated
+          ? 'Listing truncated at the limit. Narrow with a deeper path or raise limit.'
+          : undefined;
+        return asRecord({ ...tree, ...(hint ? { hint } : {}) });
       },
       forge_files_read: async (input) => {
         const identity = this.identity();
@@ -895,7 +910,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             try {
               return { ...(await workspace.filesRead({ path, ...readOne })), path };
             } catch (error) {
-              return { path, error: error instanceof ForgeError ? error.code : 'FORGE_READ_FAILED', message: error instanceof Error ? error.message.slice(0, 300) : 'The read failed for an unknown reason.' };
+              // Surface a real ForgeErrorCode so an agent keying on codes never
+              // meets an undocumented one.
+              return { path, error: toForgeError(error).code, message: error instanceof Error ? error.message.slice(0, 300) : 'The read failed for an unknown reason.' };
             }
           })
         );
