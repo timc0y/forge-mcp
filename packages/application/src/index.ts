@@ -267,13 +267,16 @@ export class ForgeApplicationService {
         });
       }
 
-      // Make pnpm available up front. The base image only enables corepack,
-      // which otherwise lazily downloads pnpm mid-build (the friction of a cold
-      // sandbox). Best-effort — never fail provisioning over it.
+      // Make pnpm available up front, otherwise `pnpm install` fails the whole
+      // bootstrap with "pnpm: command not found". corepack ships with node but
+      // isn't always on PATH in the sandbox image, so try it first and fall back
+      // to a global npm install (npm is always present). `command -v pnpm` short-
+      // circuits when it is already there. Best-effort — never fail provisioning.
       await handle.exec({
-        command: 'corepack prepare pnpm@9 --activate',
+        command:
+          'command -v pnpm >/dev/null 2>&1 || corepack prepare pnpm@9 --activate 2>/dev/null || npm install -g pnpm@9',
         cwd: '/workspace',
-        timeoutMs: 60_000,
+        timeoutMs: 120_000,
         outputLimitBytes: 20_000,
         sessionId: 'system',
         networkPolicy: 'package_install'
