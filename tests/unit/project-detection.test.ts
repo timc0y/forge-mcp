@@ -29,6 +29,7 @@ describe('project detection', () => {
       packageManager: 'pnpm',
       framework: 'astro',
       installCommand: 'pnpm install --frozen-lockfile --prefer-offline',
+      installFallbackCommand: 'pnpm install --no-frozen-lockfile --prefer-offline',
       devCommand: 'pnpm run dev',
       buildCommand: 'pnpm run build',
       expectedPorts: [4321]
@@ -44,6 +45,7 @@ describe('parseDetection', () => {
       packageManager: 'pnpm',
       framework: 'vite',
       installCommand: 'pnpm install --frozen-lockfile --prefer-offline',
+      installFallbackCommand: 'pnpm install --no-frozen-lockfile --prefer-offline',
       devCommand: 'pnpm run dev',
       buildCommand: 'pnpm run build',
       expectedPorts: [5173]
@@ -63,6 +65,7 @@ describe('parseDetection', () => {
       packageManager: 'unknown',
       framework: null,
       installCommand: null,
+      installFallbackCommand: null,
       devCommand: null,
       buildCommand: null,
       expectedPorts: []

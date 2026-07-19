@@ -61,6 +61,11 @@ export interface Workspace {
     details?: WorkspaceFailureDetails;
   };
   checkout?: { healthy: boolean; checkedAt: string; detail?: string };
+  // Non-fatal bootstrap issue: the workspace came up `ready` but dependency
+  // install did not fully succeed (e.g. a --frozen-lockfile mismatch that the
+  // non-frozen fallback also could not resolve). The checkout is usable; deps
+  // may need attention before `dev`/`build`.
+  bootstrapWarning?: { phase: string; message: string; detail?: string };
 }
 
 // Kept structured-clone serializable so it survives the Durable Object RPC
