@@ -12,6 +12,11 @@ import type {
 } from '@forge/browser-core';
 import { analyzeStructureHealth } from '@forge/browser-core';
 import { ids, type TenantId } from '@forge/core';
+import puppeteer, {
+  type Page,
+  type Page as PuppeteerPage,
+  type Browser as PuppeteerBrowser
+} from '@cloudflare/puppeteer';
 
 interface SnapshotResponse {
   success: boolean;
@@ -65,34 +70,62 @@ function baseOptions(input: Omit<ScreenshotInput, 'fullPage'>): BrowserRunBaseOp
   };
 }
 
-// Translate Forge's bounded action vocabulary into the Browser Run `actions`
-// array. Kept in one place so the provider-specific action contract does not
-// leak into the domain contract.
-function toBrowserRunActions(steps: BrowserActionStep[], base: URL): unknown[] {
-  return steps.map((step) => {
-    switch (step.kind) {
-      case 'navigate':
-        return { type: 'navigate', url: new URL(step.path.replace(/^\/+/, ''), base).toString() };
-      case 'click':
-        return { type: 'click', selector: step.selector };
-      case 'fill':
-        return { type: 'type', selector: step.selector, text: step.value };
-      case 'press':
-        return { type: 'keyboard', key: step.key };
-      case 'wait_for_selector':
-        return { type: 'waitForSelector', selector: step.selector, timeout: step.timeoutMs ?? 10_000 };
-      case 'wait_for_text':
-        return { type: 'waitForText', text: step.text, timeout: step.timeoutMs ?? 10_000 };
-      case 'wait':
-        return { type: 'wait', timeout: step.timeoutMs };
-      case 'reload':
-        return { type: 'reload' };
-    }
-  });
+// Drive Forge's bounded action vocabulary against a real Puppeteer page. The
+// Browser Run REST `/snapshot` endpoint does not accept interaction steps
+// (it rejects an `actions` key), so multi-step journeys run through the
+// @cloudflare/puppeteer binding instead — the only path that actually clicks,
+// types, and waits before capturing evidence.
+async function runStep(page: Page, step: BrowserActionStep, base: URL): Promise<void> {
+  switch (step.kind) {
+    case 'navigate':
+      await page.goto(new URL(step.path.replace(/^\/+/, ''), base).toString(), {
+        waitUntil: 'domcontentloaded',
+        timeout: 30_000
+      });
+      return;
+    case 'click':
+      await page.click(step.selector);
+      return;
+    case 'fill':
+      await page.type(step.selector, step.value);
+      return;
+    case 'press':
+      await page.keyboard.press(step.key as Parameters<typeof page.keyboard.press>[0]);
+      return;
+    case 'wait_for_selector':
+      await page.waitForSelector(step.selector, { timeout: step.timeoutMs ?? 10_000 });
+      return;
+    case 'wait_for_text':
+      // Runs in the page context; `document` is typed via globalThis so this
+      // compiles under the Worker lib (no DOM types) without leaking `any`.
+      await page.waitForFunction(
+        (text: string) =>
+          (
+            (globalThis as unknown as { document?: { body?: { innerText?: string } | null } })
+              .document?.body?.innerText ?? ''
+          ).includes(text),
+        { timeout: step.timeoutMs ?? 10_000 },
+        step.text
+      );
+      return;
+    case 'wait':
+      await new Promise((resolve) => setTimeout(resolve, step.timeoutMs));
+      return;
+    case 'reload':
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
+      return;
+  }
 }
 
 function stripDataPrefix(value: string): string {
   return value.replace(/^data:image\/[^;]+;base64,/, '');
+}
+
+// Puppeteer's screenshot() returns a Uint8Array (binary) or a base64 string
+// depending on encoding; normalize both to the ArrayBuffer storeScreenshot wants.
+function toArrayBuffer(shot: Uint8Array | string): ArrayBuffer {
+  if (typeof shot === 'string') return decodeBase64(shot);
+  return shot.buffer.slice(shot.byteOffset, shot.byteOffset + shot.byteLength) as ArrayBuffer;
 }
 
 function decodeBase64(value: string): ArrayBuffer {
@@ -241,32 +274,69 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     };
   }
 
+  // Reuse a warm Browser Rendering session when one is free (far faster than a
+  // cold launch, and avoids leaking a new session per call), else launch one
+  // with a short keep-alive so idle sessions self-close.
+  private async acquireBrowser(): Promise<PuppeteerBrowser> {
+    const binding = this.browserBinding as unknown as Parameters<typeof puppeteer.launch>[0];
+    try {
+      const sessions = await puppeteer.sessions(binding);
+      const free = sessions.find((session) => !session.connectionId);
+      if (free) return await puppeteer.connect(binding, free.sessionId);
+    } catch {
+      // No reusable session (or the API is unavailable) — fall through to launch.
+    }
+    return await puppeteer.launch(binding, { keep_alive: 60_000 });
+  }
+
   async act(input: BrowserActInput): Promise<BrowserActResult> {
     const base = new URL(input.url.endsWith('/') ? input.url : `${input.url}/`);
-    const actions = toBrowserRunActions(input.steps, base);
-    const options = {
-      ...baseOptions(input),
-      formats: EVIDENCE_FORMATS,
-      screenshotOptions: screenshotOptions(input),
-      actions
-    };
-    const result = await this.snapshotWithOptions(options as unknown as BrowserRunSnapshotOptions, input.deadlineAt);
-    if (!result?.screenshot || result.accessibilityTree === undefined) {
-      console.error('forge_browser_act_missing_formats', {
-        resultKeys: result ? Object.keys(result) : []
+    const { contentType } = imageType(input);
+    // Interaction steps require a real driven page — run them through the
+    // Puppeteer binding, then capture the screenshot + accessibility tree from
+    // the resulting post-interaction state. Bounded so a bad selector can never
+    // hang the whole capture; the session is kept warm (disconnect, not close).
+    const budgetMs = Math.max(
+      5_000,
+      Math.min(45_000, input.deadlineAt ? input.deadlineAt - Date.now() : 45_000)
+    );
+    const browser = await this.acquireBrowser();
+    let page: PuppeteerPage | undefined;
+    const drive = async (): Promise<BrowserActResult> => {
+      page = await browser.newPage();
+      await page.setViewport({ width: input.viewport.width, height: input.viewport.height });
+      if (input.headers) await page.setExtraHTTPHeaders(input.headers);
+      await page.goto(base.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      for (const step of input.steps) await runStep(page, step, base);
+      const shot = await page.screenshot({
+        type: contentType === 'image/png' ? 'png' : 'jpeg',
+        ...(contentType === 'image/jpeg' ? { quality: input.quality ?? 80 } : {}),
+        fullPage: input.fullPage
       });
-      throw new Error('Browser Run action run omitted required evidence formats.');
-    }
-    return {
-      screenshot: await this.storeScreenshot(input, decodeBase64(result.screenshot), result.screenshot),
-      accessibility: {
-        tree: result.accessibilityTree,
-        truncated: false,
-        structure: analyzeStructureHealth(result.accessibilityTree)
-      },
-      stepsExecuted: input.steps.length,
-      finalUrl: typeof result.url === 'string' ? result.url : undefined
+      const tree = await page.accessibility.snapshot();
+      const finalUrl = page.url();
+      return {
+        screenshot: await this.storeScreenshot(input, toArrayBuffer(shot)),
+        accessibility: { tree: tree ?? null, truncated: false, structure: analyzeStructureHealth(tree) },
+        stepsExecuted: input.steps.length,
+        finalUrl
+      };
     };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        drive(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Interaction run exceeded ${budgetMs}ms.`)), budgetMs);
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (page) await page.close().catch(() => undefined);
+      // Keep the remote session alive for the next capture rather than tearing
+      // it down; idle sessions self-close after keep_alive.
+      browser.disconnect();
+    }
   }
 
   async screenshot(input: ScreenshotInput): Promise<ScreenshotResult> {
