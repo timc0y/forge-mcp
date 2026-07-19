@@ -20,6 +20,7 @@
     "schemas:generate": "tsx scripts/generate-schemas.ts",
     "schemas:check": "tsx scripts/generate-schemas.ts --check",
     "migrations:check": "tsx scripts/check-migrations.ts",
+    "wiring:check": "tsx scripts/check-wiring.ts",
     "db:migrate:prod": "pnpm --filter @forge/edge-gateway exec wrangler d1 migrations apply forge-production --remote --config ../../infra/wrangler/forge.jsonc",
     "predeploy": "pnpm db:migrate:prod",
     "deploy": "pnpm --filter @forge/edge-gateway deploy",

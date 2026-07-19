@@ -291,16 +291,22 @@ export class D1TaskStore implements TaskStore {
     return row ? D1TaskStore.hydrate(row) : null;
   }
 
-  async list(tenantId: TenantId, opts?: { state?: TaskState; limit?: number }): Promise<Task[]> {
+  async list(tenantId: TenantId, opts?: { state?: TaskState; q?: string; limit?: number }): Promise<Task[]> {
     const limit = opts?.limit ?? 50;
-    const query = opts?.state
-      ? this.db
-          .prepare('SELECT * FROM tasks WHERE tenant_id = ? AND state = ? ORDER BY updated_at DESC LIMIT ?')
-          .bind(tenantId, opts.state, limit)
-      : this.db
-          .prepare('SELECT * FROM tasks WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ?')
-          .bind(tenantId, limit);
-    const { results } = await query.all<TaskRow>();
+    // Tenant scope is always the first clause; state and free-text filters are
+    // optional, and every value is a bound parameter (no interpolation). The
+    // `q` filter is a recall-oriented LIKE over the goal, repository, and the
+    // task document JSON (which carries changed files, decisions, outstanding
+    // work) — it can match JSON key names, which is acceptable for a filter.
+    const clauses = ['tenant_id = ?'];
+    const binds: (string | number)[] = [tenantId];
+    if (opts?.state) { clauses.push('state = ?'); binds.push(opts.state); }
+    if (opts?.q) { clauses.push('(goal LIKE ? OR repository LIKE ? OR document LIKE ?)'); const like = `%${opts.q}%`; binds.push(like, like, like); }
+    binds.push(limit);
+    const { results } = await this.db
+      .prepare(`SELECT * FROM tasks WHERE ${clauses.join(' AND ')} ORDER BY updated_at DESC LIMIT ?`)
+      .bind(...binds)
+      .all<TaskRow>();
     return results.map((row) => D1TaskStore.hydrate(row));
   }
 }

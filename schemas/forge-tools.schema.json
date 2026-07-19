@@ -185,7 +185,7 @@
     },
     "forge_task_list": {
       "title": "List tasks",
-      "description": "List recent tasks for the account, most recently updated first, optionally filtered by state. Container-free.",
+      "description": "List recent tasks for the account, most recently updated first, optionally filtered by state or a free-text query. Container-free.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -196,10 +196,14 @@
             "description": "Only return tasks in this state.",
             "$ref": "#/$defs/__schema0"
           },
+          "q": {
+            "description": "Free-text filter matched against the goal, repository, and task details (changed files, decisions, outstanding work).",
+            "$ref": "#/$defs/__schema1"
+          },
           "limit": {
             "default": 20,
             "description": "Maximum number of tasks to return.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           }
         },
         "required": [
@@ -223,6 +227,11 @@
             ]
           },
           "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "__schema2": {
             "type": "integer",
             "minimum": 1,
             "maximum": 100
