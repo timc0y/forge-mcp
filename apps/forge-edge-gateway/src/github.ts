@@ -90,6 +90,52 @@ function assertSameOrigin(request: Request, env: Env): void {
   });
 }
 
+function base64UrlDecode(value: string): ArrayBuffer {
+  const normalized = value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
+  return Uint8Array.from(atob(normalized), (character) => character.charCodeAt(0)).buffer as ArrayBuffer;
+}
+
+// Signed approval links let a reviewer open — and approve — the exact action
+// straight from the agent transcript without a fresh GitHub login. The token
+// binds ONE approval id + tenant + expiry under the capability signing key; it
+// authorises reading and resolving that single approval only, never a general
+// web session. Whoever created the approval already proved tenant ownership, so
+// the link simply carries that proof forward to the human who clicks it.
+interface ApprovalLinkClaims {
+  aid: string;
+  tenant: string;
+  exp: number;
+}
+
+async function hmacKey(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+async function signApprovalLink(env: Env, approvalId: string, tenantId: string, expiresAtIso: string): Promise<string> {
+  const claims: ApprovalLinkClaims = { aid: approvalId, tenant: tenantId, exp: Date.parse(expiresAtIso) };
+  const payload = base64Url(new TextEncoder().encode(JSON.stringify(claims)));
+  const signature = await crypto.subtle.sign('HMAC', await hmacKey(env.FORGE_CAPABILITY_SIGNING_KEY), new TextEncoder().encode(payload));
+  return `${payload}.${base64Url(signature)}`;
+}
+
+async function verifyApprovalLink(env: Env, token: string, approvalId: string): Promise<ApprovalLinkClaims | null> {
+  const dot = token.indexOf('.');
+  if (dot <= 0) return null;
+  const payload = token.slice(0, dot);
+  let signatureBytes: ArrayBuffer;
+  try {
+    signatureBytes = base64UrlDecode(token.slice(dot + 1));
+  } catch { return null; }
+  const ok = await crypto.subtle.verify('HMAC', await hmacKey(env.FORGE_CAPABILITY_SIGNING_KEY), signatureBytes, new TextEncoder().encode(payload));
+  if (!ok) return null;
+  let claims: ApprovalLinkClaims;
+  try {
+    claims = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload))) as ApprovalLinkClaims;
+  } catch { return null; }
+  if (claims.aid !== approvalId || typeof claims.tenant !== 'string' || typeof claims.exp !== 'number' || claims.exp <= Date.now()) return null;
+  return claims;
+}
+
 function githubHeaders(token?: string): Headers {
   const headers = new Headers({
     accept: 'application/vnd.github+json',
@@ -536,7 +582,8 @@ export async function requestApproval(
       ORDER BY expires_at DESC LIMIT 1`
   ).bind(identity.tenantId, workspaceId, action, requestPayload, nowIso).first<{ id: string; expires_at: string }>();
   if (existing) {
-    return { approval_id: existing.id, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${existing.id}`, expires_at: existing.expires_at };
+    const signed = await signApprovalLink(env, existing.id, identity.tenantId, existing.expires_at);
+    return { approval_id: existing.id, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${existing.id}?t=${signed}`, expires_at: existing.expires_at };
   }
   const approvalId = ids.approval();
   // A real build+push cycle easily exceeds a few minutes, so a short approval
@@ -549,7 +596,8 @@ export async function requestApproval(
       (id, tenant_id, workspace_id, requested_action, reason, risk_category, request_payload, state, expires_at)
      VALUES (?1, ?2, ?3, ?4, ?5, 'external_write', ?6, 'pending', ?7)`
   ).bind(approvalId, identity.tenantId, workspaceId, action, reason, requestPayload, expiresAt).run();
-  return { approval_id: approvalId, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}`, expires_at: expiresAt };
+  const signed = await signApprovalLink(env, approvalId, identity.tenantId, expiresAt);
+  return { approval_id: approvalId, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}?t=${signed}`, expires_at: expiresAt };
 }
 
 export async function requireApproval(
@@ -592,28 +640,93 @@ export async function completeApproval(env: Env, approvalId: string, succeeded: 
     .bind(succeeded ? 'consumed' : 'failed', approvalId).run();
 }
 
-// Render a unified diff as color-coded, escaped HTML lines. Bounded so a huge
-// diff can't blow up the page; the diffHash (not this) is the integrity check.
+interface DiffRow {
+  type: 'add' | 'del' | 'ctx' | 'hunk';
+  text: string;
+  oldNo: number | null;
+  newNo: number | null;
+}
+
+interface DiffFile {
+  path: string;
+  added: number;
+  removed: number;
+  binary: boolean;
+  rows: DiffRow[];
+}
+
+// Parse a unified diff into per-file, line-numbered structure so the approval
+// page can render a real side-by-gutter view instead of a raw text blob.
+function parseDiff(diff: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  let current: DiffFile | null = null;
+  let oldNo = 0;
+  let newNo = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git')) {
+      const match = line.match(/ b\/(.+)$/u);
+      current = { path: match?.[1] ?? line.replace('diff --git ', ''), added: 0, removed: 0, binary: false, rows: [] };
+      files.push(current);
+      oldNo = 0;
+      newNo = 0;
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith('rename to ')) { current.path = line.slice('rename to '.length); continue; }
+    if (line.startsWith('Binary files')) { current.binary = true; continue; }
+    if (
+      line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ') ||
+      line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('similarity ') ||
+      line.startsWith('rename from ') || line.startsWith('old mode') || line.startsWith('new mode') ||
+      line.startsWith('\\ No newline')
+    ) continue;
+    if (line.startsWith('@@')) {
+      const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u);
+      oldNo = match ? Number(match[1]) : 0;
+      newNo = match ? Number(match[2]) : 0;
+      current.rows.push({ type: 'hunk', text: line, oldNo: null, newNo: null });
+      continue;
+    }
+    if (line.startsWith('+')) { current.added += 1; current.rows.push({ type: 'add', text: line.slice(1), oldNo: null, newNo: newNo++ }); }
+    else if (line.startsWith('-')) { current.removed += 1; current.rows.push({ type: 'del', text: line.slice(1), oldNo: oldNo++, newNo: null }); }
+    else { current.rows.push({ type: 'ctx', text: line.startsWith(' ') ? line.slice(1) : line, oldNo: oldNo++, newNo: newNo++ }); }
+  }
+  return files;
+}
+
+const fileGlyph = (path: string): string => {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  if (['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs'].includes(ext)) return '𝐉𝐒';
+  if (['json', 'yaml', 'yml', 'toml'].includes(ext)) return '⚙';
+  if (['md', 'txt'].includes(ext)) return '📄';
+  if (['css', 'scss', 'html'].includes(ext)) return '🎨';
+  if (['sql'].includes(ext)) return '🗄';
+  return '›';
+};
+
+// Render the parsed diff as color-coded file cards with old/new line-number
+// gutters. Bounded so a huge diff can't blow up the page; the diffHash (not
+// this display) remains the integrity check on what actually gets pushed.
 function renderDiffHtml(diff: string): string {
-  const MAX_LINES = 4000;
-  const lines = diff.split('\n');
-  const shown = lines.slice(0, MAX_LINES);
-  const rows = shown
-    .map((line) => {
-      const cls = line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---')
-        ? 'df-meta'
-        : line.startsWith('@@')
-          ? 'df-hunk'
-          : line.startsWith('+')
-            ? 'df-add'
-            : line.startsWith('-')
-              ? 'df-del'
-              : 'df-ctx';
-      return `<span class="${cls}">${escapeHtml(line) || ' '}</span>`;
-    })
-    .join('\n');
-  const trailer = lines.length > MAX_LINES ? `\n<span class="df-meta">… ${lines.length - MAX_LINES} more lines truncated</span>` : '';
-  return rows + trailer;
+  const MAX_ROWS = 4000;
+  const files = parseDiff(diff);
+  let budget = MAX_ROWS;
+  let truncated = 0;
+  const cards = files.map((file) => {
+    const gutter = (value: number | null): string => (value === null ? '' : String(value));
+    const rows = file.rows.slice(0, budget);
+    truncated += file.rows.length - rows.length;
+    budget -= rows.length;
+    const body = file.binary
+      ? '<div class="drow ctx"><span class="dg"></span><span class="dg"></span><span class="dc">Binary file not shown</span></div>'
+      : rows.map((row) => {
+          const sign = row.type === 'add' ? '+' : row.type === 'del' ? '−' : row.type === 'hunk' ? '' : ' ';
+          return `<div class="drow ${row.type}"><span class="dg">${gutter(row.oldNo)}</span><span class="dg">${gutter(row.newNo)}</span><span class="dc"><span class="ds">${sign}</span>${escapeHtml(row.text) || ' '}</span></div>`;
+        }).join('');
+    return `<section class="dfile"><header class="dfhead"><span class="dfico" aria-hidden="true">${fileGlyph(file.path)}</span><span class="dfpath">${escapeHtml(file.path)}</span><span class="dfstat"><span class="s-add">+${file.added}</span><span class="s-del">−${file.removed}</span></span></header><div class="dfbody">${body}</div></section>`;
+  }).join('');
+  const trailer = truncated > 0 ? `<p class="dtrunc">… ${truncated} more line${truncated === 1 ? '' : 's'} truncated — review the full diff in the workspace before approving.</p>` : '';
+  return `<div class="diffset">${cards}${trailer}</div>`;
 }
 
 // Cheap +adds / -dels / files summary for the approval header.
@@ -630,11 +743,22 @@ function diffStats(diff: string): { files: number; added: number; removed: numbe
 }
 
 export async function approvalPage(request: Request, env: Env, approvalId: string): Promise<Response> {
-  const user = await getWebSession(request, env);
-  if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
+  const url = new URL(request.url);
+  // Prefer a signed link (open + approve from the transcript, no re-login). Fall
+  // back to the logged-in web session. Both resolve to a tenant scope; only then
+  // do we redirect to GitHub login.
+  const token = url.searchParams.get('t') ?? '';
+  const linkClaims = token ? await verifyApprovalLink(env, token, approvalId) : null;
+  const user = linkClaims ? null : await getWebSession(request, env);
+  const tenantId = linkClaims?.tenant ?? user?.tenant_id ?? null;
+  if (!tenantId) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
+  const resolvedBy = user ? `github:${user.github_user_id}` : 'approval-link';
+  // Preserve the signed token across the POST → 303 → GET round-trip so the
+  // reviewer never bounces to login mid-decision.
+  const selfUrl = `${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}${token ? `?t=${encodeURIComponent(token)}` : ''}`;
   const row = await env.METADATA.prepare(
     'SELECT requested_action, reason, request_payload, state, expires_at FROM approvals WHERE id=?1 AND tenant_id=?2'
-  ).bind(approvalId, user.tenant_id).first<{ requested_action: string; reason: string; request_payload: string; state: string; expires_at: string }>();
+  ).bind(approvalId, tenantId).first<{ requested_action: string; reason: string; request_payload: string; state: string; expires_at: string }>();
   if (!row) return new Response('Approval not found', { status: 404 });
   if (request.method === 'POST') {
     assertSameOrigin(request, env);
@@ -643,8 +767,8 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     const decision = body.get('decision');
     if (decision !== 'approved' && decision !== 'denied') return new Response('Invalid decision', { status: 400 });
     await env.METADATA.prepare('UPDATE approvals SET state=?1, resolved_by=?2, resolved_at=?3 WHERE id=?4 AND state=\'pending\'')
-      .bind(decision, `github:${user.github_user_id}`, new Date().toISOString(), approvalId).run();
-    return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}`, 303);
+      .bind(decision, resolvedBy, new Date().toISOString(), approvalId).run();
+    return Response.redirect(selfUrl, 303);
   }
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
   // Pull out the display-only diff/body; show the rest as a small key/value
@@ -661,14 +785,14 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     : '';
   const bodyBlock = typeof body === 'string' && body.trim() !== '' ? `<pre class="body">${escapeHtml(body)}</pre>` : '';
   const contentBlock = hasDiff
-    ? `<pre class="diff">${renderDiffHtml(diff)}</pre>`
+    ? renderDiffHtml(diff)
     : metaRows === ''
       ? `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
       : '';
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge approval</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--accent:#5b4cf0;--grad:#a78bfa;--add:#eafaf0;--add-ink:#0f9d58;--del:#fdecec;--del-ink:#d64545;--hunk:#efedfe;--hunk-ink:#5b4cf0}*{box-sizing:border-box}body{width:min(100% - 2.5rem,60rem);margin:0 auto;padding:clamp(2.5rem,8vw,5rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:1.4rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:18px;font-weight:750;letter-spacing:-.02em}h1{margin:0 0 1rem;font-size:clamp(1.9rem,6vw,2.8rem);line-height:1.02;letter-spacing:-.03em}p{color:var(--muted);overflow-wrap:anywhere}.stats{color:var(--ink);font-weight:600}.s-add{color:var(--add-ink)}.s-del{color:var(--del-ink)}.kv{display:flex;gap:.75rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)}.kv span{flex:0 0 6.5rem;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.kv code{overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre.body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem}pre.diff{max-height:32rem;padding:.5rem 0}pre.diff span{display:block;padding:0 1rem;white-space:pre;overflow-wrap:normal}.df-add{background:var(--add);color:var(--add-ink)}.df-del{background:var(--del);color:var(--del-ink)}.df-hunk{background:var(--hunk);color:var(--hunk-ink);font-weight:600}.df-meta{color:var(--muted)}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:1rem}button{min-height:46px;padding:.7rem 1.2rem;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer;transition:filter 180ms ease-out,border-color 180ms ease-out}.approve{background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;border-color:transparent}button:hover{border-color:var(--accent)}.approve:hover{filter:brightness(1.08);border-color:transparent}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
+<title>Forge approval</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--accent:#5b4cf0;--grad:#a78bfa;--add:#eafaf0;--add-ink:#0f9d58;--del:#fdecec;--del-ink:#d64545;--hunk:#efedfe;--hunk-ink:#5b4cf0}*{box-sizing:border-box}body{width:min(100% - 2.5rem,60rem);margin:0 auto;padding:clamp(2.5rem,8vw,5rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:1.4rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:18px;font-weight:750;letter-spacing:-.02em}h1{margin:0 0 1rem;font-size:clamp(1.9rem,6vw,2.8rem);line-height:1.02;letter-spacing:-.03em}p{color:var(--muted);overflow-wrap:anywhere}.stats{color:var(--ink);font-weight:600}.s-add{color:var(--add-ink)}.s-del{color:var(--del-ink)}.kv{display:flex;gap:.75rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)}.kv span{flex:0 0 6.5rem;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.kv code{overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre.body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem}.diffset{margin-top:1.25rem;display:flex;flex-direction:column;gap:1rem}.dfile{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--surface)}.dfhead{display:flex;align-items:center;gap:.6rem;padding:.6rem .9rem;background:#fafafc;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}.dfico{font-size:.72rem;font-weight:800;color:var(--muted);min-width:1.6rem;text-align:center}.dfpath{font:600 .82rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dfstat{margin-left:auto;display:flex;gap:.5rem;font:700 .74rem/1 ui-monospace,monospace;flex:0 0 auto}.dfbody{max-height:30rem;overflow:auto;font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.drow{display:grid;grid-template-columns:3rem 3rem 1fr;min-width:0}.drow .dg{padding:0 .45rem;text-align:right;color:var(--muted);opacity:.6;user-select:none;white-space:nowrap;border-right:1px solid var(--line)}.drow .dc{padding:0 .75rem;white-space:pre;overflow-wrap:normal}.drow .ds{display:inline-block;width:.75rem;color:var(--muted);opacity:.7}.drow.add{background:var(--add)}.drow.add .dc,.drow.add .ds{color:var(--add-ink)}.drow.del{background:var(--del)}.drow.del .dc,.drow.del .ds{color:var(--del-ink)}.drow.hunk{background:var(--hunk)}.drow.hunk .dc{color:var(--hunk-ink);font-weight:600}.drow.hunk .dg{background:var(--hunk);border-right-color:transparent}.dtrunc{font-size:.8rem;margin-top:.25rem}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:1rem}button{min-height:46px;padding:.7rem 1.2rem;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer;transition:filter 180ms ease-out,border-color 180ms ease-out}.approve{background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;border-color:transparent}button:hover{border-color:var(--accent)}.approve:hover{filter:brightness(1.08);border-color:transparent}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
 <div class="mark"><span class="glyph" aria-hidden="true">⚒</span><span class="wordmark">Forge</span></div><h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p>${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
-${row.state === 'pending' ? `<form method="post"><button class="approve" name="decision" value="approved">Approve once</button><button name="decision" value="denied">Deny</button></form>` : ''}`,
+${row.state === 'pending' ? `<form method="post" action="${escapeHtml(selfUrl)}"><button class="approve" name="decision" value="approved">Approve once</button><button name="decision" value="denied">Deny</button></form>` : ''}`,
   { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }
 
