@@ -12,7 +12,8 @@ import {
   type WorkspaceId
 } from '@forge/core';
 import { issueCapability } from '@forge/capabilities';
-import { registerForgeToolsV1 } from '@forge/mcp-adapter-v1';
+import { registerForgeToolsV1, type ToolCallTelemetry } from '@forge/mcp-adapter-v1';
+import { ToolCallTracker, hashArgs } from './telemetry';
 import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { D1TaskStore } from '@forge/metadata-d1';
@@ -322,8 +323,45 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
 
   async init(): Promise<void> {
     registerForgeConsole(this.server);
-    registerForgeToolsV1(this.server, this.handlers());
+    const tracker = new ToolCallTracker(this.env, {
+      waitUntil: (p) => (this.ctx as unknown as { waitUntil?: (p: Promise<unknown>) => void })?.waitUntil?.(p)
+    });
+    registerForgeToolsV1(this.server, this.handlers(), (event) => {
+      void this.onToolCallTelemetry(tracker, event);
+    });
     this.registerPrompts();
+  }
+
+  private async onToolCallTelemetry(tracker: ToolCallTracker, event: ToolCallTelemetry): Promise<void> {
+    let identity: SessionProps;
+    try {
+      identity = this.identity();
+    } catch {
+      return;
+    }
+    let clientName: string | undefined;
+    try {
+      clientName = (this.server as unknown as { server?: { getClientVersion?: () => { name?: string } | undefined } })
+        .server?.getClientVersion?.()?.name;
+    } catch {
+      clientName = undefined;
+    }
+    tracker.capture(
+      {
+        tool: event.tool,
+        distinctId: identity.tenantId,
+        sessionId: `${identity.tenantId}:${identity.projectId}`,
+        clientName,
+        durationMs: event.durationMs,
+        status: event.status,
+        errorCode: event.errorCode,
+        errorMessage: event.errorMessage,
+        resultBytes: event.resultBytes,
+        showsWidget: event.showsWidget,
+        argsHash: await hashArgs(event.input)
+      },
+      Date.now()
+    );
   }
 
   // Slash-command style entry points that mirror the server workflow in the

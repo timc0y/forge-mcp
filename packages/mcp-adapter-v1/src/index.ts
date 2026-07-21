@@ -108,7 +108,22 @@ function summarize(name: string, value: Record<string, unknown>): string {
   return pick('nextStep') ?? pick('message') ?? pick('summary') ?? `${name} completed`;
 }
 
-export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandlers): void {
+export interface ToolCallTelemetry {
+  tool: string;
+  durationMs: number;
+  status: 'success' | 'error';
+  errorCode?: string;
+  errorMessage?: string;
+  resultBytes?: number;
+  showsWidget: boolean;
+  input: Record<string, unknown>;
+}
+
+export function registerForgeToolsV1(
+  server: McpServer,
+  handlers: ForgeToolHandlers,
+  onToolCall?: (event: ToolCallTelemetry) => void
+): void {
   for (const definition of forgeTools) {
     const status = TOOL_INVOCATION_STATUS[definition.name];
     server.registerTool(
@@ -140,6 +155,7 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
         }
       },
       async (input: Record<string, unknown>) => {
+        const startedAt = Date.now();
         try {
           const result = await handlers[definition.name](input as Record<string, unknown>);
           const isResponse = (value: typeof result): value is ForgeToolResponse =>
@@ -164,7 +180,7 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
             ...(meta ?? {})
           };
 
-          return {
+          const response = {
             structuredContent: structured,
             // A ForgeToolResponse already carries purpose-built content (e.g.
             // image artifacts); otherwise emit a single short text summary
@@ -174,6 +190,17 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
               : [{ type: 'text' as const, text: summarize(definition.name, structured) }],
             ...(Object.keys(resultMeta).length > 0 ? { _meta: resultMeta } : {})
           };
+
+          onToolCall?.({
+            tool: definition.name,
+            durationMs: Date.now() - startedAt,
+            status: 'success',
+            resultBytes: JSON.stringify(response).length,
+            showsWidget: showsWidget(definition.name),
+            input
+          });
+
+          return response;
         } catch (error) {
           const shape = toForgeError(error).toJSON();
           // Hoist structured error details (e.g. an approval requirement's
@@ -186,6 +213,17 @@ export function registerForgeToolsV1(server: McpServer, handlers: ForgeToolHandl
               ? (shape.details as Record<string, unknown>)
               : {};
           const result = { error: shape, ...details };
+
+          onToolCall?.({
+            tool: definition.name,
+            durationMs: Date.now() - startedAt,
+            status: 'error',
+            errorCode: shape.code,
+            errorMessage: shape.message,
+            showsWidget: showsWidget(definition.name),
+            input
+          });
+
           return {
             isError: true,
             structuredContent: result,
