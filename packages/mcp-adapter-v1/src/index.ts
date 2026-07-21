@@ -24,17 +24,13 @@ const OPEN_WORLD = new Set([
   'forge_review'
 ]);
 
-// Tools whose result is worth rendering in the interactive console widget —
-// reviews (screenshots), diffs/status, workspace state, and the repo list.
-// Every other tool returns a plain text/structured result with NO widget, so
-// the panel does not eat space on high-frequency, low-visual calls (file reads,
-// shell exec, logs, commits, etc.). Only tools in this set carry the
-// resourceUri / outputTemplate that makes the host mount the console.
-const WIDGET_TOOLS = new Set([
-  'forge_review', 'forge_review_capture',
-  'forge_git_diff', 'forge_git_outgoing_diff', 'forge_git_status',
-  'forge_workspace_create', 'forge_workspace_get', 'forge_repository_list'
-]);
+// Widget disabled repo-wide: it never reliably rendered in ChatGPT/Claude
+// clients and the resourceUri/outputTemplate _meta it carried was adding
+// per-call render overhead for no payoff. Every tool now returns a plain
+// text/structured result. Kept as a set (rather than removing showsWidget
+// entirely) so re-enabling for a specific tool is a one-line change if a
+// client starts rendering it correctly.
+const WIDGET_TOOLS = new Set<string>([]);
 
 /** Whether a tool's result renders the interactive console widget. */
 export function showsWidget(name: string): boolean {
