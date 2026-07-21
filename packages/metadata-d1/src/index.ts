@@ -193,6 +193,7 @@ type TaskDocument = Pick<
   | 'checks'
   | 'evidenceIds'
   | 'outstanding'
+  | 'pushedAt'
 >;
 
 function parseRepository(value: string): RepositoryRef {
@@ -216,7 +217,8 @@ export class D1TaskStore implements TaskStore {
       changedFiles: task.changedFiles,
       checks: task.checks,
       evidenceIds: task.evidenceIds,
-      outstanding: task.outstanding
+      outstanding: task.outstanding,
+      pushedAt: task.pushedAt
     };
     await this.db
       .prepare(`
@@ -275,6 +277,7 @@ export class D1TaskStore implements TaskStore {
       checks: document.checks,
       evidenceIds: document.evidenceIds,
       outstanding: document.outstanding,
+      ...(document.pushedAt ? { pushedAt: document.pushedAt } : {}),
       state: row.state as TaskState,
       revision: Number(row.revision),
       createdAt: row.created_at,
@@ -308,5 +311,18 @@ export class D1TaskStore implements TaskStore {
       .bind(...binds)
       .all<TaskRow>();
     return results.map((row) => D1TaskStore.hydrate(row));
+  }
+
+  /**
+   * Most-recently-updated task attached to a workspace, if any. Used to
+   * record push/verification bookkeeping (e.g. pushedAt) against the task
+   * that owns a workspace, since forge_git_push only knows the workspace id.
+   */
+  async getByWorkspace(workspaceId: string): Promise<Task | null> {
+    const row = await this.db
+      .prepare('SELECT * FROM tasks WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 1')
+      .bind(workspaceId)
+      .first<TaskRow>();
+    return row ? D1TaskStore.hydrate(row) : null;
   }
 }

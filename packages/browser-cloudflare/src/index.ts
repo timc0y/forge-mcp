@@ -64,7 +64,12 @@ function baseOptions(input: Omit<ScreenshotInput, 'fullPage'>): BrowserRunBaseOp
     url: targetUrl(input),
     setExtraHTTPHeaders: input.headers,
     viewport: input.viewport,
-    gotoOptions: { waitUntil: 'domcontentloaded', timeout: 30_000 },
+    // 'networkidle0' (no in-flight requests for 500ms) instead of
+    // 'domcontentloaded' — the latter fires before images finish downloading,
+    // producing screenshots with broken/half-loaded images. This REST
+    // snapshot path has no page handle to run a custom img.complete wait, so
+    // the goto wait strategy is the only lever available.
+    gotoOptions: { waitUntil: 'networkidle0', timeout: 30_000 },
     cacheTTL: input.cacheTtlSeconds ?? 0,
     actionTimeout: 60_000
   };
@@ -115,6 +120,23 @@ async function runStep(page: Page, step: BrowserActionStep, base: URL): Promise<
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
       return;
   }
+}
+
+// domcontentloaded/load fire before lazy-loaded, CSS-background, or
+// JS-injected images finish downloading, so a screenshot taken right after
+// navigation can show broken/half-rendered images. Poll img.complete with a
+// bounded timeout — bounded so one slow/broken image can never hang capture
+// indefinitely.
+async function waitForImages(page: Page, timeoutMs = 5_000): Promise<void> {
+  await page
+    .waitForFunction(
+      () =>
+        Array.from(
+          (globalThis as unknown as { document: { images: ArrayLike<{ complete: boolean }> } }).document.images
+        ).every((img) => img.complete),
+      { timeout: timeoutMs }
+    )
+    .catch(() => {});
 }
 
 function stripDataPrefix(value: string): string {
@@ -308,6 +330,7 @@ export class CloudflareBrowserProvider implements BrowserProvider {
       if (input.headers) await page.setExtraHTTPHeaders(input.headers);
       await page.goto(base.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
       for (const step of input.steps) await runStep(page, step, base);
+      await waitForImages(page);
       const shot = await page.screenshot({
         type: contentType === 'image/png' ? 'png' : 'jpeg',
         ...(contentType === 'image/jpeg' ? { quality: input.quality ?? 80 } : {}),

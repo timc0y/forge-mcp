@@ -131,6 +131,14 @@ async function render({ input, steps }) {
       else if (step.kind === 'reload') await page.reload({ waitUntil: 'domcontentloaded' });
       else if (step.kind === 'navigate') await page.goto(new URL((step.path || '/').replace(/^\/+/, ''), url).toString(), { waitUntil: 'domcontentloaded' });
     }
+    // 'domcontentloaded' fires before images finish downloading (lazy-loaded,
+    // CSS-background, or JS-injected images especially), so a screenshot
+    // taken right after navigation/steps can show broken/half-rendered
+    // images. Poll img.complete with a bounded timeout so one slow/broken
+    // image can never hang capture indefinitely.
+    await page
+      .waitForFunction(() => Array.from(document.images).every((img) => img.complete), { timeout: 5_000 })
+      .catch(() => {});
     const jpeg = await page.screenshot({ type: 'jpeg', quality: 80, fullPage: Boolean(input.fullPage) });
     const tree = await page.accessibility.snapshot({ interestingOnly: false });
     return { screenshotBase64: jpeg.toString('base64'), contentType: 'image/jpeg', accessibilityTree: tree, finalUrl: page.url(), width: input.viewport?.width, height: input.viewport?.height };

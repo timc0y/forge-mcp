@@ -75,4 +75,11 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_APP_SLUG?: string;
   GITHUB_WEBHOOK_SECRET?: string;
+  // PostHog analytics for MCP tool usage (latency, errors, repeat/retry
+  // calls). Telemetry is a no-op whenever this is unset — safe to leave off
+  // in local/dev. Set via `wrangler secret put POSTHOG_API_KEY`.
+  POSTHOG_API_KEY?: string;
+  // Defaults to PostHog Cloud US (https://us.i.posthog.com). Override for
+  // EU cloud or a self-hosted instance.
+  POSTHOG_HOST?: string;
 }

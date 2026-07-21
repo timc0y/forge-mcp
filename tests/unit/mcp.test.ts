@@ -21,13 +21,14 @@ describe('Forge MCP public contracts', () => {
     expect(shell).toHaveProperty('approval_id');
   });
 
-  it('renders the console widget only for visual tools, not high-frequency ones', () => {
-    // Visual results worth a panel.
-    for (const name of ['forge_review', 'forge_review_capture', 'forge_git_diff', 'forge_git_status', 'forge_workspace_get', 'forge_repository_list']) {
-      expect(showsWidget(name)).toBe(true);
-    }
-    // High-frequency / low-visual results must NOT mount the widget.
-    for (const name of ['forge_files_read', 'forge_files_write', 'forge_shell_exec', 'forge_process_logs', 'forge_git_commit', 'forge_artifact_get']) {
+  it('renders the console widget for no tool — disabled repo-wide', () => {
+    // The widget never reliably rendered in ChatGPT/Claude clients, so it's
+    // off for every tool (see packages/mcp-adapter-v1/src/index.ts).
+    for (const name of [
+      'forge_review', 'forge_review_capture', 'forge_git_diff', 'forge_git_status',
+      'forge_workspace_get', 'forge_repository_list', 'forge_files_read', 'forge_files_write',
+      'forge_shell_exec', 'forge_process_logs', 'forge_git_commit', 'forge_artifact_get'
+    ]) {
       expect(showsWidget(name)).toBe(false);
     }
   });

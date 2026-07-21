@@ -96,6 +96,10 @@ export interface Task {
   evidenceIds: ArtifactId[];
   /** Hash of the latest inspected raw diff, for push-time safety. */
   latestDiffHash?: string;
+  /** Set when forge_git_push last succeeded for this task's branch. Cleared
+   * implicitly by comparing against changedFiles at completion time — a task
+   * with unpushed changes may not transition to complete. */
+  pushedAt?: string;
   state: TaskState;
   outstanding: string[];
   /** Optimistic-concurrency guard shared with the durable store. */

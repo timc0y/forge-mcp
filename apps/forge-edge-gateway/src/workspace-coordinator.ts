@@ -656,13 +656,15 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async requestDestroy(input: {
     expectedRevision?: number;
     idempotencyKey: string;
+    force?: boolean;
   }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       const value = this.app.requestDestroy(
         record,
         input.expectedRevision,
-        input.idempotencyKey
+        input.idempotencyKey,
+        input.force
       );
       await this.save(record);
       return value;
