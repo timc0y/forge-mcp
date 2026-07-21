@@ -68,7 +68,13 @@ const workspaceGetOutput = {
   createdAt: z.string(),
   updatedAt: z.string(),
   idleDeadline: z.string().optional(),
-  processes: z.array(z.object({ id: z.string(), providerProcessId: z.string().optional(), command: z.string().optional(), cwd: z.string().optional(), status: z.string(), pid: z.number().optional() })),
+  // Only id/command/port are actually tracked per background process — see
+  // WorkspaceRuntimeRecord.processes in @forge/application. Previously
+  // declared providerProcessId/cwd/status/pid too, none of which were ever
+  // populated, which combined with the dict-vs-array mismatch below meant
+  // this tool failed output validation on ANY client that enforces
+  // outputSchema strictly, for any workspace with a tracked process.
+  processes: z.array(z.object({ id: z.string(), command: z.string(), port: z.number().optional() })),
   previews: z.record(z.string(), z.object({ port: z.number(), processId: z.string(), access: z.string(), expiresAt: z.string() }))
 } satisfies ZodRawShape;
 
