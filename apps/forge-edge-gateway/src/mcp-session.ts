@@ -18,6 +18,8 @@ import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { D1AuditStore } from '@forge/audit';
+import { createPushEnvelope, findActiveEnvelope, recordEnvelopePush, pathsWithinEnvelope } from './push-envelopes';
+import { elicitInlineApproval } from './inline-approval';
 import type { ForgeEvent } from '@forge/events';
 import { analyzeDiff, selectContext, suggestChecks } from '@forge/insight';
 import {
@@ -48,6 +50,7 @@ import {
   completeApproval,
   createDraftPullRequest,
   listAuthorizedRepositories,
+  markApprovalApproved,
   requestApproval,
   requireApproval
 } from './github';
@@ -455,6 +458,26 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         name: error instanceof Error ? error.name : 'unknown'
       });
     });
+  }
+
+  // Best-effort inline layer on top of an already-minted (pending) approval:
+  // try MCP URL-mode elicitation so a supporting client can render the
+  // approve/decline prompt inline instead of the agent pasting a link into
+  // chat text. Returns the approval id to proceed with immediately when the
+  // human accepted inline; returns null for every other outcome (unsupported
+  // client, decline, cancel, timeout), in which case the caller should fall
+  // back to its normal "open this URL and retry" error unchanged.
+  private async tryResolveApprovalInline(
+    identity: SessionProps,
+    approval: { approval_id: string; approval_url: string; expires_at: string; already_approved: boolean },
+    reason: string
+  ): Promise<string | null> {
+    if (approval.already_approved) return null;
+    const outcome = await elicitInlineApproval(this.server, approval.approval_id, reason, approval.approval_url)
+      .catch(() => 'unsupported' as const);
+    if (outcome !== 'accept') return null;
+    const marked = await markApprovalApproved(this.env, identity.tenantId, approval.approval_id);
+    return marked ? approval.approval_id : null;
   }
 
   private identity(): SessionProps {
@@ -1063,7 +1086,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const networkPolicy = text(input.network_policy) as never;
         const workspace = await authorizedCoordinator(env, identity, workspaceId);
         const decision = classifyCommand(command, networkPolicy);
-        const approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
         const environment = input.environment as Record<string, string>;
         const environmentHash = await sha256(JSON.stringify(Object.entries(environment).sort(([left], [right]) => left.localeCompare(right))));
         const approvalPayload = { command, cwd, networkPolicy, environmentHash };
@@ -1078,9 +1101,15 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             claimedApproval = true;
           } else if (!approvalId) {
             const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} command`, approvalPayload);
-            // Expose approval_id / approval_url as machine-readable fields so the
-            // widget can render an Approve button; kind discriminates the shape.
-            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact command was already approved. No need to open the URL again — retry the call with approval_id.' : 'This command needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
+            const inline = await this.tryResolveApprovalInline(identity, approval, `Run ${decision.classification} command`);
+            if (!inline) {
+              // Expose approval_id / approval_url as machine-readable fields so the
+              // widget can render an Approve button; kind discriminates the shape.
+              throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact command was already approved. No need to open the URL again — retry the call with approval_id.' : 'This command needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
+            }
+            approvalId = inline;
+            await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
+            claimedApproval = true;
           } else {
             await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
             claimedApproval = true;
@@ -1165,22 +1194,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const branch = text(input.branch);
         const base = text(input.base);
         const diffHash = text(input.expected_diff_hash);
-        const approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        if (!approvalId) {
-          // Attach the actual outgoing diff so the human approves what they can
-          // see, not an opaque hash. Best-effort — `diff` is display-only; the
-          // diffHash remains the integrity check enforced by requireApproval.
-          const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
-            .gitOutgoingDiff({ base }).catch(() => undefined);
-          const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash, diff: outgoing?.diff ?? '' });
-          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact push was already approved. No need to open the URL again — retry the call with approval_id.' : 'This push needs human approval. Open the approval URL, approve this exact push, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
-        }
-        await requireApproval(env, identity, approvalId, workspaceId, 'git.push', { branch, base, diffHash });
-        try {
-          const result = await (await authorizedCoordinator(env, identity, workspaceId)).gitPush({
-            branch, base, expectedDiffHash: diffHash, expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
-          });
-          await completeApproval(env, approvalId, true);
+        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        const markTaskPushed = async () => {
           // Best-effort: record the push against whichever task owns this
           // workspace, so forge_task_finish can tell a pushed branch apart
           // from committed-but-stranded work. Never blocks the push itself.
@@ -1189,6 +1204,66 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             if (!task) return;
             await store.put({ ...task, pushedAt: new Date().toISOString() });
           }).catch(() => undefined);
+        };
+        const executePush = async () => {
+          const coordinator = await authorizedCoordinator(env, identity, workspaceId);
+          return coordinator.gitPush({
+            branch, base, expectedDiffHash: diffHash, expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+          });
+        };
+
+        // Envelope fast path: a prior forge_task_authorize_push_envelope for
+        // this exact (workspace, branch, base) lets this push skip the human
+        // click entirely — but only while it still satisfies the envelope's
+        // invariant, re-checked fresh on every call: the branch fast-forwards
+        // from the last envelope-covered commit (no rewritten history), and
+        // every changed path is covered by allowed_paths. Anything that fails
+        // either check falls straight through to the normal per-push approval
+        // below — the envelope never widens itself.
+        if (!approvalId) {
+          const envelope = await findActiveEnvelope(env, identity.tenantId, workspaceId, branch, base);
+          if (envelope) {
+            const coordinator = await authorizedCoordinator(env, identity, workspaceId);
+            const outgoing = await coordinator.gitOutgoingDiff({ base }).catch(() => undefined);
+            const hashOk = outgoing?.diffHash === diffHash;
+            const pathsOk = hashOk && pathsWithinEnvelope(analyzeDiff(outgoing.diff).files.map((f) => f.path), envelope.allowedPaths);
+            const ffOk = pathsOk && (envelope.lastApprovedCommit
+              ? await coordinator.gitIsAncestor({ ancestor: envelope.lastApprovedCommit })
+              : true);
+            if (hashOk && pathsOk && ffOk) {
+              const result = await executePush();
+              await markTaskPushed();
+              const newCommit = (result as { commit?: string }).commit;
+              if (newCommit) await recordEnvelopePush(env, envelope.id, newCommit);
+              await this.recordAudit(
+                'git.push',
+                identity.tenantId,
+                { branch, base, diffHash, via: 'envelope', envelopeId: envelope.id },
+                { workspaceId }
+              );
+              return asRecord(result);
+            }
+          }
+        }
+
+        if (!approvalId) {
+          // Attach the actual outgoing diff so the human approves what they can
+          // see, not an opaque hash. Best-effort — `diff` is display-only; the
+          // diffHash remains the integrity check enforced by requireApproval.
+          const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
+            .gitOutgoingDiff({ base }).catch(() => undefined);
+          const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash, diff: outgoing?.diff ?? '' });
+          const inline = await this.tryResolveApprovalInline(identity, approval, `Push ${branch} to GitHub`);
+          if (!inline) {
+            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact push was already approved. No need to open the URL again — retry the call with approval_id.' : 'This push needs human approval. Open the approval URL, approve this exact push, then retry the call with approval_id. To avoid a human click on every future push in this task, ask them to run forge_task_authorize_push_envelope once instead.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
+          }
+          approvalId = inline;
+        }
+        await requireApproval(env, identity, approvalId, workspaceId, 'git.push', { branch, base, diffHash });
+        try {
+          const result = await executePush();
+          await completeApproval(env, approvalId, true);
+          await markTaskPushed();
           await this.recordAudit(
             'git.push',
             identity.tenantId,
@@ -1201,6 +1276,81 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           throw error;
         }
       },
+      forge_task_authorize_push_envelope: async (input) => {
+        const identity = this.identity();
+        const workspaceId = text(input.workspace_id);
+        const branch = text(input.branch);
+        const base = text(input.base);
+        const taskId = input.task_id ? text(input.task_id) : undefined;
+        const ttlMinutes = number(input.ttl_minutes);
+        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        const coordinator = await authorizedCoordinator(env, identity, workspaceId);
+        const outgoing = await coordinator.gitOutgoingDiff({ base }).catch(() => undefined);
+        const defaultPaths = outgoing ? [...new Set(analyzeDiff(outgoing.diff).files.map((f) => f.path))] : [];
+        const allowedPaths = (input.allowed_paths as string[] | undefined) ?? defaultPaths;
+        if (allowedPaths.length === 0) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'No allowed_paths given and the current outgoing diff is empty — there is nothing to scope the envelope to. Make a change first, or pass allowed_paths explicitly.',
+            retryable: false
+          });
+        }
+        if (!approvalId) {
+          const approval = await requestApproval(
+            env, identity, workspaceId, 'task.push_envelope', `Pre-authorize pushes to ${branch}`,
+            { branch, base, allowedPaths, ttlMinutes, diff: outgoing?.diff ?? '' }
+          );
+          const reason = `Pre-authorize pushes to ${branch} touching only ${allowedPaths.join(', ')}`;
+          const inline = await this.tryResolveApprovalInline(identity, approval, reason);
+          if (!inline) {
+            throw new ForgeError({
+              code: 'FORGE_APPROVAL_REQUIRED',
+              message: approval.already_approved
+                ? 'This exact envelope was already approved. No need to open the URL again — retry the call with approval_id.'
+                : `This authorizes Forge to auto-approve future pushes to ${branch} for the next ${ttlMinutes} minutes, as long as each one only touches ${allowedPaths.join(', ')} and fast-forwards with no rewritten history — every other push (and every pull request) still needs its own approval. Open the approval URL, approve it, then retry the call with approval_id.`,
+              retryable: false,
+              details: { kind: 'approval', action: 'task.push_envelope', ...approval }
+            });
+          }
+          approvalId = inline;
+        }
+        // Only compare primitives here — allowedPaths is an array and the
+        // generic equality check in requireApproval is a strict !==, which
+        // would never match a freshly-parsed array even when the content is
+        // identical. The approval page already showed the human the paths.
+        await requireApproval(env, identity, approvalId, workspaceId, 'task.push_envelope', { branch, base });
+        try {
+          const state = await coordinator.getState();
+          const envelope = await createPushEnvelope(env, {
+            tenantId: identity.tenantId,
+            workspaceId,
+            taskId,
+            branch,
+            base,
+            allowedPaths,
+            startCommit: (state as { currentCommit?: string }).currentCommit ?? null,
+            ttlMinutes
+          });
+          await completeApproval(env, approvalId, true);
+          await this.recordAudit(
+            'task.push_envelope.authorize',
+            identity.tenantId,
+            { branch, base, allowedPaths, ttlMinutes, envelopeId: envelope.id, taskId },
+            { workspaceId }
+          );
+          return {
+            envelope_id: envelope.id,
+            branch: envelope.branch,
+            base: envelope.base,
+            allowed_paths: envelope.allowedPaths,
+            expires_at: envelope.expiresAt,
+            next_step: 'Future forge_git_push calls to this branch will auto-satisfy while they stay inside this envelope. Pushes outside it (new paths, rewritten history, a different branch) still need a normal approval.'
+          };
+        } catch (error) {
+          await completeApproval(env, approvalId, false);
+          throw error;
+        }
+      },
       forge_pull_request_create: async (input) => {
         const identity = this.identity();
         const workspaceId = text(input.workspace_id);
@@ -1208,7 +1358,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const base = text(input.base);
         let title = input.title === undefined ? '' : text(input.title);
         let body = input.body === undefined ? '' : text(input.body);
-        const approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
         // Blank title + AI on: summarise the branch diff into a title (and body
         // only when the caller left the body blank too). Best-effort — the
         // summariser never throws; if AI is disabled we keep prior behaviour.
@@ -1227,7 +1377,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
             .gitOutgoingDiff({ base }).catch(() => undefined);
           const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body, diff: outgoing?.diff ?? '' });
-          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact draft PR was already approved. No need to open the URL again — retry the call with approval_id.' : 'This draft PR needs human approval. Open the approval URL, approve it, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });
+          const inline = await this.tryResolveApprovalInline(identity, approval, `Create draft pull request ${head} → ${base}`);
+          if (!inline) {
+            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact draft PR was already approved. No need to open the URL again — retry the call with approval_id.' : 'This draft PR needs human approval. Open the approval URL, approve it, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });
+          }
+          approvalId = inline;
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title, body });
         try {

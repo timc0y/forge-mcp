@@ -5,6 +5,7 @@ import {
   type WorkspaceRuntimeRecord
 } from '@forge/application';
 import { ForgeError, type ProcessId } from '@forge/core';
+import { D1AuditStore } from '@forge/audit';
 import { D1MetadataStore } from '@forge/metadata-d1';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
 import { issueCapability } from '@forge/capabilities';
@@ -88,42 +89,61 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       await this.app.assertCheckoutPresent(record);
     } catch (error) {
       // Self-heal: an idle recycle can drop /workspace/repo. Try to bring the
-      // checkout back (snapshot restore, then a fresh clone) before surfacing the
-      // failure. Only propagate when recovery also fails.
-      if (await this.recoverCheckout(record)) {
+      // checkout back (snapshot restore, then a fresh clone) before surfacing
+      // the failure. A fresh-clone recovery that had to discard real
+      // unpushed work throws FORGE_CHECKOUT_DATA_LOSS — that must reach the
+      // caller loudly, not be swallowed as an ordinary self-heal success, so
+      // save the (now-recovered) record either way and propagate it.
+      try {
+        await this.recoverCheckout(record);
         await this.save(record);
         return record;
+      } catch (recoveryError) {
+        await this.save(record);
+        if (recoveryError instanceof ForgeError && recoveryError.code === 'FORGE_CHECKOUT_DATA_LOSS') {
+          await new D1AuditStore(this.env.METADATA)
+            .append({
+              schemaVersion: 1,
+              id: crypto.randomUUID(),
+              traceId: crypto.randomUUID(),
+              tenantId: record.workspace.tenantId,
+              workspaceId: record.workspace.id,
+              actor: { type: 'service', id: 'workspace-coordinator' },
+              type: 'workspace.checkout_data_loss',
+              occurredAt: new Date().toISOString(),
+              payload: { detail: record.workspace.dataLoss?.detail, branch: record.workspace.currentBranch }
+            })
+            .catch(() => undefined);
+          throw recoveryError;
+        }
+        throw error;
       }
-      await this.save(record);
-      throw error;
     }
     return record;
   }
 
   // Attempt in-place recovery of a missing repository checkout. assertCheckoutPresent
   // has already flipped the record to `failed`; we optimistically restore `ready`
-  // so the handle-gated restore path can run, and revert on total failure.
-  private async recoverCheckout(record: WorkspaceRuntimeRecord): Promise<boolean> {
+  // so the handle-gated restore path can run. Throws on total failure, and also
+  // throws FORGE_CHECKOUT_DATA_LOSS (record still mutated to a usable `ready`
+  // state) when the only available recovery path lost real unpushed work.
+  private async recoverCheckout(record: WorkspaceRuntimeRecord): Promise<void> {
     record.workspace.state = 'ready';
-    // 1. Best-effort snapshot restore of the whole /workspace tar.
+    // 1. Best-effort snapshot restore of the whole /workspace tar — lossless
+    // when it works, since it's a filesystem-level restore, not a re-clone.
     try {
       const snap = await this.restoreFromR2();
       if (snap.restored) {
         await this.app.assertCheckoutPresent(record);
         record.workspace.failure = undefined;
-        return true;
+        return;
       }
     } catch {
       // fall through to a fresh clone
     }
-    // 2. Fresh clone into /workspace/repo.
-    try {
-      const cloneSource = await repositoryCloneSource(this.env, record.workspace);
-      await this.app.recoverCheckout(record, cloneSource);
-      return true;
-    } catch {
-      return false;
-    }
+    // 2. Fresh clone — may throw FORGE_CHECKOUT_DATA_LOSS; let it propagate.
+    const cloneSource = await repositoryCloneSource(this.env, record.workspace);
+    await this.app.recoverCheckout(record, cloneSource);
   }
 
   private async save(record: WorkspaceRuntimeRecord): Promise<void> {
@@ -611,6 +631,10 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
 
   async gitOutgoingDiff(input: { base: string }) {
     return this.app.gitOutgoingDiff(await this.repoRecord(), input.base);
+  }
+
+  async gitIsAncestor(input: { ancestor: string }) {
+    return this.app.gitIsAncestor(await this.repoRecord(), input.ancestor);
   }
 
   async gitPush(input: { branch: string; base: string; expectedDiffHash: string; expectedRevision?: number; idempotencyKey: string }) {

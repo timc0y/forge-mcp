@@ -1456,6 +1456,92 @@
         }
       }
     },
+    "forge_task_authorize_push_envelope": {
+      "title": "Pre-authorize a run of pushes",
+      "description": "Ask a human to authorize, ONCE, a bounded envelope covering the next several forge_git_push calls to one branch — for tasks that iterate in many small commit-then-push cycles, so the human is not asked to click through every single push. A push only auto-satisfies inside the envelope while it (a) fast-forwards the same branch/base with no rewritten history, and (b) touches only paths under allowed_paths; anything else falls back to a normal, individually-approved push. Never covers forge_pull_request_create, which always needs its own approval. Requires a real user approval page, same as a push.",
+      "sideEffect": "none",
+      "approval": "required",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "task_id": {
+            "description": "Task this envelope belongs to, for traceability.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "branch": {
+            "type": "string",
+            "maxLength": 107,
+            "pattern": "^forge\\/.*",
+            "description": "forge/ branch the envelope covers."
+          },
+          "base": {
+            "default": "main",
+            "description": "Base branch, fixed for the life of the envelope.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "allowed_paths": {
+            "description": "Path prefixes the envelope covers. Omit to default to the paths in the current outgoing diff.",
+            "$ref": "#/$defs/__schema2"
+          },
+          "ttl_minutes": {
+            "default": 120,
+            "description": "How long the envelope stays valid.",
+            "$ref": "#/$defs/__schema4"
+          },
+          "approval_id": {
+            "description": "Approval id from the approval page.",
+            "$ref": "#/$defs/__schema5"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "branch",
+          "base",
+          "ttl_minutes"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "__schema2": {
+            "minItems": 1,
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema3"
+            }
+          },
+          "__schema3": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema4": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 480
+          },
+          "__schema5": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          }
+        }
+      }
+    },
     "forge_preview_expose": {
       "title": "Expose a preview",
       "description": "Expose a running process through a short-lived Forge preview capability. Private by default; public access requires approval.",

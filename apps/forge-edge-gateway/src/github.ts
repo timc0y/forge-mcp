@@ -566,7 +566,7 @@ export async function requestApproval(
   env: Env,
   identity: Pick<AuthenticatedContext, 'tenantId' | 'subject'>,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope',
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string; already_approved: boolean }> {
@@ -621,7 +621,7 @@ export async function requireApproval(
   identity: Pick<AuthenticatedContext, 'tenantId'>,
   approvalId: string,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope',
   expected: Record<string, unknown>
 ): Promise<void> {
   const row = await env.METADATA.prepare(
@@ -640,12 +640,40 @@ export async function requireApproval(
     throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: row.state === 'pending' ? 'Approval is still pending — wait for it to be approved in the browser, then retry.' : 'This approval was already used. Request a new one.', retryable: false });
   }
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
+  const changed: Array<{ field: string; approved: unknown; current: unknown }> = [];
   for (const [key, value] of Object.entries(expected)) {
-    if (payload[key] !== value) throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'The operation changed since it was approved (e.g. a new commit changed the diff). Re-run forge_git_outgoing_diff and request a fresh approval.', retryable: false });
+    if (payload[key] !== value) changed.push({ field: key, approved: payload[key], current: value });
+  }
+  if (changed.length > 0) {
+    // Name exactly what moved instead of a bare "state mismatch" — an agent
+    // (or a human reading the error) can tell at a glance whether this is a
+    // meaningful drift (diffHash changed: new commits landed) or something
+    // trivial, without re-deriving it themselves.
+    throw new ForgeError({
+      code: 'FORGE_APPROVAL_REQUIRED',
+      message: `The operation changed since it was approved: ${changed.map((c) => `${c.field} was ${String(c.approved)}, is now ${String(c.current)}`).join('; ')}. Re-run forge_git_outgoing_diff and request a fresh approval.`,
+      retryable: false,
+      details: { changed }
+    });
   }
   const claimed = await env.METADATA.prepare("UPDATE approvals SET state='executing' WHERE id=?1 AND state='approved'")
     .bind(approvalId).run();
   if ((claimed.meta.changes ?? 0) !== 1) throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This approval has already been used.', retryable: false });
+}
+
+/**
+ * Resolve a pending approval as approved without the human ever loading the
+ * HTML approval page — used when they consented through an inline MCP
+ * elicitation instead (see elicitInlineApproval). Mirrors approvalPage's own
+ * POST handler exactly (same state transition, same resolved_by shape) so a
+ * later forge_task_get/audit read can't tell the two paths apart except by
+ * resolved_by.
+ */
+export async function markApprovalApproved(env: Env, tenantId: string, approvalId: string): Promise<boolean> {
+  const result = await env.METADATA.prepare(
+    "UPDATE approvals SET state='approved', resolved_by='inline-elicitation', resolved_at=?1 WHERE id=?2 AND tenant_id=?3 AND state='pending' AND expires_at > ?1"
+  ).bind(new Date().toISOString(), approvalId, tenantId).run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 export async function completeApproval(env: Env, approvalId: string, succeeded: boolean): Promise<void> {

@@ -338,7 +338,8 @@ export class ForgeApplicationService {
   private async checkoutRepository(
     record: WorkspaceRuntimeRecord,
     handle: SandboxHandle,
-    cloneSource?: RepositoryCloneSource
+    cloneSource?: RepositoryCloneSource,
+    ref?: string
   ): Promise<void> {
     const source = cloneSource ?? this.defaultCloneSource(record);
     const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
@@ -349,7 +350,7 @@ export class ForgeApplicationService {
       });
     }
     const clone = await handle.exec({
-      command: `git clone --depth 1 --no-tags --branch ${quoted(record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
+      command: `git clone --depth 1 --no-tags --branch ${quoted(ref ?? record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
       cwd: '/workspace',
       timeoutMs: 180_000,
       outputLimitBytes: 200_000,
@@ -448,11 +449,25 @@ export class ForgeApplicationService {
    * an idle recycle dropped /workspace/repo). Re-clones over any partial state
    * and restores the workspace to `ready`. Bypasses the normal `handle` state
    * gate because the record has been marked `failed` by the caller.
+   *
+   * A fresh clone can only ever recover what already reached the remote — any
+   * commit or edit that existed solely in the wiped container is gone. Two
+   * things follow: (1) clone the agent's actual currentBranch when one is
+   * tracked, not the workspace's original requestedRef, so a branch that was
+   * already fully pushed comes back as itself instead of silently dumping the
+   * agent back on main; (2) if hasUnpushedWork was true going into recovery,
+   * that local-only work cannot be a clone away — surface this loudly
+   * (FORGE_CHECKOUT_DATA_LOSS) instead of quietly reporting `ready` as if
+   * nothing happened, which is what let "Forge reverted my branch to main"
+   * go unnoticed until an agent stumbled onto it downstream.
    */
   async recoverCheckout(
     record: WorkspaceRuntimeRecord,
     cloneSource?: RepositoryCloneSource
   ): Promise<void> {
+    const hadUnpushedWork = record.workspace.hasUnpushedWork === true;
+    const lostBranch = record.workspace.currentBranch;
+    const recoverRef = lostBranch ?? record.workspace.requestedRef;
     const handle = await this.providerFor(record).get(record.providerId);
     await handle.exec({
       command: 'rm -rf /workspace/repo',
@@ -462,7 +477,16 @@ export class ForgeApplicationService {
       sessionId: 'system',
       networkPolicy: 'deny_all'
     }).catch(() => undefined);
-    await this.checkoutRepository(record, handle, cloneSource);
+    // Prefer recloning the branch the agent was actually on — it may already
+    // be fully pushed, in which case this is a lossless recovery. Fall back to
+    // the original ref only when that branch no longer exists upstream either
+    // (never pushed, or since deleted).
+    try {
+      await this.checkoutRepository(record, handle, cloneSource, recoverRef);
+    } catch (cloneError) {
+      if (recoverRef === record.workspace.requestedRef) throw cloneError;
+      await this.checkoutRepository(record, handle, cloneSource, record.workspace.requestedRef);
+    }
     await this.preparePackageManager(handle);
     const checkedAt = new Date().toISOString();
     record.workspace.state = 'ready';
@@ -470,6 +494,24 @@ export class ForgeApplicationService {
     record.workspace.failure = undefined;
     record.workspace.revision = nextRevision(record.workspace.revision);
     record.workspace.updatedAt = checkedAt;
+    if (hadUnpushedWork) {
+      // The clone above recovered at most what was on the remote branch — any
+      // commit or edit that only ever existed in the wiped container is gone.
+      // Reflect that in the record (hasUnpushedWork is now meaningless: there
+      // is no local-only work left to describe) and force the caller to
+      // surface the loss rather than treat this as an ordinary self-heal.
+      record.workspace.hasUnpushedWork = false;
+      record.workspace.dataLoss = {
+        at: checkedAt,
+        detail: `Checkout recovery re-cloned ${lostBranch ?? record.workspace.requestedRef} from the remote after the container was recycled. Any commits or edits that existed only in that container and were never pushed are gone.`
+      };
+      throw new ForgeError({
+        code: 'FORGE_CHECKOUT_DATA_LOSS',
+        message: `The workspace container was recycled and its checkout had to be re-cloned from the remote. Uncommitted or unpushed work on ${lostBranch ?? '(unknown branch)'} was lost — it is not recoverable. The workspace is usable again, but re-check forge_git_status and re-apply any lost changes.`,
+        retryable: false,
+        details: { workspaceId: record.workspace.id, lostBranch, recoveredRef: recoverRef }
+      });
+    }
   }
 
   async provisionWorkspace(
@@ -1111,7 +1153,13 @@ export class ForgeApplicationService {
             line.startsWith('1 ') ||
             line.startsWith('2 ') ||
             line.startsWith('? ')
-        )
+        ),
+      // Promoted from the workspace record (not re-derived from `raw`) so an
+      // agent sees push/loss state at a glance instead of it being buried in
+      // porcelain output it has to parse itself.
+      branch: record.workspace.currentBranch ?? record.workspace.requestedRef,
+      hasUnpushedWork: record.workspace.hasUnpushedWork === true,
+      ...(record.workspace.dataLoss ? { dataLoss: record.workspace.dataLoss } : {})
     };
   }
 
@@ -1210,6 +1258,18 @@ export class ForgeApplicationService {
     });
     if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not calculate the outgoing change.', retryable: false });
     return { diff: result.stdout, diffHash: await sha256Text(result.stdout), branch: record.workspace.currentBranch, base };
+  }
+
+  // True iff `ancestor` is an ancestor of (or equal to) HEAD — i.e. HEAD only
+  // ever moved forward from it, no rewritten history. Used to gate push-
+  // envelope auto-approval: an envelope only ever covers a fast-forward.
+  async gitIsAncestor(record: WorkspaceRuntimeRecord, ancestor: string): Promise<boolean> {
+    const result = await (await this.handle(record)).exec({
+      command: `git merge-base --is-ancestor ${quoted(ancestor)} HEAD`,
+      cwd: '/workspace/repo', timeoutMs: 15_000, outputLimitBytes: 1_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    return result.exitCode === 0;
   }
 
   async gitPush(
