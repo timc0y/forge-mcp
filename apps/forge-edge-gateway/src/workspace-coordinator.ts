@@ -309,7 +309,13 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     const record = await this.getRecord();
     return {
       ...record.workspace,
-      processes: record.processes,
+      // record.processes is a dict keyed by process id (the id lives only in
+      // the key, not the value) — forge_workspace_get's outputSchema declares
+      // an array, so this must transform, not pass the dict through as-is.
+      // Doing so previously failed output validation on any client that
+      // enforces outputSchema strictly, for any workspace with a tracked
+      // process.
+      processes: Object.entries(record.processes).map(([id, value]) => ({ id, ...value })),
       previews: Object.fromEntries(
         Object.entries(record.previews).map(([id, value]) => [
           id,
