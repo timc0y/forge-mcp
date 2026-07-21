@@ -569,27 +569,38 @@ export async function requestApproval(
   action: 'git.push' | 'pull_request.create' | 'shell.exec',
   reason: string,
   payload: Record<string, unknown>
-): Promise<{ approval_id: string; approval_url: string; expires_at: string }> {
+): Promise<{ approval_id: string; approval_url: string; expires_at: string; already_approved: boolean }> {
   const requestPayload = JSON.stringify({ ...payload, requestedBy: identity.subject });
   const nowIso = new Date().toISOString();
-  // Reuse an existing pending, non-expired approval for the identical request
-  // instead of minting a new row — otherwise an agent retry-loop spams the human
-  // with N identical approval pages.
+  // Reuse an existing non-expired approval for the identical request instead of
+  // minting a new row. Covers both 'pending' (an agent retry-loop would otherwise
+  // spam the human with N identical approval pages) and 'approved' (the human
+  // already clicked approve but the agent hasn't consumed it yet — e.g. a
+  // reconnect or retry between approval and execution — so asking again for the
+  // literal same operation is pure friction, not a safety check). Approvals that
+  // are 'executing'/'completed'/'failed' are correctly excluded: one approval is
+  // still exactly one execution attempt.
   const existing = await env.METADATA.prepare(
-    `SELECT id, expires_at FROM approvals
+    `SELECT id, expires_at, state FROM approvals
       WHERE tenant_id=?1 AND workspace_id=?2 AND requested_action=?3 AND request_payload=?4
-        AND state='pending' AND expires_at > ?5
+        AND state IN ('pending','approved') AND expires_at > ?5
       ORDER BY expires_at DESC LIMIT 1`
-  ).bind(identity.tenantId, workspaceId, action, requestPayload, nowIso).first<{ id: string; expires_at: string }>();
+  ).bind(identity.tenantId, workspaceId, action, requestPayload, nowIso).first<{ id: string; expires_at: string; state: string }>();
   if (existing) {
     const signed = await signApprovalLink(env, existing.id, identity.tenantId, existing.expires_at);
-    return { approval_id: existing.id, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${existing.id}?t=${signed}`, expires_at: existing.expires_at };
+    return {
+      approval_id: existing.id,
+      approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${existing.id}?t=${signed}`,
+      expires_at: existing.expires_at,
+      already_approved: existing.state === 'approved'
+    };
   }
   const approvalId = ids.approval();
   // A real build+push cycle easily exceeds a few minutes, so a short approval
-  // window forces re-approval. Default 60 min; tune with FORGE_APPROVAL_TTL_MINUTES.
+  // window forces re-approval. Default 120 min (was 60 — too short for a real
+  // multi-step review-then-push session); tune with FORGE_APPROVAL_TTL_MINUTES.
   const ttlMinutes = Number(env.FORGE_APPROVAL_TTL_MINUTES);
-  const minutes = Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 60;
+  const minutes = Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : 120;
   const expiresAt = new Date(Date.now() + minutes * 60 * 1000).toISOString();
   await env.METADATA.prepare(
     `INSERT INTO approvals
@@ -597,7 +608,12 @@ export async function requestApproval(
      VALUES (?1, ?2, ?3, ?4, ?5, 'external_write', ?6, 'pending', ?7)`
   ).bind(approvalId, identity.tenantId, workspaceId, action, reason, requestPayload, expiresAt).run();
   const signed = await signApprovalLink(env, approvalId, identity.tenantId, expiresAt);
-  return { approval_id: approvalId, approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}?t=${signed}`, expires_at: expiresAt };
+  return {
+    approval_id: approvalId,
+    approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}?t=${signed}`,
+    expires_at: expiresAt,
+    already_approved: false
+  };
 }
 
 export async function requireApproval(

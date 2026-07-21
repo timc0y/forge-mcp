@@ -1080,7 +1080,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} command`, approvalPayload);
             // Expose approval_id / approval_url as machine-readable fields so the
             // widget can render an Approve button; kind discriminates the shape.
-            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This command needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
+            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact command was already approved. No need to open the URL again — retry the call with approval_id.' : 'This command needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
           } else {
             await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
             claimedApproval = true;
@@ -1173,7 +1173,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
             .gitOutgoingDiff({ base }).catch(() => undefined);
           const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash, diff: outgoing?.diff ?? '' });
-          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This push needs human approval. Open the approval URL, approve this exact push, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
+          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact push was already approved. No need to open the URL again — retry the call with approval_id.' : 'This push needs human approval. Open the approval URL, approve this exact push, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'git.push', { branch, base, diffHash });
         try {
@@ -1227,7 +1227,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
             .gitOutgoingDiff({ base }).catch(() => undefined);
           const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body, diff: outgoing?.diff ?? '' });
-          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This draft PR needs human approval. Open the approval URL, approve it, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });
+          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact draft PR was already approved. No need to open the URL again — retry the call with approval_id.' : 'This draft PR needs human approval. Open the approval URL, approve it, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title, body });
         try {
