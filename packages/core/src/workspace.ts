@@ -61,6 +61,11 @@ export interface Workspace {
     details?: WorkspaceFailureDetails;
   };
   checkout?: { healthy: boolean; checkedAt: string; detail?: string };
+  // Set when checkout recovery (after an idle container recycle wiped
+  // /workspace/repo) could only re-clone from the remote, losing local-only
+  // commits/edits that were never pushed. Sticky — cleared only by the caller
+  // once the loss has been surfaced and acknowledged.
+  dataLoss?: { at: string; detail: string };
   // Non-fatal bootstrap issue: the workspace came up `ready` but dependency
   // install did not fully succeed (e.g. a --frozen-lockfile mismatch that the
   // non-frozen fallback also could not resolve). The checkout is usable; deps
