@@ -439,7 +439,11 @@ async function reapAbandonedSlots(env: Env): Promise<void> {
       const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
       // Save the workspace before tearing it down (best-effort, no-op if disabled).
       await stub.snapshotToR2().catch(() => undefined);
-      await stub.requestDestroy({ idempotencyKey: `reap-${destroyId}` });
+      // force: true — reclaimStaleSlots already gated dirty-workspace
+      // eligibility on snapshotsEnabled above, so this reap has already
+      // decided the unpushed-work loss is acceptable; forgeWorkspaceDestroy's
+      // guard would otherwise reject every dirty reap unconditionally.
+      await stub.requestDestroy({ idempotencyKey: `reap-${destroyId}`, force: true });
       await env.DESTROY_WORKFLOW.create({
         id: destroyId,
         params: { workspaceId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true }

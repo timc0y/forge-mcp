@@ -1245,7 +1245,8 @@ export class ForgeApplicationService {
   requestDestroy(
     record: WorkspaceRuntimeRecord,
     expectedRevision: number | undefined,
-    idempotencyKey: string
+    idempotencyKey: string,
+    force = false
   ) {
     const prior = record.idempotency[idempotencyKey];
     if (prior) {
@@ -1255,6 +1256,18 @@ export class ForgeApplicationService {
         replay: true,
         state: record.workspace.state
       };
+    }
+    // A committed-but-unpushed forge/ branch only survives teardown via a
+    // best-effort R2 snapshot (if enabled) or not at all — an idle reap or an
+    // explicit destroy can otherwise discard real work with no trace. Refuse
+    // unless the caller explicitly accepts the loss.
+    if (record.workspace.hasUnpushedWork && !force) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: 'This workspace has committed changes that were never pushed. Push the forge/ branch first, or pass force to destroy anyway and accept the loss.',
+        retryable: false,
+        details: { workspaceId: record.workspace.id, branch: record.workspace.currentBranch }
+      });
     }
     const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
     record.workspace.state = 'destroying';

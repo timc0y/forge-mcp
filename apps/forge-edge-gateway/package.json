@@ -34,7 +34,9 @@
     "jose": "6.2.2",
     "zod": "4.4.3",
     "@forge/task-core": "workspace:*",
-    "@forge/insight": "workspace:*"
+    "@forge/insight": "workspace:*",
+    "@forge/audit": "workspace:*",
+    "@forge/events": "workspace:*"
   },
   "devDependencies": {
     "wrangler": "4.110.0"

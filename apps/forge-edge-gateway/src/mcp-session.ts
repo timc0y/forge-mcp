@@ -17,6 +17,8 @@ import { ToolCallTracker, hashArgs } from './telemetry';
 import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { D1TaskStore } from '@forge/metadata-d1';
+import { D1AuditStore } from '@forge/audit';
+import type { ForgeEvent } from '@forge/events';
 import { analyzeDiff, selectContext, suggestChecks } from '@forge/insight';
 import {
   applyTaskPatch,
@@ -25,6 +27,7 @@ import {
   isTerminalTaskState,
   createTask,
   summarizeTask,
+  hasBlockingCompletionGaps,
   type RepositoryRef,
   type TaskId,
   type TaskState
@@ -424,6 +427,36 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     );
   }
 
+  // Append-only "what actually happened" trail for the handful of mutating,
+  // consequential actions (push, PR create, task finish, workspace destroy) —
+  // deliberately best-effort and never blocks the action it records. This is
+  // what lets a later reviewer reconcile an agent's self-reported task
+  // summary against reality, rather than only having the agent's own account.
+  private async recordAudit(
+    type: string,
+    tenantId: string,
+    payload: Record<string, unknown>,
+    extra?: { workspaceId?: string }
+  ): Promise<void> {
+    const event: ForgeEvent = {
+      schemaVersion: 1,
+      id: crypto.randomUUID(),
+      traceId: crypto.randomUUID(),
+      tenantId: tenantId as TenantId,
+      workspaceId: extra?.workspaceId as WorkspaceId | undefined,
+      actor: { type: 'agent', id: this.props?.subject ?? 'forge-mcp' },
+      type,
+      occurredAt: new Date().toISOString(),
+      payload
+    };
+    await new D1AuditStore(this.env.METADATA).append(event).catch((error) => {
+      console.error('forge_audit_append_failed', {
+        type,
+        name: error instanceof Error ? error.name : 'unknown'
+      });
+    });
+  }
+
   private identity(): SessionProps {
     if (this.props?.subject && this.props.tenantId && this.props.projectId) return this.props;
     if (this.env.FORGE_ENVIRONMENT === 'local' || this.env.FORGE_ENVIRONMENT === 'development') {
@@ -455,7 +488,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const destroyId = workflowInstanceId('destroy', reapedId);
           // Save the workspace before teardown (best-effort, no-op if disabled).
           await coordinator(env, reapedId).snapshotToR2().catch(() => undefined);
-          await coordinator(env, reapedId).requestDestroy({ idempotencyKey: `reap-${destroyId}` });
+          // force: true — reclaimStaleSlots already gated dirty-workspace
+          // eligibility on snapshotsEnabled above.
+          await coordinator(env, reapedId).requestDestroy({ idempotencyKey: `reap-${destroyId}`, force: true });
           await env.DESTROY_WORKFLOW.create({
             id: destroyId,
             params: { workspaceId: reapedId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true }
@@ -523,7 +558,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const task = await this.loadTask(text(input.task_id) as TaskId);
         assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
-        return asRecord(summarizeTask(task));
+        const summary = summarizeTask(task);
+        // No per-workspace deadline is tracked, but the slot TTL is the real
+        // ceiling on how long an idle workspace survives — surface it so an
+        // agent whose tool access is about to end can push/checkpoint instead
+        // of being cut off mid-verification with no warning (see incident:
+        // work committed but never pushed before the session ended).
+        const ttlMinutes = Math.round(slotTtlMs(env) / 60_000);
+        return asRecord({
+          ...summary,
+          sessionBudget: {
+            workspaceIdleTtlMinutes: ttlMinutes,
+            note: task.workspaceId
+              ? `An idle workspace is reclaimed after ~${ttlMinutes} minutes of inactivity. Push the forge/ branch and call forge_task_finish before then, or send any tool call to reset the idle clock.`
+              : 'No workspace attached yet.'
+          }
+        });
       },
       forge_task_list: async (input) => {
         const identity = this.identity();
@@ -561,6 +611,26 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
         }
         assertTaskTransition(task.state, outcome);
+        const force = Boolean(input.force);
+        if (outcome === 'complete') {
+          const gaps = hasBlockingCompletionGaps(task);
+          if (gaps.length > 0 && !force) {
+            throw new ForgeError({
+              code: 'FORGE_VALIDATION_FAILED',
+              message: `Task cannot be marked complete: ${gaps.join(' ')} Pass force with a note explaining what is unverified to override.`,
+              retryable: false,
+              details: { taskId: task.id, gaps }
+            });
+          }
+          if (gaps.length > 0 && force && !input.note) {
+            throw new ForgeError({
+              code: 'FORGE_VALIDATION_FAILED',
+              message: `force requires a note explaining what remains unverified: ${gaps.join(' ')}`,
+              retryable: false,
+              details: { taskId: task.id, gaps }
+            });
+          }
+        }
         const outstanding = input.note ? [...task.outstanding, text(input.note)] : task.outstanding;
         const updated = applyTaskPatch(
           task,
@@ -569,6 +639,19 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           optionalNumber(input.expected_revision)
         );
         await store.put(updated);
+        await this.recordAudit(
+          'task.finish',
+          identity.tenantId,
+          {
+            taskId: updated.id,
+            outcome: updated.state,
+            forced: force,
+            note: input.note ? text(input.note) : undefined,
+            pushedAt: updated.pushedAt,
+            changedFileCount: updated.changedFiles.length
+          },
+          { workspaceId: updated.workspaceId }
+        );
         return { task_id: updated.id, state: updated.state, revision: updated.revision };
       },
       forge_context_get: async (input) => {
@@ -1098,6 +1181,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             branch, base, expectedDiffHash: diffHash, expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
           });
           await completeApproval(env, approvalId, true);
+          // Best-effort: record the push against whichever task owns this
+          // workspace, so forge_task_finish can tell a pushed branch apart
+          // from committed-but-stranded work. Never blocks the push itself.
+          const store = new D1TaskStore(env.METADATA);
+          await store.getByWorkspace(workspaceId).then(async (task) => {
+            if (!task) return;
+            await store.put({ ...task, pushedAt: new Date().toISOString() });
+          }).catch(() => undefined);
+          await this.recordAudit(
+            'git.push',
+            identity.tenantId,
+            { branch, base, diffHash },
+            { workspaceId }
+          );
           return asRecord(result);
         } catch (error) {
           await completeApproval(env, approvalId, false);
@@ -1137,6 +1234,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const state = await (await authorizedCoordinator(env, identity, workspaceId)).getState();
           const result = await createDraftPullRequest(env, identity, state.repository, { head, base, title, body });
           await completeApproval(env, approvalId, true);
+          await this.recordAudit(
+            'pull_request.create',
+            identity.tenantId,
+            { head, base, title, url: result.url },
+            { workspaceId }
+          );
           // Expose the PR link under a clearly-named field for the widget.
           return { ...result, pr_url: result.url };
         } catch (error) {
@@ -1408,7 +1511,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const idempotencyKey = text(input.idempotency_key);
         const request = await (await authorizedCoordinator(env, identity, workspaceId)).requestDestroy({
           expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey
+          idempotencyKey,
+          force: Boolean(input.force)
         });
         if (request.state !== 'destroyed') {
           const workflowId = workflowInstanceId('destroy', workspaceId);
@@ -1425,6 +1529,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             await env.DESTROY_WORKFLOW.get(workflowId);
           }
         }
+        await this.recordAudit(
+          'workspace.destroy',
+          identity.tenantId,
+          { forced: Boolean(input.force), preserveArtifacts: Boolean(input.preserve_artifacts) },
+          { workspaceId }
+        );
         return {
           workspace_id: workspaceId,
           state: request.state,

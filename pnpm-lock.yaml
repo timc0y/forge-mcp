@@ -94,6 +94,9 @@ importers:
       '@forge/artifacts-r2':
         specifier: workspace:*
         version: link:../../packages/artifacts-r2
+      '@forge/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
       '@forge/browser-cloudflare':
         specifier: workspace:*
         version: link:../../packages/browser-cloudflare
@@ -109,6 +112,9 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@forge/events':
+        specifier: workspace:*
+        version: link:../../packages/events
       '@forge/git-core':
         specifier: workspace:*
         version: link:../../packages/git-core

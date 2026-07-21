@@ -241,7 +241,7 @@
     },
     "forge_task_finish": {
       "title": "Finish a task",
-      "description": "Move a task to a terminal state (complete, failed or cancelled). The record and its evidence stay retrievable afterwards. Container-free.",
+      "description": "Move a task to a terminal state (complete, failed or cancelled). Container-free. Finishing as 'complete' is refused when failed/partial checks, unrecorded checks, unpushed changed files or outstanding items are on record — pass force with a note explaining what remains unverified to override.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -263,17 +263,23 @@
             "description": "The terminal state to move the task to."
           },
           "note": {
-            "description": "Optional closing note added to the task.",
+            "description": "Optional closing note added to the task. Required when force is true.",
             "$ref": "#/$defs/__schema0"
+          },
+          "force": {
+            "default": false,
+            "description": "Override the completion-gap check for outcome complete. Requires note explaining what is unverified.",
+            "$ref": "#/$defs/__schema1"
           },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           }
         },
         "required": [
           "task_id",
-          "outcome"
+          "outcome",
+          "force"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -282,6 +288,9 @@
             "maxLength": 2000
           },
           "__schema1": {
+            "type": "boolean"
+          },
+          "__schema2": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
@@ -1738,7 +1747,7 @@
     },
     "forge_workspace_destroy": {
       "title": "Destroy a workspace",
-      "description": "Destroy a workspace: revoke previews and capabilities, stop processes and tear down the container. Do this once the task or review is complete.",
+      "description": "Destroy a workspace: revoke previews and capabilities, stop processes and tear down the container. Do this once the task or review is complete. Refused when the repository has committed changes on a forge/ branch that were never pushed — pass force to destroy anyway and accept the loss.",
       "sideEffect": "destructive",
       "approval": "policy",
       "inputSchema": {
@@ -1755,9 +1764,14 @@
             "description": "Keep captured artifacts after teardown.",
             "$ref": "#/$defs/__schema0"
           },
+          "force": {
+            "default": false,
+            "description": "Destroy even if the workspace has unpushed committed work.",
+            "$ref": "#/$defs/__schema1"
+          },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "idempotency_key": {
             "type": "string",
@@ -1769,6 +1783,7 @@
         "required": [
           "workspace_id",
           "preserve_artifacts",
+          "force",
           "idempotency_key"
         ],
         "additionalProperties": false,
@@ -1777,6 +1792,9 @@
             "type": "boolean"
           },
           "__schema1": {
+            "type": "boolean"
+          },
+          "__schema2": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991

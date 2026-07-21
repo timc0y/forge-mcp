@@ -79,7 +79,7 @@ function recommendNextAction(task: Task): string {
   }
 }
 
-function deriveLimitations(task: Task): string[] {
+export function deriveLimitations(task: Task): string[] {
   const limitations: string[] = [];
   const failing = task.checks.filter((c) => c.status === 'failed' || c.status === 'partial');
   if (failing.length > 0) {
@@ -91,7 +91,34 @@ function deriveLimitations(task: Task): string[] {
   if (task.changedFiles.length > 0 && !task.latestDiffHash && task.state === 'reviewing') {
     limitations.push('Raw diff not yet inspected; push is unsafe until it is.');
   }
+  if (task.changedFiles.length > 0 && !task.pushedAt) {
+    limitations.push('Changed files exist but the branch has not been pushed.');
+  }
   return limitations;
+}
+
+/**
+ * Whether forge_task_finish should refuse `outcome: 'complete'` for this task
+ * without an explicit force override. Mirrors deriveLimitations but only the
+ * subset that means "this was not actually verified/landed" rather than
+ * merely informational.
+ */
+export function hasBlockingCompletionGaps(task: Task): string[] {
+  const blocking: string[] = [];
+  const failing = task.checks.filter((c) => c.status === 'failed' || c.status === 'partial');
+  if (failing.length > 0) {
+    blocking.push(`${failing.length} check(s) recorded as failed or partial.`);
+  }
+  if (task.changedFiles.length > 0 && task.checks.length === 0) {
+    blocking.push('Changes exist but no checks have been recorded.');
+  }
+  if (task.changedFiles.length > 0 && !task.pushedAt) {
+    blocking.push('Changed files exist but the branch has not been pushed.');
+  }
+  if (task.outstanding.length > 0) {
+    blocking.push(`${task.outstanding.length} outstanding item(s) still recorded.`);
+  }
+  return blocking;
 }
 
 export function summarizeTask(task: Task): TaskSummary {
