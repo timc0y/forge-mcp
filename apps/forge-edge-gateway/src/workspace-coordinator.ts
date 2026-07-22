@@ -653,6 +653,24 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
+  // Best-effort, no-approval safety push to a Forge-owned backup ref — see
+  // Application.backupUnpushedWork. Called by the idle reaper right before it
+  // destroys a dirty workspace, never as part of any human-facing tool.
+  async backupUnpushedWork(): Promise<{ pushed: boolean; ref?: string; reason?: string }> {
+    const record = await this.getRecord();
+    if (!record.workspace.hasUnpushedWork || !record.workspace.currentBranch || !record.workspace.currentCommit) {
+      return { pushed: false, reason: 'nothing to back up' };
+    }
+    const backupRef = `forge/backup/${record.workspace.id}`;
+    let source: { url: string; authorizationHeader: string };
+    try {
+      source = await repositoryPushSource(this.env, record.workspace, backupRef, record.workspace.currentCommit);
+    } catch (error) {
+      return { pushed: false, reason: error instanceof Error ? error.message.slice(0, 300) : 'no authorization' };
+    }
+    return this.app.backupUnpushedWork(record, source);
+  }
+
   async previewExpose(input: {
     processId: ProcessId;
     port: number;

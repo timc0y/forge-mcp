@@ -1,11 +1,12 @@
 import { getSandbox, Sandbox, ContainerProxy } from '@cloudflare/sandbox';
-import { ForgeError, type WorkspaceId } from '@forge/core';
+import { ForgeError, type WorkspaceId, type TenantId } from '@forge/core';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { listSlotOccupants, reclaimStaleSlots, releaseWorkspaceSlot, slotTtlMs } from './capacity';
 import { snapshotsEnabled, snapshotKey, recordSnapshot } from './snapshots';
 import { handleMultipartUpload } from './multipart-upload';
 import { parseDepsCacheKey, recordDepsCache } from './deps-cache';
 import { verifyCapability } from '@forge/capabilities';
+import { D1AuditStore } from '@forge/audit';
 import openapi from '../../../openapi/forge.openapi.json';
 import { ForgeMcpSession } from './mcp-session';
 import { WorkspaceCoordinator } from './workspace-coordinator';
@@ -437,12 +438,43 @@ async function reapAbandonedSlots(env: Env): Promise<void> {
     try {
       const destroyId = workflowInstanceId('destroy', workspaceId);
       const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
-      // Save the workspace before tearing it down (best-effort, no-op if disabled).
-      await stub.snapshotToR2().catch(() => undefined);
+      // Two independent backup attempts before teardown, in priority order:
+      // (1) push HEAD straight to a Forge-owned backup ref on GitHub — small,
+      // fast, and its exit code is a real success/failure signal; (2) tar the
+      // whole /workspace to R2 as a second line of defense. Neither is
+      // trusted blindly: an incident showed the R2 snapshot can silently come
+      // back near-empty (171 bytes for a real repo) while still reporting
+      // "success", so both outcomes are recorded to the audit trail — a
+      // destroy that goes ahead with NEITHER backup having actually worked
+      // must be loud, not silently indistinguishable from a clean one.
+      const backup: { pushed: boolean; ref?: string; reason?: string } = await stub.backupUnpushedWork().catch((error) => ({
+        pushed: false,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+      }));
+      const snapshot = await stub.snapshotToR2().catch(() => null);
+      if (backup.pushed || snapshot) {
+        console.log('forge_slot_reap_backup', { workspaceId, backupPushed: backup.pushed, backupRef: backup.ref, snapshotted: Boolean(snapshot) });
+      } else if (backup.reason !== 'nothing to back up') {
+        console.error('forge_slot_reap_destroy_without_backup', { workspaceId, tenantId: slot.tenantId, backupReason: backup.reason });
+        await new D1AuditStore(env.METADATA).append({
+          schemaVersion: 1,
+          id: crypto.randomUUID(),
+          traceId: crypto.randomUUID(),
+          tenantId: slot.tenantId as TenantId,
+          workspaceId,
+          actor: { type: 'service', id: 'idle-reaper' },
+          type: 'workspace.reap_destroy_without_backup',
+          occurredAt: new Date().toISOString(),
+          payload: { reason: backup.reason }
+        }).catch(() => undefined);
+      }
       // force: true — reclaimStaleSlots already gated dirty-workspace
       // eligibility on snapshotsEnabled above, so this reap has already
       // decided the unpushed-work loss is acceptable; forgeWorkspaceDestroy's
-      // guard would otherwise reject every dirty reap unconditionally.
+      // guard would otherwise reject every dirty reap unconditionally. Still
+      // destroying on a failed backup rather than blocking indefinitely: a
+      // container that will never successfully back up (already dead) would
+      // otherwise leak its slot forever.
       await stub.requestDestroy({ idempotencyKey: `reap-${destroyId}`, force: true });
       await env.DESTROY_WORKFLOW.create({
         id: destroyId,
