@@ -509,8 +509,32 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const reapedId = slot.workspaceId as WorkspaceId;
         try {
           const destroyId = workflowInstanceId('destroy', reapedId);
-          // Save the workspace before teardown (best-effort, no-op if disabled).
-          await coordinator(env, reapedId).snapshotToR2().catch(() => undefined);
+          // Two independent backup attempts before teardown — see the
+          // equivalent block in index.ts's reapAbandonedSlots for why (an
+          // R2 snapshot can silently come back near-empty, so a fast direct
+          // push to a Forge-owned backup ref is tried first, and a destroy
+          // that proceeds with neither having worked is logged loudly).
+          const backup: { pushed: boolean; ref?: string; reason?: string } = await coordinator(env, reapedId).backupUnpushedWork().catch((error) => ({
+            pushed: false,
+            reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+          }));
+          const snapshot = await coordinator(env, reapedId).snapshotToR2().catch(() => null);
+          if (backup.pushed || snapshot) {
+            console.log('forge_slot_reap_backup', { workspaceId: reapedId, backupPushed: backup.pushed, backupRef: backup.ref, snapshotted: Boolean(snapshot) });
+          } else if (backup.reason !== 'nothing to back up') {
+            console.error('forge_slot_reap_destroy_without_backup', { workspaceId: reapedId, tenantId: slot.tenantId, backupReason: backup.reason });
+            await new D1AuditStore(env.METADATA).append({
+              schemaVersion: 1,
+              id: crypto.randomUUID(),
+              traceId: crypto.randomUUID(),
+              tenantId: slot.tenantId as TenantId,
+              workspaceId: reapedId,
+              actor: { type: 'service', id: 'idle-reaper' },
+              type: 'workspace.reap_destroy_without_backup',
+              occurredAt: new Date().toISOString(),
+              payload: { reason: backup.reason }
+            }).catch(() => undefined);
+          }
           // force: true — reclaimStaleSlots already gated dirty-workspace
           // eligibility on snapshotsEnabled above.
           await coordinator(env, reapedId).requestDestroy({ idempotencyKey: `reap-${destroyId}`, force: true });

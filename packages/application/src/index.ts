@@ -1302,6 +1302,49 @@ export class ForgeApplicationService {
     return { branch: input.branch, commit: record.workspace.currentCommit, diffHash: outgoing.diffHash, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
+  /**
+   * Best-effort safety push, run by the idle reaper immediately before it
+   * tears down a dirty workspace. Pushes HEAD to a Forge-owned backup ref
+   * (forge/backup/<workspaceId>, never a real branch a human would build on
+   * or PR from) so real work has a durable copy on GitHub instead of relying
+   * solely on the tar-to-R2 snapshot — a git push moves only the object
+   * delta (fast, small, and its exit code is a real success/failure signal),
+   * where a full-workspace tar of node_modules etc. is slow, large, and can
+   * silently come back empty under the same resource pressure that's often
+   * WHY the workspace went idle-and-unreachable in the first place. No
+   * approval gate: this never reaches a mergeable location, it only exists
+   * so data isn't gone forever if the container is destroyed a moment later.
+   */
+  async backupUnpushedWork(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource
+  ): Promise<{ pushed: boolean; ref?: string; reason?: string }> {
+    const branch = record.workspace.currentBranch;
+    if (!record.workspace.hasUnpushedWork || !branch) return { pushed: false, reason: 'nothing to back up' };
+    if (!source.authorizationHeader) return { pushed: false, reason: 'no GitHub App authorization' };
+    const backupRef = `forge/backup/${record.workspace.id}`;
+    const configPath = `/workspace/tmp/gitconfig-backup-${record.workspace.id}`;
+    try {
+      const handle = await this.handle(record);
+      await handle.writeFile({ path: configPath, content: `[http]\n\textraHeader = ${source.authorizationHeader}\n` });
+      try {
+        const result = await handle.exec({
+          command: `git push --force ${quoted(source.url)} HEAD:${quoted(`refs/heads/${backupRef}`)}`,
+          cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 50_000,
+          sessionId: 'system', networkPolicy: 'development',
+          environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+        });
+        return result.exitCode === 0
+          ? { pushed: true, ref: backupRef }
+          : { pushed: false, reason: result.stderr.slice(0, 500) };
+      } finally {
+        await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
+      }
+    } catch (error) {
+      return { pushed: false, reason: error instanceof Error ? error.message.slice(0, 500) : 'unknown' };
+    }
+  }
+
   requestDestroy(
     record: WorkspaceRuntimeRecord,
     expectedRevision: number | undefined,
