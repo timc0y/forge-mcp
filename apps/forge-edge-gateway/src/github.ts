@@ -1,12 +1,13 @@
 import { SignJWT, importPKCS8 } from 'jose';
-import { ForgeError, ids, type RepositoryRef, type Workspace } from '@forge/core';
+import { ForgeError, ids, type RepositoryRef, type Workspace, type WorkspaceId } from '@forge/core';
 import { issueCapability, verifyCapability } from '@forge/capabilities';
 import { assertReceivePackScope, parseReceivePackCommands } from '@forge/git-core';
 import { assertAllowedForgeBranch } from '@forge/policy';
+import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import type { AuthenticatedContext } from './auth';
 import type { Env } from './env';
 import { listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
-import { launchReviewPreview, reviewPreviewStatus } from './review-preview';
+import { launchReviewPreview, releaseReviewPreview, reviewPreviewStatus } from './review-preview';
 import {
   denyDeferredAction,
   executeDeferredAction,
@@ -1030,6 +1031,21 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
       } else {
         await denyDeferredAction(env, deferred.id).catch(() => undefined);
       }
+      // The preview existed to inform this decision. Now that it is made, give
+      // the workspace slot back instead of letting the idle reaper sit on it.
+      await releaseReviewPreview(env, deferred.id, async (workspaceId) => {
+        const destroyId = workflowInstanceId('destroy', workspaceId as WorkspaceId);
+        const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId)) as unknown as {
+          requestDestroy: (input: { idempotencyKey: string; force: boolean }) => Promise<unknown>;
+        };
+        // force: a review preview never holds work worth keeping — it is a
+        // throwaway checkout of an already-staged commit.
+        await stub.requestDestroy({ idempotencyKey: `review-preview-${destroyId}`, force: true });
+        await env.DESTROY_WORKFLOW.create({
+          id: destroyId,
+          params: { workspaceId: workspaceId as WorkspaceId, idempotencyKey: `review-preview-${destroyId}`, preserveArtifacts: false }
+        });
+      });
     }
     return Response.redirect(selfUrl, 303);
   }

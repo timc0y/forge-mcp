@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   launchReviewPreview,
+  releaseReviewPreview,
   reviewPreviewStatus
 } from '../../apps/forge-edge-gateway/src/review-preview';
 import type { DeferredAction } from '../../apps/forge-edge-gateway/src/deferred-actions';
@@ -149,6 +150,35 @@ describe('review preview (on-demand, at approval time)', () => {
     const status = await reviewPreviewStatus(fakeEnv(row), action, stub.factory);
     expect(status.state).toBe('failed');
     expect(status.error).toContain('failed');
+  });
+
+  it('gives the workspace slot back once the submission is decided', async () => {
+    const row: PreviewFields = {
+      preview_workspace_id: 'ws_preview',
+      preview_state: 'ready',
+      preview_id: 'prv_1',
+      preview_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      preview_error: null
+    };
+    const env = fakeEnv(row);
+    const destroy = vi.fn(async () => undefined);
+    await releaseReviewPreview(env, action.id, destroy);
+    // A preview exists only to inform the decision; holding one of the tenant's
+    // few slots for hours afterwards would starve the agent still working.
+    expect(destroy).toHaveBeenCalledWith('ws_preview');
+    expect(row.preview_state).toBe('none');
+  });
+
+  it('is a no-op when no preview was ever launched', async () => {
+    const destroy = vi.fn(async () => undefined);
+    await releaseReviewPreview(fakeEnv(fresh()), action.id, destroy);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it('never lets a teardown failure escape into the decision', async () => {
+    const row = { ...fresh(), preview_state: 'ready', preview_workspace_id: 'ws_preview' };
+    const destroy = vi.fn(async () => { throw new Error('container already gone'); });
+    await expect(releaseReviewPreview(fakeEnv(row), action.id, destroy)).resolves.toBeUndefined();
   });
 
   it('lets an expired preview be launched again', async () => {

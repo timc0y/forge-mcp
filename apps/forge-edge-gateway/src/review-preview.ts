@@ -138,6 +138,36 @@ export async function launchReviewPreview(
 }
 
 /**
+ * Tear down a submission's preview once it has been decided.
+ *
+ * A preview holds one of the tenant's few workspace slots, and its only purpose
+ * is helping someone decide. Left alone it would sit there until the idle reaper
+ * reclaimed it hours later, so a couple of reviews could starve the agent that
+ * is still trying to work. Approving or declining is the moment it stops being
+ * useful — release it then.
+ *
+ * Best-effort: never allowed to interfere with the decision itself.
+ */
+export async function releaseReviewPreview(
+  env: Env,
+  actionId: string,
+  destroy: (workspaceId: string) => Promise<void>
+): Promise<void> {
+  try {
+    const row = await previewRow(env, actionId);
+    const workspaceId = row?.preview_workspace_id;
+    if (!workspaceId || row?.preview_state === 'none') return;
+    await setPreview(env, actionId, { state: 'none' });
+    await destroy(workspaceId);
+  } catch (error) {
+    console.error('forge_review_preview_release_failed', {
+      actionId,
+      name: error instanceof Error ? error.name : 'unknown'
+    });
+  }
+}
+
+/**
  * Advance and report the preview state machine. Called by the approval page's
  * poll: provisioning → starting (container ready, bringing the dev server up) →
  * ready (URL live) or failed.
