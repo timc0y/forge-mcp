@@ -1,5 +1,5 @@
 const PREFIXES = {
-  tenant: 'ten', project: 'prj', workspace: 'ws', operation: 'op', snapshot: 'snap', approval: 'apr', artifact: 'art', preview: 'prv', process: 'proc', task: 'task'
+  tenant: 'ten', project: 'prj', workspace: 'ws', operation: 'op', snapshot: 'snap', approval: 'apr', artifact: 'art', preview: 'prv', process: 'proc', task: 'task', deferred: 'dfr'
 } as const;
 
 export type Branded<T, Brand extends string> = T & { readonly __brand: Brand };
@@ -13,6 +13,7 @@ export type ArtifactId = Branded<string, 'ArtifactId'>;
 export type PreviewId = Branded<string, 'PreviewId'>;
 export type ProcessId = Branded<string, 'ProcessId'>;
 export type TaskId = Branded<string, 'TaskId'>;
+export type DeferredActionId = Branded<string, 'DeferredActionId'>;
 
 function randomBase32(length: number): string {
   const alphabet = '0123456789abcdefghjkmnpqrstvwxyz';
@@ -34,7 +35,8 @@ export const ids = {
   artifact: () => createId('artifact') as ArtifactId,
   preview: () => createId('preview') as PreviewId,
   process: () => createId('process') as ProcessId,
-  task: () => createId('task') as TaskId
+  task: () => createId('task') as TaskId,
+  deferred: () => createId('deferred') as DeferredActionId
 };
 
 export function assertForgeId(value: string, prefix: string): void {

@@ -1317,6 +1317,85 @@
         }
       }
     },
+    "forge_submit_for_review": {
+      "title": "Submit finished work for review",
+      "description": "Finish a piece of work in one call, without waiting for anyone. Stages the current branch on a Forge-owned ref, queues a pull request for it, and returns immediately — the human approves whenever they like, from the Forge portal or the returned URL, and Forge performs the push and opens the draft PR itself. Prefer this over forge_git_push + forge_pull_request_create, which both block until a human clicks. The workspace can be destroyed straight after this returns; the staged commits outlive it. Commit your work first.",
+      "sideEffect": "external",
+      "approval": "deferred",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "branch": {
+            "type": "string",
+            "maxLength": 107,
+            "pattern": "^forge\\/.*",
+            "description": "forge/ branch the work should land on once approved."
+          },
+          "base": {
+            "default": "main",
+            "description": "Branch the pull request will target.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "title": {
+            "description": "PR title; omit to auto-generate from the diff.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "body": {
+            "default": "",
+            "description": "PR body.",
+            "$ref": "#/$defs/__schema2"
+          },
+          "task_id": {
+            "description": "Task this submission completes, for traceability.",
+            "$ref": "#/$defs/__schema3"
+          },
+          "idempotency_key": {
+            "description": "Optional; derived from the workspace and branch when omitted.",
+            "$ref": "#/$defs/__schema4"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "branch",
+          "base",
+          "body"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "__schema2": {
+            "type": "string",
+            "maxLength": 60000
+          },
+          "__schema3": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
+          },
+          "__schema4": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+          }
+        }
+      }
+    },
     "forge_git_push": {
       "title": "Push a branch",
       "description": "Push a non-default forge/ branch through the GitHub App credential proxy. Requires a real user approval page and the expected diff hash.",

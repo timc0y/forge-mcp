@@ -54,6 +54,7 @@ import {
   requestApproval,
   requireApproval
 } from './github';
+import { createDeferredAction, listDeferredActionsForWorkspace } from './deferred-actions';
 
 interface SessionProps extends Record<string, unknown> {
   subject: string;
@@ -726,7 +727,33 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           },
           { workspaceId: updated.workspaceId }
         );
-        return { task_id: updated.id, state: updated.state, revision: updated.revision };
+        // A task can legitimately finish with work still queued for a human —
+        // that is the point of a deferred submission. Report it so the agent
+        // closes out by telling the human what is sitting in their queue,
+        // instead of implying the pull request already exists.
+        const queued = updated.workspaceId
+          ? await listDeferredActionsForWorkspace(env, identity.tenantId, updated.workspaceId)
+              .then((actions) => actions.filter((action) => action.state === 'awaiting_approval' || action.state === 'failed'))
+              .catch(() => [])
+          : [];
+        return {
+          task_id: updated.id,
+          state: updated.state,
+          revision: updated.revision,
+          ...(queued.length > 0
+            ? {
+                awaiting_review: queued.map((action) => ({
+                  deferred_action_id: action.id,
+                  branch: action.branch,
+                  base: action.base,
+                  state: action.state,
+                  files_changed: action.filesChanged,
+                  approval_url: `${env.FORGE_PUBLIC_ORIGIN}/approvals/${action.approvalId}`
+                })),
+                next_step: `Work is staged and waiting for a human. Tell them ${queued.length === 1 ? 'it is' : 'they are'} ready to review at ${env.FORGE_PUBLIC_ORIGIN}/app — they can approve whenever, and Forge will push and open the draft pull request then.`
+              }
+            : {})
+        };
       },
       forge_context_get: async (input) => {
         const identity = this.identity();
@@ -1413,6 +1440,94 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           await completeApproval(env, approvalId, false);
           throw error;
         }
+      },
+      // Finish-and-walk-away. Everything a submission needs is captured here and
+      // parked on a Forge-owned ref, so the agent never waits on a human and the
+      // workspace is free to die immediately afterwards. See deferred-actions.ts.
+      forge_submit_for_review: async (input) => {
+        const identity = this.identity();
+        const workspaceId = text(input.workspace_id);
+        const branch = text(input.branch);
+        const base = text(input.base);
+        const taskIdInput = input.task_id ? text(input.task_id) : null;
+        let title = input.title === undefined ? '' : text(input.title);
+        let body = input.body === undefined ? '' : text(input.body);
+
+        const coordinator = await authorizedCoordinator(env, identity, workspaceId);
+        const state = await coordinator.getState();
+        const outgoing = await coordinator.gitOutgoingDiff({ base }).catch(() => undefined);
+        const diff = outgoing?.diff ?? '';
+        const filesChanged = diff ? diff.split('\n').filter((line) => line.startsWith('diff --git ')).length : 0;
+
+        // Give the reviewer something readable to decide on. Best-effort: a
+        // missing summariser must never be what stops work being submitted.
+        if (!title.trim() && aiEnabled(env) && diff.trim()) {
+          const summary = await summarizeDiffForPr(env, diff, { branch, base }).catch(() => undefined);
+          if (summary) {
+            title = summary.title;
+            if (!body.trim()) body = summary.body;
+          }
+        }
+        if (!title.trim()) title = `Forge: ${branch}`;
+
+        // Park the commits somewhere durable BEFORE promising the human anything.
+        // If staging fails there is nothing to approve, and the agent should hear
+        // about it now rather than the reviewer discovering it days later.
+        const stagedRef = `forge/staged/${workspaceId}/${branch.replace(/^forge\//, '')}`;
+        const staged = await coordinator.stageForReview({ ref: stagedRef });
+
+        const approval = await requestApproval(
+          env,
+          identity,
+          workspaceId,
+          'work.submit',
+          `Merge ${branch} into ${base}`,
+          { branch, base, title, body, commit: staged.commit, diff }
+        );
+        const action = await createDeferredAction(env, {
+          tenantId: identity.tenantId,
+          projectId: identity.projectId,
+          workspaceId,
+          approvalId: approval.approval_id,
+          taskId: taskIdInput,
+          action: 'work.submit',
+          repository: { provider: 'github', owner: state.repository.owner, name: state.repository.name },
+          branch,
+          base,
+          stagedRef: staged.ref,
+          commitSha: staged.commit,
+          title,
+          body,
+          summary: `${filesChanged} file${filesChanged === 1 ? '' : 's'} changed`,
+          filesChanged
+        });
+
+        await this.recordAudit(
+          'work.submit',
+          identity.tenantId,
+          { branch, base, stagedRef: staged.ref, commit: staged.commit, approvalId: approval.approval_id },
+          { workspaceId }
+        );
+        // Mark the task pushed: the work is durable off-box now, which is the
+        // thing forge_task_finish actually cares about.
+        await new D1TaskStore(env.METADATA).getByWorkspace(workspaceId).then(async (task) => {
+          if (!task) return;
+          await new D1TaskStore(env.METADATA).put({ ...task, pushedAt: new Date().toISOString() });
+        }).catch(() => undefined);
+
+        return {
+          submitted: true,
+          status: action.state,
+          deferred_action_id: action.id,
+          approval_id: approval.approval_id,
+          approval_url: approval.approval_url,
+          staged_ref: staged.ref,
+          commit: staged.commit,
+          branch,
+          base,
+          files_changed: filesChanged,
+          next_step: `Work is staged and queued for review. Tell the human it is done and waiting for them at ${approval.approval_url} (or in the Forge portal at ${env.FORGE_PUBLIC_ORIGIN}/app) — they can approve whenever they like, and Forge will push ${branch} and open the draft pull request then. This workspace can be destroyed now.`
+        };
       },
       forge_pull_request_create: async (input) => {
         const identity = this.identity();

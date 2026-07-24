@@ -2,9 +2,17 @@ import { SignJWT, importPKCS8 } from 'jose';
 import { ForgeError, ids, type RepositoryRef, type Workspace } from '@forge/core';
 import { issueCapability, verifyCapability } from '@forge/capabilities';
 import { assertReceivePackScope, parseReceivePackCommands } from '@forge/git-core';
+import { assertAllowedForgeBranch } from '@forge/policy';
 import type { AuthenticatedContext } from './auth';
 import type { Env } from './env';
 import { listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
+import {
+  denyDeferredAction,
+  executeDeferredAction,
+  getDeferredActionByApproval,
+  listPendingDeferredActions,
+  type DeferredAction
+} from './deferred-actions';
 
 const GITHUB_API_VERSION = '2026-03-10';
 const SESSION_SECONDS = 60 * 60 * 24 * 14;
@@ -369,9 +377,10 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
   const user = await getWebSession(request, env);
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent('/app')}`, 302);
   const caps = workspaceCaps(env);
-  const [repositories, occupants] = await Promise.all([
+  const [repositories, occupants, awaitingReview] = await Promise.all([
     listAuthorizedRepositories(env, user.tenant_id),
-    listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), user.tenant_id).catch(() => [])
+    listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), user.tenant_id).catch(() => []),
+    listPendingDeferredActions(env, user.tenant_id).catch(() => [] as DeferredAction[])
   ]);
   const usedSlots = occupants.length;
   const ttlMinutes = Math.round(slotTtlMs(env) / 60_000);
@@ -391,11 +400,25 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
   const moreRows = repositories.length > 6
     ? `<details><summary>Show ${repositories.length - 6} more repositories</summary><ul>${repositories.slice(6).map(repositoryRow).join('')}</ul></details>`
     : '';
+  // The review queue: work agents have finished and staged, waiting on a human.
+  // This is the surface that makes approval asynchronous — an agent submits and
+  // walks away, and the decision lives here until someone gets to it.
+  const reviewRow = (action: DeferredAction) => {
+    const age = Math.max(0, Math.round((Date.now() - Date.parse(action.createdAt)) / 60000));
+    const when = age < 60 ? `${age}m ago` : age < 1440 ? `${Math.round(age / 60)}h ago` : `${Math.round(age / 1440)}d ago`;
+    const status = action.state === 'failed'
+      ? '<strong class="bad">needs another look</strong>'
+      : action.state === 'executing' ? 'opening pull request…' : 'waiting for you';
+    return `<li><span><strong>${escapeHtml(action.title)}</strong><small>${escapeHtml(action.repository.owner)}/${escapeHtml(action.repository.name)} · ${escapeHtml(action.branch)} → ${escapeHtml(action.base)} · ${action.filesChanged} file${action.filesChanged === 1 ? '' : 's'} · ${escapeHtml(when)} · ${status}</small></span><a class="button" href="/approvals/${escapeHtml(action.approvalId)}">Review</a></li>`;
+  };
+  const reviewSection = awaitingReview.length
+    ? `<section class="section queue"><h2>Waiting for your review <span class="badge">${awaitingReview.length}</span></h2><p>Agents finished this work and staged it. Nothing is blocked — approve whenever suits you, and Forge will push the branch and open the draft pull request.</p><ul>${awaitingReview.map(reviewRow).join('')}</ul></section>`
+    : '';
   const mcpUrl = `${env.FORGE_PUBLIC_ORIGIN}/mcp`;
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge Cloud</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--soft:#f0f0f3;--accent:#5b4cf0;--grad:#a78bfa;--accent-soft:#efedfe}*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(100% - 3rem,960px);margin:0 auto;padding:42px 0 72px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:28px;border-bottom:1px solid var(--line)}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:14px}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:19px;font-weight:750;letter-spacing:-.02em}h1{display:flex;align-items:center;gap:12px;font-size:32px;line-height:1;letter-spacing:-.035em;margin:0 0 12px}h1 .glyph{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:19px;box-shadow:0 3px 12px -3px var(--accent)}h2{font-size:18px;line-height:1.25;margin:0 0 10px}p{margin:0;color:var(--muted);max-width:68ch;text-wrap:pretty}.toplinks{display:flex;gap:14px;align-items:center;white-space:nowrap}a{color:inherit;text-underline-offset:3px}.button{display:inline-flex;min-height:44px;align-items:center;background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;padding:9px 14px;border-radius:9px;text-decoration:none;font-weight:700;transition:filter 180ms ease-out}.button:hover{filter:brightness(1.08)}a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(250px,.8fr);gap:clamp(30px,5vw,54px);padding-top:34px}.layout>*{min-width:0}.section{margin-bottom:34px}.prompt{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:10px;color:var(--ink);font:14px/1.55 ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}.prompt+.prompt{margin-top:8px}.meter{display:flex;align-items:center;gap:10px;margin-top:12px}.slots{display:flex;gap:5px}.slot{width:32px;height:8px;border-radius:4px;background:var(--soft)}.slot.used{background:var(--accent)}code{display:block;max-width:100%;background:var(--soft);border-radius:6px;padding:11px;overflow:auto;margin:10px 0;color:var(--ink);overflow-wrap:anywhere}ul{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--line)}li{padding:11px 0;border-bottom:1px solid var(--line)}li span{display:flex;justify-content:space-between;gap:12px}small{color:var(--muted)}.note{font-size:13px;margin-top:10px}details{margin-top:10px}summary{min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--muted);font-size:13px}summary:hover{color:var(--ink)}@media(max-width:720px){main{width:min(100% - 2.5rem,960px);padding:28px 0 56px}.layout{grid-template-columns:1fr;gap:8px}header{align-items:flex-start;flex-direction:column}.toplinks{width:100%;justify-content:space-between}li span{display:block}small{display:block}.button{justify-content:center;width:100%}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style>
+<title>Forge Cloud</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--soft:#f0f0f3;--accent:#5b4cf0;--grad:#a78bfa;--accent-soft:#efedfe}*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(100% - 3rem,960px);margin:0 auto;padding:42px 0 72px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:28px;border-bottom:1px solid var(--line)}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:14px}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:19px;font-weight:750;letter-spacing:-.02em}h1{display:flex;align-items:center;gap:12px;font-size:32px;line-height:1;letter-spacing:-.035em;margin:0 0 12px}h1 .glyph{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:19px;box-shadow:0 3px 12px -3px var(--accent)}h2{font-size:18px;line-height:1.25;margin:0 0 10px}p{margin:0;color:var(--muted);max-width:68ch;text-wrap:pretty}.toplinks{display:flex;gap:14px;align-items:center;white-space:nowrap}a{color:inherit;text-underline-offset:3px}.button{display:inline-flex;min-height:44px;align-items:center;background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;padding:9px 14px;border-radius:9px;text-decoration:none;font-weight:700;transition:filter 180ms ease-out}.button:hover{filter:brightness(1.08)}a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(250px,.8fr);gap:clamp(30px,5vw,54px);padding-top:34px}.layout>*{min-width:0}.section{margin-bottom:34px}.prompt{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:10px;color:var(--ink);font:14px/1.55 ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}.prompt+.prompt{margin-top:8px}.meter{display:flex;align-items:center;gap:10px;margin-top:12px}.slots{display:flex;gap:5px}.slot{width:32px;height:8px;border-radius:4px;background:var(--soft)}.slot.used{background:var(--accent)}code{display:block;max-width:100%;background:var(--soft);border-radius:6px;padding:11px;overflow:auto;margin:10px 0;color:var(--ink);overflow-wrap:anywhere}ul{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--line)}li{padding:11px 0;border-bottom:1px solid var(--line)}li span{display:flex;justify-content:space-between;gap:12px}small{color:var(--muted)}.note{font-size:13px;margin-top:10px}.queue{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:18px 20px}.queue ul{border-top-color:var(--line)}.queue li span{flex:1 1 auto}.queue li{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.queue .button{min-height:38px;padding:7px 14px;flex:0 0 auto}.badge{display:inline-grid;place-items:center;min-width:24px;height:24px;padding:0 7px;border-radius:12px;background:var(--accent);color:#fff;font-size:13px;font-weight:700;vertical-align:middle}.bad{color:#d64545}details{margin-top:10px}summary{min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--muted);font-size:13px}summary:hover{color:var(--ink)}@media(max-width:720px){main{width:min(100% - 2.5rem,960px);padding:28px 0 56px}.layout{grid-template-columns:1fr;gap:8px}header{align-items:flex-start;flex-direction:column}.toplinks{width:100%;justify-content:space-between}li span{display:block}small{display:block}.button{justify-content:center;width:100%}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style>
 <main><header><div><h1><span class="glyph" aria-hidden="true">⚒</span>Forge</h1><p>A real development computer for ChatGPT, Codex and Claude. Review a site cheaply, or open a repository to build, fix, test and prepare a draft PR.</p></div><div class="toplinks"><span>${escapeHtml(user.github_login)}</span><a href="/logout">Sign out</a></div></header>
-<div class="layout"><div><section class="section"><h2>Start in your AI client</h2><p>Connect this MCP URL once, then use ordinary language. Forge chooses the smallest capable path.</p><code id="mcp">${mcpUrl}</code><a class="button" href="#" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied';return false">Copy MCP URL</a></section>
+<div class="layout"><div>${reviewSection}<section class="section"><h2>Start in your AI client</h2><p>Connect this MCP URL once, then use ordinary language. Forge chooses the smallest capable path.</p><code id="mcp">${mcpUrl}</code><a class="button" href="#" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied';return false">Copy MCP URL</a></section>
 <section class="section"><h2>Good first prompts</h2><div class="prompt">Review https://example.com with Parallax on phone and desktop. Inspect every screenshot.</div><div class="prompt">Open ${escapeHtml(user.github_login)}/parallax-review, run the checks, explain the architecture, and do not change anything yet.</div><div class="prompt">Build my project, fix the most important issue, verify it with screenshots, then ask before creating a draft PR.</div></section>
 <section class="section"><h2>How Forge keeps cost down</h2><p>Live URLs use Browser Run without a container. Repository inspection uses GitHub. A container starts only for install, build, edit, test or preview work, and sleeps after 90 seconds idle.</p></section></div>
 <aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots">${Array.from({ length: caps.perTenant }, (_, index) => `<i class="slot ${usedSlots > index ? 'used' : ''}"></i>`).join('')}</div><span>${usedSlots} of ${caps.perTenant} active</span></div>${occupantRows}<p class="note">Each account runs up to ${caps.perTenant} workspaces (${caps.global} across all accounts). Idle workspaces are reclaimed automatically after ${ttlMinutes} minutes; destroy one sooner to free a slot immediately.</p></section>
@@ -566,7 +589,7 @@ export async function requestApproval(
   env: Env,
   identity: Pick<AuthenticatedContext, 'tenantId' | 'subject'>,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit',
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string; already_approved: boolean }> {
@@ -621,7 +644,7 @@ export async function requireApproval(
   identity: Pick<AuthenticatedContext, 'tenantId'>,
   approvalId: string,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit',
   expected: Record<string, unknown>
 ): Promise<void> {
   const row = await env.METADATA.prepare(
@@ -810,6 +833,21 @@ function diffStats(diff: string): { files: number; added: number; removed: numbe
   return { files, added, removed };
 }
 
+/** Status banner for a deferred submission, shown above the diff. */
+function renderDeferredOutcome(action: DeferredAction): string {
+  const target = `${escapeHtml(action.branch)} → ${escapeHtml(action.base)}`;
+  if (action.state === 'completed' && action.result) {
+    return `<div class="outcome ok"><strong>Merged into the queue.</strong> Forge pushed ${target} and opened <a href="${escapeHtml(action.result.pr_url)}">draft pull request #${action.result.pr_number}</a>.</div>`;
+  }
+  if (action.state === 'failed') {
+    return `<div class="outcome bad"><strong>Could not complete this submission.</strong> ${escapeHtml(action.error ?? 'Unknown error.')} The commits are safe on <code>${escapeHtml(action.stagedRef)}</code>; approving again retries.</div>`;
+  }
+  if (action.state === 'denied') {
+    return `<div class="outcome bad"><strong>Declined.</strong> Nothing was pushed. The commits remain on <code>${escapeHtml(action.stagedRef)}</code>.</div>`;
+  }
+  return `<div class="outcome"><strong>Waiting on you — no rush.</strong> ${escapeHtml(String(action.filesChanged))} file${action.filesChanged === 1 ? '' : 's'} changed, staged on <code>${escapeHtml(action.stagedRef)}</code>. Approving pushes ${target} and opens a draft pull request. The agent has already finished; nothing is blocked on this.</div>`;
+}
+
 export async function approvalPage(request: Request, env: Env, approvalId: string): Promise<Response> {
   const url = new URL(request.url);
   // Prefer a signed link (open + approve from the transcript, no re-login). Fall
@@ -836,6 +874,17 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     if (decision !== 'approved' && decision !== 'denied') return new Response('Invalid decision', { status: 400 });
     await env.METADATA.prepare('UPDATE approvals SET state=?1, resolved_by=?2, resolved_at=?3 WHERE id=?4 AND state=\'pending\'')
       .bind(decision, resolvedBy, new Date().toISOString(), approvalId).run();
+    // A deferred submission has no agent waiting to redeem this approval — the
+    // whole point is that the agent left hours ago. Forge does the work itself,
+    // here, the moment the human decides.
+    const deferred = await getDeferredActionByApproval(env, tenantId, approvalId).catch(() => null);
+    if (deferred) {
+      if (decision === 'approved') {
+        await executeDeferredAction(env, deferred, { promoteStagedRef, createDraftPullRequest }).catch(() => undefined);
+      } else {
+        await denyDeferredAction(env, deferred.id).catch(() => undefined);
+      }
+    }
     return Response.redirect(selfUrl, 303);
   }
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
@@ -846,6 +895,11 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     .filter(([, value]) => value !== '' && value !== undefined && value !== null)
     .map(([key, value]) => `<div class="kv"><span>${escapeHtml(key)}</span><code>${escapeHtml(String(value))}</code></div>`)
     .join('');
+  // For a deferred submission the page is also the receipt: after approving,
+  // the reviewer should land back here and see the pull request Forge opened —
+  // or exactly why it could not.
+  const deferredAction = await getDeferredActionByApproval(env, tenantId, approvalId).catch(() => null);
+  const outcomeBlock = deferredAction ? renderDeferredOutcome(deferredAction) : '';
   const hasDiff = typeof diff === 'string' && diff.trim() !== '';
   const stats = hasDiff ? diffStats(diff) : null;
   const statsLine = stats
@@ -858,10 +912,69 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
       ? `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
       : '';
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge approval</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--accent:#5b4cf0;--grad:#a78bfa;--add:#eafaf0;--add-ink:#0f9d58;--del:#fdecec;--del-ink:#d64545;--hunk:#efedfe;--hunk-ink:#5b4cf0}*{box-sizing:border-box}body{width:min(100% - 2.5rem,60rem);margin:0 auto;padding:clamp(2.5rem,8vw,5rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:1.4rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:18px;font-weight:750;letter-spacing:-.02em}h1{margin:0 0 1rem;font-size:clamp(1.9rem,6vw,2.8rem);line-height:1.02;letter-spacing:-.03em}p{color:var(--muted);overflow-wrap:anywhere}.stats{color:var(--ink);font-weight:600}.s-add{color:var(--add-ink)}.s-del{color:var(--del-ink)}.kv{display:flex;gap:.75rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)}.kv span{flex:0 0 6.5rem;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.kv code{overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre.body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem}.diffset{margin-top:1.25rem;display:flex;flex-direction:column;gap:1rem}.dfile{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--surface)}.dfhead{display:flex;align-items:center;gap:.6rem;padding:.6rem .9rem;background:#fafafc;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}.dfico{font-size:.72rem;font-weight:800;color:var(--muted);min-width:1.6rem;text-align:center}.dfpath{font:600 .82rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dfstat{margin-left:auto;display:flex;gap:.5rem;font:700 .74rem/1 ui-monospace,monospace;flex:0 0 auto}.dfbody{max-height:30rem;overflow:auto;font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.drow{display:grid;grid-template-columns:3rem 3rem 1fr;min-width:0}.drow .dg{padding:0 .45rem;text-align:right;color:var(--muted);opacity:.6;user-select:none;white-space:nowrap;border-right:1px solid var(--line)}.drow .dc{padding:0 .75rem;white-space:pre;overflow-wrap:normal}.drow .ds{display:inline-block;width:.75rem;color:var(--muted);opacity:.7}.drow.add{background:var(--add)}.drow.add .dc,.drow.add .ds{color:var(--add-ink)}.drow.del{background:var(--del)}.drow.del .dc,.drow.del .ds{color:var(--del-ink)}.drow.hunk{background:var(--hunk)}.drow.hunk .dc{color:var(--hunk-ink);font-weight:600}.drow.hunk .dg{background:var(--hunk);border-right-color:transparent}.dtrunc{font-size:.8rem;margin-top:.25rem}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:1rem}button{min-height:46px;padding:.7rem 1.2rem;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer;transition:filter 180ms ease-out,border-color 180ms ease-out}.approve{background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;border-color:transparent}button:hover{border-color:var(--accent)}.approve:hover{filter:brightness(1.08);border-color:transparent}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
-<div class="mark"><span class="glyph" aria-hidden="true">⚒</span><span class="wordmark">Forge</span></div><h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p>${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
-${row.state === 'pending' ? `<form method="post" action="${escapeHtml(selfUrl)}"><button class="approve" name="decision" value="approved">Approve once</button><button name="decision" value="denied">Deny</button></form>` : ''}`,
+<title>Forge approval</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--accent:#5b4cf0;--grad:#a78bfa;--add:#eafaf0;--add-ink:#0f9d58;--del:#fdecec;--del-ink:#d64545;--hunk:#efedfe;--hunk-ink:#5b4cf0}*{box-sizing:border-box}body{width:min(100% - 2.5rem,60rem);margin:0 auto;padding:clamp(2.5rem,8vw,5rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:1.4rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:18px;font-weight:750;letter-spacing:-.02em}h1{margin:0 0 1rem;font-size:clamp(1.9rem,6vw,2.8rem);line-height:1.02;letter-spacing:-.03em}p{color:var(--muted);overflow-wrap:anywhere}.stats{color:var(--ink);font-weight:600}.s-add{color:var(--add-ink)}.s-del{color:var(--del-ink)}.kv{display:flex;gap:.75rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)}.kv span{flex:0 0 6.5rem;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.kv code{overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre.body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem}.diffset{margin-top:1.25rem;display:flex;flex-direction:column;gap:1rem}.dfile{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--surface)}.dfhead{display:flex;align-items:center;gap:.6rem;padding:.6rem .9rem;background:#fafafc;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}.dfico{font-size:.72rem;font-weight:800;color:var(--muted);min-width:1.6rem;text-align:center}.dfpath{font:600 .82rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dfstat{margin-left:auto;display:flex;gap:.5rem;font:700 .74rem/1 ui-monospace,monospace;flex:0 0 auto}.dfbody{max-height:30rem;overflow:auto;font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.drow{display:grid;grid-template-columns:3rem 3rem 1fr;min-width:0}.drow .dg{padding:0 .45rem;text-align:right;color:var(--muted);opacity:.6;user-select:none;white-space:nowrap;border-right:1px solid var(--line)}.drow .dc{padding:0 .75rem;white-space:pre;overflow-wrap:normal}.drow .ds{display:inline-block;width:.75rem;color:var(--muted);opacity:.7}.drow.add{background:var(--add)}.drow.add .dc,.drow.add .ds{color:var(--add-ink)}.drow.del{background:var(--del)}.drow.del .dc,.drow.del .ds{color:var(--del-ink)}.drow.hunk{background:var(--hunk)}.drow.hunk .dc{color:var(--hunk-ink);font-weight:600}.drow.hunk .dg{background:var(--hunk);border-right-color:transparent}.dtrunc{font-size:.8rem;margin-top:.25rem}.outcome{margin:0 0 1.25rem;padding:.9rem 1.1rem;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;background:var(--surface);color:var(--ink);font-size:.92rem;line-height:1.5}.outcome a{color:var(--accent);font-weight:700}.outcome code{font:.85em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.outcome.ok{border-left-color:var(--add-ink)}.outcome.bad{border-left-color:var(--del-ink)}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:1rem}button{min-height:46px;padding:.7rem 1.2rem;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer;transition:filter 180ms ease-out,border-color 180ms ease-out}.approve{background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;border-color:transparent}button:hover{border-color:var(--accent)}.approve:hover{filter:brightness(1.08);border-color:transparent}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
+<div class="mark"><span class="glyph" aria-hidden="true">⚒</span><span class="wordmark">Forge</span></div><h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p>${outcomeBlock}${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
+${row.state === 'pending' ? `<form method="post" action="${escapeHtml(selfUrl)}"><button class="approve" name="decision" value="approved">${deferredAction ? 'Approve &amp; open pull request' : 'Approve once'}</button><button name="decision" value="denied">Deny</button></form>` : ''}`,
   { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+}
+
+/**
+ * Point `refs/heads/<branch>` at an already-staged commit, server-side.
+ *
+ * This is the push half of an approved deferred submission. It runs entirely
+ * against the GitHub REST API with the installation token, which is the whole
+ * reason approval can be asynchronous: the workspace that produced the commit is
+ * usually long gone by the time the human clicks approve, and nothing here needs
+ * it. The commit is already in the repository (the agent staged it to a
+ * `forge/staged/…` ref at submit time), so this only moves a ref.
+ *
+ * Creates the branch when absent, fast-forwards it when present. `force` is
+ * deliberately false: if the branch has moved on independently since the agent
+ * staged its work, GitHub rejects the update and the reviewer is told, rather
+ * than Forge silently overwriting someone else's commits.
+ */
+export async function promoteStagedRef(
+  env: Env,
+  identity: Pick<AuthenticatedContext, 'tenantId' | 'projectId'>,
+  repository: RepositoryRef,
+  input: { branch: string; commitSha: string }
+): Promise<void> {
+  assertAllowedForgeBranch(input.branch, 'main');
+  const row = await authorizeRepository(env, identity, repository);
+  if (!row) throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'GitHub App authorization is required.', retryable: false });
+  const token = await installationToken(env, row.installation_id, repository.name, 'write');
+  const base = `https://api.github.com/repos/${repository.owner}/${repository.name}/git/refs`;
+  const existing = await fetch(`${base}/heads/${encodeURIComponent(input.branch)}`, { headers: githubHeaders(token) });
+  if (existing.status === 404) {
+    await githubJson(base, {
+      method: 'POST',
+      headers: githubHeaders(token),
+      body: JSON.stringify({ ref: `refs/heads/${input.branch}`, sha: input.commitSha })
+    });
+    return;
+  }
+  if (!existing.ok) {
+    throw new ForgeError({
+      code: 'FORGE_GIT_PUSH_BLOCKED',
+      message: `Could not read the target branch (HTTP ${existing.status}).`,
+      retryable: true
+    });
+  }
+  const update = await fetch(`${base}/heads/${encodeURIComponent(input.branch)}`, {
+    method: 'PATCH',
+    headers: githubHeaders(token),
+    body: JSON.stringify({ sha: input.commitSha, force: false })
+  });
+  if (!update.ok) {
+    const detail = await update.text().catch(() => '');
+    throw new ForgeError({
+      code: 'FORGE_STALE_REVISION',
+      message: update.status === 422
+        ? `${input.branch} has moved on since this work was staged, so it can no longer be fast-forwarded. Rebase the staged commit and submit again.`
+        : `Could not update ${input.branch} (HTTP ${update.status}). ${detail.slice(0, 200)}`,
+      retryable: false
+    });
+  }
 }
 
 export async function createDraftPullRequest(

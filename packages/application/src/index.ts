@@ -1315,27 +1315,35 @@ export class ForgeApplicationService {
    * approval gate: this never reaches a mergeable location, it only exists
    * so data isn't gone forever if the container is destroyed a moment later.
    */
-  async backupUnpushedWork(
+  /**
+   * Force-push the workspace HEAD to an arbitrary Forge-owned ref.
+   *
+   * Shared by two callers with the same shape but different intent: the idle
+   * reaper's last-gasp backup before destroying a dirty workspace, and staging a
+   * submission so it can outlive the workspace while it waits for a human to
+   * approve it. Never targets a ref the user would treat as theirs — callers pass
+   * a `forge/`-namespaced ref — so it needs no approval of its own.
+   */
+  async pushToRef(
     record: WorkspaceRuntimeRecord,
-    source: RepositoryCloneSource
+    source: RepositoryCloneSource,
+    ref: string
   ): Promise<{ pushed: boolean; ref?: string; reason?: string }> {
-    const branch = record.workspace.currentBranch;
-    if (!record.workspace.hasUnpushedWork || !branch) return { pushed: false, reason: 'nothing to back up' };
+    if (!record.workspace.currentBranch) return { pushed: false, reason: 'no branch checked out' };
     if (!source.authorizationHeader) return { pushed: false, reason: 'no GitHub App authorization' };
-    const backupRef = `forge/backup/${record.workspace.id}`;
-    const configPath = `/workspace/tmp/gitconfig-backup-${record.workspace.id}`;
+    const configPath = `/workspace/tmp/gitconfig-push-${record.workspace.id}`;
     try {
       const handle = await this.handle(record);
       await handle.writeFile({ path: configPath, content: `[http]\n\textraHeader = ${source.authorizationHeader}\n` });
       try {
         const result = await handle.exec({
-          command: `git push --force ${quoted(source.url)} HEAD:${quoted(`refs/heads/${backupRef}`)}`,
+          command: `git push --force ${quoted(source.url)} HEAD:${quoted(`refs/heads/${ref}`)}`,
           cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 50_000,
           sessionId: 'system', networkPolicy: 'development',
           environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
         });
         return result.exitCode === 0
-          ? { pushed: true, ref: backupRef }
+          ? { pushed: true, ref }
           : { pushed: false, reason: result.stderr.slice(0, 500) };
       } finally {
         await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
@@ -1343,6 +1351,16 @@ export class ForgeApplicationService {
     } catch (error) {
       return { pushed: false, reason: error instanceof Error ? error.message.slice(0, 500) : 'unknown' };
     }
+  }
+
+  async backupUnpushedWork(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource
+  ): Promise<{ pushed: boolean; ref?: string; reason?: string }> {
+    if (!record.workspace.hasUnpushedWork || !record.workspace.currentBranch) {
+      return { pushed: false, reason: 'nothing to back up' };
+    }
+    return this.pushToRef(record, source, `forge/backup/${record.workspace.id}`);
   }
 
   requestDestroy(

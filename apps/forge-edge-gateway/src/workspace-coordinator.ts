@@ -653,6 +653,37 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
+  /**
+   * Park the current branch on a Forge-owned staging ref so a submission can wait
+   * for a human decision without holding this workspace open. Returns the commit
+   * the staging ref now points at, which is what the deferred action replays onto
+   * the real branch once the human approves.
+   *
+   * Needs no approval of its own: `forge/staged/…` is Forge's namespace, no pull
+   * request exists yet, and nothing the user considers their branch has moved.
+   */
+  async stageForReview(input: { ref: string }): Promise<{ ref: string; commit: string }> {
+    const record = await this.getRecord();
+    const commit = record.workspace.currentCommit;
+    if (!record.workspace.currentBranch || !commit) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: 'Nothing to submit: commit your work to a forge/ branch first.',
+        retryable: false
+      });
+    }
+    const source = await repositoryPushSource(this.env, record.workspace, input.ref, commit);
+    const result = await this.app.pushToRef(record, source, input.ref);
+    if (!result.pushed) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: `Could not stage the branch for review: ${result.reason ?? 'unknown error'}`,
+        retryable: true
+      });
+    }
+    return { ref: input.ref, commit };
+  }
+
   // Best-effort, no-approval safety push to a Forge-owned backup ref — see
   // Application.backupUnpushedWork. Called by the idle reaper right before it
   // destroys a dirty workspace, never as part of any human-facing tool.
