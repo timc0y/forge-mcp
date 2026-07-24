@@ -702,6 +702,79 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.app.backupUnpushedWork(record, source);
   }
 
+  /**
+   * Bring up the project's dev server and expose it, in one call.
+   *
+   * Used by the review preview on the approval page: a reviewer clicking "launch
+   * preview" has no agent to drive the usual detect → process_start →
+   * preview_expose sequence for them, and the detection result lives on the DO
+   * record rather than in the exposed workspace state. Doing all three steps here
+   * keeps that record private and makes the operation idempotent — a second click
+   * while the first preview is still live returns the same preview instead of
+   * starting a second dev server on the same port.
+   */
+  async startReviewPreview(input: { hostname: string; ttlSeconds: number }): Promise<
+    { ready: true; previewId: string; port: number; expiresAt: string } | { ready: false; reason: string }
+  > {
+    const record = await this.getRecord();
+    if (record.workspace.state !== 'ready') {
+      return { ready: false, reason: `workspace is ${record.workspace.state}` };
+    }
+    const devCommand = record.detection?.devCommand;
+    if (!devCommand) {
+      return { ready: false, reason: 'no dev server command was detected for this project' };
+    }
+    const port = record.detection?.expectedPorts?.[0] ?? 3000;
+
+    // Reuse a live preview rather than starting a second server.
+    const live = Object.entries(record.previews).find(
+      ([, preview]) => preview.port === port && Date.parse(preview.expiresAt) > Date.now()
+    );
+    if (live) {
+      return { ready: true, previewId: live[0], port, expiresAt: live[1].expiresAt };
+    }
+
+    const existingProcess = Object.entries(record.processes).find(([, value]) => value.command === devCommand);
+    let processId = existingProcess?.[0];
+    if (!processId) {
+      const started = await this.processStart({
+        command: devCommand,
+        cwd: '/workspace/repo',
+        environment: {},
+        networkPolicy: 'development',
+        idempotencyKey: `review-preview-process-${record.workspace.id}`
+      });
+      if ('replay' in started && started.replay) {
+        const refreshed = await this.getRecord();
+        processId = Object.entries(refreshed.processes).find(([, value]) => value.command === devCommand)?.[0];
+      } else {
+        processId = (started as { value?: { processId?: string } }).value?.processId
+          ?? Object.entries((await this.getRecord()).processes).find(([, value]) => value.command === devCommand)?.[0];
+      }
+    }
+    if (!processId) return { ready: false, reason: 'the dev server did not start' };
+
+    const exposed = await this.previewExpose({
+      processId: processId as ProcessId,
+      port,
+      hostname: input.hostname,
+      access: 'private',
+      ttlSeconds: input.ttlSeconds,
+      idempotencyKey: `review-preview-expose-${record.workspace.id}-${port}`
+    });
+    if ('replay' in exposed && exposed.replay) {
+      const refreshed = await this.getRecord();
+      const found = Object.entries(refreshed.previews).find(([, preview]) => preview.port === port);
+      return found
+        ? { ready: true, previewId: found[0], port, expiresAt: found[1].expiresAt }
+        : { ready: false, reason: 'preview is still starting' };
+    }
+    const value = exposed as { previewId?: string; expiresAt?: string };
+    return value.previewId && value.expiresAt
+      ? { ready: true, previewId: value.previewId, port, expiresAt: value.expiresAt }
+      : { ready: false, reason: 'preview is still starting' };
+  }
+
   async previewExpose(input: {
     processId: ProcessId;
     port: number;

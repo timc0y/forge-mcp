@@ -6,6 +6,7 @@ import { assertAllowedForgeBranch } from '@forge/policy';
 import type { AuthenticatedContext } from './auth';
 import type { Env } from './env';
 import { listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
+import { launchReviewPreview, reviewPreviewStatus } from './review-preview';
 import {
   denyDeferredAction,
   executeDeferredAction,
@@ -72,7 +73,7 @@ function id(prefix: string, value: string): Promise<string> {
   return hash(value).then((digest) => `${prefix}_${digest.slice(0, 26)}`);
 }
 
-function cookie(request: Request, name: string): string {
+export function cookie(request: Request, name: string): string {
   const source = request.headers.get('cookie') ?? '';
   for (const part of source.split(';')) {
     const [key, ...rest] = part.trim().split('=');
@@ -833,6 +834,72 @@ function diffStats(diff: string): { files: number; added: number; removed: numbe
   return { files, added, removed };
 }
 
+/**
+ * Resolve who is looking at an approval: either a signed link (approve straight
+ * from the transcript, no re-login) or a logged-in web session. Shared by the
+ * approval page and its preview endpoint so both authenticate identically.
+ */
+async function approvalViewer(
+  request: Request,
+  env: Env,
+  approvalId: string
+): Promise<{ tenantId: string; resolvedBy: string; token: string } | null> {
+  const token = new URL(request.url).searchParams.get('t') ?? '';
+  const linkClaims = token ? await verifyApprovalLink(env, token, approvalId) : null;
+  const user = linkClaims ? null : await getWebSession(request, env);
+  const tenantId = linkClaims?.tenant ?? user?.tenant_id ?? null;
+  if (!tenantId) return null;
+  return { tenantId, resolvedBy: user ? `github:${user.github_user_id}` : 'approval-link', token };
+}
+
+/**
+ * Launch (POST) and poll (GET) the on-demand review preview for a submission.
+ *
+ * Provisioning a container takes far longer than a request should, so the page
+ * kicks it off and then polls this endpoint until it reports ready. When it does,
+ * the signed preview capability is handed to the browser as a path-scoped
+ * HttpOnly cookie — the preview proxy accepts it there because a navigation
+ * cannot carry the header an agent would use.
+ */
+export async function approvalPreviewEndpoint(
+  request: Request,
+  env: Env,
+  approvalId: string
+): Promise<Response> {
+  const viewer = await approvalViewer(request, env, approvalId);
+  if (!viewer) {
+    return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
+  }
+  const action = await getDeferredActionByApproval(env, viewer.tenantId, approvalId);
+  if (!action) return new Response('Not found', { status: 404 });
+
+  const stub = (innerEnv: Env, workspaceId: string) =>
+    innerEnv.WORKSPACE_COORDINATORS.get(innerEnv.WORKSPACE_COORDINATORS.idFromName(workspaceId)) as unknown as never;
+
+  if (request.method === 'POST') {
+    assertSameOrigin(request, env);
+    await launchReviewPreview(env, action, stub);
+    const back = `${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}${viewer.token ? `?t=${encodeURIComponent(viewer.token)}` : ''}`;
+    return Response.redirect(back, 303);
+  }
+
+  const status = await reviewPreviewStatus(env, action, stub);
+  const headers = new Headers({ 'content-type': 'application/json', 'cache-control': 'no-store' });
+  if (status.state === 'ready' && status.capability && status.previewPath) {
+    const maxAge = status.expiresAt
+      ? Math.max(60, Math.floor((Date.parse(status.expiresAt) - Date.now()) / 1000))
+      : 3600;
+    headers.append(
+      'set-cookie',
+      `forge_preview_${status.previewPath.split('/')[3]}=${encodeURIComponent(status.capability)}; Path=${status.previewPath}; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`
+    );
+  }
+  // The capability is delivered only as a cookie; never echo it into JSON the
+  // page could accidentally render or log.
+  const { capability, previewPath, ...safe } = status;
+  return new Response(JSON.stringify(safe), { headers });
+}
+
 /** Status banner for a deferred submission, shown above the diff. */
 function renderDeferredOutcome(action: DeferredAction): string {
   const target = `${escapeHtml(action.branch)} → ${escapeHtml(action.base)}`;
@@ -900,6 +967,24 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   // or exactly why it could not.
   const deferredAction = await getDeferredActionByApproval(env, tenantId, approvalId).catch(() => null);
   const outcomeBlock = deferredAction ? renderDeferredOutcome(deferredAction) : '';
+  // On-demand live preview. Provisioning takes far longer than a request, so the
+  // button only kicks it off and the page polls until there is a URL to open.
+  const previewBlock = deferredAction && deferredAction.state === 'awaiting_approval'
+    ? `<div class="preview" id="pv" data-endpoint="${escapeHtml(`${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}/preview${token ? `?t=${encodeURIComponent(token)}` : ''}`)}">
+<div class="pvhead"><strong>See it running</strong><span class="pvstatus" id="pvs">Not started</span></div>
+<p class="pvnote">Builds a throwaway workspace from the staged commit and starts the dev server, so you can click through the change before approving. Takes a minute or so, and is cleaned up automatically.</p>
+<form method="post" action="${escapeHtml(`${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}/preview${token ? `?t=${encodeURIComponent(token)}` : ''}`)}" id="pvf"><button type="submit">Launch preview</button></form>
+<a class="pvlink" id="pvl" href="#" target="_blank" rel="noopener" hidden>Open preview →</a></div>
+<script>(function(){var b=document.getElementById('pv');if(!b)return;var s=document.getElementById('pvs'),l=document.getElementById('pvl'),f=document.getElementById('pvf');
+var labels={none:'Not started',provisioning:'Building workspace…',starting:'Starting dev server…',ready:'Ready',failed:'Failed'};
+function poll(){fetch(b.dataset.endpoint,{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
+s.textContent=d.state==='failed'&&d.error?d.error:(labels[d.state]||d.state);
+if(d.state==='ready'&&d.url){l.href=d.url;l.hidden=false;f.hidden=true;return}
+if(d.state==='failed'){f.hidden=false;return}
+if(d.state==='provisioning'||d.state==='starting'){f.hidden=true;setTimeout(poll,4000)}
+}).catch(function(){setTimeout(poll,8000)})}
+poll();})();</script>`
+    : '';
   const hasDiff = typeof diff === 'string' && diff.trim() !== '';
   const stats = hasDiff ? diffStats(diff) : null;
   const statsLine = stats
@@ -912,8 +997,8 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
       ? `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
       : '';
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge approval</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--accent:#5b4cf0;--grad:#a78bfa;--add:#eafaf0;--add-ink:#0f9d58;--del:#fdecec;--del-ink:#d64545;--hunk:#efedfe;--hunk-ink:#5b4cf0}*{box-sizing:border-box}body{width:min(100% - 2.5rem,60rem);margin:0 auto;padding:clamp(2.5rem,8vw,5rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:1.4rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:18px;font-weight:750;letter-spacing:-.02em}h1{margin:0 0 1rem;font-size:clamp(1.9rem,6vw,2.8rem);line-height:1.02;letter-spacing:-.03em}p{color:var(--muted);overflow-wrap:anywhere}.stats{color:var(--ink);font-weight:600}.s-add{color:var(--add-ink)}.s-del{color:var(--del-ink)}.kv{display:flex;gap:.75rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)}.kv span{flex:0 0 6.5rem;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.kv code{overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre.body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem}.diffset{margin-top:1.25rem;display:flex;flex-direction:column;gap:1rem}.dfile{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--surface)}.dfhead{display:flex;align-items:center;gap:.6rem;padding:.6rem .9rem;background:#fafafc;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}.dfico{font-size:.72rem;font-weight:800;color:var(--muted);min-width:1.6rem;text-align:center}.dfpath{font:600 .82rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dfstat{margin-left:auto;display:flex;gap:.5rem;font:700 .74rem/1 ui-monospace,monospace;flex:0 0 auto}.dfbody{max-height:30rem;overflow:auto;font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.drow{display:grid;grid-template-columns:3rem 3rem 1fr;min-width:0}.drow .dg{padding:0 .45rem;text-align:right;color:var(--muted);opacity:.6;user-select:none;white-space:nowrap;border-right:1px solid var(--line)}.drow .dc{padding:0 .75rem;white-space:pre;overflow-wrap:normal}.drow .ds{display:inline-block;width:.75rem;color:var(--muted);opacity:.7}.drow.add{background:var(--add)}.drow.add .dc,.drow.add .ds{color:var(--add-ink)}.drow.del{background:var(--del)}.drow.del .dc,.drow.del .ds{color:var(--del-ink)}.drow.hunk{background:var(--hunk)}.drow.hunk .dc{color:var(--hunk-ink);font-weight:600}.drow.hunk .dg{background:var(--hunk);border-right-color:transparent}.dtrunc{font-size:.8rem;margin-top:.25rem}.outcome{margin:0 0 1.25rem;padding:.9rem 1.1rem;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;background:var(--surface);color:var(--ink);font-size:.92rem;line-height:1.5}.outcome a{color:var(--accent);font-weight:700}.outcome code{font:.85em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.outcome.ok{border-left-color:var(--add-ink)}.outcome.bad{border-left-color:var(--del-ink)}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:1rem}button{min-height:46px;padding:.7rem 1.2rem;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer;transition:filter 180ms ease-out,border-color 180ms ease-out}.approve{background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;border-color:transparent}button:hover{border-color:var(--accent)}.approve:hover{filter:brightness(1.08);border-color:transparent}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
-<div class="mark"><span class="glyph" aria-hidden="true">⚒</span><span class="wordmark">Forge</span></div><h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p>${outcomeBlock}${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
+<title>Forge approval</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--accent:#5b4cf0;--grad:#a78bfa;--add:#eafaf0;--add-ink:#0f9d58;--del:#fdecec;--del-ink:#d64545;--hunk:#efedfe;--hunk-ink:#5b4cf0}*{box-sizing:border-box}body{width:min(100% - 2.5rem,60rem);margin:0 auto;padding:clamp(2.5rem,8vw,5rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:1.4rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:18px;font-weight:750;letter-spacing:-.02em}h1{margin:0 0 1rem;font-size:clamp(1.9rem,6vw,2.8rem);line-height:1.02;letter-spacing:-.03em}p{color:var(--muted);overflow-wrap:anywhere}.stats{color:var(--ink);font-weight:600}.s-add{color:var(--add-ink)}.s-del{color:var(--del-ink)}.kv{display:flex;gap:.75rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)}.kv span{flex:0 0 6.5rem;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.kv code{overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre.body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem}.diffset{margin-top:1.25rem;display:flex;flex-direction:column;gap:1rem}.dfile{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--surface)}.dfhead{display:flex;align-items:center;gap:.6rem;padding:.6rem .9rem;background:#fafafc;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}.dfico{font-size:.72rem;font-weight:800;color:var(--muted);min-width:1.6rem;text-align:center}.dfpath{font:600 .82rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dfstat{margin-left:auto;display:flex;gap:.5rem;font:700 .74rem/1 ui-monospace,monospace;flex:0 0 auto}.dfbody{max-height:30rem;overflow:auto;font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.drow{display:grid;grid-template-columns:3rem 3rem 1fr;min-width:0}.drow .dg{padding:0 .45rem;text-align:right;color:var(--muted);opacity:.6;user-select:none;white-space:nowrap;border-right:1px solid var(--line)}.drow .dc{padding:0 .75rem;white-space:pre;overflow-wrap:normal}.drow .ds{display:inline-block;width:.75rem;color:var(--muted);opacity:.7}.drow.add{background:var(--add)}.drow.add .dc,.drow.add .ds{color:var(--add-ink)}.drow.del{background:var(--del)}.drow.del .dc,.drow.del .ds{color:var(--del-ink)}.drow.hunk{background:var(--hunk)}.drow.hunk .dc{color:var(--hunk-ink);font-weight:600}.drow.hunk .dg{background:var(--hunk);border-right-color:transparent}.dtrunc{font-size:.8rem;margin-top:.25rem}.outcome{margin:0 0 1.25rem;padding:.9rem 1.1rem;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;background:var(--surface);color:var(--ink);font-size:.92rem;line-height:1.5}.outcome a{color:var(--accent);font-weight:700}.outcome code{font:.85em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.outcome.ok{border-left-color:var(--add-ink)}.outcome.bad{border-left-color:var(--del-ink)}.preview{margin:0 0 1.25rem;padding:.9rem 1.1rem;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.pvhead{display:flex;align-items:center;gap:.75rem;justify-content:space-between}.pvstatus{color:var(--muted);font-size:.84rem}.pvnote{margin:.45rem 0 .8rem;font-size:.86rem}.preview form{margin:0;position:static}.preview button{min-height:40px;padding:.5rem 1rem;font-size:.9rem}.pvlink{display:inline-flex;min-height:40px;align-items:center;padding:.5rem 1rem;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;text-decoration:none;font-weight:700}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:1rem}button{min-height:46px;padding:.7rem 1.2rem;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer;transition:filter 180ms ease-out,border-color 180ms ease-out}.approve{background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;border-color:transparent}button:hover{border-color:var(--accent)}.approve:hover{filter:brightness(1.08);border-color:transparent}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
+<div class="mark"><span class="glyph" aria-hidden="true">⚒</span><span class="wordmark">Forge</span></div><h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p>${outcomeBlock}${previewBlock}${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
 ${row.state === 'pending' ? `<form method="post" action="${escapeHtml(selfUrl)}"><button class="approve" name="decision" value="approved">${deferredAction ? 'Approve &amp; open pull request' : 'Approve once'}</button><button name="decision" value="denied">Deny</button></form>` : ''}`,
   { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }

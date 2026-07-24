@@ -22,6 +22,8 @@ import type { Env } from './env';
 import {
   appDashboard,
   approvalPage,
+  approvalPreviewEndpoint,
+  cookie,
   finishGitHubInstall,
   finishGitHubLogin,
   githubWebhook,
@@ -283,7 +285,15 @@ async function preview(request: Request, env: Env, url: URL): Promise<Response> 
     env.FORGE_INTERNAL_PREVIEW_KEY
   );
   if (!internal) {
-    const capability = request.headers.get('x-forge-preview-capability') ?? '';
+    // Agents send the capability as a header. A human opening a review preview
+    // from the approval page cannot — a browser navigation carries no custom
+    // headers — so fall back to a path-scoped HttpOnly cookie holding the same
+    // signed capability. Same token, same verification; only the transport
+    // differs. It is deliberately not accepted from the query string, which
+    // would leak it into history, logs and any shared link.
+    const capability = request.headers.get('x-forge-preview-capability')
+      || cookie(request, `forge_preview_${previewId}`)
+      || '';
     await verifyCapability(capability, env.FORGE_CAPABILITY_SIGNING_KEY, {
       workspaceId,
       action: `preview:${previewId}`
@@ -594,6 +604,8 @@ export default {
       if (url.pathname === '/app') return await appDashboard(request, env);
       if (url.pathname === '/github/install') return await installGitHubApp(request, env);
       if (url.pathname === '/github/setup') return await finishGitHubInstall(request, env);
+      const previewMatch = url.pathname.match(/^\/approvals\/(apr_[0-9a-hjkmnp-tv-z]{20,32})\/preview$/u);
+      if (previewMatch?.[1]) return await approvalPreviewEndpoint(request, env, previewMatch[1]);
       const approvalMatch = url.pathname.match(/^\/approvals\/(apr_[0-9a-hjkmnp-tv-z]{20,32})$/u);
       if (approvalMatch?.[1]) return await approvalPage(request, env, approvalMatch[1]);
       if (url.pathname === '/oauth/register' && request.method === 'POST') {
