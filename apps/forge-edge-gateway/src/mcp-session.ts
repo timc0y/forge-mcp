@@ -364,7 +364,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       instructions: [
         'Forge is a remote development computer; Parallax is its review contract. Work in this order:',
         '1. Need to see a live URL? Call forge_review — one call, no container, no polling, and the screenshots come back attached to the result. A url on its own captures it at phone and desktop; add captures for more routes. This is the right tool for any "what does this look like" question.',
-        '2. Starting a coding task? Call forge_task_start before creating a workspace, then create one workspace per task and reuse its workspace_id.',
+        '2. Starting a coding task? Call forge_task_start before creating a workspace, then create one workspace per task and reuse its workspace_id. forge_workspace_create waits for the workspace to be usable and returns it ready, so never build a polling loop around it.',
         '3. Before choosing routes or making changes, read the repository instructions and any parallax/ files.',
         '4. Screenshots come back attached to forge_review and forge_review_capture — look at those images directly and never claim a finding you have not seen. Only reach for forge_artifact_get when a result says captures were omitted; if a grid is too big to return at once, prefer re-running with fewer routes or one viewport.',
         '5. Never claim a multi-step journey passed unless its interactions were actually executed and recorded.',
@@ -1121,11 +1121,35 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             // in-flight workflow will drive provisioning to completion.
           }
         }
+        // Wait here rather than making the caller poll. Provisioning takes about
+        // a minute, and "call forge_workspace_get repeatedly until state is
+        // ready" is a loop an ordinary chat session cannot be relied on to run —
+        // it needs a human nudging it through each turn, and any turn that drops
+        // the workspace_id strands a container nobody destroys. One call that
+        // comes back usable is the difference between this flow working and not.
+        // Bounded: if the budget runs out the caller still gets the id and the
+        // real state, and polling remains available for anyone who wants it.
+        let state = result.state;
+        if (Boolean(input.wait_for_ready) && !['ready', 'failed', 'destroyed'].includes(state)) {
+          const waitUntil = Date.now() + number(input.wait_budget_ms);
+          while (Date.now() < waitUntil) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const current = await coordinator(env, workspaceId).getState().catch(() => undefined);
+            if (!current) continue;
+            state = current.state;
+            if (['ready', 'failed', 'destroyed'].includes(state)) break;
+          }
+        }
         return {
           workspace_id: workspaceId,
-          state: result.state,
+          state,
           operation_id: result.operationId,
-          workspace_revision: result.revision
+          workspace_revision: result.revision,
+          next_step: state === 'ready'
+            ? 'The workspace is ready — use this workspace_id for the rest of the task, and destroy it when done.'
+            : state === 'failed'
+              ? 'Provisioning failed. Read forge_workspace_get for the reason; do not keep polling.'
+              : `Still provisioning after the wait budget. Call forge_workspace_get with this workspace_id to check again — it is usually ready within a minute of creation.`
         };
       },
       forge_workspace_get: async (input) => {

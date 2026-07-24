@@ -451,7 +451,7 @@
     },
     "forge_workspace_create": {
       "title": "Create a workspace",
-      "description": "Create a disposable, isolated workspace (a container) from an authorized repository. Costly — create one only when you need to run or edit code; decide with the container-free task and read tools first. Returns immediately in state 'requested'; poll forge_workspace_get until state is 'ready' (usually under a minute) before use. idempotency_key must be unique per distinct workspace.",
+      "description": "Create a disposable, isolated workspace (a container) from an authorized repository. Costly — create one only when you need to run or edit code; decide with the container-free task and read tools first. By default this call waits until the workspace is actually usable and returns state 'ready', so there is nothing to poll — the caller does not need to loop. If the wait budget runs out it returns the real state instead, and forge_workspace_get can be used to check again.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -499,9 +499,19 @@
             "description": "Install dependencies on create.",
             "$ref": "#/$defs/__schema6"
           },
+          "wait_for_ready": {
+            "default": true,
+            "description": "Wait for the workspace to become usable before returning, so no polling loop is needed. Set false to return immediately in state 'requested'.",
+            "$ref": "#/$defs/__schema7"
+          },
+          "wait_budget_ms": {
+            "default": 60000,
+            "description": "How long to wait for readiness before returning the current state anyway.",
+            "$ref": "#/$defs/__schema8"
+          },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema7"
+            "$ref": "#/$defs/__schema9"
           }
         },
         "required": [
@@ -509,7 +519,9 @@
           "ref",
           "runtime",
           "persistence",
-          "bootstrap"
+          "bootstrap",
+          "wait_for_ready",
+          "wait_budget_ms"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -547,6 +559,14 @@
             "type": "boolean"
           },
           "__schema7": {
+            "type": "boolean"
+          },
+          "__schema8": {
+            "type": "integer",
+            "minimum": 5000,
+            "maximum": 110000
+          },
+          "__schema9": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
