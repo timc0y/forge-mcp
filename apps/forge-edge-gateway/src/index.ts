@@ -23,6 +23,8 @@ import { galleryPage } from './review-gallery';
 import {
   appDashboard,
   approvalPage,
+  forgeGlyph,
+  resolveAccessRequest,
   approvalPreviewEndpoint,
   cookie,
   finishGitHubInstall,
@@ -62,8 +64,10 @@ function html(body: string, status = 200): Response {
 }
 
 function favicon(): Response {
+  // The same anvil as the wordmark and the app icon, so a pinned tab, the portal
+  // and a shared link all read as one product.
   return new Response(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5b4cf0"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs><rect width="64" height="64" rx="16" fill="url(#g)"/><text x="32" y="33" font-size="34" text-anchor="middle" dominant-baseline="central" fill="#fff" font-family="system-ui,sans-serif">⚒</text></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="#0d0d0d"/><path d="M4 7.6H18l3.8 2a.5.5 0 0 1 0 .9L18 12.4h-3.7v3.2h3.2a1.15 1.15 0 0 1 1.15 1.15V18.6H5.35v-1.85A1.15 1.15 0 0 1 6.5 15.6h3.2v-3.2H6.3A2.3 2.3 0 0 1 4 10.1V7.6Z" fill="#fff" transform="translate(0 .2) scale(.94) translate(.75 .5)"/></svg>',
     {
       headers: {
         'cache-control': 'public, max-age=86400',
@@ -74,31 +78,86 @@ function favicon(): Response {
   );
 }
 
+
+// Small monoline marks for the landing cards. Distinct shapes rather than the
+// Forge glyph repeated three times, which says nothing about what each card is.
+const cardIcon = (paths: string): string =>
+  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+const ICON_PAGE = cardIcon('<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/><path d="M7 6.5h.01"/>');
+const ICON_CODE = cardIcon('<path d="m9 8-5 4 5 4"/><path d="m15 8 5 4-5 4"/>');
+const ICON_APPROVE = cardIcon('<path d="M20 6 9.5 17 4 11.5"/>');
+
 function landing(env: Env): Response {
   return html(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge Cloud — remote workspaces for Parallax Review</title>
-<meta name="description" content="Give ChatGPT, Codex and Claude an isolated repository, terminal and browser for Parallax Review.">
+<title>Forge — a real computer for your AI chat</title>
+<meta name="description" content="Screenshot any site, build and fix real repositories, and get a pull request to approve — from an ordinary ChatGPT or Claude conversation.">
 <style>
-:root{--bg:#0e0e12;--surface:#1a1a1f;--ink:#f4f4f6;--muted:#a2a2ad;--line:#2c2c33;--signal:#8b7dff;--grad:#a78bfa;--accent-soft:#221f33;--max:1120px}
-*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}
-a{color:inherit}.skip{position:absolute;left:1rem;top:-5rem;background:var(--ink);color:var(--bg);padding:.75rem 1rem;z-index:2}.skip:focus{top:1rem}
-header,main,footer{width:min(100% - 3rem,var(--max));margin-inline:auto}header{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-block:1.35rem;border-bottom:1px solid var(--line)}
-.mark{display:inline-flex;align-items:center;gap:.6rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--signal),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--signal)}.brand{font-weight:750;letter-spacing:-.02em;font-size:1.1rem}.pilot{color:var(--signal);font-size:.78rem;font-weight:700}
-main{padding-block:clamp(4.5rem,10vw,8rem)}.hero{max-width:940px}.eyebrow{color:var(--signal);font-size:.78rem;font-weight:750;letter-spacing:.08em;text-transform:uppercase}
-h1{max-width:13ch;margin:.28em 0 .32em;font-size:clamp(3rem,7.5vw,6rem);line-height:.94;letter-spacing:-.04em;text-wrap:balance;overflow-wrap:break-word}
-.lede{max-width:65ch;margin:0;color:var(--muted);font-size:clamp(1.08rem,1.6vw,1.3rem);text-wrap:pretty}
-.actions{display:flex;gap:.75rem;flex-wrap:wrap;margin:2rem 0 0}.actions a{display:inline-flex;min-height:46px;align-items:center;padding:.7rem 1.1rem;background:linear-gradient(135deg,var(--signal),var(--grad));color:#fff;border:1px solid transparent;border-radius:9px;text-decoration:none;font-weight:700;transition:filter 180ms ease-out,color 180ms ease-out,border-color 180ms ease-out,background-color 180ms ease-out}.actions a:hover{filter:brightness(1.08)}.actions a.secondary{background:transparent;color:var(--ink);border-color:var(--line)}.actions a.secondary:hover{border-color:var(--signal);color:var(--signal);filter:none}a:focus-visible{outline:3px solid var(--signal);outline-offset:4px}
-.capabilities{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:clamp(4rem,8vw,7rem);border-top:1px solid var(--line)}.capability{min-width:0;padding:1.4rem 2rem 0 0}.capability+.capability{padding-left:2rem;border-left:1px solid var(--line)}.capability h2{margin:0 0 .45rem;font-size:1.05rem}.capability p{max-width:34ch;margin:0;color:var(--muted);font-size:.92rem}
-footer{display:flex;justify-content:space-between;gap:1.5rem;padding-block:1.4rem;border-top:1px solid var(--line);color:var(--muted);font-size:.82rem}code{color:var(--signal)}
-@media(max-width:700px){header,main,footer{width:min(100% - 2.5rem,var(--max))}main{padding-block:4rem}h1{font-size:clamp(2.85rem,14vw,4.5rem);line-height:.93}.actions{align-items:stretch;flex-direction:column}.actions a{justify-content:center;width:100%}.capabilities{grid-template-columns:1fr;margin-top:4rem}.capability,.capability+.capability{padding:1.25rem 0;border-left:0;border-bottom:1px solid var(--line)}footer{align-items:flex-start;flex-direction:column}}
-@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+:root{color-scheme:light dark;--bg:#fff;--panel:#f7f7f8;--ink:#0d0d0d;--muted:#6e6e80;--line:#e5e5e5;--ring:#0d0d0d}
+@media(prefers-color-scheme:dark){:root{--bg:#0d0d0d;--panel:#161616;--ink:#ececf1;--muted:#9a9aa6;--line:#2a2a2a;--ring:#ececf1}}
+*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.skip{position:absolute;left:1rem;top:-4rem;background:var(--ink);color:var(--bg);padding:.7rem 1rem;border-radius:8px;z-index:9}.skip:focus{top:1rem}
+.wrap{width:min(100% - 2.5rem,64rem);margin-inline:auto}
+header{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1.1rem 0}
+.mark{display:inline-flex;align-items:center;gap:.6rem;font-weight:600;letter-spacing:-.01em}
+.mark .box{width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:var(--panel);display:grid;place-items:center}
+.nav{display:flex;align-items:center;gap:.4rem}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:.55rem 1.05rem;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;font-weight:500;text-decoration:none;transition:background 140ms ease,border-color 140ms ease}
+.btn:hover{background:var(--panel)}
+.btn.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}.btn.primary:hover{opacity:.88}
+.btn:focus-visible,a:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+main{padding:clamp(3.5rem,10vw,7rem) 0 clamp(3rem,8vw,5rem)}
+h1{margin:0 0 1rem;font-size:clamp(2.4rem,6vw,4rem);line-height:1.05;letter-spacing:-.035em;max-width:16ch;text-wrap:balance}
+.lede{margin:0;max-width:52ch;color:var(--muted);font-size:clamp(1.05rem,1.6vw,1.2rem);text-wrap:pretty}
+.cta{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:2rem}
+.tag{display:inline-flex;align-items:center;gap:.5rem;margin-bottom:1.4rem;padding:.3rem .7rem;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:.82rem}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.55}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr));gap:1rem;margin-top:clamp(3.5rem,8vw,5.5rem)}
+.card{padding:1.4rem;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+.card h2{margin:.9rem 0 .4rem;font-size:1.02rem;letter-spacing:-.01em}
+.card p{margin:0;color:var(--muted);font-size:.94rem}
+.card .box{width:34px;height:34px;border-radius:10px;border:1px solid var(--line);background:var(--bg);display:grid;place-items:center;color:var(--muted)}
+.steps{margin-top:clamp(3.5rem,8vw,5.5rem);border-top:1px solid var(--line);padding-top:2.2rem}
+.steps h2{margin:0 0 1.4rem;font-size:1.15rem;letter-spacing:-.015em}
+ol{margin:0;padding:0;list-style:none;display:grid;gap:1rem;counter-reset:step}
+ol li{counter-increment:step;display:grid;grid-template-columns:1.9rem 1fr;gap:.9rem;color:var(--muted)}
+ol li::before{content:counter(step);display:grid;place-items:center;width:1.9rem;height:1.9rem;border:1px solid var(--line);border-radius:50%;color:var(--ink);font-size:.82rem;font-variant-numeric:tabular-nums}
+ol li b{color:var(--ink);font-weight:600}
+footer{border-top:1px solid var(--line);padding:1.6rem 0 2.4rem;color:var(--muted);font-size:.85rem;display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+@media(max-width:640px){.cta{flex-direction:column;align-items:stretch}.cta .btn{width:100%}.nav .btn{padding:.5rem .8rem}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head>
-<body><a class="skip" href="#main">Skip to content</a><header><span class="mark"><span class="glyph" aria-hidden="true">⚒</span><span class="brand">Forge</span></span><span class="pilot">Cloud private pilot</span></header><main id="main"><section class="hero"><div class="eyebrow">Remote workspace for AI clients</div><h1>Run Parallax Review from any AI coding client.</h1>
-<p class="lede">Forge gives ChatGPT, Codex and Claude an isolated repository, Linux runtime and browser. Parallax defines what to review and what counts as evidence.</p>
-<div class="actions"><a href="${env.FORGE_PUBLIC_ORIGIN}/login/github">Continue with GitHub</a><a class="secondary" href="${env.FORGE_PUBLIC_ORIGIN}/.well-known/oauth-protected-resource">Connection metadata</a></div></section>
-<section class="capabilities" aria-label="Forge capabilities"><div class="capability"><h2>Repository + terminal</h2><p>Clone, inspect, patch, build and test inside an on-demand workspace.</p></div><div class="capability"><h2>Browser evidence</h2><p>Capture phone and desktop screenshots plus accessibility evidence.</p></div><div class="capability"><h2>Parallax contract</h2><p>Preserve audiences, missions, readiness and honest limitations.</p></div></section></main>
-<footer><span><code>${env.FORGE_ENVIRONMENT}</code> environment</span><span>Forge supplies the computer. Parallax supplies the review discipline.</span></footer></body></html>`);
+<body><a class="skip" href="#main">Skip to content</a>
+<div class="wrap"><header>
+<span class="mark"><span class="box">${forgeGlyph(19)}</span>Forge</span>
+<nav class="nav"><a class="btn" href="${env.FORGE_PUBLIC_ORIGIN}/login/github">Sign in</a><a class="btn primary" href="${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=%2Fapp">Request access</a></nav>
+</header></div>
+<main id="main"><div class="wrap">
+<span class="tag"><span class="dot"></span>Private pilot — access by approval</span>
+<h1>A real computer for your AI chat.</h1>
+<p class="lede">Forge gives ChatGPT and Claude a browser and a Linux workspace. Screenshot any site, build and fix real repositories, and get a pull request waiting for you to approve — from an ordinary conversation, with nothing to install.</p>
+<div class="cta">
+<a class="btn primary" href="${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=%2Fapp">Request access</a>
+<a class="btn" href="${env.FORGE_PUBLIC_ORIGIN}/login/github">I already have access</a>
+</div>
+
+<div class="cards">
+<div class="card"><span class="box">${ICON_PAGE}</span><h2>See any page</h2><p>Ask for a screenshot of a URL and get the images back in the same reply, at phone and desktop, without starting anything.</p></div>
+<div class="card"><span class="box">${ICON_CODE}</span><h2>Change real code</h2><p>Forge opens your repository in a disposable Linux workspace, runs the tests, and shows you what it did.</p></div>
+<div class="card"><span class="box">${ICON_APPROVE}</span><h2>You approve, later</h2><p>Finished work waits in your queue. Approve whenever suits you and Forge opens the pull request itself — nothing sits blocked on you.</p></div>
+</div>
+
+<section class="steps"><h2>How it works</h2><ol>
+<li><b>Request access.</b> Sign in with GitHub and your request comes to the owner for approval.</li>
+<li><b>Connect once.</b> Paste one URL into ChatGPT or Claude. There is nothing to install and nothing to run locally.</li>
+<li><b>Just ask.</b> Screenshot a page, fix a bug, try a design. Forge picks the cheapest way to do it.</li>
+<li><b>Approve in your own time.</b> Anything that touches your repository waits for you, on the web or your phone.</li>
+</ol></section>
+</div></main>
+<div class="wrap"><footer><span>Forge — ${env.FORGE_ENVIRONMENT}</span><span>Screenshots, workspaces and pull requests for AI chat.</span></footer></div>
+</body></html>`);
 }
 
 function safeError(error: unknown, env: Env): Response {
@@ -603,6 +662,7 @@ export default {
       if (url.pathname === '/login/github/callback') return await finishGitHubLogin(request, env);
       if (url.pathname === '/logout') return await logout(request, env);
       if (url.pathname === '/app') return await appDashboard(request, env);
+      if (url.pathname === '/app/access' && request.method === 'POST') return await resolveAccessRequest(request, env);
       if (url.pathname === '/github/install') return await installGitHubApp(request, env);
       if (url.pathname === '/github/setup') return await finishGitHubInstall(request, env);
       const galleryMatch = url.pathname.match(/^\/gallery\/(ws_[0-9a-hjkmnp-tv-z]{20,32})\/(art_[0-9a-hjkmnp-tv-z]{20,32})$/u);

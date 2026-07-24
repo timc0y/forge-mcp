@@ -1,6 +1,6 @@
 import { SignJWT, jwtVerify } from 'jose';
 import type { Env } from './env';
-import { getWebSession, type UserRow } from './github';
+import { getWebSession, hasForgeAccess, type UserRow } from './github';
 
 const ACCESS_TOKEN_SECONDS = 60 * 60;
 const REFRESH_TOKEN_SECONDS = 60 * 60 * 24 * 30;
@@ -326,6 +326,12 @@ export async function authorize(request: Request, env: Env): Promise<Response> {
   const ownerAuthorized = Boolean(ownerToken && body && constantTimeEqual(body.get('token') ?? '', ownerToken));
   if (githubEnabled && !user && !ownerAuthorized) {
     return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
+  }
+  // The gate that actually matters: without this an account awaiting approval
+  // could still authorize an MCP client and use Forge in full, making the
+  // approval decorative. The owner token path is unaffected.
+  if (user && !ownerAuthorized && !hasForgeAccess(user)) {
+    return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/app`, 302);
   }
   if (!githubEnabled && !ownerToken) return json({ error: 'server_auth_not_configured' }, 503);
   if (request.method === 'GET') return authorizeForm(url, user ?? undefined);

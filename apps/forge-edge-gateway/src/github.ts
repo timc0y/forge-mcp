@@ -30,6 +30,8 @@ export interface UserRow {
   id: string;
   github_user_id: string;
   github_login: string;
+  access_state?: string;
+  is_owner?: number;
   avatar_url: string | null;
   tenant_id: string;
   project_id: string;
@@ -202,7 +204,7 @@ export async function getWebSession(request: Request, env: Env): Promise<UserRow
   const token = cookie(request, 'forge_session');
   if (!token) return null;
   return env.METADATA.prepare(
-    `SELECT u.id, u.github_user_id, u.github_login, u.avatar_url, u.tenant_id, u.project_id
+    `SELECT u.id, u.github_user_id, u.github_login, u.avatar_url, u.tenant_id, u.project_id, u.access_state, u.is_owner
        FROM web_sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ?1 AND s.expires_at > ?2`
   ).bind(await hash(token), new Date().toISOString()).first<UserRow>();
@@ -270,16 +272,31 @@ export async function finishGitHubLogin(request: Request, env: Env): Promise<Res
   const previous = await env.METADATA.prepare('SELECT github_login FROM users WHERE github_user_id=?1')
     .bind(String(user.id)).first<{ github_login: string }>();
   const renamed = Boolean(previous && previous.github_login !== user.login);
+  // Bootstrapping: with no accounts yet, whoever signs in first is the owner.
+  // Checked before the insert below, and only used when creating a new row.
+  const existingAccounts = await env.METADATA.prepare('SELECT COUNT(*) AS total FROM users')
+    .first<{ total: number }>().catch(() => ({ total: 1 }));
+  const isFirstAccount = (existingAccounts?.total ?? 1) === 0;
   await env.METADATA.batch([
     env.METADATA.prepare('INSERT OR IGNORE INTO tenants (id, name, status, created_at) VALUES (?1, ?2, ?3, ?4)')
       .bind(tenantId, `${user.login} Forge`, 'active', now),
     env.METADATA.prepare('INSERT OR IGNORE INTO projects (id, tenant_id, name, created_at) VALUES (?1, ?2, ?3, ?4)')
       .bind(projectId, tenantId, 'GitHub repositories', now),
     env.METADATA.prepare(
-      `INSERT INTO users (id, github_user_id, github_login, avatar_url, tenant_id, project_id, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+      `INSERT INTO users (id, github_user_id, github_login, avatar_url, tenant_id, project_id, created_at, updated_at,
+                          access_state, is_owner, access_requested_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?7)
        ON CONFLICT(github_user_id) DO UPDATE SET github_login=excluded.github_login, avatar_url=excluded.avatar_url, updated_at=excluded.updated_at`
-    ).bind(userId, String(user.id), user.login, user.avatar_url ?? null, tenantId, projectId, now)
+    ).bind(
+      userId, String(user.id), user.login, user.avatar_url ?? null, tenantId, projectId, now,
+      // The very first account to sign in is the owner and is approved outright;
+      // there is nobody else who could have approved it. Everyone after that
+      // lands pending and waits for the owner. Only ever applied on insert — the
+      // upsert above deliberately does not touch access_state, so signing in
+      // again can neither grant nor revoke access.
+      isFirstAccount ? 'approved' : 'pending',
+      isFirstAccount ? 1 : 0
+    )
   ]);
   // Repair the stale owner logins a rename left behind, before the dashboard is
   // rendered from them. Never allowed to break the login itself.
@@ -454,10 +471,92 @@ export async function listAuthorizedRepositories(env: Env, tenantId: string): Pr
   return result.results;
 }
 
+
+
+/**
+ * The Forge mark: an anvil, drawn as one geometric silhouette.
+ *
+ * Deliberately monochrome and inherits currentColor, so it reads as a single
+ * calm shape on light or dark and never competes with the page. An original
+ * mark rather than a borrowed one — the restrained, neutral look is the part
+ * worth taking from apps that do this well; somebody else's logo is not.
+ */
+export function forgeGlyph(size = 24): string {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">`
+    + '<path d="M4 7.6H18l3.8 2a.5.5 0 0 1 0 .9L18 12.4h-3.7v3.2h3.2a1.15 1.15 0 0 1 1.15 1.15V18.6H5.35v-1.85A1.15 1.15 0 0 1 6.5 15.6h3.2v-3.2H6.3A2.3 2.3 0 0 1 4 10.1V7.6Z" fill="currentColor"/>'
+    + '</svg>';
+}
+
+
+/**
+ * Approve or decline someone waiting for access. Owner-only, and deliberately
+ * cannot touch another owner's row — the gate is worth nothing if the people it
+ * holds back can operate it.
+ */
+export async function resolveAccessRequest(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const user = await getWebSession(request, env);
+  if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github`, 302);
+  if (user.is_owner !== 1) return new Response('Only the owner can decide access.', { status: 403 });
+  assertSameOrigin(request, env);
+  const body = new URLSearchParams(await request.text());
+  const target = body.get('user_id') ?? '';
+  const decision = body.get('decision');
+  if (!target || (decision !== 'approved' && decision !== 'denied')) {
+    return new Response('Invalid decision', { status: 400 });
+  }
+  await env.METADATA.prepare(
+    `UPDATE users SET access_state=?1, access_resolved_at=?2, access_resolved_by=?3
+      WHERE id=?4 AND is_owner=0`
+  ).bind(decision, new Date().toISOString(), `github:${user.github_user_id}`, target).run();
+  return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/app`, 303);
+}
+
+/** True when this account may actually use Forge. Owners always may. */
+export function hasForgeAccess(user: Pick<UserRow, 'access_state' | 'is_owner'> | null | undefined): boolean {
+  if (!user) return false;
+  return user.is_owner === 1 || (user.access_state ?? 'approved') === 'approved';
+}
+
+/** The page a signed-in account without access sees instead of the portal. */
+export function accessPendingPage(env: Env, user: UserRow, state: string): Response {
+  const declined = state === 'denied';
+  return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forge — ${declined ? 'access declined' : 'access requested'}</title>
+<style>:root{color-scheme:light dark;--bg:#f7f7f8;--surface:#fff;--ink:#0d0d0d;--muted:#6e6e80;--line:#e5e5e5;--accent:#0d0d0d}
+@media(prefers-color-scheme:dark){:root{--bg:#0d0d0d;--surface:#171717;--ink:#ececf1;--muted:#9a9aa6;--line:#2a2a2a;--accent:#ececf1}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:2rem;background:var(--bg);color:var(--ink);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+main{width:min(100%,30rem);text-align:center}
+.glyph{width:44px;height:44px;margin:0 auto 1.5rem;border-radius:12px;border:1px solid var(--line);background:var(--surface);display:grid;place-items:center}
+h1{margin:0 0 .6rem;font-size:1.6rem;letter-spacing:-.02em}
+p{margin:0 0 1rem;color:var(--muted);text-wrap:pretty}
+a{display:inline-block;margin-top:.5rem;color:var(--muted);font-size:.9rem}</style>
+<main><div class="glyph">${forgeGlyph(22)}</div>
+<h1>${declined ? 'Access declined' : 'Request received'}</h1>
+<p>${declined
+  ? 'Your request to use Forge was not approved. If you think that is a mistake, contact whoever runs this instance.'
+  : `Thanks ${escapeHtml(user.github_login)} — your request is with the owner. You will be able to sign in here once it is approved.`}</p>
+<a href="/logout">Sign out</a></main>`, {
+    status: 403,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }
+  });
+}
+
 export async function appDashboard(request: Request, env: Env): Promise<Response> {
   const user = await getWebSession(request, env);
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent('/app')}`, 302);
+  // Signing in is not the same as being allowed in.
+  if (!hasForgeAccess(user)) return accessPendingPage(env, user, user.access_state ?? 'pending');
   const caps = workspaceCaps(env);
+  const pendingAccess = user.is_owner === 1
+    ? await env.METADATA.prepare(
+        `SELECT id, github_login, avatar_url, access_requested_at FROM users
+          WHERE access_state='pending' ORDER BY access_requested_at ASC LIMIT 25`
+      ).all<{ id: string; github_login: string; avatar_url: string | null; access_requested_at: string | null }>()
+        .then((result) => result.results ?? []).catch(() => [])
+    : [];
   const [repositories, occupants, awaitingReview] = await Promise.all([
     listAuthorizedRepositories(env, user.tenant_id),
     listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), user.tenant_id).catch(() => []),
@@ -495,11 +594,16 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
   const reviewSection = awaitingReview.length
     ? `<section class="section queue"><h2>Waiting for your review <span class="badge">${awaitingReview.length}</span></h2><p>Agents finished this work and staged it. Nothing is blocked — approve whenever suits you, and Forge will push the branch and open the draft pull request.</p><ul>${awaitingReview.map(reviewRow).join('')}</ul></section>`
     : '';
+  const accessSection = pendingAccess.length
+    ? `<section class="section queue"><h2>Access requests <span class="badge">${pendingAccess.length}</span></h2><p>These people signed in and are waiting for you. Until you approve them they cannot use Forge at all.</p><ul>${
+        pendingAccess.map((row) => `<li><span><strong>${escapeHtml(row.github_login)}</strong><small>asked ${escapeHtml(row.access_requested_at ? new Date(row.access_requested_at).toISOString().slice(0, 10) : 'recently')}</small></span><form method="post" action="${env.FORGE_PUBLIC_ORIGIN}/app/access"><input type="hidden" name="user_id" value="${escapeHtml(row.id)}"><button class="button" name="decision" value="approved">Approve</button><button class="button ghost" name="decision" value="denied">Decline</button></form></li>`).join('')
+      }</ul></section>`
+    : '';
   const mcpUrl = `${env.FORGE_PUBLIC_ORIGIN}/mcp`;
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge Cloud</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--soft:#f0f0f3;--accent:#5b4cf0;--grad:#a78bfa;--accent-soft:#efedfe}*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(100% - 3rem,960px);margin:0 auto;padding:42px 0 72px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:28px;border-bottom:1px solid var(--line)}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:14px}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:19px;font-weight:750;letter-spacing:-.02em}h1{display:flex;align-items:center;gap:12px;font-size:32px;line-height:1;letter-spacing:-.035em;margin:0 0 12px}h1 .glyph{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:19px;box-shadow:0 3px 12px -3px var(--accent)}h2{font-size:18px;line-height:1.25;margin:0 0 10px}p{margin:0;color:var(--muted);max-width:68ch;text-wrap:pretty}.toplinks{display:flex;gap:14px;align-items:center;white-space:nowrap}a{color:inherit;text-underline-offset:3px}.button{display:inline-flex;min-height:44px;align-items:center;background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;padding:9px 14px;border-radius:9px;text-decoration:none;font-weight:700;transition:filter 180ms ease-out}.button:hover{filter:brightness(1.08)}a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(250px,.8fr);gap:clamp(30px,5vw,54px);padding-top:34px}.layout>*{min-width:0}.section{margin-bottom:34px}.prompt{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:10px;color:var(--ink);font:14px/1.55 ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}.prompt+.prompt{margin-top:8px}.meter{display:flex;align-items:center;gap:10px;margin-top:12px}.slots{display:flex;gap:5px}.slot{width:32px;height:8px;border-radius:4px;background:var(--soft)}.slot.used{background:var(--accent)}code{display:block;max-width:100%;background:var(--soft);border-radius:6px;padding:11px;overflow:auto;margin:10px 0;color:var(--ink);overflow-wrap:anywhere}ul{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--line)}li{padding:11px 0;border-bottom:1px solid var(--line)}li span{display:flex;justify-content:space-between;gap:12px}small{color:var(--muted)}.note{font-size:13px;margin-top:10px}.queue{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:18px 20px}.queue ul{border-top-color:var(--line)}.queue li span{flex:1 1 auto}.queue li{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.queue .button{min-height:44px;padding:9px 16px;flex:0 0 auto}.badge{display:inline-grid;place-items:center;min-width:24px;height:24px;padding:0 7px;border-radius:12px;background:var(--accent);color:#fff;font-size:13px;font-weight:700;vertical-align:middle}.bad{color:#d64545}details{margin-top:10px}summary{min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--muted);font-size:13px}summary:hover{color:var(--ink)}@media(max-width:720px){main{width:min(100% - 2.5rem,960px);padding:28px 0 56px}.layout{grid-template-columns:1fr;gap:8px}header{align-items:flex-start;flex-direction:column}.toplinks{width:100%;justify-content:space-between}li span{display:block}small{display:block}.button{justify-content:center;width:100%}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style>
+<title>Forge Cloud</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--soft:#f0f0f3;--accent:#5b4cf0;--grad:#a78bfa;--accent-soft:#efedfe}*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(100% - 3rem,960px);margin:0 auto;padding:42px 0 72px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:28px;border-bottom:1px solid var(--line)}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:14px}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:19px;font-weight:750;letter-spacing:-.02em}h1{display:flex;align-items:center;gap:12px;font-size:32px;line-height:1;letter-spacing:-.035em;margin:0 0 12px}h1 .glyph{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:19px;box-shadow:0 3px 12px -3px var(--accent)}h2{font-size:18px;line-height:1.25;margin:0 0 10px}p{margin:0;color:var(--muted);max-width:68ch;text-wrap:pretty}.toplinks{display:flex;gap:14px;align-items:center;white-space:nowrap}a{color:inherit;text-underline-offset:3px}.button{display:inline-flex;min-height:44px;align-items:center;background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;padding:9px 14px;border-radius:9px;text-decoration:none;font-weight:700;transition:filter 180ms ease-out}.button:hover{filter:brightness(1.08)}a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(250px,.8fr);gap:clamp(30px,5vw,54px);padding-top:34px}.layout>*{min-width:0}.section{margin-bottom:34px}.prompt{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:10px;color:var(--ink);font:14px/1.55 ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}.prompt+.prompt{margin-top:8px}.meter{display:flex;align-items:center;gap:10px;margin-top:12px}.slots{display:flex;gap:5px}.slot{width:32px;height:8px;border-radius:4px;background:var(--soft)}.slot.used{background:var(--accent)}code{display:block;max-width:100%;background:var(--soft);border-radius:6px;padding:11px;overflow:auto;margin:10px 0;color:var(--ink);overflow-wrap:anywhere}ul{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--line)}li{padding:11px 0;border-bottom:1px solid var(--line)}li span{display:flex;justify-content:space-between;gap:12px}small{color:var(--muted)}.note{font-size:13px;margin-top:10px}.queue{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:18px 20px}.queue ul{border-top-color:var(--line)}.queue li span{flex:1 1 auto}.queue li{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.queue .button{min-height:44px;padding:9px 16px;flex:0 0 auto}.queue form{display:flex;gap:.5rem;margin:0;flex:0 0 auto}.queue .button.ghost{background:var(--surface);color:var(--ink);border:1px solid var(--line)}.queue .button.ghost:hover{border-color:var(--accent)}.badge{display:inline-grid;place-items:center;min-width:24px;height:24px;padding:0 7px;border-radius:12px;background:var(--accent);color:#fff;font-size:13px;font-weight:700;vertical-align:middle}.bad{color:#d64545}details{margin-top:10px}summary{min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--muted);font-size:13px}summary:hover{color:var(--ink)}@media(max-width:720px){main{width:min(100% - 2.5rem,960px);padding:28px 0 56px}.layout{grid-template-columns:1fr;gap:8px}header{align-items:flex-start;flex-direction:column}.toplinks{width:100%;justify-content:space-between}li span{display:block}small{display:block}.button{justify-content:center;width:100%}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style>
 <main><header><div><h1><span class="glyph" aria-hidden="true">⚒</span>Forge</h1><p>A real development computer for ChatGPT, Codex and Claude. Review a site cheaply, or open a repository to build, fix, test and prepare a draft PR.</p></div><div class="toplinks"><span>${escapeHtml(user.github_login)}</span><a href="/logout">Sign out</a></div></header>
-<div class="layout"><div>${reviewSection}<section class="section"><h2>Start in your AI client</h2><p>Connect this MCP URL once, then use ordinary language. Forge chooses the smallest capable path.</p><code id="mcp">${mcpUrl}</code><a class="button" href="#" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied';return false">Copy MCP URL</a></section>
+<div class="layout"><div>${accessSection}${reviewSection}<section class="section"><h2>Start in your AI client</h2><p>Connect this MCP URL once, then use ordinary language. Forge chooses the smallest capable path.</p><code id="mcp">${mcpUrl}</code><a class="button" href="#" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied';return false">Copy MCP URL</a></section>
 <section class="section"><h2>Good first prompts</h2><div class="prompt">Review https://example.com with Parallax on phone and desktop. Inspect every screenshot.</div><div class="prompt">Open ${escapeHtml(user.github_login)}/parallax-review, run the checks, explain the architecture, and do not change anything yet.</div><div class="prompt">Build my project, fix the most important issue, verify it with screenshots, then ask before creating a draft PR.</div></section>
 <section class="section"><h2>How Forge keeps cost down</h2><p>Live URLs use Browser Run without a container. Repository inspection uses GitHub. A container starts only for install, build, edit, test or preview work, and sleeps after 90 seconds idle.</p></section></div>
 <aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots">${Array.from({ length: caps.perTenant }, (_, index) => `<i class="slot ${usedSlots > index ? 'used' : ''}"></i>`).join('')}</div><span>${usedSlots} of ${caps.perTenant} active</span></div>${occupantRows}<p class="note">Each account runs up to ${caps.perTenant} workspaces (${caps.global} across all accounts). Idle workspaces are reclaimed automatically after ${ttlMinutes} minutes; destroy one sooner to free a slot immediately.</p></section>
@@ -1210,7 +1314,7 @@ export async function githubWebhook(request: Request, env: Env): Promise<Respons
   const RESYNC_ACTIONS = new Set(['renamed', 'transferred', 'added', 'removed', 'created', 'unsuspend', 'unsuspended', 'new_permissions_accepted']);
   if (installation?.id && (RESYNC_ACTIONS.has(action) || event === 'repository')) {
     const owner = await env.METADATA.prepare(
-      `SELECT u.id, u.github_user_id, u.github_login, u.avatar_url, u.tenant_id, u.project_id
+      `SELECT u.id, u.github_user_id, u.github_login, u.avatar_url, u.tenant_id, u.project_id, u.access_state, u.is_owner
          FROM github_installations i JOIN users u ON u.tenant_id = i.tenant_id
         WHERE i.installation_id = ?1 LIMIT 1`
     ).bind(String(installation.id)).first<UserRow>().catch(() => null);
