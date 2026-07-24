@@ -38,6 +38,7 @@ import type { BrowserActionStep } from '@forge/browser-core';
 import { selectBrowserProvider } from './browser-router';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { classifyCommand, assertPublicHost } from '@forge/policy';
+import { normalizeViewports, selectInlineImages } from './review-images';
 import type { CommandClass } from '@forge/policy';
 import type { Env } from './env';
 import { registerForgeConsole } from './forge-console';
@@ -231,7 +232,6 @@ async function mapWithConcurrency<T, R>(
 // How many captured screenshots to inline into the tool response. The rest stay
 // retrievable via forge_artifact_get, keeping response size (Worker CPU + client
 // tokens) bounded on large review grids.
-const MAX_INLINE_IMAGES = 4;
 // How many screenshots to inline as data: URIs into the widget-only _meta
 // gallery. Kept small so the _meta payload (never seen by the model) stays
 // bounded on large review grids.
@@ -362,10 +362,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     {
       instructions: [
         'Forge is a remote development computer; Parallax is its review contract. Work in this order:',
-        '1. Reviewing a deployed URL? Call forge_review first — it captures screenshots without starting a container.',
+        '1. Need to see a live URL? Call forge_review — one call, no container, no polling, and the screenshots come back attached to the result. A url on its own captures it at phone and desktop; add captures for more routes. This is the right tool for any "what does this look like" question.',
         '2. Starting a coding task? Call forge_task_start before creating a workspace, then create one workspace per task and reuse its workspace_id.',
         '3. Before choosing routes or making changes, read the repository instructions and any parallax/ files.',
-        '4. Capture evidence with forge_review_capture, then call forge_artifact_get and inspect every screenshot before citing it in a finding.',
+        '4. Screenshots come back attached to forge_review and forge_review_capture — look at those images directly and never claim a finding you have not seen. Only reach for forge_artifact_get when a result says captures were omitted; if a grid is too big to return at once, prefer re-running with fewer routes or one viewport.',
         '5. Never claim a multi-step journey passed unless its interactions were actually executed and recorded.',
         '6. Inspect the diff, then finish with forge_submit_for_review — it stages the work and queues the pull request for a human to approve in their own time. Never wait for a human: say the work is submitted and where to review it. Use forge_git_push / forge_pull_request_create only when the caller explicitly wants to block on an approval right now.',
         '7. Destroy the workspace once the task or review is complete — submitted work is staged off-box and survives teardown.'
@@ -826,7 +826,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // Arbitrary-URL review always renders on Cloudflare, never the mini (SSRF guard).
         const browser = await selectBrowserProvider(env, artifacts, identity.tenantId as TenantId, false);
         const captures = input.captures as Array<{ selection?: string; path: string; state: string }>;
-        const viewports = input.viewports as Array<{ id: string; width: number; height: number }>;
+        const viewports = normalizeViewports(input.viewports);
         const evidence: Array<Record<string, unknown>> = [];
         const failures: Array<Record<string, unknown>> = [];
         const skipped: Array<Record<string, unknown>> = [];
@@ -836,9 +836,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // run with bounded concurrency (Browser Run calls are seconds long) and
         // share a soft deadline so a slow route is skipped rather than lost — the
         // per-cell provider retry is deadline-aware so it stops in step.
+        // Bounded by the caller's budget rather than a fixed 110s. A chat client
+        // abandons a slow tool call and leaves the user with nothing at all, so
+        // the default is short and we return whatever succeeded inside it;
+        // callers that can genuinely wait raise time_budget_ms.
         const startedAt = Date.now();
-        const deadlineMs = 110_000;
-        const deadlineAt = startedAt + deadlineMs;
+        const deadlineAt = startedAt + number(input.time_budget_ms);
         const cells = captures.flatMap((capture) => viewports.map((viewport) => ({ capture, viewport })));
         type CellOutcome =
           | { kind: 'evidence'; value: Record<string, unknown>; inline?: { base64: string; contentType: string } }
@@ -895,12 +898,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // MCP content, capped so the _meta payload stays bounded. This never
         // enters structuredContent (base64 stays out of what the model reads).
         const screenshots: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; dataUri: string }> = [];
+        const captured: Array<{ route: unknown; inline?: { base64: string; contentType: string } }> = [];
         for (const outcome of outcomes) {
           if (outcome.kind === 'evidence') {
             evidence.push(outcome.value);
-            if (outcome.inline && content.filter((item) => item.type === 'image').length < MAX_INLINE_IMAGES) {
-              content.push({ type: 'image', data: outcome.inline.base64, mimeType: outcome.inline.contentType });
-            }
+            captured.push({ route: outcome.value.route, inline: outcome.inline });
             if (outcome.inline && screenshots.length < MAX_GALLERY_IMAGES) {
               screenshots.push({
                 route: outcome.value.route,
@@ -915,6 +917,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           } else {
             skipped.push(outcome.value);
           }
+        }
+        // The images are the deliverable — send back as many as fit, spread across
+        // routes rather than clustered on whichever finished first.
+        const { chosen: inlineCells, omitted: omittedImages } = selectInlineImages(captured);
+        for (const cell of inlineCells) {
+          content.push({ type: 'image', data: cell.inline!.base64, mimeType: cell.inline!.contentType });
         }
         if (evidence.length === 0) {
           throw new ForgeError({
@@ -958,7 +966,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           skipped,
           structureSummary,
           limitations: ['A static screenshot only proves what it shows — it does not prove that any unexecuted interaction works.'],
-          inlineImageCount: content.filter((item) => item.type === 'image').length,
+          inlineImageCount: inlineCells.length,
+          omittedImageCount: omittedImages,
           _meta: {
             'forge/widget': {
               schemaVersion: 1,
@@ -970,17 +979,29 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               structureSummary
             }
           },
-          nextStep: complete
-            ? `Inspect the returned images (the first ${MAX_INLINE_IMAGES} cells are inlined; fetch any others with forge_artifact_get on evidence[].screenshot.artifactId), then pass the evidence to Parallax with inspected set to true.`
-            : 'Inspect the returned images, fetch any others with forge_artifact_get, then re-run forge_review for the routes listed in failures and skipped — fewer routes per call captures more reliably.'
+          // Deliberately does not send the caller off to fetch artifacts one by
+          // one. The images are already attached; a chat client that cannot
+          // reliably chain a second call would otherwise be told its screenshots
+          // are somewhere else, having just been handed them.
+          nextStep: [
+            `Inspect the ${inlineCells.length} image(s) attached to this result — they are the evidence.`,
+            omittedImages > 0
+              ? `${omittedImages} further capture(s) did not fit in this response; fetch them with forge_artifact_get on evidence[].screenshot.artifactId, or re-run with fewer routes or one viewport.`
+              : '',
+            complete ? '' : 'Some cells failed or were skipped (see failures and skipped) — re-run just those routes; fewer routes per call captures more reliably.',
+            'Then pass the evidence to Parallax with inspected set to true.'
+          ].filter(Boolean).join(' ')
         };
         const structureNote =
           structureSummary.totalFindings > 0
             ? ` Structure health flagged ${structureSummary.totalFindings} heading defect(s) across ${structureSummary.affectedCells} evidence cell(s) (see structureSummary) — resolve or explicitly accept these before passing the review.`
             : '';
+        const attachedNote = omittedImages > 0
+          ? ` ${inlineCells.length} are attached here; ${omittedImages} more are stored and can be fetched with forge_artifact_get.`
+          : ' All are attached to this message.';
         const summary = complete
-          ? `Captured ${evidence.length} screenshot(s) without starting a container. Inspect every returned image before marking its evidence inspected.${structureNote}`
-          : `Captured ${evidence.length} of ${cells.length} screenshot(s) without starting a container (${failures.length} failed, ${skipped.length} skipped). Inspect the returned images, then re-run the remaining routes in smaller batches.${structureNote}`;
+          ? `Captured ${evidence.length} screenshot(s) of ${text(input.url)} without starting a container.${attachedNote}${structureNote}`
+          : `Captured ${evidence.length} of ${cells.length} screenshot(s) of ${text(input.url)} without starting a container (${failures.length} failed, ${skipped.length} skipped).${attachedNote} Re-run the remaining routes in smaller batches.${structureNote}`;
         content.unshift({ type: 'text', text: summary });
         return forgeToolResponse(packet, content);
       },
@@ -1686,7 +1707,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);
         const browser = await selectBrowserProvider(env, artifacts, detail.workspace.tenantId);
         const captures = input.captures as Array<{ selection?: string; route: string; state: string; steps?: Array<{ kind: BrowserActionStep['kind']; selector?: string; value?: string; key?: string; text?: string; path?: string; timeout_ms?: number }> }>;
-        const viewports = input.viewports as Array<{ id: string; width: number; height: number }>;
+        const viewports = normalizeViewports(input.viewports);
         const startedAt = Date.now();
         const deadlineAt = startedAt + 110_000;
         const cells = captures.flatMap((capture) => viewports.map((viewport) => ({ capture, viewport })));

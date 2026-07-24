@@ -300,7 +300,7 @@
     },
     "forge_review": {
       "title": "Review a deployed URL",
-      "description": "Capture screenshot and accessibility evidence from a live public URL for a strict Parallax review, without starting a container — the cheapest review path. Each cell reports a structure-health signal (structureSummary and evidence[].accessibility.structure) that flags heading defects a screenshot hides — stacked, empty, duplicate or skipped-level headings — which must be resolved or explicitly accepted before the review passes.",
+      "description": "Screenshot any live public URL and get the images back in this one call — the cheapest and most reliable path, no container and nothing to poll. Pass just a url to capture it at phone and desktop; add captures to cover more routes. Always returns whatever it managed to capture rather than failing outright. Each cell reports a structure-health signal (structureSummary and evidence[].accessibility.structure) that flags heading defects a screenshot hides — stacked, empty, duplicate or skipped-level headings — which must be resolved or explicitly accepted before the review passes.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -313,45 +313,52 @@
             "description": "The public URL to review."
           },
           "captures": {
-            "minItems": 1,
-            "maxItems": 10,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema0"
-            },
-            "description": "Routes to capture."
+            "default": [
+              {
+                "path": "/",
+                "state": "entry"
+              }
+            ],
+            "description": "Routes to capture. Omit to capture the URL as given.",
+            "$ref": "#/$defs/__schema0"
           },
           "viewports": {
             "default": [
-              {
-                "id": "phone",
-                "width": 390,
-                "height": 844
-              },
-              {
-                "id": "desktop",
-                "width": 1440,
-                "height": 900
-              }
+              "phone",
+              "desktop"
             ],
-            "description": "Viewports to capture each route at.",
-            "$ref": "#/$defs/__schema3"
+            "description": "Viewports to capture each route at. Use the shorthand names 'phone', 'tablet' or 'desktop', or give explicit sizes.",
+            "$ref": "#/$defs/__schema4"
           },
           "full_page": {
             "default": false,
             "description": "Capture the full scrollable page instead of just the viewport.",
-            "$ref": "#/$defs/__schema5"
+            "$ref": "#/$defs/__schema6"
+          },
+          "time_budget_ms": {
+            "default": 45000,
+            "description": "Give up capturing after this long and return what succeeded. The default suits chat clients, which abandon a slow tool call and leave you with nothing; raise it when the caller can wait.",
+            "$ref": "#/$defs/__schema7"
           }
         },
         "required": [
           "url",
           "captures",
           "viewports",
-          "full_page"
+          "full_page",
+          "time_budget_ms"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "minItems": 1,
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema1"
+            }
+          },
+          "__schema1": {
             "type": "object",
             "properties": {
               "path": {
@@ -362,11 +369,11 @@
               "state": {
                 "default": "entry",
                 "description": "Label for the page state being captured.",
-                "$ref": "#/$defs/__schema1"
+                "$ref": "#/$defs/__schema2"
               },
               "selection": {
                 "description": "Optional label for what this evidence covers.",
-                "$ref": "#/$defs/__schema2"
+                "$ref": "#/$defs/__schema3"
               }
             },
             "required": [
@@ -375,52 +382,69 @@
             ],
             "additionalProperties": false
           },
-          "__schema1": {
+          "__schema2": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100
           },
-          "__schema2": {
+          "__schema3": {
             "type": "string",
             "minLength": 1,
             "maxLength": 200
           },
-          "__schema3": {
+          "__schema4": {
             "minItems": 1,
-            "maxItems": 2,
+            "maxItems": 3,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema4"
+              "$ref": "#/$defs/__schema5"
             }
           },
-          "__schema4": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 40
-              },
-              "width": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 1920
-              },
-              "height": {
-                "type": "integer",
-                "minimum": 320,
-                "maximum": 2160
-              }
-            },
-            "required": [
-              "id",
-              "width",
-              "height"
-            ],
-            "additionalProperties": false
-          },
           "__schema5": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "phone",
+                  "tablet",
+                  "desktop"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 240,
+                    "maximum": 1920
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 320,
+                    "maximum": 2160
+                  }
+                },
+                "required": [
+                  "id",
+                  "width",
+                  "height"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "__schema6": {
             "type": "boolean"
+          },
+          "__schema7": {
+            "type": "integer",
+            "minimum": 10000,
+            "maximum": 110000
           }
         }
       }
@@ -1757,13 +1781,12 @@
             "description": "Routes to capture."
           },
           "viewports": {
-            "minItems": 1,
-            "maxItems": 4,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema5"
-            },
-            "description": "Viewports to capture each route at."
+            "default": [
+              "phone",
+              "desktop"
+            ],
+            "description": "Viewports to capture each route at. Use the shorthand names 'phone', 'tablet' or 'desktop', or give explicit sizes.",
+            "$ref": "#/$defs/__schema5"
           }
         },
         "required": [
@@ -1871,30 +1894,50 @@
             "additionalProperties": false
           },
           "__schema5": {
-            "type": "object",
-            "properties": {
-              "id": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema6"
+            }
+          },
+          "__schema6": {
+            "anyOf": [
+              {
                 "type": "string",
-                "minLength": 1,
-                "maxLength": 40
+                "enum": [
+                  "phone",
+                  "tablet",
+                  "desktop"
+                ]
               },
-              "width": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 3840
-              },
-              "height": {
-                "type": "integer",
-                "minimum": 240,
-                "maximum": 2160
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 240,
+                    "maximum": 3840
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 240,
+                    "maximum": 2160
+                  }
+                },
+                "required": [
+                  "id",
+                  "width",
+                  "height"
+                ],
+                "additionalProperties": false
               }
-            },
-            "required": [
-              "id",
-              "width",
-              "height"
-            ],
-            "additionalProperties": false
+            ]
           }
         }
       }
