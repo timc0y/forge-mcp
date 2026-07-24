@@ -476,10 +476,8 @@
             "$ref": "#/$defs/__schema6"
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema7"
           }
         },
         "required": [
@@ -487,8 +485,7 @@
           "ref",
           "runtime",
           "persistence",
-          "bootstrap",
-          "idempotency_key"
+          "bootstrap"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -524,6 +521,12 @@
           },
           "__schema6": {
             "type": "boolean"
+          },
+          "__schema7": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         }
       }
@@ -823,23 +826,26 @@
             "$ref": "#/$defs/__schema0"
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
           "workspace_id",
           "path",
-          "content",
-          "idempotency_key"
+          "content"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
             "type": "string",
             "pattern": "^[a-f0-9]{64}$"
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         }
       }
@@ -865,18 +871,23 @@
             "description": "Unified diff to apply."
           },
           "idempotency_key": {
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "patch"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
             "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
-        },
-        "required": [
-          "workspace_id",
-          "patch",
-          "idempotency_key"
-        ],
-        "additionalProperties": false
+        }
       }
     },
     "forge_shell_exec": {
@@ -929,14 +940,12 @@
             "$ref": "#/$defs/__schema5"
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema6"
           },
           "approval_id": {
             "description": "Approval id returned by a prior blocked call.",
-            "$ref": "#/$defs/__schema6"
+            "$ref": "#/$defs/__schema7"
           }
         },
         "required": [
@@ -946,8 +955,7 @@
           "timeout_ms",
           "environment",
           "network_policy",
-          "output_limit_bytes",
-          "idempotency_key"
+          "output_limit_bytes"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -990,6 +998,12 @@
             "maximum": 9007199254740991
           },
           "__schema6": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+          },
+          "__schema7": {
             "type": "string",
             "pattern": "^apr_.*"
           }
@@ -1036,10 +1050,8 @@
             "$ref": "#/$defs/__schema3"
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema4"
           }
         },
         "required": [
@@ -1047,8 +1059,7 @@
           "command",
           "cwd",
           "environment",
-          "network_policy",
-          "idempotency_key"
+          "network_policy"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1078,6 +1089,12 @@
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
+          },
+          "__schema4": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         }
       }
@@ -1196,16 +1213,13 @@
             "$ref": "#/$defs/__schema0"
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
           "workspace_id",
-          "branch",
-          "idempotency_key"
+          "branch"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1213,6 +1227,12 @@
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         }
       }
@@ -1245,16 +1265,13 @@
             "$ref": "#/$defs/__schema3"
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema4"
           }
         },
         "required": [
           "workspace_id",
-          "paths",
-          "idempotency_key"
+          "paths"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1279,6 +1296,12 @@
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
+          },
+          "__schema4": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         }
       }
@@ -1356,7 +1379,7 @@
             "$ref": "#/$defs/__schema3"
           },
           "idempotency_key": {
-            "description": "Optional; derived from the workspace and branch when omitted.",
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
             "$ref": "#/$defs/__schema4"
           }
         },
@@ -1435,18 +1458,15 @@
             "$ref": "#/$defs/__schema2"
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema3"
           }
         },
         "required": [
           "workspace_id",
           "branch",
           "base",
-          "expected_diff_hash",
-          "idempotency_key"
+          "expected_diff_hash"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1463,6 +1483,12 @@
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
+          },
+          "__schema3": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         }
       }
@@ -1661,10 +1687,8 @@
             "$ref": "#/$defs/__schema2"
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema3"
           }
         },
         "required": [
@@ -1672,8 +1696,7 @@
           "process_id",
           "port",
           "access",
-          "ttl_seconds",
-          "idempotency_key"
+          "ttl_seconds"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1695,6 +1718,12 @@
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
+          },
+          "__schema3": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         }
       }
@@ -1939,17 +1968,14 @@
             "$ref": "#/$defs/__schema2"
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema3"
           }
         },
         "required": [
           "workspace_id",
           "preserve_artifacts",
-          "force",
-          "idempotency_key"
+          "force"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1963,6 +1989,12 @@
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
+          },
+          "__schema3": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           }
         }
       }

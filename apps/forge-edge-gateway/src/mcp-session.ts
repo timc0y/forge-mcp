@@ -333,6 +333,24 @@ function asRecord(value: object): Record<string, unknown> {
   return value as unknown as Record<string, unknown>;
 }
 
+/**
+ * Idempotency key for a mutating call, minted when the caller did not supply one.
+ *
+ * The key exists so a caller that retries after a dropped connection does not
+ * apply the same mutation twice — genuinely useful, and worth keeping. But it was
+ * *required* on every mutating tool, which made the common case (one call, no
+ * retry) pay for the rare one, and pushed models into inventing keys and then
+ * accidentally reusing them, turning a real second command into a silent replay.
+ *
+ * Omitting it now means "no retry protection for this call", which is the honest
+ * default: a fresh random key can never collide, so the call always executes. A
+ * caller that wants replay safety still passes its own stable key and gets
+ * exactly the previous behaviour.
+ */
+function idempotency(value: unknown): string {
+  return value === undefined || value === null || value === '' ? crypto.randomUUID() : String(value);
+}
+
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -970,7 +988,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const repository = input.repository as { provider: 'github'; owner: string; name: string };
         await authorizeRepository(env, identity, repository);
-        const idempotencyKey = text(input.idempotency_key);
+        const idempotencyKey = idempotency(input.idempotency_key);
         const workspaceId = await workspaceIdFromIdempotency(
           `${identity.tenantId}:${identity.projectId}`,
           idempotencyKey
@@ -1146,14 +1164,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           path: text(input.path),
           content: text(input.content),
           expectedSha256: input.expected_sha256 ? text(input.expected_sha256) : undefined,
-          idempotencyKey: text(input.idempotency_key)
+          idempotencyKey: idempotency(input.idempotency_key)
         }));
       },
       forge_files_patch: async (input) => {
         const identity = this.identity();
         return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).filesPatch({
           patch: text(input.patch),
-          idempotencyKey: text(input.idempotency_key)
+          idempotencyKey: idempotency(input.idempotency_key)
         }));
       },
       forge_shell_exec: async (input) => {
@@ -1212,7 +1230,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             networkPolicy,
             outputLimitBytes: number(input.output_limit_bytes),
             expectedRevision: optionalNumber(input.expected_revision),
-            idempotencyKey: text(input.idempotency_key),
+            idempotencyKey: idempotency(input.idempotency_key),
             approved: claimedApproval
           });
           // Re-arm rather than spend: the human approved this exact command, and
@@ -1232,7 +1250,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           environment: input.environment as Record<string, string>,
           networkPolicy: text(input.network_policy) as never,
           expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: text(input.idempotency_key)
+          idempotencyKey: idempotency(input.idempotency_key)
         }));
       },
       forge_process_logs: async (input) => {
@@ -1255,7 +1273,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_git_branch_create: async (input) => {
         const identity = this.identity();
         return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).gitBranchCreate({
-          branch: text(input.branch), expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+          branch: text(input.branch), expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
         }));
       },
       forge_git_commit: async (input) => {
@@ -1271,7 +1289,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if (diff.trim()) message = await generateCommitMessage(env, diff);
         }
         return asRecord(await coordinator.gitCommit({
-          message, paths: input.paths as string[], expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+          message, paths: input.paths as string[], expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
         }));
       },
       forge_git_outgoing_diff: async (input) => {
@@ -1298,7 +1316,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const executePush = async () => {
           const coordinator = await authorizedCoordinator(env, identity, workspaceId);
           return coordinator.gitPush({
-            branch, base, expectedDiffHash: diffHash, expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+            branch, base, expectedDiffHash: diffHash, expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
           });
         };
 
@@ -1589,7 +1607,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           access: text(input.access) as never,
           ttlSeconds: number(input.ttl_seconds),
           expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: text(input.idempotency_key)
+          idempotencyKey: idempotency(input.idempotency_key)
         });
         if ('replay' in value) return asRecord(value);
         const now = Math.floor(Date.now() / 1000);
@@ -1840,7 +1858,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_workspace_destroy: async (input) => {
         const identity = this.identity();
         const workspaceId = text(input.workspace_id) as WorkspaceId;
-        const idempotencyKey = text(input.idempotency_key);
+        const idempotencyKey = idempotency(input.idempotency_key);
         const request = await (await authorizedCoordinator(env, identity, workspaceId)).requestDestroy({
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey,
