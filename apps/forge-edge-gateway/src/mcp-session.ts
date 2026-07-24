@@ -38,7 +38,7 @@ import type { BrowserActionStep } from '@forge/browser-core';
 import { selectBrowserProvider } from './browser-router';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { classifyCommand, assertPublicHost } from '@forge/policy';
-import { normalizeViewports, selectInlineImages } from './review-images';
+import { normalizeViewports, prepareInlineImages } from './review-images';
 import { resolveWorkspaceId } from './workspace-resolve';
 import { storeGallery } from './review-gallery';
 import type { CommandClass } from '@forge/policy';
@@ -928,7 +928,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
         // The images are the deliverable — send back as many as fit, spread across
         // routes rather than clustered on whichever finished first.
-        const { chosen: inlineCells, omitted: omittedImages } = selectInlineImages(captured);
+        const { chosen: inlineCells, omitted: omittedImages } = await prepareInlineImages(env, captured);
         for (const cell of inlineCells) {
           content.push({ type: 'image', data: cell.inline!.base64, mimeType: cell.inline!.contentType });
         }
@@ -1883,7 +1883,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // shot. Attach them, and hand over a page for the rest, same as the
         // live-URL path.
         const capturedAtIso = new Date().toISOString();
-        const { chosen: inlineCells, omitted: omittedImages } = selectInlineImages(capturedCells);
+        const { chosen: inlineCells, omitted: omittedImages } = await prepareInlineImages(env, capturedCells);
         const captureContent: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [];
         for (const cell of inlineCells) {
           captureContent.push({ type: 'image', data: cell.inline!.base64, mimeType: cell.inline!.contentType });

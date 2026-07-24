@@ -49,6 +49,15 @@
   "ai": {
     "binding": "AI"
   },
+  // Used only to shrink the copies of screenshots that travel back inside a tool
+  // result; the full-resolution capture is always what gets stored. Billed per
+  // transformation, so images already small enough are never sent through it and
+  // only the handful that could actually be attached are considered — see
+  // prepareInlineImages. If this binding is removed, reviews keep working and
+  // simply attach the original bytes.
+  "images": {
+    "binding": "IMAGES"
+  },
   "d1_databases": [
     {
       "binding": "METADATA",

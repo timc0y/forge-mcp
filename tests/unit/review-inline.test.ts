@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeViewports, selectInlineImages } from '../../apps/forge-edge-gateway/src/review-images';
+import { normalizeViewports, prepareInlineImages, selectInlineImages } from '../../apps/forge-edge-gateway/src/review-images';
 
 // Screenshots are the deliverable of forge_review, and the main client for it is
 // an ordinary chat session that will not reliably chain a second tool call to go
@@ -73,5 +73,85 @@ describe('choosing which screenshots travel inline', () => {
 
   it('returns nothing to attach when nothing was captured', () => {
     expect(selectInlineImages([])).toEqual({ chosen: [], omitted: 0 });
+  });
+});
+
+describe('downscaling attached copies (Cloudflare Images)', () => {
+  const big = 'B'.repeat(600_000);
+  const small = 'S'.repeat(1000);
+  const cellOf = (route: string, base64: string) => ({ route, inline: { base64, contentType: 'image/png' } });
+
+  function imagesEnv(shrunkTo = 'T'.repeat(5000)) {
+    const calls: Array<{ width?: number }> = [];
+    const env = {
+      IMAGES: {
+        input: () => ({
+          transform: (options: { width?: number }) => {
+            calls.push(options);
+            return {
+              output: async () => ({
+                image: () => new Response(shrunkTo).body!,
+                contentType: () => 'image/jpeg'
+              })
+            };
+          }
+        })
+      }
+    };
+    return { env, calls };
+  }
+
+  it('never transforms an image that is already small enough', async () => {
+    // Transformations are billed per image, and most phone captures are already
+    // inside the target — paying to shrink them would be money for nothing.
+    const { env, calls } = imagesEnv();
+    const { chosen } = await prepareInlineImages(env, [cellOf('/', small), cellOf('/a', small)]);
+    expect(calls).toHaveLength(0);
+    expect(chosen.every((c) => c.inline.base64 === small)).toBe(true);
+  });
+
+  it('only pays for images that could actually be attached', async () => {
+    // 20 oversized captures, but at most 8 can ever be attached — the other 12
+    // must not each cost a transformation to then be discarded.
+    const { env, calls } = imagesEnv();
+    const cells = Array.from({ length: 20 }, (_, i) => cellOf(`/r${i}`, big));
+    await prepareInlineImages(env, cells);
+    expect(calls.length).toBeLessThanOrEqual(8);
+  });
+
+  it('shrinks oversized copies so more of them fit', async () => {
+    const { env, calls } = imagesEnv();
+    const cells = Array.from({ length: 8 }, (_, i) => cellOf(`/r${i}`, big));
+    // Unshrunk, the byte budget admits far fewer than eight of these.
+    const withoutImages = await prepareInlineImages(undefined, cells);
+    const withImages = await prepareInlineImages(env, cells);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(withImages.chosen.length).toBeGreaterThan(withoutImages.chosen.length);
+    expect(withImages.chosen[0]!.inline.contentType).toBe('image/jpeg');
+  });
+
+  it('keeps the original when the transform came back no smaller', async () => {
+    const { env } = imagesEnv('X'.repeat(900_000));
+    const { chosen } = await prepareInlineImages(env, [cellOf('/', big)]);
+    expect(chosen[0]!.inline.base64).toBe(big);
+  });
+
+  it('falls back to the original bytes when Images is unavailable or fails', async () => {
+    // A missing binding, and a binding that throws, must both behave exactly as
+    // before — a review that captured screenshots must never fail over this.
+    const broken = { IMAGES: { input: () => { throw new Error('quota exceeded'); } } };
+    for (const env of [undefined, {}, broken]) {
+      const { chosen, omitted } = await prepareInlineImages(env, [cellOf('/', small)]);
+      expect(chosen).toHaveLength(1);
+      expect(chosen[0]!.inline.base64).toBe(small);
+      expect(omitted).toBe(0);
+    }
+  });
+
+  it('still accounts for every captured image', async () => {
+    const { env } = imagesEnv();
+    const cells = Array.from({ length: 30 }, (_, i) => cellOf(`/r${i}`, big));
+    const { chosen, omitted } = await prepareInlineImages(env, cells);
+    expect(chosen.length + omitted).toBe(cells.length);
   });
 });
