@@ -263,6 +263,12 @@ export async function finishGitHubLogin(request: Request, env: Env): Promise<Res
   const tenantId = await id('ten', `github:${user.id}`);
   const projectId = await id('prj', `github:${user.id}:default`);
   const now = new Date().toISOString();
+  // Identity is keyed on GitHub's immutable numeric user id, so a rename keeps
+  // the same tenant, project and user row. What it does invalidate is every
+  // stored repository owner — detect it here so we can repair those below.
+  const previous = await env.METADATA.prepare('SELECT github_login FROM users WHERE github_user_id=?1')
+    .bind(String(user.id)).first<{ github_login: string }>();
+  const renamed = Boolean(previous && previous.github_login !== user.login);
   await env.METADATA.batch([
     env.METADATA.prepare('INSERT OR IGNORE INTO tenants (id, name, status, created_at) VALUES (?1, ?2, ?3, ?4)')
       .bind(tenantId, `${user.login} Forge`, 'active', now),
@@ -274,6 +280,18 @@ export async function finishGitHubLogin(request: Request, env: Env): Promise<Res
        ON CONFLICT(github_user_id) DO UPDATE SET github_login=excluded.github_login, avatar_url=excluded.avatar_url, updated_at=excluded.updated_at`
     ).bind(userId, String(user.id), user.login, user.avatar_url ?? null, tenantId, projectId, now)
   ]);
+  // Repair the stale owner logins a rename left behind, before the dashboard is
+  // rendered from them. Never allowed to break the login itself.
+  if (renamed) {
+    await resyncTenantInstallations(env, {
+      id: userId,
+      github_user_id: String(user.id),
+      github_login: user.login,
+      avatar_url: user.avatar_url ?? null,
+      tenant_id: tenantId,
+      project_id: projectId
+    } as UserRow);
+  }
   const session = randomToken('session');
   await env.METADATA.prepare('INSERT INTO web_sessions (token_hash, user_id, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)')
     .bind(await hash(session), userId, new Date(Date.now() + SESSION_SECONDS * 1000).toISOString(), now).run();
@@ -295,6 +313,70 @@ export async function installGitHubApp(request: Request, env: Env): Promise<Resp
   const installUrl = new URL(`https://github.com/apps/${encodeURIComponent(required(env.GITHUB_APP_SLUG, 'GITHUB_APP_SLUG'))}/installations/new`);
   installUrl.searchParams.set('state', state);
   return Response.redirect(installUrl.toString(), 302);
+}
+
+/**
+ * A slug freed by a rename can immediately be taken by a different repository.
+ * Clear any row squatting on this (owner, name) that is not this repository, so
+ * the legacy UNIQUE(provider, owner, name, tenant_id) cannot reject the upsert
+ * below. GitHub is the source of truth for what exists.
+ *
+ * Exported so the rename regression test drives the real statement.
+ */
+export const REPOSITORY_SLUG_CLEAR_SQL =
+  `DELETE FROM repositories
+    WHERE tenant_id=?1 AND provider='github' AND owner=?2 AND name=?3 AND id<>?4`;
+
+/**
+ * Upsert one authorized repository, keyed on the stable row id.
+ *
+ * The row id derives from the tenant plus GitHub's immutable numeric repository
+ * id, so it survives renames; owner and name are both mutable and are what a
+ * rename moves. Conflicting on (provider, owner, name, tenant_id) instead meant
+ * that after a rename the upsert matched nothing on that target and then hit the
+ * primary key with no handler, failing with "UNIQUE constraint failed:
+ * repositories.id" — and because the sync runs as one atomic batch, that took
+ * down the entire installation sync and left every stored owner stale.
+ *
+ * Exported so the rename regression test drives the real statement.
+ */
+export const REPOSITORY_UPSERT_SQL =
+  `INSERT INTO repositories
+    (id, tenant_id, project_id, provider, owner, name, installation_id, authorization_state, last_verified_at,
+     github_repository_id, visibility, default_branch)
+   VALUES (?1, ?2, ?3, 'github', ?4, ?5, ?6, 'authorized', ?7, ?8, ?9, ?10)
+   ON CONFLICT(id) DO UPDATE SET owner=excluded.owner, name=excluded.name,
+     installation_id=excluded.installation_id,
+     authorization_state='authorized', last_verified_at=excluded.last_verified_at,
+     github_repository_id=excluded.github_repository_id, visibility=excluded.visibility, default_branch=excluded.default_branch`;
+
+/**
+ * Re-sync every active installation for a tenant.
+ *
+ * Renaming a GitHub account changes the owner login on every repository, and
+ * nothing else in Forge re-reads that: the only sync trigger is the GitHub App
+ * install callback, so stale owners would otherwise persist until the user
+ * happened to reinstall. Called when a rename is detected at sign-in and from the
+ * rename-ish webhooks, so the portal repairs itself.
+ *
+ * Best-effort by contract: this must never be the reason a login fails.
+ */
+export async function resyncTenantInstallations(env: Env, user: UserRow): Promise<void> {
+  try {
+    const rows = await env.METADATA.prepare(
+      "SELECT installation_id FROM github_installations WHERE tenant_id=?1 AND status='active'"
+    ).bind(user.tenant_id).all<{ installation_id: string }>();
+    for (const row of rows.results ?? []) {
+      await syncInstallation(env, user, row.installation_id).catch((error) => {
+        console.error('forge_resync_installation_failed', {
+          installationId: row.installation_id,
+          name: error instanceof Error ? error.name : 'unknown'
+        });
+      });
+    }
+  } catch (error) {
+    console.error('forge_resync_tenant_failed', { name: error instanceof Error ? error.name : 'unknown' });
+  }
 }
 
 async function syncInstallation(env: Env, user: UserRow, installationId: string): Promise<number> {
@@ -325,16 +407,13 @@ async function syncInstallation(env: Env, user: UserRow, installationId: string)
     ).bind(String(installation.id), user.tenant_id, installation.account.login, JSON.stringify(installation.permissions), now, String(installation.account.id), installation.account.type)
   ];
   for (const repository of repositories.repositories) {
-    statements.push(env.METADATA.prepare(
-      `INSERT INTO repositories
-        (id, tenant_id, project_id, provider, owner, name, installation_id, authorization_state, last_verified_at,
-         github_repository_id, visibility, default_branch)
-       VALUES (?1, ?2, ?3, 'github', ?4, ?5, ?6, 'authorized', ?7, ?8, ?9, ?10)
-       ON CONFLICT(provider, owner, name, tenant_id) DO UPDATE SET installation_id=excluded.installation_id,
-         authorization_state='authorized', last_verified_at=excluded.last_verified_at,
-         github_repository_id=excluded.github_repository_id, visibility=excluded.visibility, default_branch=excluded.default_branch`
-    ).bind(
-      await id('repo', `${user.tenant_id}:${repository.id}`), user.tenant_id, user.project_id,
+    // Stable across renames: derived from the tenant plus GitHub's immutable
+    // numeric repository id. See REPOSITORY_UPSERT_SQL.
+    const rowId = await id('repo', `${user.tenant_id}:${repository.id}`);
+    statements.push(env.METADATA.prepare(REPOSITORY_SLUG_CLEAR_SQL)
+      .bind(user.tenant_id, repository.owner.login, repository.name, rowId));
+    statements.push(env.METADATA.prepare(REPOSITORY_UPSERT_SQL).bind(
+      rowId, user.tenant_id, user.project_id,
       repository.owner.login, repository.name, String(installation.id), now, String(repository.id),
       repository.private ? 'private' : 'public', repository.default_branch
     ));
@@ -1096,8 +1175,8 @@ export async function githubWebhook(request: Request, env: Env): Promise<Respons
   const event = request.headers.get('x-github-event') ?? '';
   const payload = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
   const installation = payload.installation as { id?: number } | undefined;
+  const action = String(payload.action ?? '');
   if (installation?.id && (event === 'installation' || event === 'installation_repositories')) {
-    const action = String(payload.action ?? '');
     if (['deleted', 'suspend', 'suspended'].includes(action)) {
       await env.METADATA.batch([
         env.METADATA.prepare("UPDATE github_installations SET status='revoked', last_verified_at=?1 WHERE installation_id=?2")
@@ -1105,6 +1184,28 @@ export async function githubWebhook(request: Request, env: Env): Promise<Respons
         env.METADATA.prepare("UPDATE repositories SET authorization_state='revoked', last_verified_at=?1 WHERE installation_id=?2")
           .bind(new Date().toISOString(), String(installation.id))
       ]);
+      return new Response(null, { status: 204 });
+    }
+  }
+  // Anything that can move a repository's owner or name invalidates the stored
+  // slug, which is what the rest of Forge looks repositories up by. Re-sync from
+  // GitHub rather than trying to patch the row from the payload, so one code
+  // path owns what "authorized repositories" means.
+  const RESYNC_ACTIONS = new Set(['renamed', 'transferred', 'added', 'removed', 'created', 'unsuspend', 'unsuspended', 'new_permissions_accepted']);
+  if (installation?.id && (RESYNC_ACTIONS.has(action) || event === 'repository')) {
+    const owner = await env.METADATA.prepare(
+      `SELECT u.id, u.github_user_id, u.github_login, u.avatar_url, u.tenant_id, u.project_id
+         FROM github_installations i JOIN users u ON u.tenant_id = i.tenant_id
+        WHERE i.installation_id = ?1 LIMIT 1`
+    ).bind(String(installation.id)).first<UserRow>().catch(() => null);
+    if (owner) {
+      await syncInstallation(env, owner, String(installation.id)).catch((error) => {
+        console.error('forge_webhook_resync_failed', {
+          event,
+          action,
+          name: error instanceof Error ? error.name : 'unknown'
+        });
+      });
     }
   }
   return new Response(null, { status: 204 });

@@ -14,6 +14,10 @@ type Row = Record<string, unknown>;
 // Minimal in-memory D1 understanding only the statements deferred-actions.ts
 // issues. Matching on SQL fragments keeps it honest: a query this fake does not
 // recognise throws rather than silently returning nothing.
+// Current state of the repositories table, so a test can rename an owner
+// underneath a queued submission.
+const repositories: Array<{ tenant_id: string; github_repository_id: string; owner: string; name: string }> = [];
+
 function fakeD1(rows: Row[]) {
   return {
     prepare(sql: string) {
@@ -24,6 +28,11 @@ function fakeD1(rows: Row[]) {
           return statement;
         },
         async first<T>(): Promise<T | null> {
+          if (sql.includes('FROM repositories')) {
+            return (repositories.find(
+              (repo) => repo.tenant_id === values[0] && repo.github_repository_id === values[1]
+            ) as T) ?? null;
+          }
           if (sql.includes('WHERE approval_id=?1 AND tenant_id=?2')) {
             return (rows.find((row) => row.approval_id === values[0] && row.tenant_id === values[1]) as T) ?? null;
           }
@@ -50,11 +59,12 @@ function fakeD1(rows: Row[]) {
           if (sql.startsWith('INSERT INTO deferred_actions')) {
             const [id, tenant_id, project_id, workspace_id, approval_id, task_id, action,
               repo_owner, repo_name, branch, base, staged_ref, commit_sha, title, body,
-              summary, files_changed, now] = values;
+              summary, files_changed, now, github_repository_id] = values;
             rows.push({
               id, tenant_id, project_id, workspace_id, approval_id, task_id, action,
               repo_owner, repo_name, branch, base, staged_ref, commit_sha, title, body,
-              summary, files_changed, state: 'awaiting_approval', result: null, error: null,
+              summary, files_changed, github_repository_id,
+              state: 'awaiting_approval', result: null, error: null,
               created_at: now, updated_at: now
             });
             return { meta: { changes: 1 } };
@@ -85,6 +95,8 @@ function fakeD1(rows: Row[]) {
 }
 
 function envWith(rows: Row[]): Env {
+  repositories.length = 0;
+  repositories.push({ tenant_id: 'ten_a', github_repository_id: '4242', owner: 'acme', name: 'app' });
   return { METADATA: fakeD1(rows) } as unknown as Env;
 }
 
@@ -96,6 +108,7 @@ const submission = {
   taskId: null,
   action: 'work.submit' as const,
   repository: { provider: 'github' as const, owner: 'acme', name: 'app' },
+  githubRepositoryId: '4242',
   branch: 'forge/fix-login',
   base: 'main',
   stagedRef: 'forge/staged/ws_a/fix-login',
@@ -187,6 +200,45 @@ describe('deferred actions (async approval)', () => {
     expect(stored?.stagedRef).toBe(submission.stagedRef);
     const retry = await executeDeferredAction(env, stored!, executors());
     expect(retry.state).toBe('completed');
+  });
+
+  it('follows a GitHub rename that happened while it sat in the queue', async () => {
+    const rows: Row[] = [];
+    const env = envWith(rows);
+    await createDeferredAction(env, submission);
+    // The whole point of async approval is that this can be days later — and an
+    // owner login is mutable, so the slug captured at submit time can go stale.
+    repositories[0]!.owner = 'acme-renamed';
+
+    // Reload from storage, the way the approval page does, so the pinned id has
+    // to survive the round-trip rather than being carried in memory.
+    const reloaded = await getDeferredActionByApproval(env, 'ten_a', 'apr_a');
+    expect(reloaded?.githubRepositoryId).toBe('4242');
+    const deps = executors();
+    const result = await executeDeferredAction(env, reloaded!, deps);
+    expect(result.state).toBe('completed');
+    // Both GitHub calls must target the repository as it is NOW, not as it was.
+    expect(deps.promoteStagedRef).toHaveBeenCalledWith(
+      env, expect.anything(),
+      { provider: 'github', owner: 'acme-renamed', name: 'app' },
+      expect.anything()
+    );
+    expect(deps.createDraftPullRequest).toHaveBeenCalledWith(
+      env, expect.anything(),
+      { provider: 'github', owner: 'acme-renamed', name: 'app' },
+      expect.anything()
+    );
+  });
+
+  it('falls back to the stored slug when the immutable id is unknown', async () => {
+    const rows: Row[] = [];
+    const env = envWith(rows);
+    const action = await createDeferredAction(env, { ...submission, githubRepositoryId: null });
+    const deps = executors();
+    expect((await executeDeferredAction(env, action, deps)).state).toBe('completed');
+    expect(deps.promoteStagedRef).toHaveBeenCalledWith(
+      env, expect.anything(), submission.repository, expect.anything()
+    );
   });
 
   it('declining pushes nothing', async () => {

@@ -1510,6 +1510,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           taskId: taskIdInput,
           action: 'work.submit',
           repository: { provider: 'github', owner: state.repository.owner, name: state.repository.name },
+          // Pin the immutable id too: this submission may not be approved for
+          // days, and a GitHub rename in the meantime would leave the slug alone
+          // pointing at nothing.
+          githubRepositoryId: await env.METADATA.prepare(
+            "SELECT github_repository_id AS id FROM repositories WHERE tenant_id=?1 AND provider='github' AND owner=?2 AND name=?3 LIMIT 1"
+          ).bind(identity.tenantId, state.repository.owner, state.repository.name)
+            .first<{ id: string | null }>().then((row) => row?.id ?? null).catch(() => null),
           branch,
           base,
           stagedRef: staged.ref,

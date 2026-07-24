@@ -38,6 +38,8 @@ export interface DeferredAction {
   taskId: string | null;
   action: 'work.submit';
   repository: RepositoryRef;
+  /** GitHub's immutable numeric repository id, when known. */
+  githubRepositoryId: string | null;
   branch: string;
   base: string;
   stagedRef: string;
@@ -63,6 +65,7 @@ interface Row {
   action: string;
   repo_owner: string;
   repo_name: string;
+  github_repository_id: string | null;
   branch: string;
   base: string;
   staged_ref: string;
@@ -96,6 +99,7 @@ function hydrate(row: Row): DeferredAction {
     taskId: row.task_id,
     action: row.action as DeferredAction['action'],
     repository: { provider: 'github', owner: row.repo_owner, name: row.repo_name },
+    githubRepositoryId: row.github_repository_id ?? null,
     branch: row.branch,
     base: row.base,
     stagedRef: row.staged_ref,
@@ -122,13 +126,13 @@ export async function createDeferredAction(
     `INSERT INTO deferred_actions
       (id, tenant_id, project_id, workspace_id, approval_id, task_id, action,
        repo_owner, repo_name, branch, base, staged_ref, commit_sha, title, body,
-       summary, files_changed, state, created_at, updated_at)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,'awaiting_approval',?18,?18)`
+       summary, files_changed, github_repository_id, state, created_at, updated_at)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?19,'awaiting_approval',?18,?18)`
   ).bind(
     id, input.tenantId, input.projectId, input.workspaceId, input.approvalId,
     input.taskId, input.action, input.repository.owner, input.repository.name,
     input.branch, input.base, input.stagedRef, input.commitSha, input.title,
-    input.body, input.summary, input.filesChanged, now
+    input.body, input.summary, input.filesChanged, now, input.githubRepositoryId ?? null
   ).run();
   return {
     ...input,
@@ -194,6 +198,21 @@ async function setState(
   ).run();
 }
 
+/**
+ * The repository's slug as it stands now, not as it stood when the agent
+ * submitted. Looked up by GitHub's immutable numeric id; returns the stored
+ * owner/name unchanged when that id is unknown or no longer authorized.
+ */
+async function currentRepositorySlug(env: Env, action: DeferredAction): Promise<RepositoryRef> {
+  if (!action.githubRepositoryId) return action.repository;
+  const row = await env.METADATA.prepare(
+    `SELECT owner, name FROM repositories
+      WHERE tenant_id=?1 AND provider='github' AND github_repository_id=?2 AND authorization_state='authorized'
+      LIMIT 1`
+  ).bind(action.tenantId, action.githubRepositoryId).first<{ owner: string; name: string }>().catch(() => null);
+  return row ? { provider: 'github', owner: row.owner, name: row.name } : action.repository;
+}
+
 export async function denyDeferredAction(env: Env, id: string): Promise<void> {
   await setState(env, id, 'denied', { error: 'Declined by the reviewer.' });
 }
@@ -245,19 +264,25 @@ export async function executeDeferredAction(
   }
 
   try {
+    // A submission can sit in the queue for days, and an owner login is mutable —
+    // renaming a GitHub account rewrites it on every repository. Re-resolve the
+    // slug from the immutable numeric id so an approval that outlives a rename
+    // still targets the right repository. Falls back to what was stored when the
+    // id is unknown (rows written before it was recorded).
+    const repository = await currentRepositorySlug(env, action);
     // 1. Promote the staged commit onto the branch the human approved. Creates the
     //    branch if it does not exist, fast-forwards it if it does.
     await executors.promoteStagedRef(
       env,
       { tenantId: action.tenantId, projectId: action.projectId },
-      action.repository,
+      repository,
       { branch: action.branch, commitSha: action.commitSha }
     );
     // 2. Open the draft PR against the base recorded at submit time.
     const pr = await executors.createDraftPullRequest(
       env,
       { tenantId: action.tenantId, projectId: action.projectId },
-      action.repository,
+      repository,
       { head: action.branch, base: action.base, title: action.title, body: action.body }
     );
     const result = { pr_number: pr.number, pr_url: pr.url };
