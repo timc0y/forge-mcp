@@ -39,6 +39,7 @@ import { selectBrowserProvider } from './browser-router';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { classifyCommand, assertPublicHost } from '@forge/policy';
 import { normalizeViewports, selectInlineImages } from './review-images';
+import { storeGallery } from './review-gallery';
 import type { CommandClass } from '@forge/policy';
 import type { Env } from './env';
 import { registerForgeConsole } from './forge-console';
@@ -898,11 +899,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // MCP content, capped so the _meta payload stays bounded. This never
         // enters structuredContent (base64 stays out of what the model reads).
         const screenshots: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; dataUri: string }> = [];
-        const captured: Array<{ route: unknown; inline?: { base64: string; contentType: string } }> = [];
+        const captured: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; inline?: { base64: string; contentType: string } }> = [];
         for (const outcome of outcomes) {
           if (outcome.kind === 'evidence') {
             evidence.push(outcome.value);
-            captured.push({ route: outcome.value.route, inline: outcome.inline });
+            captured.push({
+              route: outcome.value.route,
+              viewport: outcome.value.observedViewport ?? outcome.value.requestedViewport,
+              state: outcome.value.state,
+              findingCount: findingCountOf(outcome.value),
+              inline: outcome.inline
+            });
             if (outcome.inline && screenshots.length < MAX_GALLERY_IMAGES) {
               screenshots.push({
                 route: outcome.value.route,
@@ -950,6 +957,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           findingCount: findingCountOf(cell),
           inspected: cell.inspected
         }));
+        // A link the model can simply hand over. Best-effort: the attached images
+        // stay the primary path, so a failure to write the page must not fail the
+        // review that produced them.
+        const capturedAtIso = new Date().toISOString();
+        const galleryUrl = await storeGallery(env, identity, workspaceId, text(input.url), capturedAtIso, captured);
         const packet = {
           schemaVersion: 1,
           provider: 'forge',
@@ -957,7 +969,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           containerUsed: false,
           workspaceId,
           sourceUrl: text(input.url),
-          capturedAt: new Date().toISOString(),
+          capturedAt: capturedAtIso,
           requestedCaptures: cells.length,
           capturedCount: evidence.length,
           complete,
@@ -983,12 +995,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           // one. The images are already attached; a chat client that cannot
           // reliably chain a second call would otherwise be told its screenshots
           // are somewhere else, having just been handed them.
+          galleryUrl,
           nextStep: [
             `Inspect the ${inlineCells.length} image(s) attached to this result — they are the evidence.`,
             omittedImages > 0
               ? `${omittedImages} further capture(s) did not fit in this response; fetch them with forge_artifact_get on evidence[].screenshot.artifactId, or re-run with fewer routes or one viewport.`
               : '',
             complete ? '' : 'Some cells failed or were skipped (see failures and skipped) — re-run just those routes; fewer routes per call captures more reliably.',
+            galleryUrl ? `Give the human this link to see them all in a browser: ${galleryUrl}` : '',
             'Then pass the evidence to Parallax with inspected set to true.'
           ].filter(Boolean).join(' ')
         };
@@ -997,11 +1011,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             ? ` Structure health flagged ${structureSummary.totalFindings} heading defect(s) across ${structureSummary.affectedCells} evidence cell(s) (see structureSummary) — resolve or explicitly accept these before passing the review.`
             : '';
         const attachedNote = omittedImages > 0
-          ? ` ${inlineCells.length} are attached here; ${omittedImages} more are stored and can be fetched with forge_artifact_get.`
+          ? ` ${inlineCells.length} are attached here; ${omittedImages} more are stored.`
           : ' All are attached to this message.';
+        const galleryNote = galleryUrl ? ` View them all in a browser: ${galleryUrl}` : '';
         const summary = complete
-          ? `Captured ${evidence.length} screenshot(s) of ${text(input.url)} without starting a container.${attachedNote}${structureNote}`
-          : `Captured ${evidence.length} of ${cells.length} screenshot(s) of ${text(input.url)} without starting a container (${failures.length} failed, ${skipped.length} skipped).${attachedNote} Re-run the remaining routes in smaller batches.${structureNote}`;
+          ? `Captured ${evidence.length} screenshot(s) of ${text(input.url)} without starting a container.${attachedNote}${galleryNote}${structureNote}`
+          : `Captured ${evidence.length} of ${cells.length} screenshot(s) of ${text(input.url)} without starting a container (${failures.length} failed, ${skipped.length} skipped).${attachedNote} Re-run the remaining routes in smaller batches.${galleryNote}${structureNote}`;
         content.unshift({ type: 'text', text: summary });
         return forgeToolResponse(packet, content);
       },

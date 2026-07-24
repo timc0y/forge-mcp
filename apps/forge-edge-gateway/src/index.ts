@@ -19,6 +19,7 @@ import {
   token
 } from './oauth';
 import type { Env } from './env';
+import { galleryPage } from './review-gallery';
 import {
   appDashboard,
   approvalPage,
@@ -604,6 +605,8 @@ export default {
       if (url.pathname === '/app') return await appDashboard(request, env);
       if (url.pathname === '/github/install') return await installGitHubApp(request, env);
       if (url.pathname === '/github/setup') return await finishGitHubInstall(request, env);
+      const galleryMatch = url.pathname.match(/^\/gallery\/(ws_[0-9a-hjkmnp-tv-z]{20,32})\/(art_[0-9a-hjkmnp-tv-z]{20,32})$/u);
+      if (galleryMatch?.[1] && galleryMatch[2]) return await galleryPage(request, env, galleryMatch[1], galleryMatch[2]);
       const previewMatch = url.pathname.match(/^\/approvals\/(apr_[0-9a-hjkmnp-tv-z]{20,32})\/preview$/u);
       if (previewMatch?.[1]) return await approvalPreviewEndpoint(request, env, previewMatch[1]);
       const approvalMatch = url.pathname.match(/^\/approvals\/(apr_[0-9a-hjkmnp-tv-z]{20,32})$/u);

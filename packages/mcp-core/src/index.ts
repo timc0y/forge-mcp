@@ -156,6 +156,7 @@ const reviewOutput = {
   skipped: z.array(z.unknown()),
   structureSummary: z.unknown().describe('Aggregate heading-structure health across all cells.'),
   limitations: z.array(z.string()),
+  galleryUrl: z.string().optional().describe("A shareable page showing every screenshot from this review; give it to the human when they should look themselves."),
   inlineImageCount: z.number().describe("How many screenshots are attached to this result as images."),
   omittedImageCount: z.number().optional().describe("Captures that did not fit in the response; fetch with forge_artifact_get."),
   nextStep: z.string()
