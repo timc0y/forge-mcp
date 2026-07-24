@@ -663,25 +663,34 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
    * request exists yet, and nothing the user considers their branch has moved.
    */
   async stageForReview(input: { ref: string }): Promise<{ ref: string; commit: string }> {
-    const record = await this.getRecord();
-    const commit = record.workspace.currentCommit;
-    if (!record.workspace.currentBranch || !commit) {
-      throw new ForgeError({
-        code: 'FORGE_VALIDATION_FAILED',
-        message: 'Nothing to submit: commit your work to a forge/ branch first.',
-        retryable: false
-      });
-    }
-    const source = await repositoryPushSource(this.env, record.workspace, input.ref, commit);
-    const result = await this.app.pushToRef(record, source, input.ref);
-    if (!result.pushed) {
-      throw new ForgeError({
-        code: 'FORGE_GIT_PUSH_BLOCKED',
-        message: `Could not stage the branch for review: ${result.reason ?? 'unknown error'}`,
-        retryable: true
-      });
-    }
-    return { ref: input.ref, commit };
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const commit = record.workspace.currentCommit;
+      if (!record.workspace.currentBranch || !commit) {
+        throw new ForgeError({
+          code: 'FORGE_VALIDATION_FAILED',
+          message: 'Nothing to submit: commit your work to a forge/ branch first.',
+          retryable: false
+        });
+      }
+      const source = await repositoryPushSource(this.env, record.workspace, input.ref, commit);
+      const result = await this.app.pushToRef(record, source, input.ref);
+      if (!result.pushed) {
+        throw new ForgeError({
+          code: 'FORGE_GIT_PUSH_BLOCKED',
+          message: `Could not stage the branch for review: ${result.reason ?? 'unknown error'}`,
+          retryable: true
+        });
+      }
+      // The commits are on GitHub now, which is exactly what hasUnpushedWork
+      // tracks: "would tearing this down lose work?". Leaving it set made
+      // forge_workspace_destroy refuse right after submitting — telling the agent
+      // to push the branch, i.e. steering it back to the blocking path — and made
+      // the idle reaper treat an already-safe workspace as dirty.
+      record.workspace.hasUnpushedWork = false;
+      await this.save(record);
+      return { ref: input.ref, commit };
+    });
   }
 
   // Best-effort, no-approval safety push to a Forge-owned backup ref — see
