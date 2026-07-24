@@ -34,39 +34,73 @@ describe('Forge policy', () => {
     );
   });
 
-  it('never classifies chained/obfuscated commands as low-risk', () => {
-    const chains = [
-      'git status && cat /etc/passwd',
-      'ls; python -c "import os"',
-      'git status || whoami',
-      'echo hi | base64',
-      'echo hi & sleep 1',
-      'cat `whoami`',
-      'cat $(whoami)',
-      'echo ${SECRET}',
-      'cat foo > /tmp/out',
-      'cat < /etc/passwd',
-      'sh -c "cat /etc/passwd"',
-      'bash -lc "id"',
-      'git status\nrm -rf x'
+  // The property that actually matters: a benign leading command must never let
+  // a severe one ride along behind it, wherever in the line it hides.
+  it('catches a severe command hidden anywhere in a chain', () => {
+    const hidden: Array<[string, string]> = [
+      ['git status && rm -rf /workspace', 'destructive'],
+      ['ls; sudo mount /dev/sda /mnt', 'prohibited'],
+      ['echo ok || git reset --hard', 'destructive'],
+      ['git status\nrm -rf x', 'destructive'],
+      ['cat $(rm -rf /workspace)', 'destructive'],
+      ['cat `sudo id`', 'prohibited'],
+      ['sh -c "rm -rf /workspace"', 'destructive'],
+      ['bash -lc "sudo reboot"', 'prohibited'],
+      ['npm test && npm install left-pad', 'dependency_install']
     ];
-    for (const command of chains) {
+    for (const [command, classification] of hidden) {
       const decision = classifyCommand(command, 'development');
-      expect(decision.classification, command).not.toBe('read_only');
-      expect(decision.classification, command).not.toBe('local_mutation');
-      // Anything not caught by a stronger (prohibited/destructive/network)
-      // rule lands in requires_approval and is never auto-approved.
-      expect(decision.approvalRequired, command).toBe(true);
+      expect(decision.classification, command).toBe(classification);
+      expect(decision.approvalRequired || !decision.allowed, command).toBe(true);
     }
   });
 
-  it('requires approval (not auto-approve) for a benign-prefixed chain', () => {
-    const decision = classifyCommand('git status && cat secrets', 'development');
+  // The regression this rewrite exists to fix: ordinary compound commands are the
+  // shape of nearly all real shell work and must not each cost a human click.
+  it('does not demand approval for honest compound commands', () => {
+    const honest = [
+      'npm test 2>&1',
+      'npm run build > build.log',
+      'cd packages/core && npm test',
+      'git status --short | head -20',
+      'cat file.txt | grep error',
+      'ls -la | wc -l',
+      'echo "hello" > out.txt',
+      'npm run lint && npm test',
+      'git add . && git commit -m "fix: a && b"',
+      'go test ./... 2>&1 | tail -50',
+      'make build || make clean',
+      'grep -rn "foo" src/ | head',
+      'find . -name "*.ts" | xargs wc -l'
+    ];
+    for (const command of honest) {
+      const decision = classifyCommand(command, 'development');
+      expect(decision.approvalRequired, command).toBe(false);
+      expect(decision.allowed, command).toBe(true);
+      expect(() => assertCommandAllowed(command, 'development', false), command).not.toThrow();
+    }
+  });
+
+  it('keeps quoted operators out of the split', () => {
+    // The && lives inside the commit message, so this is one ordinary command.
+    const decision = classifyCommand('git commit -m "fix a && rm -rf b"', 'development');
+    expect(decision.approvalRequired).toBe(false);
+    expect(decision.classification).toBe('local_mutation');
+  });
+
+  it('treats sed -i as a mutation rather than read-only', () => {
+    expect(classifyCommand('sed -i "s/a/b/" file.ts', 'development').classification).toBe('local_mutation');
+    expect(classifyCommand("sed 's/a/b/' file.ts", 'development').classification).toBe('read_only');
+  });
+
+  it('does not call a redirected write read-only', () => {
+    expect(classifyCommand('cat a.txt > b.txt', 'development').classification).toBe('local_mutation');
+    expect(classifyCommand('cat < a.txt', 'development').classification).toBe('read_only');
+  });
+
+  it('falls back to approval when the line cannot be parsed', () => {
+    const decision = classifyCommand('echo "unbalanced', 'development');
     expect(decision).toMatchObject({ classification: 'requires_approval', approvalRequired: true });
-    expect(() => assertCommandAllowed('git status && cat secrets', 'development', false)).toThrowError(
-      expect.objectContaining({ code: 'FORGE_APPROVAL_REQUIRED' })
-    );
-    expect(() => assertCommandAllowed('git status && cat secrets', 'development', true)).not.toThrow();
   });
 
   it('still classifies genuine single read-only commands as read_only', () => {

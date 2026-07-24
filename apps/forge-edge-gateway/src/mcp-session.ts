@@ -71,24 +71,51 @@ function autoApproveShell(env: Pick<Env, 'FORGE_AUTO_APPROVE_SHELL'>): boolean {
 }
 
 // Which gated (allowed && approvalRequired) shell classes the operator auto-approve
-// flag is permitted to silently approve. Deliberately narrow: only low-risk
-// dependency installs. Anything higher-risk — a destructive command, or network
-// egress under the unrestricted_with_approval policy — must ALWAYS go through a
-// real human approval click even when FORGE_AUTO_APPROVE_SHELL is on.
-const AUTO_APPROVABLE_SHELL_CLASSES: ReadonlySet<CommandClass> = new Set<CommandClass>(['dependency_install']);
+// flag is permitted to silently approve.
+//
+// Defaults to dependency installs plus `requires_approval`. The latter no longer
+// means "this command contains a pipe" — since the segment-aware classifier landed
+// it means only "this line could not be parsed at all" (unbalanced quotes,
+// pathological nesting), which is a parser limitation rather than a signal of
+// risk, and is squarely the kind of thing an operator who has opted into
+// auto-approve is opting into.
+//
+// Operators can widen or narrow this with FORGE_AUTO_APPROVE_SHELL_CLASSES (a
+// comma-separated list). `destructive` is deliberately NOT in the default set:
+// `rm -rf` and `git reset --hard` throw away work that may not exist anywhere
+// else yet. Network egress under `unrestricted_with_approval` can never be
+// auto-approved at all, regardless of this setting — see mayAutoApproveShell.
+const DEFAULT_AUTO_APPROVABLE_SHELL_CLASSES: readonly CommandClass[] = ['dependency_install', 'requires_approval'];
+
+const KNOWN_SHELL_CLASSES: ReadonlySet<string> = new Set<CommandClass>([
+  'read_only', 'local_mutation', 'dependency_install', 'network_access',
+  'external_side_effect', 'privileged', 'destructive', 'prohibited', 'requires_approval'
+]);
+
+function autoApprovableShellClasses(env: Pick<Env, 'FORGE_AUTO_APPROVE_SHELL_CLASSES'>): ReadonlySet<CommandClass> {
+  const configured = (env.FORGE_AUTO_APPROVE_SHELL_CLASSES ?? '').trim();
+  if (!configured) return new Set(DEFAULT_AUTO_APPROVABLE_SHELL_CLASSES);
+  const parsed = configured
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => KNOWN_SHELL_CLASSES.has(entry)) as CommandClass[];
+  // An unparseable or fully-bogus setting falls back to the default rather than
+  // to "auto-approve nothing" (silent friction) or "everything" (silent risk).
+  return parsed.length > 0 ? new Set(parsed) : new Set(DEFAULT_AUTO_APPROVABLE_SHELL_CLASSES);
+}
 
 // True only when the operator flag is on AND the command is a low-risk gated
 // class AND the caller is not asking for the unrestricted_with_approval network
 // policy (which always demands a human even for an otherwise auto-approvable
 // class).
 function mayAutoApproveShell(
-  env: Pick<Env, 'FORGE_AUTO_APPROVE_SHELL'>,
+  env: Pick<Env, 'FORGE_AUTO_APPROVE_SHELL' | 'FORGE_AUTO_APPROVE_SHELL_CLASSES'>,
   classification: CommandClass,
   networkPolicy: string
 ): boolean {
   if (!autoApproveShell(env)) return false;
   if (networkPolicy === 'unrestricted_with_approval') return false;
-  return AUTO_APPROVABLE_SHELL_CLASSES.has(classification);
+  return autoApprovableShellClasses(env).has(classification);
 }
 
 // A url_review workspace (from forge_review) has no WorkspaceCoordinator record,
@@ -1125,15 +1152,25 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             claimedApproval = true;
           } else if (!approvalId) {
             const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} command`, approvalPayload);
-            const inline = await this.tryResolveApprovalInline(identity, approval, `Run ${decision.classification} command`);
-            if (!inline) {
-              // Expose approval_id / approval_url as machine-readable fields so the
-              // widget can render an Approve button; kind discriminates the shape.
-              throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact command was already approved. No need to open the URL again — retry the call with approval_id.' : 'This command needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
+            if (approval.already_approved) {
+              // The human has already said yes to this exact command in this exact
+              // workspace and the approval is still live. Making the agent bounce
+              // off an error just to hand the same id straight back is pure
+              // ceremony — take it and run.
+              approvalId = approval.approval_id;
+              await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
+              claimedApproval = true;
+            } else {
+              const inline = await this.tryResolveApprovalInline(identity, approval, `Run ${decision.classification} command`);
+              if (!inline) {
+                // Expose approval_id / approval_url as machine-readable fields so the
+                // widget can render an Approve button; kind discriminates the shape.
+                throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This command needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
+              }
+              approvalId = inline;
+              await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
+              claimedApproval = true;
             }
-            approvalId = inline;
-            await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
-            claimedApproval = true;
           } else {
             await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
             claimedApproval = true;
@@ -1151,7 +1188,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             idempotencyKey: text(input.idempotency_key),
             approved: claimedApproval
           });
-          if (claimedApproval && approvalId) await completeApproval(env, approvalId, true);
+          // Re-arm rather than spend: the human approved this exact command, and
+          // a test-fix loop re-runs it verbatim. See completeApproval.
+          if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
           return asRecord(result);
         } catch (error) {
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);

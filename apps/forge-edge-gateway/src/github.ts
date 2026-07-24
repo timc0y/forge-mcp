@@ -676,12 +676,36 @@ export async function markApprovalApproved(env: Env, tenantId: string, approvalI
   return (result.meta.changes ?? 0) === 1;
 }
 
-export async function completeApproval(env: Env, approvalId: string, succeeded: boolean): Promise<void> {
-  // One approval = one execution attempt. On failure the approval is spent
-  // ('failed'), not re-armed — so a failing risky command can't be retried
-  // indefinitely inside the TTL window without the human seeing it again.
+/**
+ * Settle an approval after its operation ran.
+ *
+ * External writes (git.push, pull_request.create) stay strictly one-approval-one-
+ * execution: the thing they authorize is irreversible and leaves Forge, so a
+ * second push must mean a second human decision.
+ *
+ * In-workspace shell is different. Its approval is scoped to one exact command in
+ * one workspace, and the iterate-run-fix loop re-runs that identical command over
+ * and over. Spending the approval on first use meant a human click per iteration
+ * of a test-fix cycle — friction with no corresponding decision, since the human
+ * already said yes to precisely this command. So a successful shell approval is
+ * re-armed to 'approved' and can be reused for the same command until its TTL
+ * expires. A *failed* one is still spent, so a command that keeps erroring cannot
+ * be retried indefinitely without the human seeing it again.
+ */
+export async function completeApproval(
+  env: Env,
+  approvalId: string,
+  succeeded: boolean,
+  options: { reusable?: boolean } = {}
+): Promise<void> {
+  const nextState = succeeded ? (options.reusable ? 'approved' : 'consumed') : 'failed';
   await env.METADATA.prepare('UPDATE approvals SET state=?1 WHERE id=?2 AND state=\'executing\'')
-    .bind(succeeded ? 'consumed' : 'failed', approvalId).run();
+    .bind(nextState, approvalId).run();
+}
+
+/** Actions whose approval may be reused for an identical repeat within its TTL. */
+export function approvalIsReusable(action: string): boolean {
+  return action === 'shell.exec';
 }
 
 interface DiffRow {

@@ -52,6 +52,8 @@ export interface Env {
   // GitHub writes (git push / PR create) stay gated regardless. Optional; the
   // gate stays on unless this is 'true'/'1'.
   FORGE_AUTO_APPROVE_SHELL?: string;
+  /** Comma-separated CommandClass list the auto-approve flag may cover. */
+  FORGE_AUTO_APPROVE_SHELL_CLASSES?: string;
   // Self-hosted compute route (e.g. a Mac mini running the Forge Node Agent).
   // When enabled and healthy, new workspaces run there; otherwise Forge falls
   // back to Cloudflare containers. All optional — unset means Cloudflare only.
