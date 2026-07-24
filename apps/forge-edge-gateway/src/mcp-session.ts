@@ -1735,13 +1735,49 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_review_capture: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id) as WorkspaceId;
-        const previewId = text(input.preview_id);
-        const detail = await (await authorizedCoordinator(env, identity, workspaceId)).getPreviewInternal(previewId);
+        // Getting here used to cost four calls and a polling loop: start the dev
+        // server, poll its logs until it booted, expose a preview, then capture.
+        // That is the whole "how does my app look right now" loop, and it is the
+        // shape a chat session is worst at. With no preview_id, Forge does it —
+        // detect the dev command, start it, wait for it to answer, expose it —
+        // so screenshotting your own app is one call, same as a live URL.
+        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        let previewId = input.preview_id ? text(input.preview_id) : '';
+        if (!previewId) {
+          const deadline = Date.now() + number(input.preview_wait_ms);
+          let lastReason = 'the dev server did not start in time';
+          for (;;) {
+            const started = await workspace.startReviewPreview({
+              hostname: env.FORGE_PREVIEW_HOSTNAME,
+              ttlSeconds: 3600
+            }).catch((error: unknown) => ({
+              ready: false as const,
+              reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown'
+            }));
+            if (started.ready) {
+              previewId = started.previewId;
+              break;
+            }
+            lastReason = started.reason;
+            // No dev server to run is terminal — waiting cannot conjure one.
+            if (lastReason.includes('no dev server command') || Date.now() >= deadline) {
+              throw new ForgeError({
+                code: 'FORGE_PREVIEW_UNAVAILABLE',
+                message: lastReason.includes('no dev server command')
+                  ? 'No dev server command was detected for this project, so there is nothing to screenshot. Start it yourself with forge_process_start, expose it with forge_preview_expose, and pass the preview_id.'
+                  : `The preview was not ready in time (${lastReason}). Check forge_process_logs, or raise preview_wait_ms.`,
+                retryable: true
+              });
+            }
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+        }
+        const detail = await workspace.getPreviewInternal(previewId);
         if (new Date(detail.preview.expiresAt).getTime() <= Date.now()) {
           throw new ForgeError({
             code: 'FORGE_PREVIEW_UNAVAILABLE',
-            message: 'This preview has expired. Call forge_preview_expose again to get a fresh preview_id.',
-            retryable: false
+            message: 'This preview has expired. Call forge_review_capture again without a preview_id and Forge will bring a fresh one up.',
+            retryable: true
           });
         }
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);
@@ -1820,8 +1856,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // Widget-only screenshot gallery (small JPEG data: URIs) built from the
         // inline bytes captured above, capped so _meta stays bounded.
         const screenshots: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; dataUri: string }> = [];
+        const capturedCells: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; inline?: { base64: string; contentType: string } }> = [];
         for (const cell of evidence) {
           const inline = cell._inline as { base64: string; contentType: string } | undefined;
+          capturedCells.push({
+            route: cell.route,
+            viewport: cell.observedViewport ?? cell.requestedViewport,
+            state: cell.state,
+            findingCount: findingCountOf(cell),
+            inline
+          });
           if (inline && screenshots.length < MAX_GALLERY_IMAGES) {
             screenshots.push({
               route: cell.route,
@@ -1832,6 +1876,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             });
           }
         }
+        // This tool used to attach nothing at all: it stored every screenshot and
+        // told the caller to fetch them back one at a time. For the flow this
+        // exists to serve — looking at your own app while designing it — that
+        // meant the model never saw a single image without a second call per
+        // shot. Attach them, and hand over a page for the rest, same as the
+        // live-URL path.
+        const capturedAtIso = new Date().toISOString();
+        const { chosen: inlineCells, omitted: omittedImages } = selectInlineImages(capturedCells);
+        const captureContent: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [];
+        for (const cell of inlineCells) {
+          captureContent.push({ type: 'image', data: cell.inline!.base64, mimeType: cell.inline!.contentType });
+        }
+        const captureGalleryUrl = await storeGallery(
+          env, identity, workspaceId, `preview of ${workspaceId}`, capturedAtIso, capturedCells
+        );
         // Strip the transient inline bytes out of the full evidence so no base64
         // leaks into structuredContent or the _meta evidence array.
         const fullEvidence = evidence.map(({ _inline: _drop, ...rest }) => rest);
@@ -1848,7 +1907,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           executedSteps: cell.executedSteps,
           inspected: cell.inspected
         }));
-        return {
+        const capturePacket = {
           schemaVersion: 1,
           provider: 'forge',
           executionMode: 'preview_review',
@@ -1874,8 +1933,25 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               structureSummary
             }
           },
-          nextStep: 'Call forge_artifact_get for each evidence[].screenshot.artifactId and inspect the image, then mark that evidence inspected in Parallax. Resolve or explicitly accept any structureSummary heading defects before passing the review.'
+          galleryUrl: captureGalleryUrl,
+          inlineImageCount: inlineCells.length,
+          omittedImageCount: omittedImages,
+          nextStep: [
+            `Inspect the ${inlineCells.length} image(s) attached to this result — they are the evidence.`,
+            omittedImages > 0 ? `${omittedImages} further capture(s) did not fit; fetch them with forge_artifact_get on evidence[].screenshot.artifactId.` : '',
+            captureGalleryUrl ? `Give the human this link to see them all in a browser: ${captureGalleryUrl}` : '',
+            'Then mark that evidence inspected in Parallax, resolving or explicitly accepting any structureSummary heading defects.'
+          ].filter(Boolean).join(' ')
         };
+        captureContent.unshift({
+          type: 'text',
+          text: `Captured ${evidence.length} screenshot(s) of the running app.${
+            omittedImages > 0
+              ? ` ${inlineCells.length} are attached here; ${omittedImages} more are stored.`
+              : ' All are attached to this message.'
+          }${captureGalleryUrl ? ` View them all in a browser: ${captureGalleryUrl}` : ''}`
+        });
+        return forgeToolResponse(capturePacket, captureContent);
       },
       forge_artifact_get: async (input) => {
         const identity = this.identity();

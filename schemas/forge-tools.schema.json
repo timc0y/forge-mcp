@@ -1834,7 +1834,7 @@
     },
     "forge_review_capture": {
       "title": "Capture preview review evidence",
-      "description": "Capture screenshot and accessibility evidence from a running Forge preview — one packet across bounded routes, states and viewports. Give a capture `steps` to drive a real interaction (click/fill/press/wait) before the shot, proving multi-step flows a static screenshot cannot. Inspect each image with forge_artifact_get; this is the only preview-evidence tool.",
+      "description": "Screenshot your own running app in the workspace and get the images back in this call. Omit preview_id and Forge starts the dev server and exposes it for you, so this is one call rather than a start-poll-expose-capture sequence. Give a capture `steps` to drive a real interaction (click/fill/press/wait) before the shot, proving multi-step flows a static screenshot cannot. Screenshots come back attached to the result; this is the only preview-evidence tool.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -1846,16 +1846,20 @@
             "$ref": "#/$defs/__schema0"
           },
           "preview_id": {
-            "type": "string",
-            "pattern": "^prv_.*",
-            "description": "Preview id from forge_preview_expose."
+            "description": "Preview id from forge_preview_expose. Optional — omit it and Forge starts the project dev server and exposes it for you, which is usually what you want.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "preview_wait_ms": {
+            "default": 60000,
+            "description": "How long to wait for the dev server to come up when Forge is starting it.",
+            "$ref": "#/$defs/__schema2"
           },
           "captures": {
             "minItems": 1,
             "maxItems": 20,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema1"
+              "$ref": "#/$defs/__schema3"
             },
             "description": "Routes to capture."
           },
@@ -1865,11 +1869,11 @@
               "desktop"
             ],
             "description": "Viewports to capture each route at. Use the shorthand names 'phone', 'tablet' or 'desktop', or give explicit sizes.",
-            "$ref": "#/$defs/__schema6"
+            "$ref": "#/$defs/__schema8"
           }
         },
         "required": [
-          "preview_id",
+          "preview_wait_ms",
           "captures",
           "viewports"
         ],
@@ -1881,6 +1885,15 @@
             "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
+            "type": "string",
+            "pattern": "^prv_.*"
+          },
+          "__schema2": {
+            "type": "integer",
+            "minimum": 5000,
+            "maximum": 110000
+          },
+          "__schema3": {
             "type": "object",
             "properties": {
               "route": {
@@ -1891,15 +1904,15 @@
               "state": {
                 "default": "entry",
                 "description": "Label for the page state being captured.",
-                "$ref": "#/$defs/__schema2"
+                "$ref": "#/$defs/__schema4"
               },
               "selection": {
                 "description": "Optional label for what this evidence covers.",
-                "$ref": "#/$defs/__schema3"
+                "$ref": "#/$defs/__schema5"
               },
               "steps": {
                 "description": "Interaction to drive before the shot.",
-                "$ref": "#/$defs/__schema4"
+                "$ref": "#/$defs/__schema6"
               }
             },
             "required": [
@@ -1908,25 +1921,25 @@
             ],
             "additionalProperties": false
           },
-          "__schema2": {
+          "__schema4": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100
           },
-          "__schema3": {
+          "__schema5": {
             "type": "string",
             "minLength": 1,
             "maxLength": 200
           },
-          "__schema4": {
+          "__schema6": {
             "minItems": 1,
             "maxItems": 20,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema5"
+              "$ref": "#/$defs/__schema7"
             }
           },
-          "__schema5": {
+          "__schema7": {
             "type": "object",
             "properties": {
               "kind": {
@@ -1976,15 +1989,15 @@
             ],
             "additionalProperties": false
           },
-          "__schema6": {
+          "__schema8": {
             "minItems": 1,
             "maxItems": 4,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema7"
+              "$ref": "#/$defs/__schema9"
             }
           },
-          "__schema7": {
+          "__schema9": {
             "anyOf": [
               {
                 "type": "string",
