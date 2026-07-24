@@ -367,8 +367,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         '3. Before choosing routes or making changes, read the repository instructions and any parallax/ files.',
         '4. Capture evidence with forge_review_capture, then call forge_artifact_get and inspect every screenshot before citing it in a finding.',
         '5. Never claim a multi-step journey passed unless its interactions were actually executed and recorded.',
-        '6. Inspect the diff and get explicit approval before any Git push or pull-request action.',
-        '7. Destroy the workspace once the task or review is complete.'
+        '6. Inspect the diff, then finish with forge_submit_for_review — it stages the work and queues the pull request for a human to approve in their own time. Never wait for a human: say the work is submitted and where to review it. Use forge_git_push / forge_pull_request_create only when the caller explicitly wants to block on an approval right now.',
+        '7. Destroy the workspace once the task or review is complete — submitted work is staged off-box and survives teardown.'
       ].join(' ')
     }
   );
@@ -454,24 +454,24 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       ({ repository, task }) =>
         userText(
-          `Start a coding task on ${repository}: ${task}. Create one Forge workspace for this task with forge_workspace_create and reuse its workspace_id, poll forge_workspace_get until it is ready, then read the repository instructions and any parallax/ files before making changes. Implement and verify the change, request explicit approval before any Git push or pull-request action, and destroy the workspace once the task is complete.`
+          `Start a coding task on ${repository}: ${task}. Create one Forge workspace for this task with forge_workspace_create and reuse its workspace_id, poll forge_workspace_get until it is ready, then read the repository instructions and any parallax/ files before making changes. Implement and verify the change, inspect the outgoing diff, then finish with forge_submit_for_review — it stages the work and queues the pull request for review, so do not wait for anyone. Tell me it is submitted and where to approve it, then destroy the workspace.`
         )
     );
 
     this.server.registerPrompt(
       'prepare-draft-pr',
       {
-        title: 'Prepare a draft PR',
-        description: 'Prepare a draft pull request for the current Forge branch once tests pass.',
+        title: 'Submit work for review',
+        description: 'Stage the current Forge branch and queue its draft pull request for review, without waiting for an approval.',
         argsSchema: {
           workspace_id: z.string().optional().describe('The workspace whose branch should become a draft PR')
         }
       },
       ({ workspace_id }) =>
         userText(
-          `Prepare a draft pull request${
-            workspace_id ? ` for workspace ${workspace_id}` : ''
-          } once tests pass. Run the tests and confirm they are green, inspect the outgoing diff with forge_git_outgoing_diff, push the forge/ branch, then create the draft PR — requesting explicit user approval at both the push and the pull-request step.`
+          `Submit the current work for review${
+            workspace_id ? ` in workspace ${workspace_id}` : ''
+          } once tests pass. Run the tests and confirm they are green, inspect the outgoing diff with forge_git_outgoing_diff, then call forge_submit_for_review. It stages the branch and queues the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
         )
     );
   }
@@ -1473,9 +1473,41 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
 
         const coordinator = await authorizedCoordinator(env, identity, workspaceId);
         const state = await coordinator.getState();
+
+        // Commit anything still in the working tree FIRST. Staging pushes HEAD,
+        // and the outgoing diff is computed against commits, so uncommitted edits
+        // would be silently absent from both — the human would be shown, and
+        // would approve, a pull request containing none of the actual work. This
+        // is also what makes "submit" a genuine single call rather than a
+        // commit-then-submit dance the agent has to remember.
+        const status = await coordinator.gitStatus().catch(() => undefined);
+        let autoCommitted = false;
+        if (status && !status.clean) {
+          let message = '';
+          if (aiEnabled(env)) {
+            const working = await coordinator.gitDiff({ staged: false }).then((r) => r.stdout ?? '').catch(() => '');
+            if (working.trim()) message = await generateCommitMessage(env, working).catch(() => '');
+          }
+          await coordinator.gitCommit({
+            message: message.trim() || `chore: submit ${branch.replace(/^forge\//, '')} for review`,
+            paths: [],
+            idempotencyKey: `submit-autocommit-${workspaceId}-${branch}`
+          });
+          autoCommitted = true;
+        }
+
         const outgoing = await coordinator.gitOutgoingDiff({ base }).catch(() => undefined);
         const diff = outgoing?.diff ?? '';
         const filesChanged = diff ? diff.split('\n').filter((line) => line.startsWith('diff --git ')).length : 0;
+        // Nothing to review is a mistake worth naming, not an empty pull request
+        // for someone to puzzle over later.
+        if (filesChanged === 0) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `There is nothing to submit: ${branch} has no changes against ${base}. Make the change first, then submit.`,
+            retryable: false
+          });
+        }
 
         // Give the reviewer something readable to decide on. Best-effort: a
         // missing summariser must never be what stops work being submitted.
@@ -1551,7 +1583,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           branch,
           base,
           files_changed: filesChanged,
-          next_step: `Work is staged and queued for review. Tell the human it is done and waiting for them at ${approval.approval_url} (or in the Forge portal at ${env.FORGE_PUBLIC_ORIGIN}/app) — they can approve whenever they like, and Forge will push ${branch} and open the draft pull request then. This workspace can be destroyed now.`
+          auto_committed: autoCommitted,
+          next_step: `Work is staged and queued for review. Tell the human it is done and waiting for them at ${approval.approval_url} (or in the Forge portal at ${env.FORGE_PUBLIC_ORIGIN}/app) — they can approve whenever they like, and Forge will push ${branch} and open the draft pull request then. Do not wait for them. This workspace can be destroyed now.`
         };
       },
       forge_pull_request_create: async (input) => {

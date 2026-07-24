@@ -1342,7 +1342,7 @@
     },
     "forge_submit_for_review": {
       "title": "Submit finished work for review",
-      "description": "Finish a piece of work in one call, without waiting for anyone. Stages the current branch on a Forge-owned ref, queues a pull request for it, and returns immediately — the human approves whenever they like, from the Forge portal or the returned URL, and Forge performs the push and opens the draft PR itself. Prefer this over forge_git_push + forge_pull_request_create, which both block until a human clicks. The workspace can be destroyed straight after this returns; the staged commits outlive it. Commit your work first.",
+      "description": "Finish a piece of work in one call, without waiting for anyone. Stages the current branch on a Forge-owned ref, queues a pull request for it, and returns immediately — the human approves whenever they like, from the Forge portal or the returned URL, and Forge performs the push and opens the draft PR itself. Prefer this over forge_git_push + forge_pull_request_create, which both block until a human clicks. Any uncommitted work is committed automatically, so this is genuinely one call. The workspace can be destroyed straight after this returns; the staged commits outlive it.",
       "sideEffect": "external",
       "approval": "deferred",
       "inputSchema": {
