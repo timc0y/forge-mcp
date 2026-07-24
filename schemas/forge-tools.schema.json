@@ -585,15 +585,18 @@
         "type": "object",
         "properties": {
           "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
             "type": "string",
             "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
             "description": "Target workspace id (ws_...)."
           }
-        },
-        "required": [
-          "workspace_id"
-        ],
-        "additionalProperties": false
+        }
       }
     },
     "forge_context_get": {
@@ -606,9 +609,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "goal": {
             "type": "string",
@@ -618,25 +620,24 @@
           },
           "task_id": {
             "description": "Optional task to associate the lookup with.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "root": {
             "default": "/workspace/repo",
             "description": "Subtree to rank within.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "max_results": {
             "default": 12,
             "description": "Maximum number of files to return.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           },
           "categories": {
             "description": "Restrict results to these file categories.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           }
         },
         "required": [
-          "workspace_id",
           "goal",
           "root",
           "max_results"
@@ -645,26 +646,31 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target task id (task_...)."
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
             "type": "string",
-            "pattern": "^\\/workspace.*"
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
           },
           "__schema2": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema3": {
             "type": "integer",
             "minimum": 1,
             "maximum": 100
           },
-          "__schema3": {
+          "__schema4": {
             "maxItems": 4,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema4"
+              "$ref": "#/$defs/__schema5"
             }
           },
-          "__schema4": {
+          "__schema5": {
             "type": "string",
             "enum": [
               "source",
@@ -686,23 +692,26 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "base": {
             "default": "main",
             "description": "Base branch to diff the current branch against.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
-          "workspace_id",
           "base"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
             "type": "string",
             "minLength": 1,
             "maxLength": 255
@@ -720,28 +729,26 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "path": {
             "default": "/workspace/repo",
             "description": "Directory to list.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "depth": {
             "default": 4,
             "description": "How many levels deep to descend.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "limit": {
             "default": 1000,
             "description": "Maximum number of entries to return.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           }
         },
         "required": [
-          "workspace_id",
           "path",
           "depth",
           "limit"
@@ -750,14 +757,19 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^\\/workspace.*"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema2": {
             "type": "integer",
             "minimum": 1,
             "maximum": 20
           },
-          "__schema2": {
+          "__schema3": {
             "type": "integer",
             "minimum": 1,
             "maximum": 10000
@@ -775,58 +787,56 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "path": {
             "description": "Single file to read.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "paths": {
             "description": "Several files to read in one call.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "start_line": {
             "description": "First line to include (1-based).",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           },
           "end_line": {
             "description": "Last line to include (1-based).",
-            "$ref": "#/$defs/__schema4"
+            "$ref": "#/$defs/__schema5"
           },
           "max_bytes": {
             "default": 200000,
             "description": "Per-file byte ceiling.",
-            "$ref": "#/$defs/__schema5"
+            "$ref": "#/$defs/__schema6"
           }
         },
         "required": [
-          "workspace_id",
           "max_bytes"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^\\/workspace.*"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema2": {
             "minItems": 1,
             "maxItems": 20,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema2"
+              "$ref": "#/$defs/__schema3"
             }
           },
-          "__schema2": {
+          "__schema3": {
             "type": "string",
             "pattern": "^\\/workspace.*"
-          },
-          "__schema3": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
           },
           "__schema4": {
             "type": "integer",
@@ -834,6 +844,11 @@
             "maximum": 9007199254740991
           },
           "__schema5": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "__schema6": {
             "type": "integer",
             "minimum": 1,
             "maximum": 500000
@@ -851,9 +866,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "path": {
             "type": "string",
@@ -867,15 +881,14 @@
           },
           "expected_sha256": {
             "description": "Hash the file must currently have, for a conflict-safe overwrite; omit to create.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           }
         },
         "required": [
-          "workspace_id",
           "path",
           "content"
         ],
@@ -883,9 +896,14 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "__schema2": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
@@ -904,9 +922,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "patch": {
             "type": "string",
@@ -916,16 +933,20 @@
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
-          "workspace_id",
           "patch"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
@@ -944,9 +965,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "command": {
             "type": "string",
@@ -957,43 +977,42 @@
           "cwd": {
             "default": "/workspace/repo",
             "description": "Working directory inside the workspace; must start with /workspace.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "timeout_ms": {
             "default": 300000,
             "description": "Kill the command after this many milliseconds.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "environment": {
             "default": {},
             "description": "Extra environment variables.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           },
           "network_policy": {
             "default": "development",
             "description": "Outbound network policy for this command.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           },
           "output_limit_bytes": {
             "default": 200000,
             "description": "Truncate captured output past this many bytes.",
-            "$ref": "#/$defs/__schema4"
+            "$ref": "#/$defs/__schema5"
           },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema5"
+            "$ref": "#/$defs/__schema6"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema6"
+            "$ref": "#/$defs/__schema7"
           },
           "approval_id": {
             "description": "Approval id returned by a prior blocked call.",
-            "$ref": "#/$defs/__schema7"
+            "$ref": "#/$defs/__schema8"
           }
         },
         "required": [
-          "workspace_id",
           "command",
           "cwd",
           "timeout_ms",
@@ -1005,14 +1024,19 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^\\/workspace.*"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema2": {
             "type": "integer",
             "minimum": 100,
             "maximum": 900000
           },
-          "__schema2": {
+          "__schema3": {
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -1021,7 +1045,7 @@
               "type": "string"
             }
           },
-          "__schema3": {
+          "__schema4": {
             "type": "string",
             "enum": [
               "deny_all",
@@ -1031,23 +1055,23 @@
               "unrestricted_with_approval"
             ]
           },
-          "__schema4": {
+          "__schema5": {
             "type": "integer",
             "minimum": 1000,
             "maximum": 1000000
           },
-          "__schema5": {
+          "__schema6": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
-          "__schema6": {
+          "__schema7": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
             "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           },
-          "__schema7": {
+          "__schema8": {
             "type": "string",
             "pattern": "^apr_.*"
           }
@@ -1064,9 +1088,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "command": {
             "type": "string",
@@ -1077,29 +1100,28 @@
           "cwd": {
             "default": "/workspace/repo",
             "description": "Working directory inside the workspace; must start with /workspace.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "environment": {
             "default": {},
             "description": "Extra environment variables.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "network_policy": {
             "default": "development",
             "description": "Outbound network policy for this process.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema4"
+            "$ref": "#/$defs/__schema5"
           }
         },
         "required": [
-          "workspace_id",
           "command",
           "cwd",
           "environment",
@@ -1109,9 +1131,14 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^\\/workspace.*"
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema2": {
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -1120,7 +1147,7 @@
               "type": "string"
             }
           },
-          "__schema2": {
+          "__schema3": {
             "type": "string",
             "enum": [
               "deny_all",
@@ -1129,12 +1156,12 @@
               "custom_allowlist"
             ]
           },
-          "__schema3": {
+          "__schema4": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
-          "__schema4": {
+          "__schema5": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
@@ -1153,9 +1180,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "process_id": {
             "type": "string",
@@ -1164,16 +1190,20 @@
           },
           "cursor": {
             "description": "Opaque cursor from a prior page.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
-          "workspace_id",
           "process_id"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
             "type": "string"
           }
         }
@@ -1189,15 +1219,18 @@
         "type": "object",
         "properties": {
           "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
             "type": "string",
             "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
             "description": "Target workspace id (ws_...)."
           }
-        },
-        "required": [
-          "workspace_id"
-        ],
-        "additionalProperties": false
+        }
       }
     },
     "forge_git_diff": {
@@ -1210,23 +1243,26 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "staged": {
             "default": false,
             "description": "Diff staged changes instead of the working tree.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
-          "workspace_id",
           "staged"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
             "type": "boolean"
           }
         }
@@ -1242,9 +1278,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "branch": {
             "type": "string",
@@ -1254,25 +1289,29 @@
           },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           }
         },
         "required": [
-          "workspace_id",
           "branch"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
-          "__schema1": {
+          "__schema2": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
@@ -1291,57 +1330,60 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "message": {
             "description": "Commit message; omit to auto-generate.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "paths": {
             "default": [],
             "description": "Paths to stage; empty stages all changes.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema4"
+            "$ref": "#/$defs/__schema5"
           }
         },
         "required": [
-          "workspace_id",
           "paths"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 500
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
-            "maxItems": 100,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema2"
-            }
-          },
-          "__schema2": {
             "type": "string",
             "minLength": 1,
             "maxLength": 500
           },
+          "__schema2": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema3"
+            }
+          },
           "__schema3": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema4": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
-          "__schema4": {
+          "__schema5": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
@@ -1360,23 +1402,26 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "base": {
             "default": "main",
             "description": "Base branch to compare against.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
-          "workspace_id",
           "base"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
             "type": "string",
             "minLength": 1,
             "maxLength": 255
@@ -1394,9 +1439,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "branch": {
             "type": "string",
@@ -1407,28 +1451,27 @@
           "base": {
             "default": "main",
             "description": "Branch the pull request will target.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "title": {
             "description": "PR title; omit to auto-generate from the diff.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "body": {
             "default": "",
             "description": "PR body.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           },
           "task_id": {
             "description": "Task this submission completes, for traceability.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema4"
+            "$ref": "#/$defs/__schema5"
           }
         },
         "required": [
-          "workspace_id",
           "branch",
           "base",
           "body"
@@ -1437,24 +1480,29 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 255
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 256
+            "maxLength": 255
           },
           "__schema2": {
             "type": "string",
-            "maxLength": 60000
+            "minLength": 1,
+            "maxLength": 256
           },
           "__schema3": {
+            "type": "string",
+            "maxLength": 60000
+          },
+          "__schema4": {
             "type": "string",
             "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
             "description": "Target task id (task_...)."
           },
-          "__schema4": {
+          "__schema5": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
@@ -1473,9 +1521,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "branch": {
             "type": "string",
@@ -1486,7 +1533,7 @@
           "base": {
             "default": "main",
             "description": "Base branch the push targets.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "expected_diff_hash": {
             "type": "string",
@@ -1495,19 +1542,18 @@
           },
           "approval_id": {
             "description": "Approval id from the approval page.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           }
         },
         "required": [
-          "workspace_id",
           "branch",
           "base",
           "expected_diff_hash"
@@ -1516,19 +1562,24 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 255
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
             "type": "string",
-            "pattern": "^apr_.*"
+            "minLength": 1,
+            "maxLength": 255
           },
           "__schema2": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          },
+          "__schema3": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
-          "__schema3": {
+          "__schema4": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
@@ -1547,9 +1598,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "head": {
             "type": "string",
@@ -1560,24 +1610,23 @@
           "base": {
             "default": "main",
             "description": "Branch to merge into.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "title": {
             "description": "PR title; omit to auto-generate.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "body": {
             "default": "",
             "description": "PR body.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           },
           "approval_id": {
             "description": "Approval id from the approval page.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           }
         },
         "required": [
-          "workspace_id",
           "head",
           "base",
           "body"
@@ -1586,19 +1635,24 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 255
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 256
+            "maxLength": 255
           },
           "__schema2": {
             "type": "string",
-            "maxLength": 60000
+            "minLength": 1,
+            "maxLength": 256
           },
           "__schema3": {
+            "type": "string",
+            "maxLength": 60000
+          },
+          "__schema4": {
             "type": "string",
             "pattern": "^apr_.*"
           }
@@ -1615,13 +1669,12 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "task_id": {
             "description": "Task this envelope belongs to, for traceability.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "branch": {
             "type": "string",
@@ -1632,24 +1685,23 @@
           "base": {
             "default": "main",
             "description": "Base branch, fixed for the life of the envelope.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "allowed_paths": {
             "description": "Path prefixes the envelope covers. Omit to default to the paths in the current outgoing diff.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           },
           "ttl_minutes": {
             "default": 120,
             "description": "How long the envelope stays valid.",
-            "$ref": "#/$defs/__schema4"
+            "$ref": "#/$defs/__schema5"
           },
           "approval_id": {
             "description": "Approval id from the approval page.",
-            "$ref": "#/$defs/__schema5"
+            "$ref": "#/$defs/__schema6"
           }
         },
         "required": [
-          "workspace_id",
           "branch",
           "base",
           "ttl_minutes"
@@ -1658,33 +1710,38 @@
         "$defs": {
           "__schema0": {
             "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "string",
             "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
             "description": "Target task id (task_...)."
           },
-          "__schema1": {
+          "__schema2": {
             "type": "string",
             "minLength": 1,
             "maxLength": 255
           },
-          "__schema2": {
+          "__schema3": {
             "minItems": 1,
             "maxItems": 50,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema3"
+              "$ref": "#/$defs/__schema4"
             }
           },
-          "__schema3": {
+          "__schema4": {
             "type": "string",
             "minLength": 1,
             "maxLength": 500
           },
-          "__schema4": {
+          "__schema5": {
             "type": "integer",
             "minimum": 5,
             "maximum": 480
           },
-          "__schema5": {
+          "__schema6": {
             "type": "string",
             "pattern": "^apr_.*"
           }
@@ -1701,9 +1758,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "process_id": {
             "type": "string",
@@ -1719,24 +1775,23 @@
           "access": {
             "default": "private",
             "description": "Who can reach the preview.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "ttl_seconds": {
             "default": 3600,
             "description": "How long the preview stays open.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           }
         },
         "required": [
-          "workspace_id",
           "process_id",
           "port",
           "access",
@@ -1746,6 +1801,11 @@
         "$defs": {
           "__schema0": {
             "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "string",
             "enum": [
               "private",
               "tenant",
@@ -1753,17 +1813,17 @@
               "public"
             ]
           },
-          "__schema1": {
+          "__schema2": {
             "type": "integer",
             "minimum": 60,
             "maximum": 86400
           },
-          "__schema2": {
+          "__schema3": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
-          "__schema3": {
+          "__schema4": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
@@ -1782,9 +1842,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "preview_id": {
             "type": "string",
@@ -1796,7 +1855,7 @@
             "maxItems": 20,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema0"
+              "$ref": "#/$defs/__schema1"
             },
             "description": "Routes to capture."
           },
@@ -1806,11 +1865,10 @@
               "desktop"
             ],
             "description": "Viewports to capture each route at. Use the shorthand names 'phone', 'tablet' or 'desktop', or give explicit sizes.",
-            "$ref": "#/$defs/__schema5"
+            "$ref": "#/$defs/__schema6"
           }
         },
         "required": [
-          "workspace_id",
           "preview_id",
           "captures",
           "viewports"
@@ -1818,6 +1876,11 @@
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
             "type": "object",
             "properties": {
               "route": {
@@ -1828,15 +1891,15 @@
               "state": {
                 "default": "entry",
                 "description": "Label for the page state being captured.",
-                "$ref": "#/$defs/__schema1"
+                "$ref": "#/$defs/__schema2"
               },
               "selection": {
                 "description": "Optional label for what this evidence covers.",
-                "$ref": "#/$defs/__schema2"
+                "$ref": "#/$defs/__schema3"
               },
               "steps": {
                 "description": "Interaction to drive before the shot.",
-                "$ref": "#/$defs/__schema3"
+                "$ref": "#/$defs/__schema4"
               }
             },
             "required": [
@@ -1845,25 +1908,25 @@
             ],
             "additionalProperties": false
           },
-          "__schema1": {
+          "__schema2": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100
           },
-          "__schema2": {
+          "__schema3": {
             "type": "string",
             "minLength": 1,
             "maxLength": 200
           },
-          "__schema3": {
+          "__schema4": {
             "minItems": 1,
             "maxItems": 20,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema4"
+              "$ref": "#/$defs/__schema5"
             }
           },
-          "__schema4": {
+          "__schema5": {
             "type": "object",
             "properties": {
               "kind": {
@@ -1913,15 +1976,15 @@
             ],
             "additionalProperties": false
           },
-          "__schema5": {
+          "__schema6": {
             "minItems": 1,
             "maxItems": 4,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema6"
+              "$ref": "#/$defs/__schema7"
             }
           },
-          "__schema6": {
+          "__schema7": {
             "anyOf": [
               {
                 "type": "string",
@@ -1972,9 +2035,8 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "artifact_id": {
             "type": "string",
@@ -1984,17 +2046,21 @@
           "max_bytes": {
             "default": 2500000,
             "description": "Maximum bytes to return.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
-          "workspace_id",
           "artifact_id",
           "max_bytes"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
             "type": "integer",
             "minimum": 1,
             "maximum": 4000000
@@ -2012,48 +2078,51 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
           },
           "preserve_artifacts": {
             "default": true,
             "description": "Keep captured artifacts after teardown.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "force": {
             "default": false,
             "description": "Destroy even if the workspace has unpushed committed work.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema2"
           },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema2"
+            "$ref": "#/$defs/__schema3"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           }
         },
         "required": [
-          "workspace_id",
           "preserve_artifacts",
           "force"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
-            "type": "boolean"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
             "type": "boolean"
           },
           "__schema2": {
+            "type": "boolean"
+          },
+          "__schema3": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
-          "__schema3": {
+          "__schema4": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
