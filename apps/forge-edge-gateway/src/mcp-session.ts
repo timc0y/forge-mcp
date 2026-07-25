@@ -47,6 +47,7 @@ import type { WorkspaceCoordinator } from './workspace-coordinator';
 import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
 import { snapshotsEnabled } from './snapshots';
 import { aiEnabled, generateCommitMessage, summarizeDiffForPr } from './ai';
+import { registerLegacyWidgetStub } from './legacy-widget';
 import {
   authorizeRepository,
   completeApproval,
@@ -405,6 +406,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   );
 
   async init(): Promise<void> {
+    // Resolves the retired widget URI to an empty document. No tool advertises
+    // it; this exists only so sessions opened before the widget was removed
+    // stop rendering an unresolved placeholder. See legacy-widget.ts.
+    registerLegacyWidgetStub(this.server);
     const tracker = new ToolCallTracker(this.env, {
       waitUntil: (p) => (this.ctx as unknown as { waitUntil?: (p: Promise<unknown>) => void })?.waitUntil?.(p)
     });

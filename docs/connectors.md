@@ -2,8 +2,8 @@
 
 Forge is exposed as **one remote MCP server**, consumed by two clients:
 
-- **ChatGPT App** (OpenAI Apps SDK) — Forge appears as an app with an
-  interactive widget rendered in the ChatGPT tool-result surface.
+- **ChatGPT App** (OpenAI Apps SDK) — Forge appears as an app; results render
+  as ChatGPT's own plain output, with no Forge-authored widget.
 - **Claude connector** (remote MCP server) — the same endpoint is added as a
   custom/remote connector in Claude.
 
@@ -57,9 +57,17 @@ Session-JWT signing can be split from capability-token signing via the
 
 ## No in-chat widget
 
-Forge deliberately serves **no** MCP Apps (`ui://`) resource, and no tool
-carries `_meta.ui` or `_meta['openai/outputTemplate']`. Tool results render as
-the host's own plain text/structured output.
+No tool carries `_meta.ui` or `_meta['openai/outputTemplate']`, so tool results
+render as the host's own plain text/structured output.
+
+One `ui://` resource still resolves — `ui://forge/workspace-console`, an empty
+document (`legacy-widget.ts`). Nothing advertises it. It exists because ChatGPT
+caches tool metadata for the life of a connection: a session opened while the
+widget was still advertised keeps requesting that URI on every tool result, and
+once the resource was deleted the host sat on an unresolved skeleton card — one
+per tool call. Answering with an empty document collapses it to nothing, which
+is what a fresh session shows. Safe to delete once no client can still hold
+metadata from before the widget was dropped.
 
 There was previously a `ui://forge/workspace-console` widget that shape-detected
 the last tool's output and drew repository cards, Parallax evidence galleries,

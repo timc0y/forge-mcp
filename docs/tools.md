@@ -116,9 +116,11 @@ fail closed if the path list cannot be enumerated in full.
 
 ## No MCP-UI widget
 
-Forge serves no MCP Apps (`ui://`) resource and no tool declares
-`_meta.ui` or `_meta['openai/outputTemplate']`. Every host — ChatGPT included —
-renders tool results with its own plain text/structured output. The only
+No tool declares `_meta.ui` or `_meta['openai/outputTemplate']`, so every host
+— ChatGPT included — renders tool results with its own plain text/structured
+output. A single `ui://` resource still resolves, to an empty document, purely
+so sessions opened before the widget was removed do not hang on an unresolved
+placeholder; see [connectors.md](connectors.md#no-in-chat-widget). The only
 `_meta` a tool carries is the short `openai/toolInvocation/{invoking,invoked}`
 status strings.
 
