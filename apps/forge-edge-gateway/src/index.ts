@@ -32,6 +32,7 @@ import {
   githubWebhook,
   gitCredentialProxy,
   installGitHubApp,
+  reconnectGitHub,
   logout,
   startGitHubLogin
 } from './github';
@@ -664,6 +665,7 @@ export default {
       if (url.pathname === '/app') return await appDashboard(request, env);
       if (url.pathname === '/app/access' && request.method === 'POST') return await resolveAccessRequest(request, env);
       if (url.pathname === '/github/install') return await installGitHubApp(request, env);
+      if (url.pathname === '/github/reconnect' && request.method === 'POST') return await reconnectGitHub(request, env);
       if (url.pathname === '/github/setup') return await finishGitHubInstall(request, env);
       const galleryMatch = url.pathname.match(/^\/gallery\/(ws_[0-9a-hjkmnp-tv-z]{20,32})\/(art_[0-9a-hjkmnp-tv-z]{20,32})$/u);
       if (galleryMatch?.[1] && galleryMatch[2]) return await galleryPage(request, env, galleryMatch[1], galleryMatch[2]);

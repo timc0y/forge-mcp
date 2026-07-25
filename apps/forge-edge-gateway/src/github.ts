@@ -469,6 +469,60 @@ export async function finishGitHubInstall(request: Request, env: Env): Promise<R
   return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/app`, 302);
 }
 
+
+/**
+ * Find this account's App installations by asking GitHub, and sync them.
+ *
+ * Until now Forge only learned that its App had been installed via the redirect
+ * back from GitHub. That redirect is the single point of failure for the entire
+ * repository half of the product: if the App's setup URL is not configured, if
+ * the person installs from GitHub's own settings page, or if they simply close
+ * the tab before being bounced back, Forge never hears about it and there is no
+ * way to recover — the account looks permanently unconnected no matter how many
+ * times the App is installed. Production hit exactly this: six install attempts,
+ * five of which never reached the callback at all.
+ *
+ * So stop depending on being told. The App can enumerate its own installations,
+ * so ask, and sync the ones that belong to the signed-in account.
+ *
+ * The ownership check is stricter than the redirect flow's was, not looser: an
+ * installation is only adopted when GitHub says its account id is this user's
+ * GitHub id. The old nonce proved the person started a flow; this proves the
+ * installation is actually theirs.
+ */
+export async function reconnectGitHub(request: Request, env: Env): Promise<Response> {
+  const user = await getWebSession(request, env);
+  if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent('/app')}`, 302);
+  if (!hasForgeAccess(user)) return accessPendingPage(env, user, user.access_state ?? 'pending');
+  assertSameOrigin(request, env);
+  try {
+    const installations = await githubJson<Array<{ id: number; account?: { id?: number; login?: string; type?: string } }>>(
+      'https://api.github.com/app/installations?per_page=100',
+      { headers: githubHeaders(await appJwt(env)) }
+    );
+    const mine = (Array.isArray(installations) ? installations : []).filter(
+      (installation) => String(installation.account?.id ?? '') === String(user.github_user_id)
+    );
+    let synced = 0;
+    for (const installation of mine) {
+      await syncInstallation(env, user, String(installation.id)).then(() => { synced += 1; }).catch((error) => {
+        console.error('forge_reconnect_sync_failed', {
+          installationId: installation.id,
+          name: error instanceof Error ? error.name : 'unknown'
+        });
+      });
+    }
+    // Nothing found is a real answer, not a failure: the App genuinely is not
+    // installed on this account, and the person needs to install it rather than
+    // reconnect it.
+    const outcome = mine.length === 0 ? 'none' : synced === 0 ? 'failed' : 'ok';
+    return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/app?reconnect=${outcome}`, 303);
+  } catch (error) {
+    console.error('forge_reconnect_failed', { name: error instanceof Error ? error.name : 'unknown' });
+    return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/app?reconnect=failed`, 303);
+  }
+}
+
 export async function listAuthorizedRepositories(env: Env, tenantId: string): Promise<Array<Record<string, unknown>>> {
   const result = await env.METADATA.prepare(
     `SELECT owner, name, visibility, default_branch, installation_id, last_verified_at
@@ -653,6 +707,15 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
         pendingAccess.map((row) => `<li><span><strong>${escapeHtml(row.github_login)}</strong><small>asked ${escapeHtml(row.access_requested_at ? new Date(row.access_requested_at).toISOString().slice(0, 10) : 'recently')}</small></span><form method="post" action="${env.FORGE_PUBLIC_ORIGIN}/app/access"><input type="hidden" name="user_id" value="${escapeHtml(row.id)}"><button class="button" name="decision" value="approved">Approve</button><button class="button ghost" name="decision" value="denied">Decline</button></form></li>`).join('')
       }</ul></section>`
     : '';
+  // Reconnect outcome, so the button visibly does something either way.
+  const reconnectParam = new URL(request.url).searchParams.get('reconnect');
+  const reconnectNote = reconnectParam === 'ok'
+    ? '<p class="note"><strong>Reconnected.</strong> Repositories below are re-read from GitHub.</p>'
+    : reconnectParam === 'none'
+      ? '<p class="note"><strong>No installation found for your GitHub account.</strong> The Forge App is not installed — use Install below, not Reconnect.</p>'
+      : reconnectParam === 'failed'
+        ? '<p class="note"><strong>Reconnect failed.</strong> GitHub did not return a usable installation; try Install below.</p>'
+        : '';
   const mcpUrl = `${env.FORGE_PUBLIC_ORIGIN}/mcp`;
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Forge Cloud</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--soft:#f0f0f3;--accent:#5b4cf0;--grad:#a78bfa;--accent-soft:#efedfe}*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(100% - 3rem,960px);margin:0 auto;padding:42px 0 72px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:28px;border-bottom:1px solid var(--line)}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:14px}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:19px;font-weight:750;letter-spacing:-.02em}h1{display:flex;align-items:center;gap:12px;font-size:32px;line-height:1;letter-spacing:-.035em;margin:0 0 12px}h1 .glyph{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:19px;box-shadow:0 3px 12px -3px var(--accent)}h2{font-size:18px;line-height:1.25;margin:0 0 10px}p{margin:0;color:var(--muted);max-width:68ch;text-wrap:pretty}.toplinks{display:flex;gap:14px;align-items:center;white-space:nowrap}a{color:inherit;text-underline-offset:3px}.button{display:inline-flex;min-height:44px;align-items:center;background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;padding:9px 14px;border-radius:9px;text-decoration:none;font-weight:700;transition:filter 180ms ease-out}.button:hover{filter:brightness(1.08)}a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(250px,.8fr);gap:clamp(30px,5vw,54px);padding-top:34px}.layout>*{min-width:0}.section{margin-bottom:34px}.prompt{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:10px;color:var(--ink);font:14px/1.55 ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}.prompt+.prompt{margin-top:8px}.meter{display:flex;align-items:center;gap:10px;margin-top:12px}.slots{display:flex;gap:5px}.slot{width:32px;height:8px;border-radius:4px;background:var(--soft)}.slot.used{background:var(--accent)}code{display:block;max-width:100%;background:var(--soft);border-radius:6px;padding:11px;overflow:auto;margin:10px 0;color:var(--ink);overflow-wrap:anywhere}ul{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--line)}li{padding:11px 0;border-bottom:1px solid var(--line)}li span{display:flex;justify-content:space-between;gap:12px}small{color:var(--muted)}.note{font-size:13px;margin-top:10px}.queue{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:18px 20px}.queue ul{border-top-color:var(--line)}.queue li span{flex:1 1 auto}.queue li{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.queue .button{min-height:44px;padding:9px 16px;flex:0 0 auto}.queue form{display:flex;gap:.5rem;margin:0;flex:0 0 auto}.queue .button.ghost{background:var(--surface);color:var(--ink);border:1px solid var(--line)}.queue .button.ghost:hover{border-color:var(--accent)}.badge{display:inline-grid;place-items:center;min-width:24px;height:24px;padding:0 7px;border-radius:12px;background:var(--accent);color:#fff;font-size:13px;font-weight:700;vertical-align:middle}.bad{color:#d64545}details{margin-top:10px}summary{min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--muted);font-size:13px}summary:hover{color:var(--ink)}@media(max-width:720px){main{width:min(100% - 2.5rem,960px);padding:28px 0 56px}.layout{grid-template-columns:1fr;gap:8px}header{align-items:flex-start;flex-direction:column}.toplinks{width:100%;justify-content:space-between}li span{display:block}small{display:block}.button{justify-content:center;width:100%}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style>
@@ -661,7 +724,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
 <section class="section"><h2>Good first prompts</h2><div class="prompt">Review https://example.com with Parallax on phone and desktop. Inspect every screenshot.</div><div class="prompt">Open ${escapeHtml(user.github_login)}/parallax-review, run the checks, explain the architecture, and do not change anything yet.</div><div class="prompt">Build my project, fix the most important issue, verify it with screenshots, then ask before creating a draft PR.</div></section>
 <section class="section"><h2>How Forge keeps cost down</h2><p>Live URLs use Browser Run without a container. Repository inspection uses GitHub. A container starts only for install, build, edit, test or preview work, and sleeps after 90 seconds idle.</p></section></div>
 <aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots">${Array.from({ length: caps.perTenant }, (_, index) => `<i class="slot ${usedSlots > index ? 'used' : ''}"></i>`).join('')}</div><span>${usedSlots} of ${caps.perTenant} active</span></div>${occupantRows}<p class="note">Each account runs up to ${caps.perTenant} workspaces (${caps.global} across all accounts). Idle workspaces are reclaimed automatically after ${ttlMinutes} minutes; destroy one sooner to free a slot immediately.</p></section>
-<section class="section${repositories.length === 0 ? ' queue' : ''}"><h2>GitHub repositories</h2>${repositories.length === 0 ? '<p>Forge cannot open, build or change any repository until this is reconnected.</p>' : ''}<a class="button" href="/github/install">${repositories.length === 0 ? 'Reconnect GitHub' : 'Manage access'}</a><ul>${rows}</ul>${moreRows}</section></aside></div></main>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+<section class="section${repositories.length === 0 ? ' queue' : ''}"><h2>GitHub repositories</h2>${reconnectNote}${repositories.length === 0 ? '<p>Forge cannot open, build or change any repository until this is reconnected.</p>' : ''}<form method="post" action="${env.FORGE_PUBLIC_ORIGIN}/github/reconnect" style="margin:0 0 8px"><button class="button" type="submit">Reconnect GitHub</button></form><a class="button" href="/github/install">Install or add repositories</a><ul>${rows}</ul>${moreRows}</section></aside></div></main>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }
 
 export async function authorizeRepository(
