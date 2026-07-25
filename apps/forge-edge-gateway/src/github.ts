@@ -96,9 +96,21 @@ function escapeHtmlLocal(value: string): string {
   })[character] ?? character);
 }
 
-function assertSameOrigin(request: Request, env: Env): void {
+/**
+ * CSRF guard for form POSTs: the submission must come from a page Forge itself
+ * served.
+ *
+ * "Forge itself" is more than one origin — the canonical one plus any it used
+ * to answer on (FORGE_LEGACY_ORIGINS). Checking only the canonical origin broke
+ * every approval page loaded on the older hostname the moment the canonical one
+ * changed: the page rendered a working-looking Approve button, and pressing it
+ * returned 403 with nothing explaining why.
+ */
+export function assertSameOrigin(request: Request, env: Env): void {
   const origin = request.headers.get('origin');
-  if (origin && origin !== env.FORGE_PUBLIC_ORIGIN) throw new ForgeError({
+  if (!origin) return;
+  const allowed = [env.FORGE_PUBLIC_ORIGIN, ...(env.FORGE_LEGACY_ORIGINS ?? '').split(',').map((value) => value.trim())];
+  if (!allowed.filter(Boolean).includes(origin)) throw new ForgeError({
     code: 'FORGE_PERMISSION_DENIED', message: 'Cross-origin form submission was rejected.', retryable: false
   });
 }
@@ -1297,11 +1309,16 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   const linkClaims = token ? await verifyApprovalLink(env, token, approvalId) : null;
   const user = linkClaims ? null : await getWebSession(request, env);
   const tenantId = linkClaims?.tenant ?? user?.tenant_id ?? null;
-  if (!tenantId) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
+  // Stay on the hostname the reviewer opened. Forge answers on more than one,
+  // and sending them to the canonical origin mid-decision makes the form post
+  // cross-origin (rejected by assertSameOrigin) and drops the host-scoped
+  // session cookie of anyone relying on one instead of a signed link.
+  const self = forgeOrigin(request, env);
+  if (!tenantId) return Response.redirect(`${self}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
   const resolvedBy = user ? `github:${user.github_user_id}` : 'approval-link';
   // Preserve the signed token across the POST → 303 → GET round-trip so the
   // reviewer never bounces to login mid-decision.
-  const selfUrl = `${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}${token ? `?t=${encodeURIComponent(token)}` : ''}`;
+  const selfUrl = `${self}/approvals/${approvalId}${token ? `?t=${encodeURIComponent(token)}` : ''}`;
   const row = await env.METADATA.prepare(
     'SELECT requested_action, reason, request_payload, state, expires_at FROM approvals WHERE id=?1 AND tenant_id=?2'
   ).bind(approvalId, tenantId).first<{ requested_action: string; reason: string; request_payload: string; state: string; expires_at: string }>();
@@ -1381,6 +1398,14 @@ if(d.state==='provisioning'||d.state==='starting'){f.hidden=true;setTimeout(poll
 }).catch(function(){setTimeout(poll,8000)})}
 poll();})();</script>`
     : '';
+  // The POST path refuses an expired approval, so the page must not offer a
+  // button that can only fail. Previously an expired-but-pending approval
+  // rendered a live-looking Approve, and pressing it returned a bare 409.
+  const expired = row.state === 'pending' && Date.parse(row.expires_at) <= Date.now();
+  const decidable = row.state === 'pending' && !expired;
+  const expiredBlock = expired
+    ? '<div class="outcome bad"><strong>This approval has expired.</strong> Nothing was done. Ask the agent to request it again — a fresh approval takes seconds and this link cannot be revived.</div>'
+    : '';
   const hasDiff = typeof diff === 'string' && diff.trim() !== '';
   const shown = hasDiff ? diffStats(diff) : null;
   // Prefer the recorded totals for the headline figure — they describe the
@@ -1441,10 +1466,10 @@ pre.body{background:var(--panel);border:1px solid var(--line);border-radius:12px
 form.decide{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:0;z-index:2;background:var(--bg);border-top:1px solid var(--line);padding:.85rem 0 1rem}
 body{padding-bottom:5rem}
 @media(max-width:560px){form.decide{flex-direction:column}form.decide button{width:100%}}`,
-    body: `<h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1>
+    body: `<h1>${decidable ? 'Approve Forge action' : expired ? 'Approval expired' : `Action ${escapeHtml(row.state)}`}</h1>
 <p><strong>${escapeHtml(row.requested_action)}</strong> — ${escapeHtml(row.reason)}</p>
-${outcomeBlock}${previewBlock}${statsLine}${partialLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
-${row.state === 'pending' ? `<form class="decide" method="post" action="${escapeHtml(selfUrl)}"><button class="primary" name="decision" value="approved">${deferredAction ? 'Approve &amp; open pull request' : 'Approve once'}</button><button name="decision" value="denied">Deny</button></form>` : ''}`
+${expiredBlock}${outcomeBlock}${previewBlock}${statsLine}${partialLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
+${decidable ? `<form class="decide" method="post" action="${escapeHtml(selfUrl)}"><button class="primary" name="decision" value="approved">${deferredAction ? 'Approve &amp; open pull request' : 'Approve once'}</button><button name="decision" value="denied">Deny</button></form>` : ''}`
   });
 }
 
