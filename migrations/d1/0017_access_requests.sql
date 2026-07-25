@@ -17,4 +17,18 @@ ALTER TABLE users ADD COLUMN access_requested_at TEXT;
 ALTER TABLE users ADD COLUMN access_resolved_at TEXT;
 ALTER TABLE users ADD COLUMN access_resolved_by TEXT;
 
+-- Hand ownership to the account that was already here.
+--
+-- Without this the gate installs itself with nobody able to operate it: every
+-- existing row backfills to is_owner=0, and the "first account becomes owner"
+-- rule in the login flow only fires on a completely empty users table, which
+-- this database is not. Approved users could still work, but no access request
+-- could ever be granted and the approve/decline endpoint would refuse everyone.
+--
+-- The earliest account is the one that created this instance, so it is the
+-- owner. Written to be safe on an empty table too (it simply matches nothing).
+UPDATE users
+   SET access_state = 'approved', is_owner = 1
+ WHERE id = (SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1);
+
 CREATE INDEX IF NOT EXISTS idx_users_access_state ON users(access_state, access_requested_at);
