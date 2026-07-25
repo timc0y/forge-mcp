@@ -7,6 +7,7 @@ import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import type { AuthenticatedContext } from './auth';
 import type { Env } from './env';
 import { listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
+import { BASE_CSS, escapeHtml, forgeGlyph, page } from './ui';
 import { launchReviewPreview, releaseReviewPreview, reviewPreviewStatus } from './review-preview';
 import {
   denyDeferredAction,
@@ -89,7 +90,7 @@ function sessionCookie(token: string, maxAge = SESSION_SECONDS): string {
   return `forge_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
 }
 
-function escapeHtml(value: string): string {
+function escapeHtmlLocal(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   })[character] ?? character);
@@ -577,19 +578,6 @@ export async function repositoryAccessDiagnosis(
 
 
 
-/**
- * The Forge mark: an anvil, drawn as one geometric silhouette.
- *
- * Deliberately monochrome and inherits currentColor, so it reads as a single
- * calm shape on light or dark and never competes with the page. An original
- * mark rather than a borrowed one — the restrained, neutral look is the part
- * worth taking from apps that do this well; somebody else's logo is not.
- */
-export function forgeGlyph(size = 24): string {
-  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">`
-    + '<path d="M4 7.6H18l3.8 2a.5.5 0 0 1 0 .9L18 12.4h-3.7v3.2h3.2a1.15 1.15 0 0 1 1.15 1.15V18.6H5.35v-1.85A1.15 1.15 0 0 1 6.5 15.6h3.2v-3.2H6.3A2.3 2.3 0 0 1 4 10.1V7.6Z" fill="currentColor"/>'
-    + '</svg>';
-}
 
 
 /**
@@ -627,24 +615,15 @@ export function hasForgeAccess(user: Pick<UserRow, 'access_state' | 'is_owner'> 
 /** The page a signed-in account without access sees instead of the portal. */
 export function accessPendingPage(env: Env, user: UserRow, state: string): Response {
   const declined = state === 'denied';
-  return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge — ${declined ? 'access declined' : 'access requested'}</title>
-<style>:root{color-scheme:light dark;--bg:#f7f7f8;--surface:#fff;--ink:#0d0d0d;--muted:#6e6e80;--line:#e5e5e5;--accent:#0d0d0d}
-@media(prefers-color-scheme:dark){:root{--bg:#0d0d0d;--surface:#171717;--ink:#ececf1;--muted:#9a9aa6;--line:#2a2a2a;--accent:#ececf1}}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:2rem;background:var(--bg);color:var(--ink);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-main{width:min(100%,30rem);text-align:center}
-.glyph{width:44px;height:44px;margin:0 auto 1.5rem;border-radius:12px;border:1px solid var(--line);background:var(--surface);display:grid;place-items:center}
-h1{margin:0 0 .6rem;font-size:1.6rem;letter-spacing:-.02em}
-p{margin:0 0 1rem;color:var(--muted);text-wrap:pretty}
-a{display:inline-block;margin-top:.5rem;color:var(--muted);font-size:.9rem}</style>
-<main><div class="glyph">${forgeGlyph(22)}</div>
-<h1>${declined ? 'Access declined' : 'Request received'}</h1>
+  return page({
+    title: `Forge — ${declined ? 'access declined' : 'access requested'}`,
+    status: 403,
+    topRight: '<a href="/logout">Sign out</a>',
+    css: '.centre{max-width:34rem;margin:clamp(3rem,10vw,6rem) auto;text-align:center}',
+    body: `<div class="centre"><h1>${declined ? 'Access declined' : 'Request received'}</h1>
 <p>${declined
   ? 'Your request to use Forge was not approved. If you think that is a mistake, contact whoever runs this instance.'
-  : `Thanks ${escapeHtml(user.github_login)} — your request is with the owner. You will be able to sign in here once it is approved.`}</p>
-<a href="/logout">Sign out</a></main>`, {
-    status: 403,
-    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }
+  : `Thanks ${escapeHtml(user.github_login)} — your request is with the owner. You will be able to sign in here once it is approved.`}</p></div>`
   });
 }
 
@@ -675,8 +654,8 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
     return `<li><span><strong>Slot ${occupant.slot}</strong><small>${escapeHtml(occupant.workspaceId.slice(0, 14))}… · ${escapeHtml(state)} · ${escapeHtml(idle)}${flag}</small></span></li>`;
   };
   const occupantRows = occupants.length
-    ? `<ul>${occupants.map(occupantRow).join('')}</ul>`
-    : `<p class="note">All ${caps.perTenant} workspace slots are free.</p>`;
+    ? `<ul class="list">${occupants.map(occupantRow).join('')}</ul>`
+    : '';
   // When the list is empty, say why. "No repositories connected" reads as a
   // dead end; "your installation was revoked when the account was renamed" is
   // something the owner can act on in one click.
@@ -686,7 +665,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
     ? repositories.slice(0, 6).map(repositoryRow).join('')
     : `<li><span><strong>No repositories connected</strong><small>${escapeHtml(diagnosis?.detail ?? 'Install the GitHub App to build, edit and create draft PRs.')}</small></span></li>`;
   const moreRows = repositories.length > 6
-    ? `<details><summary>Show ${repositories.length - 6} more repositories</summary><ul>${repositories.slice(6).map(repositoryRow).join('')}</ul></details>`
+    ? `<details><summary>Show ${repositories.length - 6} more repositories</summary><ul class="list">${repositories.slice(6).map(repositoryRow).join('')}</ul></details>`
     : '';
   // The review queue: work agents have finished and staged, waiting on a human.
   // This is the surface that makes approval asynchronous — an agent submits and
@@ -697,14 +676,14 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
     const status = action.state === 'failed'
       ? '<strong class="bad">needs another look</strong>'
       : action.state === 'executing' ? 'opening pull request…' : 'waiting for you';
-    return `<li><span><strong>${escapeHtml(action.title)}</strong><small>${escapeHtml(action.repository.owner)}/${escapeHtml(action.repository.name)} · ${escapeHtml(action.branch)} → ${escapeHtml(action.base)} · ${action.filesChanged} file${action.filesChanged === 1 ? '' : 's'} · ${escapeHtml(when)} · ${status}</small></span><a class="button" href="/approvals/${escapeHtml(action.approvalId)}">Review</a></li>`;
+    return `<li><span><strong>${escapeHtml(action.title)}</strong><small>${escapeHtml(action.repository.owner)}/${escapeHtml(action.repository.name)} · ${escapeHtml(action.branch)} → ${escapeHtml(action.base)} · ${action.filesChanged} file${action.filesChanged === 1 ? '' : 's'} · ${escapeHtml(when)} · ${status}</small></span><a class="btn" href="/approvals/${escapeHtml(action.approvalId)}">Review</a></li>`;
   };
   const reviewSection = awaitingReview.length
-    ? `<section class="section queue"><h2>Waiting for your review <span class="badge">${awaitingReview.length}</span></h2><p>Agents finished this work and staged it. Nothing is blocked — approve whenever suits you, and Forge will push the branch and open the draft pull request.</p><ul>${awaitingReview.map(reviewRow).join('')}</ul></section>`
+    ? `<section class="section alert"><h2>Waiting for your review <span class="badge">${awaitingReview.length}</span></h2><p>Agents finished this work and staged it. Nothing is blocked — approve whenever suits you, and Forge will push the branch and open the draft pull request.</p><ul class="list">${awaitingReview.map(reviewRow).join('')}</ul></section>`
     : '';
   const accessSection = pendingAccess.length
-    ? `<section class="section queue"><h2>Access requests <span class="badge">${pendingAccess.length}</span></h2><p>These people signed in and are waiting for you. Until you approve them they cannot use Forge at all.</p><ul>${
-        pendingAccess.map((row) => `<li><span><strong>${escapeHtml(row.github_login)}</strong><small>asked ${escapeHtml(row.access_requested_at ? new Date(row.access_requested_at).toISOString().slice(0, 10) : 'recently')}</small></span><form method="post" action="${env.FORGE_PUBLIC_ORIGIN}/app/access"><input type="hidden" name="user_id" value="${escapeHtml(row.id)}"><button class="button" name="decision" value="approved">Approve</button><button class="button ghost" name="decision" value="denied">Decline</button></form></li>`).join('')
+    ? `<section class="section alert"><h2>Access requests <span class="badge">${pendingAccess.length}</span></h2><p>These people signed in and are waiting for you. Until you approve them they cannot use Forge at all.</p><ul class="list">${
+        pendingAccess.map((row) => `<li><span><strong>${escapeHtml(row.github_login)}</strong><small>asked ${escapeHtml(row.access_requested_at ? new Date(row.access_requested_at).toISOString().slice(0, 10) : 'recently')}</small></span><form class="row" method="post" action="${env.FORGE_PUBLIC_ORIGIN}/app/access"><input type="hidden" name="user_id" value="${escapeHtml(row.id)}"><button class="primary" name="decision" value="approved">Approve</button><button name="decision" value="denied">Decline</button></form></li>`).join('')
       }</ul></section>`
     : '';
   // Reconnect outcome, so the button visibly does something either way.
@@ -717,14 +696,44 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
         ? '<p class="note"><strong>Reconnect failed.</strong> GitHub did not return a usable installation; try Install below.</p>'
         : '';
   const mcpUrl = `${env.FORGE_PUBLIC_ORIGIN}/mcp`;
-  return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge Cloud</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--soft:#f0f0f3;--accent:#5b4cf0;--grad:#a78bfa;--accent-soft:#efedfe}*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(100% - 3rem,960px);margin:0 auto;padding:42px 0 72px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:28px;border-bottom:1px solid var(--line)}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:14px}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:19px;font-weight:750;letter-spacing:-.02em}h1{display:flex;align-items:center;gap:12px;font-size:32px;line-height:1;letter-spacing:-.035em;margin:0 0 12px}h1 .glyph{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:19px;box-shadow:0 3px 12px -3px var(--accent)}h2{font-size:18px;line-height:1.25;margin:0 0 10px}p{margin:0;color:var(--muted);max-width:68ch;text-wrap:pretty}.toplinks{display:flex;gap:14px;align-items:center;white-space:nowrap}a{color:inherit;text-underline-offset:3px}.button{display:inline-flex;min-height:44px;align-items:center;background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;padding:9px 14px;border-radius:9px;text-decoration:none;font-weight:700;transition:filter 180ms ease-out}.button:hover{filter:brightness(1.08)}a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(250px,.8fr);gap:clamp(30px,5vw,54px);padding-top:34px}.layout>*{min-width:0}.section{margin-bottom:34px}.prompt{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:10px;color:var(--ink);font:14px/1.55 ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}.prompt+.prompt{margin-top:8px}.meter{display:flex;align-items:center;gap:10px;margin-top:12px}.slots{display:flex;gap:5px}.slot{width:32px;height:8px;border-radius:4px;background:var(--soft)}.slot.used{background:var(--accent)}code{display:block;max-width:100%;background:var(--soft);border-radius:6px;padding:11px;overflow:auto;margin:10px 0;color:var(--ink);overflow-wrap:anywhere}ul{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--line)}li{padding:11px 0;border-bottom:1px solid var(--line)}li span{display:flex;justify-content:space-between;gap:12px}small{color:var(--muted)}.note{font-size:13px;margin-top:10px}.queue{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:18px 20px}.queue ul{border-top-color:var(--line)}.queue li span{flex:1 1 auto}.queue li{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.queue .button{min-height:44px;padding:9px 16px;flex:0 0 auto}.queue form{display:flex;gap:.5rem;margin:0;flex:0 0 auto}.queue .button.ghost{background:var(--surface);color:var(--ink);border:1px solid var(--line)}.queue .button.ghost:hover{border-color:var(--accent)}.badge{display:inline-grid;place-items:center;min-width:24px;height:24px;padding:0 7px;border-radius:12px;background:var(--accent);color:#fff;font-size:13px;font-weight:700;vertical-align:middle}.bad{color:#d64545}details{margin-top:10px}summary{min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--muted);font-size:13px}summary:hover{color:var(--ink)}@media(max-width:720px){main{width:min(100% - 2.5rem,960px);padding:28px 0 56px}.layout{grid-template-columns:1fr;gap:8px}header{align-items:flex-start;flex-direction:column}.toplinks{width:100%;justify-content:space-between}li span{display:block}small{display:block}.button{justify-content:center;width:100%}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style>
-<main><header><div><h1><span class="glyph" aria-hidden="true">⚒</span>Forge</h1><p>A real development computer for ChatGPT, Codex and Claude. Review a site cheaply, or open a repository to build, fix, test and prepare a draft PR.</p></div><div class="toplinks"><span>${escapeHtml(user.github_login)}</span><a href="/logout">Sign out</a></div></header>
-<div class="layout"><div>${accessSection}${reviewSection}<section class="section"><h2>Start in your AI client</h2><p>Connect this MCP URL once, then use ordinary language. Forge chooses the smallest capable path.</p><code id="mcp">${mcpUrl}</code><a class="button" href="#" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied';return false">Copy MCP URL</a></section>
-<section class="section"><h2>Good first prompts</h2><div class="prompt">Review https://example.com with Parallax on phone and desktop. Inspect every screenshot.</div><div class="prompt">Open ${escapeHtml(user.github_login)}/parallax-review, run the checks, explain the architecture, and do not change anything yet.</div><div class="prompt">Build my project, fix the most important issue, verify it with screenshots, then ask before creating a draft PR.</div></section>
-<section class="section"><h2>How Forge keeps cost down</h2><p>Live URLs use Browser Run without a container. Repository inspection uses GitHub. A container starts only for install, build, edit, test or preview work, and sleeps after 90 seconds idle.</p></section></div>
-<aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots">${Array.from({ length: caps.perTenant }, (_, index) => `<i class="slot ${usedSlots > index ? 'used' : ''}"></i>`).join('')}</div><span>${usedSlots} of ${caps.perTenant} active</span></div>${occupantRows}<p class="note">Each account runs up to ${caps.perTenant} workspaces (${caps.global} across all accounts). Idle workspaces are reclaimed automatically after ${ttlMinutes} minutes; destroy one sooner to free a slot immediately.</p></section>
-<section class="section${repositories.length === 0 ? ' queue' : ''}"><h2>GitHub repositories</h2>${reconnectNote}${repositories.length === 0 ? '<p>Forge cannot open, build or change any repository until this is reconnected.</p>' : ''}<form method="post" action="${env.FORGE_PUBLIC_ORIGIN}/github/reconnect" style="margin:0 0 8px"><button class="button" type="submit">Reconnect GitHub</button></form><a class="button" href="/github/install">Install or add repositories</a><ul>${rows}</ul>${moreRows}</section></aside></div></main>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+  return page({
+    title: 'Forge — your workspace',
+    topRight: `<span>${escapeHtml(user.github_login)}</span><a href="/logout">Sign out</a>`,
+    css: `
+.lead{margin:1.6rem 0 1.4rem}
+.grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(min(100%,17rem),.65fr);gap:1.25rem;align-items:start}
+.grid>*{min-width:0}
+.slots{display:flex;gap:5px;margin:.6rem 0}
+.slot{width:30px;height:8px;border-radius:4px;background:var(--bg);border:1px solid var(--line)}
+.slot.used{background:var(--ink);border-color:var(--ink)}
+.prompt{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:.75rem .85rem;margin-top:.5rem;font:.9rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+details{margin-top:.6rem}summary{min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--muted);font-size:.88rem}summary:hover{color:var(--ink)}
+@media(max-width:820px){.grid{grid-template-columns:1fr}}`,
+    body: `<div class="lead"><h1>Your workspace</h1>
+<p>Screenshot any site, change real code, and approve what comes back — from an ordinary ChatGPT or Claude conversation.</p></div>
+${accessSection}${reviewSection}
+<div class="grid"><div>
+<section class="section"><h2>Start in your AI client</h2>
+<p>Connect this MCP URL once, then use ordinary language. Forge picks the cheapest way to do what you ask.</p>
+<code class="block" id="mcp">${escapeHtml(mcpUrl)}</code>
+<button class="primary" type="button" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied'">Copy MCP URL</button></section>
+<section class="section"><h2>Good first prompts</h2>
+<div class="prompt">Screenshot ${escapeHtml(user.github_login)}.com on phone and desktop and tell me what looks wrong.</div>
+<div class="prompt">Open one of my repositories, run the checks, and explain the architecture. Change nothing yet.</div>
+<div class="prompt">Fix the most important issue you found, verify it with screenshots, then submit it for my review.</div></section>
+</div><aside>
+<section class="section"><h2>Workspace capacity</h2>
+<div class="slots">${Array.from({ length: caps.perTenant }, (_, index) => `<i class="slot ${usedSlots > index ? 'used' : ''}"></i>`).join('')}</div>
+<p class="note">${usedSlots} of ${caps.perTenant} active. Idle workspaces are reclaimed after ${ttlMinutes} minutes.</p>
+${occupantRows}</section>
+<section class="section${repositories.length === 0 ? ' alert' : ''}"><h2>GitHub repositories</h2>${reconnectNote}
+${repositories.length === 0 ? '<p>Forge cannot open, build or change any repository until this is reconnected.</p>' : ''}
+<div class="row"><form method="post" action="${env.FORGE_PUBLIC_ORIGIN}/github/reconnect"><button class="${repositories.length === 0 ? 'primary' : ''}" type="submit">Reconnect GitHub</button></form>
+<a class="btn" href="/github/install">Install or add repositories</a></div>
+<ul class="list">${rows}</ul>${moreRows}</section>
+</aside></div>
+<footer>Forge — ${escapeHtml(env.FORGE_ENVIRONMENT)}</footer>`
+  });
 }
 
 export async function authorizeRepository(
@@ -1312,11 +1321,43 @@ poll();})();</script>`
     : metaRows === ''
       ? `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
       : '';
-  return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge approval</title><style>:root{--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--accent:#5b4cf0;--grad:#a78bfa;--add:#eafaf0;--add-ink:#0f9d58;--del:#fdecec;--del-ink:#d64545;--hunk:#efedfe;--hunk-ink:#5b4cf0}*{box-sizing:border-box}body{width:min(100% - 2.5rem,60rem);margin:0 auto;padding:clamp(2.5rem,8vw,5rem) 0 7rem;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:1.4rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 3px 12px -3px var(--accent)}.mark .wordmark{font-size:18px;font-weight:750;letter-spacing:-.02em}h1{margin:0 0 1rem;font-size:clamp(1.9rem,6vw,2.8rem);line-height:1.02;letter-spacing:-.03em}p{color:var(--muted);overflow-wrap:anywhere}.stats{color:var(--ink);font-weight:600}.s-add{color:var(--add-ink)}.s-del{color:var(--del-ink)}.kv{display:flex;gap:.75rem;align-items:baseline;padding:.3rem 0;border-bottom:1px solid var(--line)}.kv span{flex:0 0 6.5rem;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.kv code{overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;background:var(--surface);padding:1rem;border:1px solid var(--line);border-radius:10px;font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}pre.body{white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem}.diffset{margin-top:1.25rem;display:flex;flex-direction:column;gap:1rem}.dfile{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--surface)}.dfhead{display:flex;align-items:center;gap:.6rem;padding:.6rem .9rem;background:#fafafc;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}.dfico{font-size:.72rem;font-weight:800;color:var(--muted);min-width:1.6rem;text-align:center}.dfpath{font:600 .82rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dfstat{margin-left:auto;display:flex;gap:.5rem;font:700 .74rem/1 ui-monospace,monospace;flex:0 0 auto}.dfbody{max-height:30rem;overflow:auto;font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.drow{display:grid;grid-template-columns:3rem 3rem 1fr;min-width:0}.drow .dg{padding:0 .45rem;text-align:right;color:var(--muted);opacity:.6;user-select:none;white-space:nowrap;border-right:1px solid var(--line)}.drow .dc{padding:0 .75rem;white-space:pre;overflow-wrap:normal}.drow .ds{display:inline-block;width:.75rem;color:var(--muted);opacity:.7}.drow.add{background:var(--add)}.drow.add .dc,.drow.add .ds{color:var(--add-ink)}.drow.del{background:var(--del)}.drow.del .dc,.drow.del .ds{color:var(--del-ink)}.drow.hunk{background:var(--hunk)}.drow.hunk .dc{color:var(--hunk-ink);font-weight:600}.drow.hunk .dg{background:var(--hunk);border-right-color:transparent}.dtrunc{font-size:.8rem;margin-top:.25rem}.outcome{margin:0 0 1.25rem;padding:.9rem 1.1rem;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;background:var(--surface);color:var(--ink);font-size:.92rem;line-height:1.5}.outcome a{color:var(--accent);font-weight:700}.outcome code{font:.85em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.outcome.ok{border-left-color:var(--add-ink)}.outcome.bad{border-left-color:var(--del-ink)}.preview{margin:0 0 1.25rem;padding:.9rem 1.1rem;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.pvhead{display:flex;align-items:center;gap:.75rem;justify-content:space-between}.pvstatus{color:var(--muted);font-size:.84rem}.pvnote{margin:.45rem 0 .8rem;font-size:.86rem}.preview form{margin:0;position:static;background:none;border-top:0;padding:0;z-index:auto}.preview button{min-height:40px;padding:.5rem 1rem;font-size:.9rem}.pvlink[hidden],.preview form[hidden]{display:none}.pvlink{display:inline-flex;min-height:40px;align-items:center;padding:.5rem 1rem;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;text-decoration:none;font-weight:700}form{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:0;z-index:2;background:var(--bg);border-top:1px solid var(--line);padding:.85rem 0 1rem}button{min-height:46px;padding:.7rem 1.2rem;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);font:inherit;font-weight:700;cursor:pointer;transition:filter 180ms ease-out,border-color 180ms ease-out}.approve{background:linear-gradient(135deg,var(--accent),var(--grad));color:#fff;border-color:transparent}button:hover{border-color:var(--accent)}.approve:hover{filter:brightness(1.08);border-color:transparent}button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:460px){form{flex-direction:column}button{width:100%}}</style>
-<div class="mark"><span class="glyph" aria-hidden="true">⚒</span><span class="wordmark">Forge</span></div><h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1><p><strong>${escapeHtml(row.requested_action)}</strong></p><p>${escapeHtml(row.reason)}</p>${outcomeBlock}${previewBlock}${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
-${row.state === 'pending' ? `<form method="post" action="${escapeHtml(selfUrl)}"><button class="approve" name="decision" value="approved">${deferredAction ? 'Approve &amp; open pull request' : 'Approve once'}</button><button name="decision" value="denied">Deny</button></form>` : ''}`,
-  { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+  return page({
+    title: `Forge — ${row.state === 'pending' ? 'approve' : row.state}`,
+    topRight: '<a href="/app">Portal</a>',
+    css: `
+.stats{color:var(--ink);font-weight:600;margin:.9rem 0}
+.s-add{color:var(--ok)}.s-del{color:var(--bad)}
+.outcome{margin:1rem 0;padding:.9rem 1.1rem;border:1px solid var(--line);border-left:3px solid var(--ink);border-radius:12px;background:var(--panel);font-size:.94rem}
+.outcome a{font-weight:600}.outcome.ok{border-left-color:var(--ok)}.outcome.bad{border-left-color:var(--bad)}
+.preview{margin:1rem 0;padding:.9rem 1.1rem;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.pvhead{display:flex;align-items:center;gap:.75rem;justify-content:space-between}
+.pvstatus{color:var(--muted);font-size:.85rem}.pvnote{margin:.45rem 0 .8rem;font-size:.88rem}
+.preview form{margin:0}.pvlink[hidden],.preview form[hidden]{display:none}
+.pvlink{display:inline-flex;align-items:center;min-height:44px;padding:.55rem 1.05rem;border-radius:10px;background:var(--ink);color:var(--bg);text-decoration:none;font-weight:600}
+pre.body{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:1rem;white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem;overflow:auto;font:.85rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+.diffset{margin-top:1.25rem;display:flex;flex-direction:column;gap:1rem}
+.dfile{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}
+.dfhead{display:flex;align-items:center;gap:.6rem;padding:.6rem .9rem;background:var(--bg);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}
+.dfico{font-size:.7rem;font-weight:700;color:var(--muted);min-width:1.6rem;text-align:center}
+.dfpath{font:600 .82rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dfstat{margin-left:auto;display:flex;gap:.5rem;font:700 .74rem/1 ui-monospace,monospace;flex:0 0 auto}
+.dfbody{max-height:30rem;overflow:auto;font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+.drow{display:grid;grid-template-columns:3rem 3rem 1fr;min-width:0}
+.drow .dg{padding:0 .45rem;text-align:right;color:var(--muted);opacity:.6;user-select:none;white-space:nowrap;border-right:1px solid var(--line)}
+.drow .dc{padding:0 .75rem;white-space:pre}
+.drow .ds{display:inline-block;width:.75rem;color:var(--muted);opacity:.7}
+.drow.add{background:var(--ok-bg)}.drow.add .dc,.drow.add .ds{color:var(--ok)}
+.drow.del{background:var(--bad-bg)}.drow.del .dc,.drow.del .ds{color:var(--bad)}
+.drow.hunk{background:var(--bg)}.drow.hunk .dc{color:var(--muted);font-weight:600}
+.dtrunc{font-size:.85rem;margin-top:.25rem}
+form.decide{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:0;z-index:2;background:var(--bg);border-top:1px solid var(--line);padding:.85rem 0 1rem}
+body{padding-bottom:5rem}
+@media(max-width:560px){form.decide{flex-direction:column}form.decide button{width:100%}}`,
+    body: `<h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1>
+<p><strong>${escapeHtml(row.requested_action)}</strong> — ${escapeHtml(row.reason)}</p>
+${outcomeBlock}${previewBlock}${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
+${row.state === 'pending' ? `<form class="decide" method="post" action="${escapeHtml(selfUrl)}"><button class="primary" name="decision" value="approved">${deferredAction ? 'Approve &amp; open pull request' : 'Approve once'}</button><button name="decision" value="denied">Deny</button></form>` : ''}`
+  });
 }
 
 /**

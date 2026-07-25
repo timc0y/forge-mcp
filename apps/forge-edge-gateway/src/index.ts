@@ -20,10 +20,10 @@ import {
 } from './oauth';
 import type { Env } from './env';
 import { galleryPage } from './review-gallery';
+import { forgeGlyph } from './ui';
 import {
   appDashboard,
   approvalPage,
-  forgeGlyph,
   resolveAccessRequest,
   approvalPreviewEndpoint,
   cookie,

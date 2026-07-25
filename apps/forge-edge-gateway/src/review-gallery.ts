@@ -1,6 +1,7 @@
 import { ids, type ArtifactId, type TenantId, type WorkspaceId } from '@forge/core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import type { Env } from './env';
+import { BASE_CSS, forgeGlyph } from './ui';
 
 /**
  * A shareable page of the screenshots from one review.
@@ -120,27 +121,24 @@ export function buildGalleryHtml(sourceUrl: string, capturedAt: string, cells: G
   const note = omitted > 0
     ? `<p class="note">${omitted} further capture(s) were too large to include on this page.</p>`
     : '';
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>Forge screenshots — ${escapeHtml(sourceUrl)}</title>
-<style>:root{color-scheme:light dark;--bg:#f5f5f8;--surface:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e6e6ea;--accent:#5b4cf0;--grad:#a78bfa}
-@media(prefers-color-scheme:dark){:root{--bg:#0e0e12;--surface:#17171c;--ink:#f4f4f6;--muted:#a2a2ad;--line:#2a2a31}}
-*{box-sizing:border-box}body{margin:0;padding:clamp(1.5rem,4vw,3rem) 0 4rem;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}
-main{width:min(100% - 2.5rem,72rem);margin:0 auto}
-.mark{display:inline-flex;align-items:center;gap:10px;margin-bottom:1.1rem}.mark .glyph{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--grad));display:grid;place-items:center;color:#fff;font-size:17px}.mark .wordmark{font-size:18px;font-weight:750;letter-spacing:-.02em}
-h1{margin:0 0 .35rem;font-size:clamp(1.5rem,4vw,2.2rem);line-height:1.1;letter-spacing:-.03em;overflow-wrap:anywhere}
-p{margin:0;color:var(--muted)}p a{color:var(--accent)}.note{margin-top:.75rem;font-size:.9rem}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:1.25rem;margin-top:2rem}
-figure{margin:0;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><link rel="icon" href="/favicon.ico">
+<title>Forge screenshots — ${escapeHtml(sourceUrl)}</title>
+<style>${BASE_CSS}
+.head{padding:1.6rem 0 .6rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:1.25rem;margin-top:1.6rem}
+figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
 figcaption{display:flex;flex-direction:column;gap:2px;padding:.7rem .9rem;border-bottom:1px solid var(--line)}
 figcaption strong{font:600 .85rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
 figcaption span{color:var(--muted);font-size:.78rem}
 img{display:block;width:100%;height:auto;background:var(--bg)}
-footer{margin-top:2.5rem;color:var(--muted);font-size:.82rem}</style>
-<main><div class="mark"><span class="glyph" aria-hidden="true">⚒</span><span class="wordmark">Forge</span></div>
-<h1>${escapeHtml(sourceUrl)}</h1>
-<p>${included.length} screenshot(s) captured ${escapeHtml(capturedAt.replace("T", " ").replace(/\.\d+Z$/, " UTC"))}.</p>${note}
+.wrap{width:min(100% - 2.5rem,76rem)}</style></head>
+<body><div class="wrap"><div class="topbar"><span class="mark"><span class="box">${forgeGlyph(19)}</span>Forge</span>
+<div class="who">${included.length} screenshot(s)</div></div></div>
+<main class="wrap"><div class="head"><h1>${escapeHtml(sourceUrl)}</h1>
+<p>Captured ${escapeHtml(capturedAt.replace('T', ' ').replace(/\.\d+Z$/, ' UTC'))}.</p>${note}</div>
 <div class="grid">${figures}</div>
-<footer>Captured by Forge. This page is self-contained — the images are embedded, nothing is fetched from anywhere else.</footer></main>`;
+<footer>Self-contained — the images are embedded, nothing is fetched from anywhere else.</footer></main></body></html>`;
 }
 
 /**

@@ -91,7 +91,7 @@ describe('reviewer-facing pages', () => {
     expect(html).toContain('.pvlink[hidden]');
     // The sticky action bar needs an opaque backdrop, or page content scrolls
     // underneath it and sits unreadable behind the buttons on a phone.
-    expect(html).toMatch(/form\{[^}]*position:sticky[^}]*background:var\(--bg\)/);
+    expect(html).toMatch(/form\.decide\{[^}]*position:sticky[^}]*background:var\(--bg\)/);
   });
 
   it('shows the outcome instead of the buttons once decided', async () => {
@@ -109,6 +109,7 @@ describe('reviewer-facing pages', () => {
     expect(html).toContain('Fix homepage typo');
     expect(html).toContain('/approvals/apr_aaaaaaaaaaaaaaaaaaaaaaaaaa');
     // Approving happens on a phone; keep the tap target at the page's own 44px.
-    expect(html).toMatch(/\.queue \.button\{min-height:44px/);
+    // Tap targets come from the shared sheet now, so every surface gets them.
+    expect(html).toMatch(/\.btn,button\{[^}]*min-height:44px/);
   });
 });

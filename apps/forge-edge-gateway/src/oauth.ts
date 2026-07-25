@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify } from 'jose';
 import type { Env } from './env';
 import { getWebSession, hasForgeAccess, type UserRow } from './github';
+import { page } from './ui';
 
 const ACCESS_TOKEN_SECONDS = 60 * 60;
 const REFRESH_TOKEN_SECONDS = 60 * 60 * 24 * 30;
@@ -292,14 +293,20 @@ function authorizeForm(url: URL, user?: UserRow, error?: string): Response {
   const fields = ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'code_challenge', 'code_challenge_method']
     .map((key) => `<input type="hidden" name="${key}" value="${escapeHtml(url.searchParams.get(key) ?? '')}">`)
     .join('');
-  return html(`<!doctype html>
-<meta charset="utf-8">
-<title>Authorize Forge MCP</title>
-<style>:root{--bg:#f2f4f1;--surface:#fff;--ink:#151a16;--muted:#5c665f;--line:#cfd5d0;--accent:#23784b}*{box-sizing:border-box}body{width:min(100% - 2.5rem,32rem);margin:0 auto;padding:clamp(3rem,10vw,6rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}h1{margin:0 0 .75rem;font-size:clamp(2.2rem,8vw,3.25rem);line-height:1;letter-spacing:-.035em}p{color:var(--muted);text-wrap:pretty}form{margin-top:2rem;padding:clamp(1.25rem,4vw,2rem);background:var(--surface);border:1px solid var(--line);border-radius:12px}label{display:block;margin:0 0 1rem;font-weight:700}input{width:100%;min-height:46px;margin-top:.45rem;padding:.7rem;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);font:inherit}button{min-height:46px;padding:.7rem 1rem;background:var(--ink);color:#fff;border:0;border-radius:6px;font:inherit;font-weight:700;cursor:pointer}button:hover{background:var(--accent)}input:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}[role=alert]{padding:.75rem 1rem;background:#fce3df;color:#731f12;border-radius:6px}</style>
-<h1>Authorize Forge MCP</h1>
-<p>This connects the MCP client to ${user ? `<strong>${escapeHtml(user.github_login)}</strong>&#39;s` : 'your'} Forge workspace.</p>
+  return page({
+    title: 'Authorize Forge',
+    // The connect screen is the first authenticated surface most people see, so
+    // it has to look like the same product as the site they arrived from.
+    css: `.centre{max-width:32rem;margin:clamp(2.5rem,8vw,5rem) auto}
+label{display:block;margin:0 0 1rem;font-weight:600;color:var(--ink)}
+input{width:100%;min-height:46px;margin-top:.45rem;padding:.7rem;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font:inherit}
+input:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+[role=alert]{padding:.75rem 1rem;background:var(--bad-bg);color:var(--bad);border-radius:10px;margin-bottom:1rem}`,
+    body: `<div class="centre"><h1>Authorize Forge</h1>
+<p>This connects your AI client to ${user ? `<strong>${escapeHtml(user.github_login)}</strong>&#39;s` : 'your'} Forge workspace, so it can screenshot sites and work on repositories you have connected.</p>
 ${error ? `<p role="alert">${escapeHtml(error)}</p>` : ''}
-<form method="post">${fields}${user ? '' : '<label>Forge development token<input name="token" type="password" autocomplete="current-password" required></label>'}<button>Authorize</button></form>`);
+<section class="section"><form method="post">${fields}${user ? '' : '<label>Forge development token<input name="token" type="password" autocomplete="current-password" required></label>'}<button class="primary" type="submit">Authorize</button></form></section></div>`
+  });
 }
 
 export async function authorize(request: Request, env: Env): Promise<Response> {
