@@ -3,8 +3,6 @@ import { forgeTools, type ForgeToolHandlers, type ForgeToolResponse } from '@for
 import { toForgeError } from '@forge/core';
 import type { ZodRawShape } from 'zod';
 
-const FORGE_CONSOLE_URI = 'ui://forge/workspace-console';
-
 const RETRY_SAFE_MUTATIONS = new Set([
   'forge_workspace_create', 'forge_files_patch', 'forge_shell_exec', 'forge_process_start',
   'forge_git_branch_create', 'forge_git_commit', 'forge_git_push', 'forge_preview_expose',
@@ -23,19 +21,6 @@ const TRUE_READS = new Set([
 const OPEN_WORLD = new Set([
   'forge_review'
 ]);
-
-// Widget disabled repo-wide: it never reliably rendered in ChatGPT/Claude
-// clients and the resourceUri/outputTemplate _meta it carried was adding
-// per-call render overhead for no payoff. Every tool now returns a plain
-// text/structured result. Kept as a set (rather than removing showsWidget
-// entirely) so re-enabling for a specific tool is a one-line change if a
-// client starts rendering it correctly.
-const WIDGET_TOOLS = new Set<string>([]);
-
-/** Whether a tool's result renders the interactive console widget. */
-export function showsWidget(name: string): boolean {
-  return WIDGET_TOOLS.has(name);
-}
 
 // Short (<=64 char) ChatGPT status strings surfaced through result/tool _meta.
 // NOTE: these are adapter-side defaults. The per-tool source of truth should
@@ -111,7 +96,6 @@ export interface ToolCallTelemetry {
   errorCode?: string;
   errorMessage?: string;
   resultBytes?: number;
-  showsWidget: boolean;
   input: Record<string, unknown>;
 }
 
@@ -135,13 +119,11 @@ export function registerForgeToolsV1(
           ? { outputSchema: (definition as { outputSchema?: ZodRawShape }).outputSchema }
           : {}),
         annotations: toolAnnotations(definition.name, definition.sideEffect),
+        // No `ui`/`openai/outputTemplate` here on purpose: Forge serves no
+        // ui:// widget resource, so every tool result renders as the host's
+        // own plain text/structured output. The only Forge-authored UI a
+        // client ever shows is the hosted approval page at /approvals/:id.
         _meta: {
-          ...(showsWidget(definition.name)
-            ? {
-                ui: { resourceUri: FORGE_CONSOLE_URI, visibility: ['model', 'app'] },
-                'openai/outputTemplate': FORGE_CONSOLE_URI
-              }
-            : {}),
           ...(status
             ? {
                 'openai/toolInvocation/invoking': status.invoking,
@@ -163,9 +145,9 @@ export function registerForgeToolsV1(
           const rawValue = isResponse(result) ? result.value : result;
           const { structured, meta } = splitMeta(rawValue);
 
-          // Component-only _meta is forwarded to the widget via the result _meta,
-          // merged with the per-tool ChatGPT status strings, and kept out of the
-          // model-visible structuredContent.
+          // Bulk `_meta` a handler set aside (e.g. inline screenshot payloads)
+          // rides on the result _meta alongside the per-tool ChatGPT status
+          // strings, and stays out of the model-visible structuredContent.
           const resultMeta: Record<string, unknown> = {
             ...(status
               ? {
@@ -192,7 +174,6 @@ export function registerForgeToolsV1(
             durationMs: Date.now() - startedAt,
             status: 'success',
             resultBytes: JSON.stringify(response).length,
-            showsWidget: showsWidget(definition.name),
             input
           });
 
@@ -201,9 +182,9 @@ export function registerForgeToolsV1(
           const shape = toForgeError(error).toJSON();
           // Hoist structured error details (e.g. an approval requirement's
           // { kind, action, approval_id, approval_url, expires_at }) to the top
-          // level so the widget's action bar can render an Approve button —
-          // the widget reads approval_url/approval_id from structuredContent,
-          // not from the nested error.details.
+          // level so the model can read approval_url straight off
+          // structuredContent and relay the link, rather than having to dig
+          // through the nested error.details.
           const details =
             shape.details && typeof shape.details === 'object'
               ? (shape.details as Record<string, unknown>)
@@ -216,7 +197,6 @@ export function registerForgeToolsV1(
             status: 'error',
             errorCode: shape.code,
             errorMessage: shape.message,
-            showsWidget: showsWidget(definition.name),
             input
           });
 

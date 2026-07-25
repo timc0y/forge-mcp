@@ -210,32 +210,6 @@ function tokenResponse(accessToken: string, refreshToken: string): Response {
   });
 }
 
-// The set of origins Forge itself owns and serves: the public gateway origin
-// (approval and preview URLs live under it — /approvals/:id, /preview/…) and the
-// dedicated preview host used for exposed workspace previews. Only these qualify
-// as "allowed link URIs" a host may open from the widget without a per-link
-// confirmation; third-party targets (e.g. github.com PR links) intentionally do
-// not appear and will still prompt. Exported so the surface that actually
-// advertises owned origins to the host can reuse this derivation without
-// duplicating it. See docs/connectors.md — as of @modelcontextprotocol/ext-apps
-// 1.7.2 there is no allowed-link-URIs field on the MCP Apps resource `_meta.ui`
-// (only csp/permissions/domain/prefersBorder) or on the OAuth metadata, so this
-// cannot yet be emitted here; it is kept as a single source of truth for when a
-// host or spec field exists.
-export function forgeOwnedOrigins(env: Env): string[] {
-  const origins = new Set<string>();
-  const add = (value: string | undefined): void => {
-    if (!value) return;
-    try {
-      origins.add(new URL(value.includes('://') ? value : `https://${value}`).origin);
-    } catch {
-      /* ignore an unparseable configured origin */
-    }
-  };
-  add(env.FORGE_PUBLIC_ORIGIN);
-  add(env.FORGE_PREVIEW_HOSTNAME);
-  return [...origins];
-}
 
 export function authorizationServerMetadata(env: Env): Record<string, unknown> {
   const origin = env.FORGE_PUBLIC_ORIGIN;

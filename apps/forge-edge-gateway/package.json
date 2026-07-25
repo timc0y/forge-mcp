@@ -28,7 +28,6 @@
     "@forge/artifacts-core": "workspace:*",
     "@forge/sandbox-core": "workspace:*",
     "@forge/workflows-cloudflare": "workspace:*",
-    "@modelcontextprotocol/ext-apps": "1.7.2",
     "@modelcontextprotocol/sdk": "1.29.0",
     "agents": "0.17.3",
     "jose": "6.2.2",

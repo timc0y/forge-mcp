@@ -83,15 +83,17 @@ Deterministic, model-free tools — no embeddings, syntax-only analysis.
 | `forge_review_capture` | none (workspace side effect) | Capture screenshot + accessibility evidence of a running Forge preview across bounded routes, states, and viewports. Optional `steps` drive real interactions (click/fill/press/wait) before the shot, so a multi-step flow (open a menu, submit a form) can be proven, not just a static screenshot. This is the only preview-evidence tool. |
 | `forge_artifact_get` | none | Return a stored Forge artifact (e.g. a screenshot) to the MCP client; image artifacts come back as MCP image content for direct model inspection. |
 
-## MCP-UI widget
+## No MCP-UI widget
 
-Hosts that support MCP Apps (ChatGPT today) additionally receive the
-`ui://forge/workspace-console` resource, linked from every tool via
-`_meta.ui`. It is a single self-contained, read-only HTML/CSS/JS document (no
-external network calls) that shape-detects the last tool's structured output
-and renders repositories, Parallax evidence, Git diff/status, or workspace
-state. Clients without MCP Apps get the same information as plain structured
-and text tool output — the widget never changes what a tool call does.
+Forge serves no MCP Apps (`ui://`) resource and no tool declares
+`_meta.ui` or `_meta['openai/outputTemplate']`. Every host — ChatGPT included —
+renders tool results with its own plain text/structured output. The only
+`_meta` a tool carries is the short `openai/toolInvocation/{invoking,invoked}`
+status strings.
+
+Approvals are the one Forge-authored screen: tools that need one return an
+`approval_url` pointing at the hosted Approve / Deny page at `/approvals/:id`.
+See [connectors.md](connectors.md#no-in-chat-widget).
 
 See [connectors.md](connectors.md) for the OAuth flow and how ChatGPT/Claude
 connect to this tool set.

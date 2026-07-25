@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { forgeTools } from '@forge/mcp-core';
-import { toolAnnotations, showsWidget } from '../../packages/mcp-adapter-v1/src/index';
+import { toolAnnotations, registerForgeToolsV1 } from '../../packages/mcp-adapter-v1/src/index';
+import type { ForgeToolHandlers } from '@forge/mcp-core';
 
 function tool(name: string) {
   const result = forgeTools.find((candidate) => candidate.name === name);
@@ -21,15 +22,30 @@ describe('Forge MCP public contracts', () => {
     expect(shell).toHaveProperty('approval_id');
   });
 
-  it('renders the console widget for no tool — disabled repo-wide', () => {
-    // The widget never reliably rendered in ChatGPT/Claude clients, so it's
-    // off for every tool (see packages/mcp-adapter-v1/src/index.ts).
-    for (const name of [
-      'forge_review', 'forge_review_capture', 'forge_git_diff', 'forge_git_status',
-      'forge_workspace_get', 'forge_repository_list', 'forge_files_read', 'forge_files_write',
-      'forge_shell_exec', 'forge_process_logs', 'forge_git_commit', 'forge_artifact_get'
-    ]) {
-      expect(showsWidget(name)).toBe(false);
+  it('advertises no ui:// widget on any tool, so hosts render plain results', () => {
+    // Forge serves no MCP Apps resource. If a `ui` or `openai/outputTemplate`
+    // key ever reappears in a tool's _meta, ChatGPT starts rendering a custom
+    // component again — which is exactly what was removed. The only
+    // Forge-authored UI is the hosted approval page at /approvals/:id.
+    const registered: Record<string, unknown>[] = [];
+    const server = {
+      registerTool(_name: string, config: Record<string, unknown>) {
+        registered.push(config);
+      }
+    } as never;
+    const handlers = new Proxy({}, { get: () => async () => ({}) }) as ForgeToolHandlers;
+
+    registerForgeToolsV1(server, handlers);
+
+    expect(registered.length).toBe(forgeTools.length);
+    for (const config of registered) {
+      const meta = (config._meta ?? {}) as Record<string, unknown>;
+      expect(meta).not.toHaveProperty('ui');
+      expect(meta).not.toHaveProperty('openai/outputTemplate');
+      // The short invoking/invoked status strings are plain text and stay.
+      for (const key of Object.keys(meta)) {
+        expect(key).toMatch(/^openai\/toolInvocation\//);
+      }
     }
   });
 

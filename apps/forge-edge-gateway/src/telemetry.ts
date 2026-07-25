@@ -26,7 +26,6 @@ export interface ToolCallEvent {
   errorCode?: string;
   errorMessage?: string;
   resultBytes?: number;
-  showsWidget: boolean;
   argsHash: string;
 }
 
@@ -72,7 +71,6 @@ export class ToolCallTracker {
         error_code: event.errorCode,
         error_message: event.errorMessage,
         result_bytes: event.resultBytes,
-        shows_widget: event.showsWidget,
         is_repeat_call: isRepeatCall,
         environment: this.env.FORGE_ENVIRONMENT
       }
