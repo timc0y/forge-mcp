@@ -1300,6 +1300,25 @@ function renderDeferredOutcome(action: DeferredAction): string {
   return `<div class="outcome"><strong>Waiting on you — no rush.</strong> ${escapeHtml(String(action.filesChanged))} file${action.filesChanged === 1 ? '' : 's'} changed, staged on <code>${escapeHtml(action.stagedRef)}</code>. Approving pushes ${target} and opens a draft pull request. The agent has already finished; nothing is blocked on this.</div>`;
 }
 
+/**
+ * A readable page for a decision that could not be recorded.
+ *
+ * `reason` is echoed in a meta tag as well as the prose so a failure can be
+ * identified exactly — from a screenshot, or with a single curl — instead of
+ * being reported as "it errors".
+ */
+function decisionProblem(env: Env, status: number, reason: string, heading: string, detail: string): Response {
+  return page({
+    status,
+    title: `Forge — ${heading}`,
+    topRight: '<a href="/app">Portal</a>',
+    body: `<meta name="forge-reason" content="${escapeHtmlLocal(reason)}">
+<h1>${heading}</h1>
+<div class="section alert"><p>${detail}</p></div>
+<p class="note">Nothing was pushed and nothing was changed by this attempt.</p>`
+  });
+}
+
 export async function approvalPage(request: Request, env: Env, approvalId: string): Promise<Response> {
   const url = new URL(request.url);
   // Prefer a signed link (open + approve from the transcript, no re-login). Fall
@@ -1322,13 +1341,40 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   const row = await env.METADATA.prepare(
     'SELECT requested_action, reason, request_payload, state, expires_at FROM approvals WHERE id=?1 AND tenant_id=?2'
   ).bind(approvalId, tenantId).first<{ requested_action: string; reason: string; request_payload: string; state: string; expires_at: string }>();
-  if (!row) return new Response('Approval not found', { status: 404 });
+  if (!row) return decisionProblem(env, 404, 'not_found', 'Approval not found', 'This approval no longer exists, or it belongs to a different account.');
   if (request.method === 'POST') {
-    assertSameOrigin(request, env);
-    if (row.state !== 'pending' || Date.parse(row.expires_at) <= Date.now()) return new Response('Approval expired', { status: 409 });
+    // Every refusal below renders a real page naming the cause. These used to
+    // return bare one-line text — a reviewer pressing Approve got an unstyled
+    // "Approval expired" or a raw 403 with nothing saying what to do, and no
+    // way to tell the failures apart when reporting them.
+    try {
+      assertSameOrigin(request, env);
+    } catch {
+      return decisionProblem(
+        env, 403, 'cross_origin', 'Could not submit that decision',
+        `This page was opened from ${escapeHtmlLocal(request.headers.get('origin') ?? 'an unrecognised address')}, which is not an address Forge serves. Open the approval link again and press the button on the freshly loaded page.`
+      );
+    }
+    if (row.state !== 'pending') {
+      return decisionProblem(
+        env, 409, 'already_resolved', `Already ${escapeHtmlLocal(row.state)}`,
+        `Someone already resolved this approval, so nothing further was done. Reload the page to see the outcome.`
+      );
+    }
+    if (Date.parse(row.expires_at) <= Date.now()) {
+      return decisionProblem(
+        env, 409, 'expired', 'This approval has expired',
+        'Nothing was done. Approvals are deliberately short-lived; ask the agent to request this action again and a fresh link will be issued.'
+      );
+    }
     const body = new URLSearchParams(await request.text());
     const decision = body.get('decision');
-    if (decision !== 'approved' && decision !== 'denied') return new Response('Invalid decision', { status: 400 });
+    if (decision !== 'approved' && decision !== 'denied') {
+      return decisionProblem(
+        env, 400, 'invalid_decision', 'Could not read that decision',
+        'The form did not send a recognisable Approve or Deny. Reload the approval page and press the button again.'
+      );
+    }
     await env.METADATA.prepare('UPDATE approvals SET state=?1, resolved_by=?2, resolved_at=?3 WHERE id=?4 AND state=\'pending\'')
       .bind(decision, resolvedBy, new Date().toISOString(), approvalId).run();
     // A deferred submission has no agent waiting to redeem this approval — the
@@ -1406,6 +1452,13 @@ poll();})();</script>`
   const expiredBlock = expired
     ? '<div class="outcome bad"><strong>This approval has expired.</strong> Nothing was done. Ask the agent to request it again — a fresh approval takes seconds and this link cannot be revived.</div>'
     : '';
+  // A deferred submission is performed by Forge itself on approval. Everything
+  // else only RECORDS the decision — the agent that asked still has to come
+  // back and redeem it. If that session has ended, approving here is correct
+  // but nothing visible happens, which reads as a silent failure unless said.
+  const handoffBlock = decidable && !deferredAction
+    ? '<p class="note">Approving records your decision so the agent that asked can carry it out. It does not perform the action from this page — if that session has already ended, ask it again and it will go straight through.</p>'
+    : '';
   const hasDiff = typeof diff === 'string' && diff.trim() !== '';
   const shown = hasDiff ? diffStats(diff) : null;
   // Prefer the recorded totals for the headline figure — they describe the
@@ -1468,7 +1521,7 @@ body{padding-bottom:5rem}
 @media(max-width:560px){form.decide{flex-direction:column}form.decide button{width:100%}}`,
     body: `<h1>${decidable ? 'Approve Forge action' : expired ? 'Approval expired' : `Action ${escapeHtml(row.state)}`}</h1>
 <p><strong>${escapeHtml(row.requested_action)}</strong> — ${escapeHtml(row.reason)}</p>
-${expiredBlock}${outcomeBlock}${previewBlock}${statsLine}${partialLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
+${expiredBlock}${outcomeBlock}${previewBlock}${statsLine}${partialLine}${handoffBlock}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
 ${decidable ? `<form class="decide" method="post" action="${escapeHtml(selfUrl)}"><button class="primary" name="decision" value="approved">${deferredAction ? 'Approve &amp; open pull request' : 'Approve once'}</button><button name="decision" value="denied">Deny</button></form>` : ''}`
   });
 }
