@@ -8,15 +8,15 @@ Forge is exposed as **one remote MCP server**, consumed by two clients:
   custom/remote connector in Claude.
 
 Both talk to the same Worker, `@forge/edge-gateway` (`apps/forge-edge-gateway`),
-and the same tool + widget surface. There is no second backend.
+and the same tool surface. There is no second backend.
 
 | Piece | Where |
 | --- | --- |
 | MCP endpoint | `POST /mcp`, served by the `ForgeMcpSession` Durable Object (`apps/forge-edge-gateway/src/mcp-session.ts`) |
 | Tool definitions | `packages/mcp-core/src/index.ts` |
 | Tool registration/adapter | `packages/mcp-adapter-v1/src/index.ts` |
-| Widget resource | `ui://forge/workspace-console`, `apps/forge-edge-gateway/src/forge-console.ts`, MIME `text/html+skybridge` |
 | OAuth | `apps/forge-edge-gateway/src/oauth.ts` |
+| Approval page | `approvalPage()` in `apps/forge-edge-gateway/src/github.ts`, served at `GET/POST /approvals/:id` |
 
 ## OAuth flow (as implemented)
 
@@ -55,34 +55,35 @@ Session-JWT signing can be split from capability-token signing via the
 `FORGE_SESSION_SIGNING_KEY` secret (falls back to
 `FORGE_CAPABILITY_SIGNING_KEY` if unset) — see [security.md](security.md).
 
-## Interactive widget
+## No in-chat widget
 
-`registerForgeConsole()` registers `ui://forge/workspace-console`. Every tool
-links to it through adapter `_meta`:
+Forge deliberately serves **no** MCP Apps (`ui://`) resource, and no tool
+carries `_meta.ui` or `_meta['openai/outputTemplate']`. Tool results render as
+the host's own plain text/structured output.
 
-- `_meta.ui = { resourceUri: 'ui://forge/workspace-console', visibility: ['model','app'] }`
-- `_meta['openai/outputTemplate'] = 'ui://forge/workspace-console'` (ChatGPT)
-- `_meta['openai/toolInvocation/{invoking,invoked}']` status strings
+There was previously a `ui://forge/workspace-console` widget that shape-detected
+the last tool's output and drew repository cards, Parallax evidence galleries,
+diff viewers and scorecards. It was removed: it rendered unreliably across
+hosts, and where it did render it showed a large amount of chrome around
+information the model was already stating in chat. The only `_meta` the adapter
+still emits is:
 
-The widget is a single self-contained HTML document (all CSS/JS inline, no
-network calls). It shape-detects the last tool's structured output and
-renders repositories, Parallax evidence, Git diff/status, or workspace state,
-and posts `ui/message` follow-up prompts back to the host. It is read-only —
-it never issues its own tool calls independent of what the model already
-returned.
+- `_meta['openai/toolInvocation/{invoking,invoked}']` — short (≤64 char) status
+  strings, plain text, no component.
 
-## Allowed-link origins
+`tests/unit/mcp.test.ts` asserts no tool advertises a widget, so re-adding one
+is a deliberate act rather than an accident.
 
-Claude shows a per-link confirmation for `ui/open-link` unless the connector
-declares the origins it owns. `oauth.ts` exports `forgeOwnedOrigins(env)`
-(`FORGE_PUBLIC_ORIGIN`, `FORGE_PREVIEW_HOSTNAME`) as the source of truth for
-this, but as of the `@modelcontextprotocol/ext-apps` version vendored in this
-repo there is no spec/SDK field to actually emit it on — the MCP Apps resource
-`_meta.ui` schema only accepts `csp`, `permissions`, `domain`, and
-`prefersBorder`, and `ui/open-link` carries only `{ url }`. So today, Claude
-will prompt on every opened link, including Forge's own approval/preview
-pages; `github.com` PR links are not Forge-owned and are expected to keep
-prompting regardless.
+The one piece of Forge-authored UI a user sees is the **approval page** at
+`/approvals/:id` (`approvalPage()` in `github.ts`) — the Approve / Deny form
+that gates pushes, pull requests and privileged commands. Tool results surface
+it as an `approval_url` in `structuredContent` for the model to relay. Hosts
+also show their own native tool-confirmation prompt; that is host UI, not ours.
+
+`inline-approval.ts` can additionally surface that same decision inline via
+MCP URL-mode elicitation (`elicitation/create`, mode `url`). It is inert until
+a client advertises the `elicitation.url` capability, and every failure path
+falls back to the `approval_url` link.
 
 Official docs: <https://claude.com/docs/connectors>,
 <https://developers.openai.com/apps-sdk>.

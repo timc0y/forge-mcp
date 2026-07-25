@@ -43,7 +43,6 @@ import { resolveWorkspaceId } from './workspace-resolve';
 import { storeGallery } from './review-gallery';
 import type { CommandClass } from '@forge/policy';
 import type { Env } from './env';
-import { registerForgeConsole } from './forge-console';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
 import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
 import { snapshotsEnabled } from './snapshots';
@@ -377,7 +376,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   );
 
   async init(): Promise<void> {
-    registerForgeConsole(this.server);
     const tracker = new ToolCallTracker(this.env, {
       waitUntil: (p) => (this.ctx as unknown as { waitUntil?: (p: Promise<unknown>) => void })?.waitUntil?.(p)
     });
@@ -412,7 +410,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         errorCode: event.errorCode,
         errorMessage: event.errorMessage,
         resultBytes: event.resultBytes,
-        showsWidget: event.showsWidget,
         argsHash: await hashArgs(event.input)
       },
       Date.now()

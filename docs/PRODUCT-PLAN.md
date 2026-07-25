@@ -299,18 +299,15 @@ The page shows the complete repository-to-PR demo and clearly labels current lim
 
 ### Forge Console
 
-The first console is one compact workspace card, not an IDE:
+Not built, and not planned as an in-chat widget. An MCP Apps
+(`ui://forge/workspace-console`) version was shipped and then removed: it
+rendered unreliably across hosts, and where it did render it wrapped a lot of
+chrome around information the model was already stating in chat.
 
-- repository, commit and branch;
-- lifecycle and elapsed active time;
-- latest operation and logs;
-- preview status;
-- evidence gallery;
-- test result and diff summary;
-- approvals;
-- stop workspace.
-
-The same information remains available as structured MCP output.
+Workspace, evidence, diff and test state stay available as structured MCP
+output. The only Forge-authored screen is the approval page at
+`/approvals/:id`. If a console returns, it should be a web surface under
+`/app`, not something injected into the chat transcript.
 
 ### Parallax
 

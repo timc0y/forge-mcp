@@ -5,7 +5,7 @@
  * Two drifts the TypeScript compiler does NOT catch:
  *
  * 1. The v1 adapter classifies tools through untyped string-literal sets
- *    (RETRY_SAFE_MUTATIONS, TRUE_READS, OPEN_WORLD, WIDGET_TOOLS) and a
+ *    (RETRY_SAFE_MUTATIONS, TRUE_READS, OPEN_WORLD) and a
  *    TOOL_INVOCATION_STATUS map. A tool renamed in mcp-core silently loses its
  *    annotations/status because these are plain strings. We assert every
  *    forge_* name in those sets is a real tool.
@@ -36,7 +36,7 @@ const adapterSource = readFileSync(resolve(root, 'packages/mcp-adapter-v1/src/in
 
 // The four Set literals are flat string arrays — a lazy match to the closing
 // `]` captures every name.
-const SETS = ['RETRY_SAFE_MUTATIONS', 'TRUE_READS', 'OPEN_WORLD', 'WIDGET_TOOLS'];
+const SETS = ['RETRY_SAFE_MUTATIONS', 'TRUE_READS', 'OPEN_WORLD'];
 for (const setName of SETS) {
   const block = new RegExp(`${setName}[^\\[]*\\[([\\s\\S]*?)\\]`).exec(adapterSource);
   if (!block) { errors.push(`Adapter set "${setName}" not found in mcp-adapter-v1.`); continue; }
