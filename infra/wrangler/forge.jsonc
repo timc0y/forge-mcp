@@ -12,6 +12,12 @@
   "triggers": {
     "crons": ["*/5 * * * *"]
   },
+  // Canonical hostname. Adding a custom domain does NOT take workers.dev out of
+  // service — that would need "workers_dev": false — so both hostnames reach
+  // this Worker and existing links keep resolving.
+  "routes": [
+    { "pattern": "forge.timcoy.uk", "custom_domain": true }
+  ],
   "observability": {
     "enabled": true,
     "logs": {
@@ -22,7 +28,17 @@
   "upload_source_maps": true,
   "vars": {
     "FORGE_ENVIRONMENT": "production",
-    "FORGE_PUBLIC_ORIGIN": "https://forge-edge-gateway.timcoy72.workers.dev",
+    "FORGE_PUBLIC_ORIGIN": "https://forge.timcoy.uk",
+    // Origins Forge used to answer on. Access and refresh tokens carry
+    // FORGE_PUBLIC_ORIGIN as their JWT issuer, so without this every token
+    // issued before the move to forge.timcoy.uk would stop verifying the
+    // moment it changed and every connected client would need re-authorizing.
+    // See acceptedIssuers() in auth.ts. Safe to drop once the longest refresh
+    // token lifetime (30 days) has elapsed since the cutover.
+    "FORGE_LEGACY_ORIGINS": "https://forge-edge-gateway.timcoy72.workers.dev",
+    // Deliberately still the workers.dev host: preview capabilities are minted
+    // against this hostname and it keeps serving, so moving it is a separate
+    // change with its own blast radius.
     "FORGE_PREVIEW_HOSTNAME": "forge-edge-gateway.timcoy72.workers.dev",
     "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
     "FORGE_DEFAULT_TENANT_ID": "ten_00000000000000000000000001",

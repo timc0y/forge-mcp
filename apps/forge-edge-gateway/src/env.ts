@@ -32,6 +32,12 @@ export interface Env {
   FORGE_DEFAULT_TENANT_ID: string;
   FORGE_DEFAULT_PROJECT_ID: string;
   FORGE_PUBLIC_ORIGIN: string;
+  // Origins Forge used to be reachable on, comma-separated. Tokens are signed
+  // with FORGE_PUBLIC_ORIGIN as their issuer, so renaming the canonical origin
+  // would otherwise invalidate every access and refresh token already issued
+  // and force every connected client to re-authorize. Listing the old origin
+  // here keeps those tokens verifiable until they expire on their own.
+  FORGE_LEGACY_ORIGINS?: string;
   FORGE_PREVIEW_HOSTNAME: string;
   // Minutes a workspace may hold a slot without activity before the lazy reaper
   // reclaims it. Optional; defaults to 30 when unset or invalid.

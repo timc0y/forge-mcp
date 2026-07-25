@@ -12,6 +12,27 @@ export interface AuthenticatedContext {
 
 const jwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
+/**
+ * Issuers a Forge-signed token may legitimately carry: the current canonical
+ * origin, plus any origin Forge previously answered on.
+ *
+ * Tokens are signed with FORGE_PUBLIC_ORIGIN as their issuer, so moving Forge
+ * to a new domain would otherwise reject every token already in the wild the
+ * moment the variable changed — every connected ChatGPT/Claude client would
+ * break at once and need re-authorizing. Accepting the old origin lets those
+ * tokens live out their normal lifetime while new ones are issued under the
+ * new name. Verification is otherwise unchanged: same signing key, same
+ * audience, same expiry.
+ */
+export function acceptedIssuers(env: Env): string[] {
+  const origins = [env.FORGE_PUBLIC_ORIGIN];
+  for (const origin of (env.FORGE_LEGACY_ORIGINS ?? '').split(',')) {
+    const trimmed = origin.trim();
+    if (trimmed && !origins.includes(trimmed)) origins.push(trimmed);
+  }
+  return origins;
+}
+
 export function constantTimeEqual(leftValue: string, rightValue: string): boolean {
   const left = new TextEncoder().encode(leftValue);
   const right = new TextEncoder().encode(rightValue);
@@ -53,7 +74,7 @@ async function authenticateForgeToken(token: string, env: Env): Promise<Authenti
     const { payload } = await jwtVerify(
       token,
       new TextEncoder().encode(env.FORGE_SESSION_SIGNING_KEY ?? env.FORGE_CAPABILITY_SIGNING_KEY),
-      { issuer: env.FORGE_PUBLIC_ORIGIN, audience: 'forge-mcp' }
+      { issuer: acceptedIssuers(env), audience: 'forge-mcp' }
     );
     const subject = typeof payload.sub === 'string' ? payload.sub : '';
     const tenantId = typeof payload.tenant_id === 'string' ? payload.tenant_id : '';

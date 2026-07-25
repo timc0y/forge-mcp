@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify } from 'jose';
 import type { Env } from './env';
 import { getWebSession, hasForgeAccess, type UserRow } from './github';
+import { acceptedIssuers } from './auth';
 import { page } from './ui';
 
 const ACCESS_TOKEN_SECONDS = 60 * 60;
@@ -353,8 +354,11 @@ export async function token(request: Request, env: Env): Promise<Response> {
   const grantType = body.get('grant_type') ?? '';
   if (grantType === 'refresh_token') {
     try {
+      // Accepts a refresh token issued under a previous origin too, so a
+      // domain move does not force every client to re-authorize; the token it
+      // is exchanged for is minted under the current canonical origin.
       const { payload } = await jwtVerify(body.get('refresh_token') ?? '', signingKey(env), {
-        issuer: env.FORGE_PUBLIC_ORIGIN,
+        issuer: acceptedIssuers(env),
         audience: 'forge-mcp'
       });
       if (

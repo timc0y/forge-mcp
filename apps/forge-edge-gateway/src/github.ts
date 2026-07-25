@@ -201,6 +201,32 @@ async function installationToken(
   return result.token;
 }
 
+/**
+ * The Forge origin this request came in on.
+ *
+ * Forge answers on its canonical origin and on any origin it used to answer on
+ * (see FORGE_LEGACY_ORIGINS), and a visitor should stay on whichever one they
+ * chose — the session cookie is host-scoped, so redirecting them to the other
+ * one mid-login silently drops the session they just established.
+ *
+ * The request's own host is matched against that allow-list rather than
+ * trusted: a Host header is attacker-controlled, and this value ends up in an
+ * OAuth redirect_uri. Anything unrecognised falls back to the canonical origin.
+ */
+export function forgeOrigin(request: Request, env: Env): string {
+  let origin: string;
+  try {
+    origin = new URL(request.url).origin;
+  } catch {
+    return env.FORGE_PUBLIC_ORIGIN;
+  }
+  if (origin === env.FORGE_PUBLIC_ORIGIN) return origin;
+  for (const legacy of (env.FORGE_LEGACY_ORIGINS ?? '').split(',')) {
+    if (legacy.trim() && legacy.trim() === origin) return origin;
+  }
+  return env.FORGE_PUBLIC_ORIGIN;
+}
+
 export async function getWebSession(request: Request, env: Env): Promise<UserRow | null> {
   const token = cookie(request, 'forge_session');
   if (!token) return null;
@@ -213,11 +239,15 @@ export async function getWebSession(request: Request, env: Env): Promise<UserRow
 
 export async function startGitHubLogin(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  // Sign in against the hostname the visitor is actually on. Forge answers on
+  // more than one (the canonical origin plus any legacy one), and pinning the
+  // flow to the canonical origin would bounce a visitor mid-login to a
+  // different host — losing the session cookie they are in the middle of
+  // getting, since it is host-scoped.
+  const self = forgeOrigin(request, env);
   const requestedReturn = url.searchParams.get('return_to') ?? '/app';
-  const candidate = new URL(requestedReturn, env.FORGE_PUBLIC_ORIGIN);
-  const returnUrl = candidate.origin === env.FORGE_PUBLIC_ORIGIN
-    ? candidate
-    : new URL('/app', env.FORGE_PUBLIC_ORIGIN);
+  const candidate = new URL(requestedReturn, self);
+  const returnUrl = candidate.origin === self ? candidate : new URL('/app', self);
   const state = randomToken('ghstate');
   await env.METADATA.prepare(
     'INSERT INTO github_login_states (state_hash, return_to, expires_at) VALUES (?1, ?2, ?3)'
@@ -228,7 +258,7 @@ export async function startGitHubLogin(request: Request, env: Env): Promise<Resp
   ).run();
   const authorizeUrl = new URL('https://github.com/login/oauth/authorize');
   authorizeUrl.searchParams.set('client_id', required(env.GITHUB_APP_CLIENT_ID, 'GITHUB_APP_CLIENT_ID'));
-  authorizeUrl.searchParams.set('redirect_uri', `${env.FORGE_PUBLIC_ORIGIN}/login/github/callback`);
+  authorizeUrl.searchParams.set('redirect_uri', `${self}/login/github/callback`);
   authorizeUrl.searchParams.set('state', state);
   return Response.redirect(authorizeUrl.toString(), 302);
 }
@@ -258,7 +288,10 @@ export async function finishGitHubLogin(request: Request, env: Env): Promise<Res
       client_id: required(env.GITHUB_APP_CLIENT_ID, 'GITHUB_APP_CLIENT_ID'),
       client_secret: required(env.GITHUB_APP_CLIENT_SECRET, 'GITHUB_APP_CLIENT_SECRET'),
       code,
-      redirect_uri: `${env.FORGE_PUBLIC_ORIGIN}/login/github/callback`
+      // Must match the redirect_uri sent to /authorize exactly. GitHub sent the
+      // visitor back to that same host, so deriving it from this request
+      // reproduces it without having to store it alongside the state.
+      redirect_uri: `${forgeOrigin(request, env)}/login/github/callback`
     }).toString()
   });
   if (!token.access_token) throw new ForgeError({ code: 'FORGE_AUTH_REQUIRED', message: 'GitHub did not issue a user authorization token.', retryable: false });
@@ -1109,25 +1142,55 @@ const fileGlyph = (path: string): string => {
 // Render the parsed diff as color-coded file cards with old/new line-number
 // gutters. Bounded so a huge diff can't blow up the page; the diffHash (not
 // this display) remains the integrity check on what actually gets pushed.
-function renderDiffHtml(diff: string): string {
-  const MAX_ROWS = 4000;
+export function renderDiffHtml(diff: string): string {
+  // Budgets, and why there are two. A single overall cap let the first big file
+  // eat the entire allowance, so every file after it rendered ZERO rows while
+  // the page said only "N more lines truncated" — the reviewer could not see
+  // that later files existed at all. A per-file cap keeps every file
+  // represented; the overall cap still bounds the page.
+  const MAX_ROWS = 4_000;
+  const MAX_ROWS_PER_FILE = 400;
   const files = parseDiff(diff);
   let budget = MAX_ROWS;
-  let truncated = 0;
+  let hiddenRows = 0;
+  let hiddenFiles = 0;
+
   const cards = files.map((file) => {
-    const gutter = (value: number | null): string => (value === null ? '' : String(value));
-    const rows = file.rows.slice(0, budget);
-    truncated += file.rows.length - rows.length;
+    const head = `<header class="dfhead"><span class="dfico" aria-hidden="true">${fileGlyph(file.path)}</span><span class="dfpath">${escapeHtml(file.path)}</span><span class="dfstat"><span class="s-add">+${file.added}</span><span class="s-del">−${file.removed}</span></span></header>`;
+    // Out of budget: still show the file's header. Knowing a file changed
+    // matters more to the decision than seeing its hunks.
+    if (budget <= 0 && !file.binary) {
+      hiddenFiles += 1;
+      hiddenRows += file.rows.length;
+      return `<section class="dfile">${head}<div class="dfbody"><div class="drow ctx">Not shown — the page is already at its display limit.</div></div></section>`;
+    }
+    const limit = Math.min(MAX_ROWS_PER_FILE, budget);
+    const rows = file.rows.slice(0, limit);
+    const cut = file.rows.length - rows.length;
+    hiddenRows += cut;
     budget -= rows.length;
+    // One element per row, with the two line-number gutters drawn from data
+    // attributes in CSS. The previous markup spent a div plus four spans on
+    // every line: 4,000 lines became ~20,000 nodes and ~660 KB of HTML, which
+    // is what made this page slow to open on a phone.
     const body = file.binary
-      ? '<div class="drow ctx"><span class="dg"></span><span class="dg"></span><span class="dc">Binary file not shown</span></div>'
+      ? '<div class="drow ctx">Binary file not shown</div>'
       : rows.map((row) => {
           const sign = row.type === 'add' ? '+' : row.type === 'del' ? '−' : row.type === 'hunk' ? '' : ' ';
-          return `<div class="drow ${row.type}"><span class="dg">${gutter(row.oldNo)}</span><span class="dg">${gutter(row.newNo)}</span><span class="dc"><span class="ds">${sign}</span>${escapeHtml(row.text) || ' '}</span></div>`;
-        }).join('');
-    return `<section class="dfile"><header class="dfhead"><span class="dfico" aria-hidden="true">${fileGlyph(file.path)}</span><span class="dfpath">${escapeHtml(file.path)}</span><span class="dfstat"><span class="s-add">+${file.added}</span><span class="s-del">−${file.removed}</span></span></header><div class="dfbody">${body}</div></section>`;
+          const oldNo = row.oldNo === null ? '' : String(row.oldNo);
+          const newNo = row.newNo === null ? '' : String(row.newNo);
+          return `<div class="drow ${row.type}" data-o="${oldNo}" data-n="${newNo}">${sign}${escapeHtml(row.text) || ' '}</div>`;
+        }).join('')
+        + (cut > 0 ? `<div class="drow ctx">… ${cut} more line${cut === 1 ? '' : 's'} in this file</div>` : '');
+    return `<section class="dfile">${head}<div class="dfbody">${body}</div></section>`;
   }).join('');
-  const trailer = truncated > 0 ? `<p class="dtrunc">… ${truncated} more line${truncated === 1 ? '' : 's'} truncated — review the full diff in the workspace before approving.</p>` : '';
+
+  const notes: string[] = [];
+  if (hiddenRows > 0) notes.push(`${hiddenRows} line${hiddenRows === 1 ? '' : 's'} not shown`);
+  if (hiddenFiles > 0) notes.push(`${hiddenFiles} file${hiddenFiles === 1 ? '' : 's'} listed without their changes`);
+  const trailer = notes.length
+    ? `<p class="dtrunc">${notes.join(', ')} — this page shows a bounded preview. Review the full diff in the workspace before approving.</p>`
+    : '';
   return `<div class="diffset">${cards}${trailer}</div>`;
 }
 
@@ -1355,19 +1418,25 @@ poll();})();</script>`
 .pvlink{display:inline-flex;align-items:center;min-height:44px;padding:.55rem 1.05rem;border-radius:10px;background:var(--ink);color:var(--bg);text-decoration:none;font-weight:600}
 pre.body{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:1rem;white-space:pre-wrap;overflow-wrap:anywhere;max-height:16rem;overflow:auto;font:.85rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
 .diffset{margin-top:1.25rem;display:flex;flex-direction:column;gap:1rem}
-.dfile{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}
+/* content-visibility lets the browser skip layout and paint for the file cards
+   that are off-screen, which is most of them on a long diff. contain-intrinsic-size
+   supplies a placeholder height so the scrollbar does not jump as they render. */
+.dfile{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel);content-visibility:auto;contain-intrinsic-size:auto 22rem}
 .dfhead{display:flex;align-items:center;gap:.6rem;padding:.6rem .9rem;background:var(--bg);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}
 .dfico{font-size:.7rem;font-weight:700;color:var(--muted);min-width:1.6rem;text-align:center}
 .dfpath{font:600 .82rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dfstat{margin-left:auto;display:flex;gap:.5rem;font:700 .74rem/1 ui-monospace,monospace;flex:0 0 auto}
 .dfbody{max-height:30rem;overflow:auto;font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
-.drow{display:grid;grid-template-columns:3rem 3rem 1fr;min-width:0}
-.drow .dg{padding:0 .45rem;text-align:right;color:var(--muted);opacity:.6;user-select:none;white-space:nowrap;border-right:1px solid var(--line)}
-.drow .dc{padding:0 .75rem;white-space:pre}
-.drow .ds{display:inline-block;width:.75rem;color:var(--muted);opacity:.7}
-.drow.add{background:var(--ok-bg)}.drow.add .dc,.drow.add .ds{color:var(--ok)}
-.drow.del{background:var(--bad-bg)}.drow.del .dc,.drow.del .ds{color:var(--bad)}
-.drow.hunk{background:var(--bg)}.drow.hunk .dc{color:var(--muted);font-weight:600}
+/* Each row is a single element; the old/new line numbers come from its data
+   attributes via ::before/::after rather than from two extra spans per line. */
+.drow{position:relative;padding:0 .75rem 0 6.9rem;white-space:pre;min-width:0}
+.drow::before,.drow::after{position:absolute;top:0;width:3rem;padding:0 .45rem;text-align:right;color:var(--muted);opacity:.6;user-select:none;white-space:nowrap;box-sizing:border-box}
+.drow::before{content:attr(data-o);left:0}
+.drow::after{content:attr(data-n);left:3rem;border-right:1px solid var(--line)}
+.drow.add{background:var(--ok-bg);color:var(--ok)}
+.drow.del{background:var(--bad-bg);color:var(--bad)}
+.drow.hunk{background:var(--bg);color:var(--muted);font-weight:600}
+.drow.ctx{color:var(--muted)}
 .dtrunc{font-size:.85rem;margin-top:.25rem}
 form.decide{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:0;z-index:2;background:var(--bg);border-top:1px solid var(--line);padding:.85rem 0 1rem}
 body{padding-bottom:5rem}
