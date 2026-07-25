@@ -1282,7 +1282,15 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
   // Pull out the display-only diff/body; show the rest as a small key/value
   // list so the human approves what they can actually read, not a raw hash blob.
-  const { diff, body, ...meta } = payload as { diff?: string; body?: string; [key: string]: unknown };
+  const { diff, body, diffTotals, ...meta } = payload as {
+    diff?: string;
+    body?: string;
+    // True scale of the change, independent of how much diff text was attached.
+    // A large diff is attached one page of files at a time, so counting the
+    // rendered text would under-report what is actually being approved.
+    diffTotals?: { files?: number; additions?: number; deletions?: number };
+    [key: string]: unknown;
+  };
   const metaRows = Object.entries(meta)
     .filter(([, value]) => value !== '' && value !== undefined && value !== null)
     .map(([key, value]) => `<div class="kv"><span>${escapeHtml(key)}</span><code>${escapeHtml(String(value))}</code></div>`)
@@ -1311,9 +1319,20 @@ if(d.state==='provisioning'||d.state==='starting'){f.hidden=true;setTimeout(poll
 poll();})();</script>`
     : '';
   const hasDiff = typeof diff === 'string' && diff.trim() !== '';
-  const stats = hasDiff ? diffStats(diff) : null;
+  const shown = hasDiff ? diffStats(diff) : null;
+  // Prefer the recorded totals for the headline figure — they describe the
+  // whole change. Fall back to counting the text for older approvals stored
+  // before totals were recorded.
+  const stats = diffTotals?.files !== undefined
+    ? { files: diffTotals.files, added: diffTotals.additions ?? 0, removed: diffTotals.deletions ?? 0 }
+    : shown;
   const statsLine = stats
     ? `<p class="stats"><b>${stats.files}</b> file${stats.files === 1 ? '' : 's'} · <span class="s-add">+${stats.added}</span> <span class="s-del">−${stats.removed}</span></p>`
+    : '';
+  // Never let the reviewer believe they have seen the whole change when the
+  // attached diff stops short.
+  const partialLine = stats && shown && shown.files < stats.files
+    ? `<p class="note">Showing the diff for ${shown.files} of ${stats.files} files — the rest is too large to render here. The approval covers the entire change.</p>`
     : '';
   const bodyBlock = typeof body === 'string' && body.trim() !== '' ? `<pre class="body">${escapeHtml(body)}</pre>` : '';
   const contentBlock = hasDiff
@@ -1355,7 +1374,7 @@ body{padding-bottom:5rem}
 @media(max-width:560px){form.decide{flex-direction:column}form.decide button{width:100%}}`,
     body: `<h1>${row.state === 'pending' ? 'Approve Forge action' : `Action ${escapeHtml(row.state)}`}</h1>
 <p><strong>${escapeHtml(row.requested_action)}</strong> — ${escapeHtml(row.reason)}</p>
-${outcomeBlock}${previewBlock}${statsLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
+${outcomeBlock}${previewBlock}${statsLine}${partialLine}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
 ${row.state === 'pending' ? `<form class="decide" method="post" action="${escapeHtml(selfUrl)}"><button class="primary" name="decision" value="approved">${deferredAction ? 'Approve &amp; open pull request' : 'Approve once'}</button><button name="decision" value="denied">Deny</button></form>` : ''}`
   });
 }

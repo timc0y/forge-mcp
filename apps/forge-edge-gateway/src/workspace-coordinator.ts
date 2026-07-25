@@ -613,8 +613,10 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.app.gitStatus(await this.repoRecord());
   }
 
-  async gitDiff(input: { staged: boolean }) {
-    return this.app.gitDiff(await this.repoRecord(), input.staged);
+  async gitDiff(input: { staged: boolean; cursor?: number; maxBytes?: number; paths?: string[] }) {
+    return this.app.gitDiff(await this.repoRecord(), input.staged, {
+      cursor: input.cursor, maxBytes: input.maxBytes, paths: input.paths
+    });
   }
 
   async gitBranchCreate(input: { branch: string; expectedRevision?: number; idempotencyKey: string }) {
@@ -635,8 +637,14 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
-  async gitOutgoingDiff(input: { base: string }) {
-    return this.app.gitOutgoingDiff(await this.repoRecord(), input.base);
+  async gitOutgoingDiff(input: { base: string; cursor?: number; maxBytes?: number; paths?: string[] }) {
+    return this.app.gitOutgoingDiff(await this.repoRecord(), input.base, {
+      cursor: input.cursor, maxBytes: input.maxBytes, paths: input.paths
+    });
+  }
+
+  async gitOutgoingPaths(input: { base: string }) {
+    return this.app.gitOutgoingPaths(await this.repoRecord(), input.base);
   }
 
   async gitIsAncestor(input: { ancestor: string }) {

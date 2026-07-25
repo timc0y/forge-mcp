@@ -1235,7 +1235,7 @@
     },
     "forge_git_diff": {
       "title": "Read Git diff",
-      "description": "Get a bounded unified diff of the working tree, or of staged changes. Read-only.",
+      "description": "Get the working-tree (or staged) diff one page of files at a time. Every call returns the COMPLETE list of changed files with line counts; `diff` carries the hunks for that page only. Follow `nextCursor` for the rest, or pass `paths` to jump straight to specific files. Read-only.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1250,10 +1250,24 @@
             "default": false,
             "description": "Diff staged changes instead of the working tree.",
             "$ref": "#/$defs/__schema1"
+          },
+          "cursor": {
+            "description": "Opaque cursor from a prior page's nextCursor. Omit for the first page.",
+            "$ref": "#/$defs/__schema2"
+          },
+          "max_bytes": {
+            "default": 64000,
+            "description": "Approximate byte budget for this page of hunks. Lower it if results are still too large to read comfortably.",
+            "$ref": "#/$defs/__schema3"
+          },
+          "paths": {
+            "description": "Restrict the diff to these exact paths (from `files`). Use this to read one large file's change directly instead of paging to it.",
+            "$ref": "#/$defs/__schema4"
           }
         },
         "required": [
-          "staged"
+          "staged",
+          "max_bytes"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1264,6 +1278,27 @@
           },
           "__schema1": {
             "type": "boolean"
+          },
+          "__schema2": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "__schema3": {
+            "type": "integer",
+            "minimum": 2000,
+            "maximum": 400000
+          },
+          "__schema4": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema5"
+            }
+          },
+          "__schema5": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
           }
         }
       }
@@ -1394,7 +1429,7 @@
     },
     "forge_git_outgoing_diff": {
       "title": "Inspect the outgoing change",
-      "description": "Get the exact bounded diff and its hash between the base branch and the current forge/ branch. Read-only — inspect this before requesting a push.",
+      "description": "Get the diff between the base branch and the current forge/ branch, one page of files at a time. Every call returns the COMPLETE list of changed files plus `diffHash` over the WHOLE change (safe to pass to push from any page); `diff` carries the hunks for that page only. Follow `nextCursor` for the rest, or pass `paths` for specific files. Read-only — inspect this before requesting a push.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1409,10 +1444,24 @@
             "default": "main",
             "description": "Base branch to compare against.",
             "$ref": "#/$defs/__schema1"
+          },
+          "cursor": {
+            "description": "Opaque cursor from a prior page's nextCursor. Omit for the first page.",
+            "$ref": "#/$defs/__schema2"
+          },
+          "max_bytes": {
+            "default": 64000,
+            "description": "Approximate byte budget for this page of hunks. Lower it if results are still too large to read comfortably.",
+            "$ref": "#/$defs/__schema3"
+          },
+          "paths": {
+            "description": "Restrict the diff to these exact paths (from `files`). Use this to read one large file's change directly instead of paging to it.",
+            "$ref": "#/$defs/__schema4"
           }
         },
         "required": [
-          "base"
+          "base",
+          "max_bytes"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1425,6 +1474,27 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 255
+          },
+          "__schema2": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "__schema3": {
+            "type": "integer",
+            "minimum": 2000,
+            "maximum": 400000
+          },
+          "__schema4": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema5"
+            }
+          },
+          "__schema5": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
           }
         }
       }

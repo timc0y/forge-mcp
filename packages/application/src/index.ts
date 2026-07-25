@@ -146,6 +146,181 @@ export function parseProvisionProbe(stdout: string): ProvisionProbe {
   };
 }
 
+// --- Progressive (per-file) diff paging ------------------------------------
+//
+// A diff is the one Forge result whose size is dictated by the user's
+// repository rather than by anything Forge chooses. A single generated file, a
+// vendored bundle or a large text/content change can run to megabytes, and
+// returning that in one tool result either blows the client's limit outright or
+// buries the answer. Worse, the previous behaviour truncated silently at the
+// exec output cap and then hashed the TRUNCATED text — so a push could be
+// approved against a diff nobody had actually seen in full.
+//
+// So the diff is served a page of FILES at a time:
+//   1. `git diff --numstat -z` gives the complete file list with line counts.
+//      Its size scales with the NUMBER of files, not their content, so it stays
+//      small (~40 bytes/file) even for a multi-megabyte change.
+//   2. A budget-aware planner picks the slice of files this page carries.
+//   3. Only those files' hunks are fetched, with `-- <paths>`.
+// The full-diff hash is computed inside the container (`| sha256sum`), so it
+// covers the whole change on every page and never depends on what was paged in.
+
+/** One record of `git diff --numstat -z`. Binary files report `-` for counts. */
+export interface DiffFileStat {
+  path: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  /** Set for renames/copies; both paths go into the pathspec so git still renders it as a rename. */
+  previousPath?: string;
+}
+
+/**
+ * Parse `git diff --numstat -z` output.
+ *
+ * NUL-delimited rather than line-delimited on purpose: with plain `--numstat`,
+ * git quote-escapes any path containing a space, quote or non-ASCII byte, and
+ * un-escaping that correctly is easy to get subtly wrong. With `-z` the paths
+ * arrive verbatim.
+ *
+ * Record shapes:
+ *   normal  `<adds>\t<dels>\t<path>\0`
+ *   rename  `<adds>\t<dels>\t\0<old>\0<new>\0`  — counts first, then two fields
+ */
+export function parseNumstatZ(raw: string): DiffFileStat[] {
+  const tokens = raw.split('\0');
+  const files: DiffFileStat[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    // The section may carry a leading newline from the sentinel `echo`.
+    const token = (tokens[index] ?? '').replace(/^[\r\n]+/, '');
+    if (!token) continue;
+    const firstTab = token.indexOf('\t');
+    if (firstTab === -1) continue;
+    const secondTab = token.indexOf('\t', firstTab + 1);
+    if (secondTab === -1) continue;
+    const additions = token.slice(0, firstTab);
+    const deletions = token.slice(firstTab + 1, secondTab);
+    let path = token.slice(secondTab + 1);
+    let previousPath: string | undefined;
+    if (path === '') {
+      // Rename/copy: the old and new paths follow as their own NUL fields.
+      const from = tokens[index + 1];
+      const to = tokens[index + 2];
+      if (from === undefined || to === undefined) continue;
+      previousPath = from;
+      path = to;
+      index += 2;
+    }
+    if (!path) continue;
+    const binary = additions === '-' || deletions === '-';
+    files.push({
+      path,
+      additions: binary ? 0 : Number.parseInt(additions, 10) || 0,
+      deletions: binary ? 0 : Number.parseInt(deletions, 10) || 0,
+      binary,
+      ...(previousPath ? { previousPath } : {})
+    });
+  }
+  return files;
+}
+
+// Rough per-line and per-file costs used only to decide where to cut a page.
+// Measuring the real size would mean fetching it, which is the cost being
+// avoided; the fetch itself is still hard-capped, so a bad estimate costs a
+// slightly fuller or emptier page, never a blown limit.
+const DIFF_LINE_BYTES = 64;
+const DIFF_FILE_OVERHEAD_BYTES = 200;
+const DIFF_BINARY_BYTES = 4_096;
+
+export function estimateFileDiffBytes(file: DiffFileStat): number {
+  if (file.binary) return DIFF_FILE_OVERHEAD_BYTES + DIFF_BINARY_BYTES;
+  return DIFF_FILE_OVERHEAD_BYTES + (file.additions + file.deletions) * DIFF_LINE_BYTES;
+}
+
+export interface DiffPagePlan {
+  /** Pathspecs to fetch hunks for (includes a rename's old path). */
+  pathspecs: string[];
+  /** Paths, in file-list order, whose hunks this page carries. */
+  paths: string[];
+  fromIndex: number;
+  /** Index the next page starts at, or null when this page is the last. */
+  nextIndex: number | null;
+}
+
+/**
+ * Choose the slice of files whose hunks a page carries.
+ *
+ * ALWAYS selects at least one file while any remain. A file whose own diff
+ * exceeds the entire budget would otherwise select nothing, the cursor would
+ * never advance, and a caller following nextCursor would page forever. Such a
+ * file is instead returned alone and truncated, with the result saying so.
+ */
+export function planDiffPage(
+  files: DiffFileStat[],
+  startIndex: number,
+  maxBytes: number,
+  maxFiles: number
+): DiffPagePlan {
+  const fromIndex = Math.max(0, Math.min(Math.trunc(startIndex) || 0, files.length));
+  const paths: string[] = [];
+  const pathspecs: string[] = [];
+  let spent = 0;
+  let index = fromIndex;
+  while (index < files.length && paths.length < maxFiles) {
+    const file = files[index];
+    if (!file) break;
+    const cost = estimateFileDiffBytes(file);
+    if (paths.length > 0 && spent + cost > maxBytes) break;
+    paths.push(file.path);
+    pathspecs.push(file.path);
+    if (file.previousPath) pathspecs.push(file.previousPath);
+    spent += cost;
+    index += 1;
+  }
+  return { pathspecs, paths, fromIndex, nextIndex: index < files.length ? index : null };
+}
+
+export interface DiffPageResult {
+  diff: string;
+  files: { path: string; additions: number; deletions: number; binary: boolean }[];
+  totalFiles: number;
+  totalAdditions: number;
+  totalDeletions: number;
+  pageFiles: string[];
+  cursor?: string;
+  nextCursor?: string;
+  hasMore: boolean;
+  truncated: boolean;
+  fileListTruncated?: boolean;
+  diffHash?: string;
+  note: string;
+}
+
+/**
+ * One plain sentence telling the caller what it is holding and how to get the
+ * rest. The model acts on this, so it states the next call rather than merely
+ * flagging that the result is partial.
+ */
+export function diffPageNote(state: {
+  shown: number;
+  total: number;
+  hasMore: boolean;
+  truncated: boolean;
+  fileListTruncated?: boolean;
+}): string {
+  const parts: string[] = [];
+  if (state.total === 0) return 'No changes.';
+  parts.push(
+    state.hasMore || state.shown < state.total
+      ? `Showing the diff for ${state.shown} of ${state.total} changed files; every changed file is listed in \`files\`.`
+      : `Showing the diff for all ${state.total} changed file${state.total === 1 ? '' : 's'}.`
+  );
+  if (state.hasMore) parts.push('Call again with `cursor: nextCursor` for the next page, or pass `paths` to jump to specific files.');
+  if (state.truncated) parts.push('This page\'s diff was cut short — usually one file too large to include whole. Read that file with forge_files_read, or re-request it alone with `paths`; paging will not return the missing part.');
+  if (state.fileListTruncated) parts.push('The change touches too many files to list them all; narrow with `paths`.');
+  return parts.join(' ');
+}
+
 function repositorySlug(repository: RepositoryRef): string {
   if (
     !/^[A-Za-z0-9_.-]{1,100}$/.test(repository.owner) ||
@@ -237,10 +412,6 @@ function withTimeout<T>(
   });
 }
 
-async function sha256Text(value: string): Promise<string> {
-  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
 
 // Routes sandbox work across backends (e.g. a self-hosted box vs Cloudflare).
 // `selectForCreate` decides which backend a new workspace lands on (with its own
@@ -1163,15 +1334,150 @@ export class ForgeApplicationService {
     };
   }
 
-  async gitDiff(record: WorkspaceRuntimeRecord, staged = false) {
-    return this.exec(record, {
-      command: staged
-        ? 'git diff --cached --no-ext-diff'
-        : 'git diff --no-ext-diff',
+  /**
+   * One page of a diff, selected by file. See the paging note above
+   * `parseNumstatZ` for why diffs are never returned whole.
+   *
+   * `selector` is whatever goes after `git diff` to choose the revisions
+   * ('' for the working tree, '--cached' for the index, 'base...HEAD' for the
+   * outgoing change). Callers must have validated it — it is interpolated into
+   * a shell command.
+   */
+  private async diffPage(
+    record: WorkspaceRuntimeRecord,
+    options: {
+      selector: string;
+      cursor?: number;
+      maxBytes: number;
+      maxFiles?: number;
+      paths?: string[];
+      withHash?: boolean;
+    }
+  ): Promise<DiffPageResult> {
+    const maxBytes = Math.max(2_000, Math.min(options.maxBytes, 400_000));
+    const maxFiles = options.maxFiles ?? 50;
+    const handle = await this.handle(record);
+    // `--literal-pathspecs`: a page's paths come back from git and go straight
+    //   out again as a pathspec, so a path containing `*` or `?` must not be
+    //   re-interpreted as a glob and pull in files this page never planned for.
+    // `core.quotePath=false`: otherwise git octal-escapes any non-ASCII path in
+    //   the diff HEADER ("a/caf\303\251.md") while `files` reports it verbatim,
+    //   so the two disagree about what the same file is called.
+    const git = `git -c core.quotePath=false --literal-pathspecs diff --no-ext-diff ${options.selector}`.trimEnd();
+
+    // Probe: the complete file list, plus (for the outgoing diff) a hash over
+    // the whole change. Both stay small regardless of how large the content is
+    // — numstat scales with file count, sha256sum emits 64 hex characters.
+    const probe = await handle.exec({
+      command: `sh -c ${quoted([
+        'echo ===FORGE_NUMSTAT===',
+        `${git} --numstat -z`,
+        'echo',
+        'echo ===FORGE_HASH===',
+        options.withHash ? `${git} --binary | sha256sum` : 'echo'
+      ].join('\n'))}`,
       cwd: '/workspace/repo',
-      timeoutMs: 30_000,
-      outputLimitBytes: 500_000,
+      timeoutMs: 60_000,
+      outputLimitBytes: 1_000_000,
+      sessionId: 'system',
       networkPolicy: 'deny_all'
+    });
+    if (probe.exitCode !== 0) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_DIRTY',
+        message: 'Forge could not read the diff.',
+        retryable: false,
+        details: { stderr: probe.stderr.slice(0, 2_000) }
+      });
+    }
+
+    const marker = (name: string): string => {
+      const start = probe.stdout.indexOf(name);
+      if (start === -1) return '';
+      const from = start + name.length;
+      const next = probe.stdout.indexOf('===FORGE_', from);
+      // Deliberately NOT trimmed: numstat records are NUL-terminated and the
+      // paths inside them may legitimately start or end with whitespace.
+      return probe.stdout.slice(from, next === -1 ? probe.stdout.length : next);
+    };
+
+    let files = parseNumstatZ(marker('===FORGE_NUMSTAT==='));
+    const diffHash = options.withHash ? (marker('===FORGE_HASH===').trim().split(/\s+/)[0] ?? '') : '';
+
+    // A file list long enough to hit the probe cap means `files` is short of
+    // the truth. Say so rather than quietly under-reporting the change.
+    const fileListTruncated = probe.truncated === true;
+
+    // An explicit `paths` request narrows the list before paging, so a caller
+    // can jump straight to one large file instead of paging up to it.
+    if (options.paths?.length) {
+      const wanted = new Set(options.paths);
+      files = files.filter((file) => wanted.has(file.path) || (file.previousPath !== undefined && wanted.has(file.previousPath)));
+    }
+
+    const totalAdditions = files.reduce((sum, file) => sum + file.additions, 0);
+    const totalDeletions = files.reduce((sum, file) => sum + file.deletions, 0);
+    const plan = planDiffPage(files, options.cursor ?? 0, maxBytes, maxFiles);
+
+    let diff = '';
+    let truncated = false;
+    if (plan.pathspecs.length > 0) {
+      // Headroom above the planner's budget so a slightly-underestimated page
+      // still arrives whole; only a genuinely oversized file gets cut.
+      const page = await handle.exec({
+        command: `${git} --binary -- ${plan.pathspecs.map(quoted).join(' ')}`,
+        cwd: '/workspace/repo',
+        timeoutMs: 60_000,
+        outputLimitBytes: maxBytes + 64_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      if (page.exitCode !== 0) {
+        throw new ForgeError({
+          code: 'FORGE_GIT_DIRTY',
+          message: 'Forge could not read the diff for this page of files.',
+          retryable: false,
+          details: { stderr: page.stderr.slice(0, 2_000) }
+        });
+      }
+      diff = page.stdout;
+      truncated = page.truncated === true;
+    }
+
+    const hasMore = plan.nextIndex !== null;
+    return {
+      diff,
+      files: files.map(({ path, additions, deletions, binary }) => ({ path, additions, deletions, binary })),
+      totalFiles: files.length,
+      totalAdditions,
+      totalDeletions,
+      pageFiles: plan.paths,
+      ...(plan.fromIndex > 0 ? { cursor: String(plan.fromIndex) } : {}),
+      ...(hasMore ? { nextCursor: String(plan.nextIndex) } : {}),
+      hasMore,
+      truncated,
+      ...(fileListTruncated ? { fileListTruncated } : {}),
+      ...(options.withHash ? { diffHash } : {}),
+      note: diffPageNote({
+        shown: plan.paths.length,
+        total: files.length,
+        hasMore,
+        truncated,
+        fileListTruncated
+      })
+    };
+  }
+
+  async gitDiff(
+    record: WorkspaceRuntimeRecord,
+    staged = false,
+    paging: { cursor?: number; maxBytes?: number; paths?: string[] } = {}
+  ) {
+    return this.diffPage(record, {
+      selector: staged ? '--cached' : '',
+      cursor: paging.cursor,
+      maxBytes: paging.maxBytes ?? 64_000,
+      paths: paging.paths
     });
   }
 
@@ -1249,15 +1555,53 @@ export class ForgeApplicationService {
     return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
-  async gitOutgoingDiff(record: WorkspaceRuntimeRecord, base: string) {
+  /**
+   * The outgoing change, one page of files at a time.
+   *
+   * `diffHash` is computed inside the container over the COMPLETE diff, so it
+   * is identical on every page and is safe to carry into a push from any of
+   * them. It previously hashed the Worker-side stdout, which the exec cap
+   * silently truncated at 1 MB — meaning a large change could be approved and
+   * pushed against a hash of only its first megabyte.
+   */
+  async gitOutgoingDiff(
+    record: WorkspaceRuntimeRecord,
+    base: string,
+    paging: { cursor?: number; maxBytes?: number; paths?: string[] } = {}
+  ) {
+    assertRef(base);
+    const page = await this.diffPage(record, {
+      selector: `${quoted(base)}...HEAD`,
+      cursor: paging.cursor,
+      maxBytes: paging.maxBytes ?? 64_000,
+      paths: paging.paths,
+      withHash: true
+    });
+    return { ...page, branch: record.workspace.currentBranch, base };
+  }
+
+  /**
+   * Every path in the outgoing change — complete, cheap, and independent of
+   * paging. Push-envelope checks must use this rather than parsing whatever
+   * hunks a page happened to carry, or a file outside the envelope's allowed
+   * paths could ride along unnoticed simply by sorting after the page cut.
+   */
+  async gitOutgoingPaths(record: WorkspaceRuntimeRecord, base: string): Promise<string[]> {
     assertRef(base);
     const result = await (await this.handle(record)).exec({
-      command: `git diff --no-ext-diff --binary ${quoted(base)}...HEAD`,
+      command: `git -c core.quotePath=false --literal-pathspecs diff --no-ext-diff --name-only -z ${quoted(base)}...HEAD`,
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 1_000_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not calculate the outgoing change.', retryable: false });
-    return { diff: result.stdout, diffHash: await sha256Text(result.stdout), branch: record.workspace.currentBranch, base };
+    if (result.exitCode !== 0) {
+      throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not list the outgoing paths.', retryable: false });
+    }
+    if (result.truncated) {
+      // Fail closed: a partial path list would let an envelope check pass on
+      // files it never saw.
+      throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'The outgoing change touches too many files to verify against a push envelope.', retryable: false });
+    }
+    return result.stdout.split('\0').map((path) => path.replace(/^[\r\n]+/, '')).filter(Boolean);
   }
 
   // True iff `ancestor` is an ancestor of (or equal to) HEAD — i.e. HEAD only

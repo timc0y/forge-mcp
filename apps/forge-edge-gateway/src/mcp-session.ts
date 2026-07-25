@@ -336,6 +336,35 @@ function asRecord(value: object): Record<string, unknown> {
 }
 
 /**
+ * Paging inputs shared by the two diff tools. The cursor is an opaque string on
+ * the wire (so its meaning can change without a schema break) but a file index
+ * underneath; anything unparseable falls back to the first page rather than
+ * erroring, since a bad cursor should never be a dead end.
+ */
+/**
+ * The change's true scale, for an approval page that may only be able to render
+ * part of the diff. Kept separate from the attached text so the headline figures
+ * never shrink just because the diff was paged.
+ */
+function diffTotals(
+  page: { totalFiles: number; totalAdditions: number; totalDeletions: number } | undefined
+): { files: number; additions: number; deletions: number } | undefined {
+  return page && { files: page.totalFiles, additions: page.totalAdditions, deletions: page.totalDeletions };
+}
+
+function diffPaging(input: Record<string, unknown>): { cursor?: number; maxBytes?: number; paths?: string[] } {
+  const parsed = input.cursor === undefined ? Number.NaN : Number.parseInt(String(input.cursor), 10);
+  const paths = Array.isArray(input.paths)
+    ? input.paths.map((path) => String(path)).filter((path) => path && !path.startsWith('/') && !path.includes('..') && !path.includes('\0'))
+    : undefined;
+  return {
+    ...(Number.isFinite(parsed) && parsed > 0 ? { cursor: parsed } : {}),
+    ...(input.max_bytes === undefined ? {} : { maxBytes: Number(input.max_bytes) }),
+    ...(paths?.length ? { paths } : {})
+  };
+}
+
+/**
  * Idempotency key for a mutating call, minted when the caller did not supply one.
  *
  * The key exists so a caller that retries after a dropped connection does not
@@ -805,18 +834,44 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_diff_metadata: async (input) => {
         const identity = this.identity();
+        // Summary of the WHOLE change, so it stays a reliable overview of a
+        // diff too large to read: the file list, line counts and path-derived
+        // facts come from --numstat and cover every file. Only the content-
+        // derived parts (changed symbols, possible secrets) need hunks, so
+        // those are computed over as much of the diff as fits one generous
+        // page, and `note` says when that fell short.
         const outgoing = await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitOutgoingDiff({
-          base: text(input.base)
+          base: text(input.base),
+          maxBytes: 400_000
         });
         const compact = analyzeDiff(outgoing.diff);
+        const analyzed = new Map(compact.files.map((file) => [file.path, file]));
+        const files = outgoing.files.map((file) => {
+          const seen = analyzed.get(file.path);
+          return {
+            path: file.path,
+            changeType: seen?.changeType ?? (file.binary ? 'binary' : 'modified'),
+            additions: file.additions,
+            deletions: file.deletions,
+            changedSymbols: seen?.changedSymbols ?? [],
+            possibleSecret: seen?.possibleSecret ?? false,
+            ...(seen?.facts === undefined ? {} : { facts: seen.facts })
+          };
+        });
+        const unanalyzed = files.length - compact.files.length;
         return {
           ...compact,
+          files,
+          totalAdditions: outgoing.totalAdditions,
+          totalDeletions: outgoing.totalDeletions,
           diffHash: outgoing.diffHash,
           base: outgoing.base,
           branch: outgoing.branch,
-          suggestedChecks: suggestChecks(compact.files.map((file) => file.path)),
+          suggestedChecks: suggestChecks(files.map((file) => file.path)),
           rawDiffAvailableVia: 'forge_git_outgoing_diff',
-          note: 'This is a syntax-only summary. Inspect the raw diff before any Git mutation.'
+          note: unanalyzed > 0
+            ? `This is a syntax-only summary. File list and line counts cover all ${files.length} changed files; symbol and secret detection covers the first ${compact.files.length} (${unanalyzed} too large to scan here — read them with forge_git_outgoing_diff paths:[...]). Inspect the raw diff before any Git mutation.`
+            : 'This is a syntax-only summary. Inspect the raw diff before any Git mutation.'
         };
       },
       forge_review: async (input) => {
@@ -1337,7 +1392,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_git_diff: async (input) => {
         const identity = this.identity();
         return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitDiff({
-          staged: Boolean(input.staged)
+          staged: Boolean(input.staged),
+          ...diffPaging(input)
         }));
       },
       forge_git_branch_create: async (input) => {
@@ -1355,7 +1411,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // diff is empty we leave the message blank so gitCommit enforces the
         // existing required-message contract.
         if (!message.trim() && aiEnabled(env)) {
-          const diff = await coordinator.gitDiff({ staged: false }).then((r) => r.stdout ?? '').catch(() => '');
+          const diff = await coordinator.gitDiff({ staged: false, maxBytes: 32_000 }).then((r) => r.diff).catch(() => '');
           if (diff.trim()) message = await generateCommitMessage(env, diff);
         }
         return asRecord(await coordinator.gitCommit({
@@ -1364,7 +1420,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_git_outgoing_diff: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitOutgoingDiff({ base: text(input.base) }));
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitOutgoingDiff({
+          base: text(input.base),
+          ...diffPaging(input)
+        }));
       },
       forge_git_push: async (input) => {
         const identity = this.identity();
@@ -1402,9 +1461,15 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const envelope = await findActiveEnvelope(env, identity.tenantId, workspaceId, branch, base);
           if (envelope) {
             const coordinator = await authorizedCoordinator(env, identity, workspaceId);
-            const outgoing = await coordinator.gitOutgoingDiff({ base }).catch(() => undefined);
+            // Hash over the whole change, and the path list straight from
+            // `git diff --name-only` — never from the returned hunks, which
+            // are one page of files and would let anything after the page cut
+            // slip past allowed_paths unchecked. gitOutgoingPaths fails closed
+            // if it cannot enumerate every path.
+            const outgoing = await coordinator.gitOutgoingDiff({ base, maxBytes: 2_000 }).catch(() => undefined);
+            const changedPaths = outgoing ? await coordinator.gitOutgoingPaths({ base }).catch(() => undefined) : undefined;
             const hashOk = outgoing?.diffHash === diffHash;
-            const pathsOk = hashOk && pathsWithinEnvelope(analyzeDiff(outgoing.diff).files.map((f) => f.path), envelope.allowedPaths);
+            const pathsOk = hashOk && changedPaths !== undefined && pathsWithinEnvelope(changedPaths, envelope.allowedPaths);
             const ffOk = pathsOk && (envelope.lastApprovedCommit
               ? await coordinator.gitIsAncestor({ ancestor: envelope.lastApprovedCommit })
               : true);
@@ -1429,8 +1494,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           // see, not an opaque hash. Best-effort — `diff` is display-only; the
           // diffHash remains the integrity check enforced by requireApproval.
           const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
-            .gitOutgoingDiff({ base }).catch(() => undefined);
-          const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash, diff: outgoing?.diff ?? '' });
+            .gitOutgoingDiff({ base, maxBytes: 200_000 }).catch(() => undefined);
+          const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash, diff: outgoing?.diff ?? '', diffTotals: diffTotals(outgoing) });
           const inline = await this.tryResolveApprovalInline(identity, approval, `Push ${branch} to GitHub`);
           if (!inline) {
             throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact push was already approved. No need to open the URL again — retry the call with approval_id.' : 'This push needs human approval. Open the approval URL, approve this exact push, then retry the call with approval_id. To avoid a human click on every future push in this task, ask them to run forge_task_authorize_push_envelope once instead.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
@@ -1463,9 +1528,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const ttlMinutes = number(input.ttl_minutes);
         let approvalId = input.approval_id ? text(input.approval_id) : undefined;
         const coordinator = await authorizedCoordinator(env, identity, workspaceId);
-        const outgoing = await coordinator.gitOutgoingDiff({ base }).catch(() => undefined);
-        const defaultPaths = outgoing ? [...new Set(analyzeDiff(outgoing.diff).files.map((f) => f.path))] : [];
+        // The envelope's default allow-list must cover every currently changed
+        // path, so it comes from the complete `--name-only` list rather than
+        // from a page of hunks — an under-wide default would quietly block
+        // later pushes, and is derived from the same source the push-time
+        // check uses.
+        const defaultPaths = [...new Set(await coordinator.gitOutgoingPaths({ base }).catch(() => []))];
         const allowedPaths = (input.allowed_paths as string[] | undefined) ?? defaultPaths;
+        // Display-only, for the approval page: a bounded page of the diff plus
+        // the true totals, so the reviewer sees real scale even when the change
+        // is too large to render whole.
+        const envelopePreview = await coordinator.gitOutgoingDiff({ base, maxBytes: 200_000 }).catch(() => undefined);
         if (allowedPaths.length === 0) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
@@ -1476,7 +1549,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (!approvalId) {
           const approval = await requestApproval(
             env, identity, workspaceId, 'task.push_envelope', `Pre-authorize pushes to ${branch}`,
-            { branch, base, allowedPaths, ttlMinutes, diff: outgoing?.diff ?? '' }
+            { branch, base, allowedPaths, ttlMinutes, diff: envelopePreview?.diff ?? '', diffTotals: diffTotals(envelopePreview) }
           );
           const reason = `Pre-authorize pushes to ${branch} touching only ${allowedPaths.join(', ')}`;
           const inline = await this.tryResolveApprovalInline(identity, approval, reason);
@@ -1555,7 +1628,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (status && !status.clean) {
           let message = '';
           if (aiEnabled(env)) {
-            const working = await coordinator.gitDiff({ staged: false }).then((r) => r.stdout ?? '').catch(() => '');
+            const working = await coordinator.gitDiff({ staged: false, maxBytes: 32_000 }).then((r) => r.diff).catch(() => '');
             if (working.trim()) message = await generateCommitMessage(env, working).catch(() => '');
           }
           await coordinator.gitCommit({
@@ -1566,9 +1639,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           autoCommitted = true;
         }
 
-        const outgoing = await coordinator.gitOutgoingDiff({ base }).catch(() => undefined);
+        // A bounded first page: enough diff for the summariser to work from,
+        // while `totalFiles` still counts the whole change. Counting
+        // `diff --git` lines here would only ever see this page and could call
+        // a large submission empty.
+        const outgoing = await coordinator.gitOutgoingDiff({ base, maxBytes: 48_000 }).catch(() => undefined);
         const diff = outgoing?.diff ?? '';
-        const filesChanged = diff ? diff.split('\n').filter((line) => line.startsWith('diff --git ')).length : 0;
+        const filesChanged = outgoing?.totalFiles ?? 0;
         // Nothing to review is a mistake worth naming, not an empty pull request
         // for someone to puzzle over later.
         if (filesChanged === 0) {
@@ -1682,7 +1759,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           // its contents, not just a title. Display-only, best-effort.
           const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
             .gitOutgoingDiff({ base }).catch(() => undefined);
-          const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body, diff: outgoing?.diff ?? '' });
+          const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body, diff: outgoing?.diff ?? '', diffTotals: diffTotals(outgoing) });
           const inline = await this.tryResolveApprovalInline(identity, approval, `Create draft pull request ${head} → ${base}`);
           if (!inline) {
             throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact draft PR was already approved. No need to open the URL again — retry the call with approval_id.' : 'This draft PR needs human approval. Open the approval URL, approve it, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });

@@ -68,10 +68,10 @@ Deterministic, model-free tools — no embeddings, syntax-only analysis.
 | Tool | Approval | Description |
 | --- | --- | --- |
 | `forge_git_status` | none | Return structured working-tree and branch status. |
-| `forge_git_diff` | none | Return a bounded unified diff for the working tree or staged changes. |
+| `forge_git_diff` | none | Return the working-tree or staged diff one page of files at a time. Always returns the complete changed-file list; `diff` holds that page's hunks. See [Paged diffs](#paged-diffs). |
 | `forge_git_branch_create` | none (workspace side effect) | Create and check out a local branch under the required `forge/` namespace. |
 | `forge_git_commit` | none (workspace side effect) | Stage selected paths and create a commit attributed to `forge-mcp[bot]`. Omit `message` to auto-generate a conventional-commit message from the diff (Workers AI). |
-| `forge_git_outgoing_diff` | none | Return the exact bounded diff and hash between the base branch and the current Forge branch — call this before any push/PR approval. |
+| `forge_git_outgoing_diff` | none | Return the diff between the base branch and the current Forge branch, one page of files at a time, plus `diffHash` over the whole change — call this before any push/PR approval. See [Paged diffs](#paged-diffs). |
 | `forge_git_push` | **required** (external) | Push a non-default `forge/` branch through the GitHub App credential proxy. Always needs a real user-approval page. |
 | `forge_pull_request_create` | **required** (external) | Create a draft GitHub pull request for an already-pushed Forge branch. Omit `title` to auto-generate title/body from the diff. Always needs approval. |
 
@@ -82,6 +82,37 @@ Deterministic, model-free tools — no embeddings, syntax-only analysis.
 | `forge_preview_expose` | policy | Expose a running process through a short-lived Forge preview capability. Private by default; `public` access requires approval. |
 | `forge_review_capture` | none (workspace side effect) | Capture screenshot + accessibility evidence of a running Forge preview across bounded routes, states, and viewports. Optional `steps` drive real interactions (click/fill/press/wait) before the shot, so a multi-step flow (open a menu, submit a form) can be proven, not just a static screenshot. This is the only preview-evidence tool. |
 | `forge_artifact_get` | none | Return a stored Forge artifact (e.g. a screenshot) to the MCP client; image artifacts come back as MCP image content for direct model inspection. |
+
+## Paged diffs
+
+A diff is the one Forge result whose size is set by the user's repository
+rather than by anything Forge chooses — one generated file, a vendored bundle
+or a large content change can run to megabytes. `forge_git_diff` and
+`forge_git_outgoing_diff` therefore return **a page of files at a time**:
+
+| Field | Meaning |
+| --- | --- |
+| `files` | Every changed file with `additions` / `deletions` / `binary`. **Always complete**, on every page — it comes from `--numstat`, whose size scales with file count, not content. |
+| `totalFiles`, `totalAdditions`, `totalDeletions` | Totals for the whole change, not the page. |
+| `diff` | Unified diff for this page's files only. |
+| `pageFiles` | The paths whose hunks are in `diff`. |
+| `nextCursor` / `hasMore` | Call again with `cursor: nextCursor` for the next page. |
+| `truncated` | A single file was too large to include whole. Paging will **not** return the rest — read it with `forge_files_read`. |
+| `note` | One sentence stating what you are holding and the next call to make. |
+
+Inputs: `cursor`, `max_bytes` (default 64 000), and `paths` — pass `paths` to
+jump straight to specific files instead of paging up to them.
+
+`forge_git_outgoing_diff` additionally returns `diffHash`, computed inside the
+container over the **complete** diff. It is identical on every page and is safe
+to carry into `forge_git_push` from any of them. (Previously the hash was taken
+over the Worker-side stdout, which was silently truncated at 1 MB — so a large
+change could be approved and pushed against a hash covering only its first
+megabyte.)
+
+Push-envelope checks and the envelope's default allow-list are derived from
+`git diff --name-only` over the whole change, never from a page's hunks, and
+fail closed if the path list cannot be enumerated in full.
 
 ## No MCP-UI widget
 

@@ -111,12 +111,44 @@ const gitStatusOutput = {
   dataLoss: z.object({ at: z.string(), detail: z.string() }).optional().describe('Set when a checkout recovery could only re-clone from the remote and had to discard local-only work.')
 } satisfies ZodRawShape;
 
+// Shared by both diff tools. A diff is the one Forge result whose size is set
+// by the user's repository rather than by anything Forge controls, so it is
+// returned a page of FILES at a time: `files` always lists every changed file
+// (it comes from --numstat, which stays small no matter how large the content
+// is), while `diff` carries the hunks for just this page.
+const diffPageFields = {
+  diff: z.string().describe('Unified diff for the files in `pageFiles` only — not the whole change.'),
+  files: z.array(z.object({
+    path: z.string(),
+    additions: z.number(),
+    deletions: z.number(),
+    binary: z.boolean()
+  })).describe('Every changed file with its line counts. Always complete, on every page.'),
+  totalFiles: z.number(),
+  totalAdditions: z.number(),
+  totalDeletions: z.number(),
+  pageFiles: z.array(z.string()).describe('Paths whose hunks are included in `diff`.'),
+  cursor: z.string().optional().describe('Cursor this page started at; absent on the first page.'),
+  nextCursor: z.string().optional().describe('Pass back as `cursor` to fetch the next page. Absent on the last page.'),
+  hasMore: z.boolean().describe('True when more files remain; fetch them with `cursor: nextCursor`.'),
+  truncated: z.boolean().describe('True when a single file was too large to include whole. Its remaining content is not reachable by paging — read the file with forge_files_read instead.'),
+  fileListTruncated: z.boolean().optional().describe('True when even the file list had to be cut, so `files` is incomplete. Narrow with `paths`.'),
+  note: z.string()
+} satisfies ZodRawShape;
+
+const diffPageOutput = { ...diffPageFields } satisfies ZodRawShape;
+
 const outgoingDiffOutput = {
-  diff: z.string(),
-  diffHash: z.string().describe('Stable hash of the diff; pass it back as expected_diff_hash on push.'),
+  ...diffPageFields,
+  diffHash: z.string().describe('Stable hash of the COMPLETE outgoing diff, not just this page; pass it back as expected_diff_hash on push. Identical on every page.'),
   branch: z.string().optional(),
   base: z.string()
 } satisfies ZodRawShape;
+
+// Paging inputs shared by both diff tools.
+const diffCursor = z.string().max(64).optional().describe('Opaque cursor from a prior page\'s nextCursor. Omit for the first page.');
+const diffMaxBytes = z.number().int().min(2_000).max(400_000).default(64_000).describe('Approximate byte budget for this page of hunks. Lower it if results are still too large to read comfortably.');
+const diffPaths = z.array(z.string().min(1).max(400)).max(200).optional().describe('Restrict the diff to these exact paths (from `files`). Use this to read one large file\'s change directly instead of paging to it.');
 
 const filesReadOutput = {
   path: z.string().optional(),
@@ -318,10 +350,10 @@ export const forgeTools = [
   { name: 'forge_process_start', title: 'Start a background process', description: 'Start a long-running background process such as a development server and return its Forge process id immediately. idempotency_key must be unique per distinct process.', inputSchema: { workspace_id: workspaceIdOptional, command: z.string().min(1).max(16384).describe('Command to run in the background.'), cwd, environment: z.record(z.string(), z.string()).default({}).describe('Extra environment variables.'), network_policy: z.enum(['deny_all','package_install','development','custom_allowlist']).default('development').describe('Outbound network policy for this process.'), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'workspace', approval: 'policy' },
   { name: 'forge_process_logs', title: 'Read process logs', description: 'Read a bounded page of a background process\'s logs using an opaque cursor. Read-only.', inputSchema: { workspace_id: workspaceIdOptional, process_id: z.string().startsWith('proc_').describe('Process id from forge_process_start.'), cursor: z.string().optional().describe('Opaque cursor from a prior page.') }, sideEffect: 'none', approval: 'none' },
   { name: 'forge_git_status', title: 'Read Git status', description: 'Get the workspace repository\'s working-tree and branch status. Read-only.', inputSchema: { workspace_id: workspaceIdOptional }, outputSchema: gitStatusOutput, sideEffect: 'none', approval: 'none' },
-  { name: 'forge_git_diff', title: 'Read Git diff', description: 'Get a bounded unified diff of the working tree, or of staged changes. Read-only.', inputSchema: { workspace_id: workspaceIdOptional, staged: z.boolean().default(false).describe('Diff staged changes instead of the working tree.') }, outputSchema: execResultOutput, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_git_diff', title: 'Read Git diff', description: 'Get the working-tree (or staged) diff one page of files at a time. Every call returns the COMPLETE list of changed files with line counts; `diff` carries the hunks for that page only. Follow `nextCursor` for the rest, or pass `paths` to jump straight to specific files. Read-only.', inputSchema: { workspace_id: workspaceIdOptional, staged: z.boolean().default(false).describe('Diff staged changes instead of the working tree.'), cursor: diffCursor, max_bytes: diffMaxBytes, paths: diffPaths }, outputSchema: diffPageOutput, sideEffect: 'none', approval: 'none' },
   { name: 'forge_git_branch_create', title: 'Create a branch', description: 'Create and check out a local branch under the required forge/ namespace.', inputSchema: { workspace_id: workspaceIdOptional, branch: z.string().startsWith('forge/').max(107).describe('Branch name; must start with forge/.'), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'workspace', approval: 'none' },
   { name: 'forge_git_commit', title: 'Commit changes', description: 'Stage the given repository paths and commit them, attributed to forge-mcp[bot]. Omit message to auto-generate a conventional-commit message from the diff.', inputSchema: { workspace_id: workspaceIdOptional, message: z.string().min(1).max(500).optional().describe('Commit message; omit to auto-generate.'), paths: z.array(z.string().min(1).max(500)).max(100).default([]).describe('Paths to stage; empty stages all changes.'), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'workspace', approval: 'none' },
-  { name: 'forge_git_outgoing_diff', title: 'Inspect the outgoing change', description: 'Get the exact bounded diff and its hash between the base branch and the current forge/ branch. Read-only — inspect this before requesting a push.', inputSchema: { workspace_id: workspaceIdOptional, base: z.string().min(1).max(255).default('main').describe('Base branch to compare against.') }, outputSchema: outgoingDiffOutput, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_git_outgoing_diff', title: 'Inspect the outgoing change', description: 'Get the diff between the base branch and the current forge/ branch, one page of files at a time. Every call returns the COMPLETE list of changed files plus `diffHash` over the WHOLE change (safe to pass to push from any page); `diff` carries the hunks for that page only. Follow `nextCursor` for the rest, or pass `paths` for specific files. Read-only — inspect this before requesting a push.', inputSchema: { workspace_id: workspaceIdOptional, base: z.string().min(1).max(255).default('main').describe('Base branch to compare against.'), cursor: diffCursor, max_bytes: diffMaxBytes, paths: diffPaths }, outputSchema: outgoingDiffOutput, sideEffect: 'none', approval: 'none' },
   { name: 'forge_submit_for_review', title: 'Submit finished work for review', description: 'Finish a piece of work in one call, without waiting for anyone. Stages the current branch on a Forge-owned ref, queues a pull request for it, and returns immediately — the human approves whenever they like, from the Forge portal or the returned URL, and Forge performs the push and opens the draft PR itself. Prefer this over forge_git_push + forge_pull_request_create, which both block until a human clicks. Any uncommitted work is committed automatically, so this is genuinely one call. The workspace can be destroyed straight after this returns; the staged commits outlive it.', inputSchema: { workspace_id: workspaceIdOptional, branch: z.string().startsWith('forge/').max(107).describe('forge/ branch the work should land on once approved.'), base: z.string().min(1).max(255).default('main').describe('Branch the pull request will target.'), title: z.string().min(1).max(256).optional().describe('PR title; omit to auto-generate from the diff.'), body: z.string().max(60000).default('').describe('PR body.'), task_id: taskId.optional().describe('Task this submission completes, for traceability.'), idempotency_key: idempotencyOptional }, outputSchema: { submitted: z.boolean().describe('True once the work is staged and queued for review.'), status: z.string().describe('Lifecycle state of the submission, e.g. awaiting_approval.'), deferred_action_id: z.string().describe('Id of the queued action.'), approval_id: z.string().describe('Approval the human resolves to release it.'), approval_url: z.string().describe('Page where a human can review and approve this submission.'), staged_ref: z.string().describe('Forge-owned ref holding the commits until approval.'), commit: z.string().describe('Commit that will be promoted onto the branch.'), branch: z.string(), base: z.string(), files_changed: z.number().int(), auto_committed: z.boolean().describe('True when uncommitted work was committed as part of submitting.'), next_step: z.string().describe('What the agent should tell the human.') }, sideEffect: 'external', approval: 'deferred' },
   { name: 'forge_git_push', title: 'Push a branch', description: 'Push a non-default forge/ branch through the GitHub App credential proxy. Requires a real user approval page and the expected diff hash.', inputSchema: { workspace_id: workspaceIdOptional, branch: z.string().startsWith('forge/').max(107).describe('forge/ branch to push.'), base: z.string().min(1).max(255).default('main').describe('Base branch the push targets.'), expected_diff_hash: z.string().regex(/^[a-f0-9]{64}$/).describe('diffHash from forge_git_outgoing_diff; the push fails if the diff changed.'), approval_id: z.string().startsWith('apr_').optional().describe('Approval id from the approval page.'), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'external', approval: 'required' },
   { name: 'forge_pull_request_create', title: 'Open a draft pull request', description: 'Open a draft GitHub pull request for an already-pushed forge/ branch. Requires a real user approval page. Omit title to auto-generate the title and body from the branch diff.', inputSchema: { workspace_id: workspaceIdOptional, head: z.string().startsWith('forge/').max(107).describe('forge/ branch to open the PR from.'), base: z.string().min(1).max(255).default('main').describe('Branch to merge into.'), title: z.string().min(1).max(256).optional().describe('PR title; omit to auto-generate.'), body: z.string().max(60000).default('').describe('PR body.'), approval_id: z.string().startsWith('apr_').optional().describe('Approval id from the approval page.') }, sideEffect: 'external', approval: 'required' },
