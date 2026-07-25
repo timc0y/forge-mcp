@@ -12,12 +12,16 @@
   "triggers": {
     "crons": ["*/5 * * * *"]
   },
-  // Canonical hostname. Adding a custom domain does NOT take workers.dev out of
-  // service — that would need "workers_dev": false — so both hostnames reach
-  // this Worker and existing links keep resolving.
+  // Canonical hostname.
   "routes": [
     { "pattern": "forge.timcoy.uk", "custom_domain": true }
   ],
+  // MUST stay explicitly true. Wrangler disables workers.dev by default as soon
+  // as a route is declared, which took forge-edge-gateway.timcoy72.workers.dev
+  // to a 404 — retiring every approval and OAuth link already issued against
+  // it, and FORGE_PREVIEW_HOSTNAME with them, since preview capabilities are
+  // minted on that hostname.
+  "workers_dev": true,
   "observability": {
     "enabled": true,
     "logs": {
