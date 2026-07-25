@@ -17,6 +17,16 @@ describe('Forge HTML surfaces', () => {
     expect(landing).toMatch(/grid-template-columns:repeat\(auto-fit,minmax\(min\(100%/);
     // Actions stack instead of overflowing on a narrow screen.
     expect(landing).toMatch(/@media\(max-width:640px\)\{[^}]*flex-direction:column/);
+    // Each numbered step must present exactly two grid children: the counter,
+    // and one wrapper holding everything else. A loose text node beside the <b>
+    // becomes a third item and lands in the 1.9rem counter column, which wraps
+    // the whole description one word per line.
+    const steps = landing.slice(landing.indexOf('<section class="steps">'), landing.indexOf('</ol>'));
+    const items = steps.match(/<li>.*?<\/li>/gs) ?? [];
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      expect(item, item.slice(0, 60)).toMatch(/^<li><span>.*<\/span><\/li>$/s);
+    }
     // The authenticated surfaces share one stylesheet now, so the guards move
     // with them: the shell bounds its own width, grid children may shrink below
     // their content, and long unbroken strings (ids, refs, URLs) wrap.

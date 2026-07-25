@@ -123,7 +123,8 @@ h1{margin:0 0 1rem;font-size:clamp(2.4rem,6vw,4rem);line-height:1.05;letter-spac
 .steps{margin-top:clamp(3.5rem,8vw,5.5rem);border-top:1px solid var(--line);padding-top:2.2rem}
 .steps h2{margin:0 0 1.4rem;font-size:1.15rem;letter-spacing:-.015em}
 ol{margin:0;padding:0;list-style:none;display:grid;gap:1rem;counter-reset:step}
-ol li{counter-increment:step;display:grid;grid-template-columns:1.9rem 1fr;gap:.9rem;color:var(--muted)}
+ol li{counter-increment:step;display:grid;grid-template-columns:1.9rem minmax(0,1fr);grid-auto-flow:column;gap:.9rem;color:var(--muted);align-items:start}
+ol li>span{grid-column:2}
 ol li::before{content:counter(step);display:grid;place-items:center;width:1.9rem;height:1.9rem;border:1px solid var(--line);border-radius:50%;color:var(--ink);font-size:.82rem;font-variant-numeric:tabular-nums}
 ol li b{color:var(--ink);font-weight:600}
 footer{border-top:1px solid var(--line);padding:1.6rem 0 2.4rem;color:var(--muted);font-size:.85rem;display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
@@ -151,10 +152,10 @@ footer{border-top:1px solid var(--line);padding:1.6rem 0 2.4rem;color:var(--mute
 </div>
 
 <section class="steps"><h2>How it works</h2><ol>
-<li><b>Request access.</b> Sign in with GitHub and your request comes to the owner for approval.</li>
-<li><b>Connect once.</b> Paste one URL into ChatGPT or Claude. There is nothing to install and nothing to run locally.</li>
-<li><b>Just ask.</b> Screenshot a page, fix a bug, try a design. Forge picks the cheapest way to do it.</li>
-<li><b>Approve in your own time.</b> Anything that touches your repository waits for you, on the web or your phone.</li>
+<li><span><b>Request access.</b> Sign in with GitHub and your request comes to the owner for approval.</span></li>
+<li><span><b>Connect once.</b> Paste one URL into ChatGPT or Claude. There is nothing to install and nothing to run locally.</span></li>
+<li><span><b>Just ask.</b> Screenshot a page, fix a bug, try a design. Forge picks the cheapest way to do it.</span></li>
+<li><span><b>Approve in your own time.</b> Anything that touches your repository waits for you, on the web or your phone.</span></li>
 </ol></section>
 </div></main>
 <div class="wrap"><footer><span>Forge — ${env.FORGE_ENVIRONMENT}</span><span>Screenshots, workspaces and pull requests for AI chat.</span></footer></div>
