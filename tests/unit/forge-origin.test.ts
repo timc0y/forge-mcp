@@ -68,3 +68,19 @@ describe('forgeOrigin', () => {
     expect(forgeOrigin(post(`${LEGACY}/approvals/apr_x`), envNoLegacy)).toBe(CANONICAL);
   });
 });
+
+describe('Origin: null (sandboxed webviews)', () => {
+  it('is rejected by the raw origin guard', () => {
+    // Every in-app browser and sandboxed iframe posts a literal "null" origin.
+    // It matches no hostname, so no allow-list can admit it — which is why
+    // widening the allow-list did not fix approvals opened from a chat client.
+    expect(() => assertSameOrigin(post(`${CANONICAL}/approvals/apr_x`, 'null'), env)).toThrow();
+  });
+
+  it('is not silently treated as a missing header', () => {
+    // A missing Origin is allowed; the string "null" must not take that path
+    // by accident, or the guard would be trivially bypassable.
+    expect(() => assertSameOrigin(post(`${CANONICAL}/x`, 'null'), env)).toThrow();
+    expect(() => assertSameOrigin(post(`${CANONICAL}/x`), env)).not.toThrow();
+  });
+});

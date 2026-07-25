@@ -1347,13 +1347,28 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     // return bare one-line text — a reviewer pressing Approve got an unstyled
     // "Approval expired" or a raw 403 with nothing saying what to do, and no
     // way to tell the failures apart when reporting them.
-    try {
-      assertSameOrigin(request, env);
-    } catch {
-      return decisionProblem(
-        env, 403, 'cross_origin', 'Could not submit that decision',
-        `This page was opened from ${escapeHtmlLocal(request.headers.get('origin') ?? 'an unrecognised address')}, which is not an address Forge serves. Open the approval link again and press the button on the freshly loaded page.`
-      );
+    // CSRF is an AMBIENT-CREDENTIALS attack: it matters when the browser
+    // attaches the session cookie by itself, so a forged cross-site form can
+    // act as the victim. A signed approval link carries its own unguessable,
+    // server-signed authorization in the URL instead — anyone able to make a
+    // victim's browser submit it would have to already hold the link, and could
+    // just open it themselves. So the Origin check guards the cookie-session
+    // path only.
+    //
+    // Requiring a recognisable Origin on the link flow broke real reviewers: a
+    // sandboxed webview or iframe — which is every in-app browser, including
+    // the one a chat client opens links in — posts `Origin: null`. That matches
+    // no hostname, so no allow-list can ever admit it, and it is not forgeable
+    // into one either. The reviewer just saw the decision rejected every time.
+    if (!linkClaims) {
+      try {
+        assertSameOrigin(request, env);
+      } catch {
+        return decisionProblem(
+          env, 403, 'cross_origin', 'Could not submit that decision',
+          `This page was opened from ${escapeHtmlLocal(request.headers.get('origin') ?? 'an unrecognised address')}, which is not an address Forge serves. Open the approval link again and press the button on the freshly loaded page.`
+        );
+      }
     }
     if (row.state !== 'pending') {
       return decisionProblem(
