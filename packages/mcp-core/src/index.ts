@@ -245,7 +245,9 @@ const repositoryListOutput = {
     default_branch: z.string().optional(),
     installation_id: z.unknown().optional(),
     last_verified_at: z.unknown().optional()
-  }))
+  })),
+  reason: z.string().optional().describe('Present only when the list is empty: why there are none (never_installed, revoked, stale_owner, ok).'),
+  next_step: z.string().optional().describe('Present only when the list is empty: what the account owner has to do, and where.')
 } satisfies ZodRawShape;
 
 const diffMetadataOutput = {

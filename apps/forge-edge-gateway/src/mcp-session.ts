@@ -53,6 +53,7 @@ import {
   completeApproval,
   createDraftPullRequest,
   listAuthorizedRepositories,
+  repositoryAccessDiagnosis,
   markApprovalApproved,
   requestApproval,
   requireApproval
@@ -625,7 +626,18 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     return {
       forge_repository_list: async () => {
         const identity = this.identity();
-        return { repositories: await listAuthorizedRepositories(env, identity.tenantId) };
+        const repositories = await listAuthorizedRepositories(env, identity.tenantId);
+        if (repositories.length > 0) return { repositories };
+        // An empty list reads as "Forge is broken" unless it says otherwise. Tell
+        // the caller which of the several very different reasons this is, and
+        // exactly where the human has to click, so it can pass that on instead of
+        // reporting a dead end.
+        const diagnosis = await repositoryAccessDiagnosis(env, identity.tenantId);
+        return {
+          repositories,
+          reason: diagnosis.state,
+          next_step: `${diagnosis.detail} Ask the account owner to open ${diagnosis.installUrl} and connect the repositories — no repository work is possible until they do.`
+        };
       },
       forge_task_start: async (input) => {
         const identity = this.identity();

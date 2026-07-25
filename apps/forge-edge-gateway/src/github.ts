@@ -381,8 +381,14 @@ export const REPOSITORY_UPSERT_SQL =
  */
 export async function resyncTenantInstallations(env: Env, user: UserRow): Promise<void> {
   try {
+    // Deliberately not filtered to status='active'. The state most in need of
+    // repair is an installation marked revoked that is in fact live on GitHub —
+    // which is exactly what a GitHub account rename can leave behind. Skipping
+    // those meant the one case self-healing existed for was the one case it
+    // could not reach. A genuinely dead installation simply fails its sync and
+    // stays revoked.
     const rows = await env.METADATA.prepare(
-      "SELECT installation_id FROM github_installations WHERE tenant_id=?1 AND status='active'"
+      'SELECT installation_id FROM github_installations WHERE tenant_id=?1'
     ).bind(user.tenant_id).all<{ installation_id: string }>();
     for (const row of rows.results ?? []) {
       await syncInstallation(env, user, row.installation_id).catch((error) => {
@@ -469,6 +475,50 @@ export async function listAuthorizedRepositories(env: Env, tenantId: string): Pr
        FROM repositories WHERE tenant_id = ?1 AND authorization_state = 'authorized' ORDER BY owner, name`
   ).bind(tenantId).all<Record<string, unknown>>();
   return result.results;
+}
+
+/**
+ * Why a tenant has no usable repositories, when it has none.
+ *
+ * An empty list is not self-explaining, and the three reasons behind it need
+ * completely different actions: never connected, connected then revoked, or
+ * connected under a GitHub account that has since been renamed. Returning the
+ * bare empty array left callers — and the people asking them — to guess, and the
+ * guess is usually "Forge is broken" rather than "click install".
+ */
+export async function repositoryAccessDiagnosis(
+  env: Env,
+  tenantId: string
+): Promise<{ state: 'ok' | 'never_installed' | 'revoked' | 'stale_owner'; detail: string; installUrl: string }> {
+  const installUrl = `${env.FORGE_PUBLIC_ORIGIN}/github/install`;
+  const installation = await env.METADATA.prepare(
+    'SELECT status, account_login FROM github_installations WHERE tenant_id=?1 ORDER BY last_verified_at DESC LIMIT 1'
+  ).bind(tenantId).first<{ status: string; account_login: string }>().catch(() => null);
+  if (!installation) {
+    return {
+      state: 'never_installed',
+      detail: 'The Forge GitHub App has not been installed for this account yet.',
+      installUrl
+    };
+  }
+  if (installation.status !== 'active') {
+    return {
+      state: 'revoked',
+      detail: `The Forge GitHub App installation for ${installation.account_login} is no longer active — it was uninstalled, suspended, or replaced when the GitHub account changed. Reconnecting restores access to every repository.`,
+      installUrl
+    };
+  }
+  const user = await env.METADATA.prepare(
+    'SELECT github_login FROM users WHERE tenant_id=?1 ORDER BY created_at ASC LIMIT 1'
+  ).bind(tenantId).first<{ github_login: string }>().catch(() => null);
+  if (user && installation.account_login && user.github_login !== installation.account_login) {
+    return {
+      state: 'stale_owner',
+      detail: `Repositories are still recorded under the old GitHub account name "${installation.account_login}" but the account is now "${user.github_login}". Reconnecting re-reads them under the current name.`,
+      installUrl
+    };
+  }
+  return { state: 'ok', detail: 'The GitHub App is installed but no repositories are authorized for it. Add repositories to the installation.', installUrl };
 }
 
 
@@ -573,10 +623,14 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
   const occupantRows = occupants.length
     ? `<ul>${occupants.map(occupantRow).join('')}</ul>`
     : `<p class="note">All ${caps.perTenant} workspace slots are free.</p>`;
+  // When the list is empty, say why. "No repositories connected" reads as a
+  // dead end; "your installation was revoked when the account was renamed" is
+  // something the owner can act on in one click.
+  const diagnosis = repositories.length === 0 ? await repositoryAccessDiagnosis(env, user.tenant_id).catch(() => null) : null;
   const repositoryRow = (repo: Record<string, unknown>) => `<li><span><strong>${escapeHtml(String(repo.owner))}/${escapeHtml(String(repo.name))}</strong><small>${escapeHtml(String(repo.visibility))} · ${escapeHtml(String(repo.default_branch))}</small></span></li>`;
   const rows = repositories.length
     ? repositories.slice(0, 6).map(repositoryRow).join('')
-    : '<li><span><strong>No repositories connected</strong><small>Install the GitHub App to build, edit and create draft PRs.</small></span></li>';
+    : `<li><span><strong>No repositories connected</strong><small>${escapeHtml(diagnosis?.detail ?? 'Install the GitHub App to build, edit and create draft PRs.')}</small></span></li>`;
   const moreRows = repositories.length > 6
     ? `<details><summary>Show ${repositories.length - 6} more repositories</summary><ul>${repositories.slice(6).map(repositoryRow).join('')}</ul></details>`
     : '';
@@ -607,7 +661,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
 <section class="section"><h2>Good first prompts</h2><div class="prompt">Review https://example.com with Parallax on phone and desktop. Inspect every screenshot.</div><div class="prompt">Open ${escapeHtml(user.github_login)}/parallax-review, run the checks, explain the architecture, and do not change anything yet.</div><div class="prompt">Build my project, fix the most important issue, verify it with screenshots, then ask before creating a draft PR.</div></section>
 <section class="section"><h2>How Forge keeps cost down</h2><p>Live URLs use Browser Run without a container. Repository inspection uses GitHub. A container starts only for install, build, edit, test or preview work, and sleeps after 90 seconds idle.</p></section></div>
 <aside><section class="section"><h2>Workspace capacity</h2><div class="meter"><div class="slots">${Array.from({ length: caps.perTenant }, (_, index) => `<i class="slot ${usedSlots > index ? 'used' : ''}"></i>`).join('')}</div><span>${usedSlots} of ${caps.perTenant} active</span></div>${occupantRows}<p class="note">Each account runs up to ${caps.perTenant} workspaces (${caps.global} across all accounts). Idle workspaces are reclaimed automatically after ${ttlMinutes} minutes; destroy one sooner to free a slot immediately.</p></section>
-<section class="section"><h2>GitHub repositories</h2><a class="button" href="/github/install">Manage access</a><ul>${rows}</ul>${moreRows}</section></aside></div></main>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+<section class="section${repositories.length === 0 ? ' queue' : ''}"><h2>GitHub repositories</h2>${repositories.length === 0 ? '<p>Forge cannot open, build or change any repository until this is reconnected.</p>' : ''}<a class="button" href="/github/install">${repositories.length === 0 ? 'Reconnect GitHub' : 'Manage access'}</a><ul>${rows}</ul>${moreRows}</section></aside></div></main>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
 }
 
 export async function authorizeRepository(
