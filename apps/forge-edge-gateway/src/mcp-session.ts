@@ -7,6 +7,7 @@ import {
   ids,
   workspaceIdFromIdempotency,
   type ProcessId,
+  type OperationId,
   type CredentialProfileId,
   type ProjectId,
   type SecretId,
@@ -856,7 +857,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               networkPolicy: 'development', outputLimitBytes: 200_000,
               expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key), approved: true
             });
-            return { ...value, stdout: value.stdout.replaceAll(secret, '[REDACTED]'), stderr: value.stderr.replaceAll(secret, '[REDACTED]') };
+            const stdout = 'stdout' in value ? String(value.stdout ?? '') : '';
+            const stderr = 'stderr' in value ? String(value.stderr ?? '') : '';
+            return { ...value, stdout: stdout.replaceAll(secret, '[REDACTED]'), stderr: stderr.replaceAll(secret, '[REDACTED]') };
           });
           await completeApproval(env, approvalId, true);
           return asRecord(result);
@@ -958,12 +961,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (targetWorkspaceId) {
           try {
             const workspace = await authorizedCoordinator(env, identity, targetWorkspaceId);
-            const state = await workspace.getState();
+            const state = await workspace.getState({ compact: true });
+            const stateRecord = state as unknown as Record<string, unknown>;
             workspaceState = {
               workspaceId: state.id,
               state: state.state,
               currentBranch: state.currentBranch,
-              hasUnpushedWork: state.hasUnpushedWork
+              currentCommit: state.currentCommit,
+              revision: state.revision,
+              hasUnpushedWork: state.hasUnpushedWork,
+              dependencyState: stateRecord.dependencyState ?? null,
+              activeProcessIds: stateRecord.activeProcessIds ?? [],
+              processes: stateRecord.processes ?? [],
+              allowedNextActions: stateRecord.allowedNextActions ?? [],
+              next_step: stateRecord.next_step ?? null
             };
             const status = await workspace.gitStatus();
             gitSummary = {
@@ -1553,7 +1564,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_workspace_get: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).getState());
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).getState({
+          compact: Boolean(input.compact)
+        }));
+      },
+      forge_operation_get: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).operationGet({
+          operationId: text(input.operation_id) as OperationId
+        }));
+      },
+      forge_operation_reconcile: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).operationGet({
+          operationId: text(input.operation_id) as OperationId
+        }));
       },
       forge_files_tree: async (input) => {
         const identity = this.identity();
@@ -1676,22 +1701,35 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if (input.async === true) {
             const proc = await workspace.processStart({
               command,
-              cwd,
+              cwd: cwd.replace(/\/+$/u, '') || cwd,
               environment,
               networkPolicy,
               expectedRevision: optionalNumber(input.expected_revision),
-              idempotencyKey: idempotency(input.idempotency_key)
+              idempotencyKey: idempotency(input.idempotency_key),
+              approved: claimedApproval
             });
             if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
             const procRecord = proc as unknown as Record<string, unknown>;
-            const processId = String(procRecord.processId ?? procRecord.id ?? 'proc_started');
-            const status = String(procRecord.status ?? 'running');
+            const value = (procRecord.value && typeof procRecord.value === 'object'
+              ? procRecord.value
+              : procRecord) as Record<string, unknown>;
+            const processId = value.id ?? procRecord.processId ?? procRecord.id;
+            if (typeof processId !== 'string' || !processId.startsWith('proc_')) {
+              throw new ForgeError({
+                code: 'FORGE_WORKSPACE_CONFLICT',
+                message: 'Managed process start did not return a process id; inspect forge_workspace_get before retrying with a new idempotency key.',
+                retryable: false,
+                details: { replay: Boolean(procRecord.replay) }
+              });
+            }
+            const status = String(value.status ?? procRecord.status ?? 'running');
             return {
               processId,
               status,
               command,
               async: true,
-              next_step: `Command started in background as process ${processId}. Call forge_process_wait to await completion or forge_process_logs to inspect output.`
+              replay: Boolean(procRecord.replay),
+              next_step: `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for dependency installs), or forge_process_logs to inspect output.`
             };
           }
           const result = await workspace.shellExec({
@@ -1703,13 +1741,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             outputLimitBytes: number(input.output_limit_bytes),
             expectedRevision: optionalNumber(input.expected_revision),
             idempotencyKey: idempotency(input.idempotency_key),
-            approved: claimedApproval
+            approved: claimedApproval,
+            mode: input.mode === 'read_only' || input.mode === 'mutating' ? input.mode : undefined
           });
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
+          const stdout = 'stdout' in result ? String(result.stdout ?? '') : '';
+          const stderr = 'stderr' in result ? String(result.stderr ?? '') : '';
           return {
             ...asRecord(result),
-            stdout: attached.redact.size > 0 ? await vaultService(env).redactOutput(String(result.stdout ?? ''), identity.tenantId as TenantId, workspaceId) : result.stdout,
-            stderr: attached.redact.size > 0 ? await vaultService(env).redactOutput(String(result.stderr ?? ''), identity.tenantId as TenantId, workspaceId) : result.stderr
+            stdout: attached.redact.size > 0 ? await vaultService(env).redactOutput(stdout, identity.tenantId as TenantId, workspaceId) : stdout,
+            stderr: attached.redact.size > 0 ? await vaultService(env).redactOutput(stderr, identity.tenantId as TenantId, workspaceId) : stderr
           };
         } catch (error) {
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
@@ -1719,16 +1760,56 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_process_start: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const command = text(input.command);
+        const cwd = text(input.cwd);
+        const networkPolicy = text(input.network_policy) as never;
+        const decision = classifyCommand(command, networkPolicy);
+        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        const userEnv = (input.environment as Record<string, string>) ?? {};
         const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
-        const environment = { ...attached.vars, ...(input.environment as Record<string, string>) };
-        return asRecord(await (await authorizedCoordinator(env, identity, workspaceId)).processStart({
-          command: text(input.command),
-          cwd: text(input.cwd),
-          environment,
-          networkPolicy: text(input.network_policy) as never,
-          expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: idempotency(input.idempotency_key)
-        }));
+        const environment = { ...attached.vars, ...userEnv };
+        const environmentHash = await sha256(JSON.stringify(Object.entries(userEnv).sort(([left], [right]) => left.localeCompare(right))));
+        const approvalPayload = { command, cwd, networkPolicy, environmentHash };
+        let claimedApproval = false;
+        if (decision.allowed && decision.approvalRequired) {
+          if (mayAutoApproveShell(env, decision.classification, networkPolicy)) {
+            claimedApproval = true;
+          } else if (!approvalId) {
+            const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} process`, approvalPayload);
+            if (approval.already_approved) {
+              approvalId = approval.approval_id;
+              await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
+              claimedApproval = true;
+            } else {
+              const inline = await this.tryResolveApprovalInline(identity, approval, `Run ${decision.classification} process`);
+              if (!inline) {
+                throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This process needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
+              }
+              approvalId = inline;
+              await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
+              claimedApproval = true;
+            }
+          } else {
+            await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
+            claimedApproval = true;
+          }
+        }
+        try {
+          const started = await (await authorizedCoordinator(env, identity, workspaceId)).processStart({
+            command,
+            cwd,
+            environment,
+            networkPolicy,
+            expectedRevision: optionalNumber(input.expected_revision),
+            idempotencyKey: idempotency(input.idempotency_key),
+            approved: claimedApproval
+          });
+          if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
+          return asRecord(started);
+        } catch (error) {
+          if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
+          throw error;
+        }
       },
       forge_process_logs: async (input) => {
         const identity = this.identity();
@@ -1739,9 +1820,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_get: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processGet({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processGet({
           processId: text(input.process_id) as ProcessId
         }));
+      },
+      forge_process_list: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processList());
       },
       forge_process_stop: async (input) => {
         const identity = this.identity();

@@ -127,6 +127,54 @@ describe('Forge MCP public contracts', () => {
     expect(schema.workspace_id.safeParse(undefined).success).toBe(true);
   });
 
+  it('requires schema-safe dependencyState object on forge_workspace_get output', () => {
+    const schema = tool('forge_workspace_get').outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(schema.dependencyState.safeParse(null).success).toBe(false);
+    expect(schema.dependencyState.safeParse({
+      status: 'unknown',
+      reason: 'not_observed',
+      usable: false
+    }).success).toBe(true);
+    expect(schema.dependencyState.safeParse({
+      status: 'ready',
+      reason: 'installed',
+      lockfileHash: 'a'.repeat(64),
+      installedAt: '2026-07-26T00:00:00.000Z',
+      usable: true
+    }).success).toBe(true);
+    expect(schema.dependencyState.safeParse({ usable: true }).success).toBe(false);
+  });
+
+  it('includes schema-safe dependencyState on forge_process_wait output', () => {
+    const schema = tool('forge_process_wait').outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(schema.dependencyState.safeParse(null).success).toBe(false);
+    expect(schema.dependencyState.safeParse({
+      status: 'unusable',
+      reason: 'install_not_visible',
+      lockfileHash: 'a'.repeat(64),
+      installedAt: '2026-07-26T00:00:00.000Z',
+      usable: false
+    }).success).toBe(true);
+  });
+
+  it('exposes process list, operation get/reconcile, read_only mode, and incremental log outputs', () => {
+    expect(tool('forge_process_list').sideEffect).toBe('none');
+    expect(tool('forge_operation_get').sideEffect).toBe('none');
+    expect(tool('forge_operation_reconcile').sideEffect).toBe('none');
+    const logs = tool('forge_process_logs').outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(logs.nextCursor.safeParse(null).success).toBe(true);
+    expect(logs.hasMore.safeParse(true).success).toBe(true);
+    expect(logs.status.safeParse('running').success).toBe(true);
+    expect(tool('forge_process_start').description).toMatch(/dependency installs/i);
+    const shell = tool('forge_shell_exec').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(shell.mode.safeParse('read_only').success).toBe(true);
+    expect(shell.mode.safeParse('mutating').success).toBe(true);
+    const processStart = tool('forge_process_start').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(processStart.approval_id.safeParse('apr_123').success).toBe(true);
+    const diff = tool('forge_git_diff').outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(diff.nextCursor.safeParse(null).success).toBe(true);
+  });
+
   it('exposes a full-file write tool and multi-file read for headless agents', () => {
     const write = tool('forge_files_write');
     expect(write.sideEffect).toBe('workspace');

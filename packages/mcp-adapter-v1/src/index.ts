@@ -11,9 +11,9 @@ const RETRY_SAFE_MUTATIONS = new Set([
 const TRUE_READS = new Set([
   'forge_capabilities', 'forge_credential_list', 'forge_workspace_reconcile', 'forge_workspace_prove',
   'forge_repository_list', 'forge_workspace_get', 'forge_files_tree', 'forge_files_read',
-  'forge_process_logs', 'forge_process_get', 'forge_process_wait', 'forge_check_get', 'forge_git_status', 'forge_git_diff', 'forge_git_outgoing_diff',
-  'forge_artifact_get', 'forge_task_get', 'forge_task_summary', 'forge_task_list', 'forge_task_handoff', 'forge_task_resume',
-  'forge_context_get', 'forge_context_pack', 'forge_diff_metadata'
+  'forge_process_logs', 'forge_process_get', 'forge_process_list', 'forge_process_wait', 'forge_check_get', 'forge_git_status', 'forge_git_diff', 'forge_git_outgoing_diff',
+  'forge_operation_get', 'forge_operation_reconcile', 'forge_artifact_get', 'forge_task_get', 'forge_task_summary', 'forge_task_list', 'forge_task_handoff', 'forge_task_resume',
+  'forge_context_get', 'forge_context_pack', 'forge_diff_metadata', 'forge_workspace_reconcile', 'forge_workspace_prove'
 ]);
 
 // Tools that reach the open world of arbitrary external URLs (not just the
@@ -40,7 +40,10 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_shell_exec: { invoking: 'Running command…', invoked: 'Command finished' },
   forge_process_start: { invoking: 'Starting process…', invoked: 'Process started' },
   forge_process_logs: { invoking: 'Reading logs…', invoked: 'Logs ready' },
+  forge_process_list: { invoking: 'Listing processes…', invoked: 'Process list ready' },
   forge_process_wait: { invoking: 'Waiting for process…', invoked: 'Process finished' },
+  forge_operation_get: { invoking: 'Checking operation…', invoked: 'Operation status ready' },
+  forge_operation_reconcile: { invoking: 'Reconciling operation…', invoked: 'Operation reconciled' },
   forge_git_status: { invoking: 'Reading Git status…', invoked: 'Git status ready' },
   forge_git_diff: { invoking: 'Reading Git diff…', invoked: 'Git diff ready' },
   forge_git_outgoing_diff: { invoking: 'Inspecting outgoing change…', invoked: 'Outgoing diff ready' },

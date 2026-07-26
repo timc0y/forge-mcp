@@ -26,6 +26,11 @@ export interface SandboxProvider {
   healthCheck?(): Promise<SandboxHealth>;
   create(input: CreateSandboxInput): Promise<SandboxHandle>;
   get(providerId: string): Promise<SandboxHandle>;
+  /**
+   * Prevent or allow automatic container sleep. Required while managed mutating
+   * processes run: a sleep wipes the live filesystem and discards their writes.
+   */
+  setKeepAlive?(providerId: string, keepAlive: boolean): Promise<void>;
   suspend(providerId: string): Promise<void>;
   resume(providerId: string): Promise<SandboxHandle>;
   destroy(providerId: string): Promise<void>;

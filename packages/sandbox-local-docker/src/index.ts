@@ -11,7 +11,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { ids, type ProcessId } from '@forge/core';
+import { ForgeError, ids, type ProcessId } from '@forge/core';
 import type {
   CreateSandboxInput,
   ExecInput,
@@ -239,7 +239,13 @@ class LocalDockerHandle implements SandboxHandle {
     if (result.exitCode !== 0) throw new Error(result.stderr || 'Failed to start process.');
     const detail = await this.getProcess(input.processId);
     if (!detail) throw new Error('Process did not start.');
-    return { ...detail, startedAt };
+    return {
+      ...detail,
+      startedAt,
+      command: input.command,
+      cwd: input.cwd,
+      mutatesFilesystem: input.mutatesFilesystem ?? detail.mutatesFilesystem
+    };
   }
 
   async getProcess(id: ProcessId): Promise<ProcessRecord | null> {
@@ -317,8 +323,13 @@ class LocalDockerHandle implements SandboxHandle {
       }
       if (record.status === 'running') {
         if (Date.now() >= deadline) {
-          await this.processCancel(processId);
-          return { ...record, status: 'cancelled', completedAt: new Date().toISOString(), exitCode: 124, mutatesFilesystem: false };
+          // Observational timeout only — never kill. Use processCancel to stop.
+          throw new ForgeError({
+            code: 'FORGE_COMMAND_TIMEOUT',
+            message: `Timed out waiting for process ${processId} after ${timeoutMs}ms; the process is still running.`,
+            retryable: true,
+            details: { processId, status: 'running', pid: record.pid ?? null, timeoutMs }
+          });
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
         continue;

@@ -1,5 +1,5 @@
 import { getSandbox, type ExecutionSession, type Sandbox } from '@cloudflare/sandbox';
-import { ids, type ProcessId } from '@forge/core';
+import { ForgeError, ids, type ProcessId } from '@forge/core';
 import type {
   CreateSandboxInput,
   ExecInput,
@@ -86,7 +86,11 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
     case 'killed': return 'stopped';
     default: return 'exited';
   }
-}class CloudflareSandboxHandle implements SandboxHandle {
+}
+
+class CloudflareSandboxHandle implements SandboxHandle {
+  private readonly processMutatesFilesystem = new Map<string, boolean>();
+
   constructor(readonly providerId: string, private readonly sandbox: Sandbox) {}
 
   private async session(id: string, cwd = ROOT): Promise<ExecutionSession> {
@@ -176,6 +180,8 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
         processId: input.processId,
         autoCleanup: input.autoCleanup
       });
+      const mutatesFilesystem = input.mutatesFilesystem ?? false;
+      this.processMutatesFilesystem.set(input.processId, mutatesFilesystem);
       return {
         id: input.processId,
         providerProcessId: process.id,
@@ -184,7 +190,7 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
         status: mapProcessStatus(process.status),
         pid: process.pid,
         startedAt: new Date().toISOString(),
-        mutatesFilesystem: false
+        mutatesFilesystem
       };
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'startProcess');
@@ -205,7 +211,7 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
         status,
         pid: process.pid,
         startedAt: new Date().toISOString(),
-        mutatesFilesystem: false,
+        mutatesFilesystem: this.processMutatesFilesystem.get(processId) ?? false,
         ...(isTerminal ? { completedAt: new Date().toISOString(), exitCode: process.exitCode ?? 0 } : {})
       };
     } catch (error) {
@@ -244,23 +250,49 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
 
   async processWait(input: { processId: ProcessId; timeoutMs?: number }): Promise<ProcessRecord> {
     try {
-      const process = await this.sandbox.getProcess(input.processId);
-      if (!process) {
-        return {
-          id: input.processId,
-          providerProcessId: input.processId,
-          command: '',
-          cwd: REPO,
-          status: 'failed',
-          startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-          exitCode: 1,
-          mutatesFilesystem: false
-        };
-      }
       const timeoutMs = input.timeoutMs ?? 120_000;
       const deadline = Date.now() + timeoutMs;
+      let consecutiveMisses = 0;
+      let lastSeen: { id: string; command: string; pid?: number } | null = null;
       for (;;) {
+        // Re-fetch each poll. A stale Process object can keep reporting
+        // `running` forever, which previously made wait SIGKILL healthy work.
+        let process: Awaited<ReturnType<Sandbox['getProcess']>> | null = null;
+        try {
+          process = await this.sandbox.getProcess(input.processId);
+        } catch {
+          process = null;
+        }
+        if (!process) {
+          consecutiveMisses += 1;
+          // Transient provider blips can briefly return null for a live process.
+          // Only declare failure after repeated confirmed misses.
+          if (consecutiveMisses >= 5 && Date.now() >= deadline) {
+            return {
+              id: input.processId,
+              providerProcessId: lastSeen?.id ?? input.processId,
+              command: lastSeen?.command ?? '',
+              cwd: REPO,
+              status: 'failed',
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString(),
+              exitCode: 1,
+              mutatesFilesystem: this.processMutatesFilesystem.get(input.processId) ?? false
+            };
+          }
+          if (Date.now() >= deadline) {
+            throw new ForgeError({
+              code: 'FORGE_COMMAND_TIMEOUT',
+              message: `Timed out waiting for process ${input.processId} after ${timeoutMs}ms; process lookup was intermittently unavailable.`,
+              retryable: true,
+              details: { processId: input.processId, status: 'unknown', timeoutMs, consecutiveMisses }
+            });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
+        }
+        consecutiveMisses = 0;
+        lastSeen = { id: process.id, command: process.command, pid: process.pid };
         const status = mapProcessStatus(process.status);
         if (status !== 'running' && status !== 'starting') {
           return {
@@ -273,27 +305,30 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
             startedAt: new Date().toISOString(),
             completedAt: new Date().toISOString(),
             exitCode: process.exitCode ?? 0,
-            mutatesFilesystem: false
+            mutatesFilesystem: this.processMutatesFilesystem.get(input.processId) ?? false
           };
         }
         if (Date.now() >= deadline) {
-          await process.kill('SIGKILL');
-          return {
-            id: input.processId,
-            providerProcessId: process.id,
-            command: process.command,
-            cwd: REPO,
-            status: 'cancelled',
-            pid: process.pid,
-            startedAt: new Date().toISOString(),
-            completedAt: new Date().toISOString(),
-            exitCode: 124,
-            mutatesFilesystem: false
-          };
+          // Observational timeout only — never kill. Cancellation is explicit
+          // via processCancel. Killing here tore down long installs whose wait
+          // budget was shorter than the install itself.
+          throw new ForgeError({
+            code: 'FORGE_COMMAND_TIMEOUT',
+            message: `Timed out waiting for process ${input.processId} after ${timeoutMs}ms; the process is still running.`,
+            retryable: true,
+            details: {
+              processId: input.processId,
+              providerProcessId: process.id,
+              status: 'running',
+              pid: process.pid ?? null,
+              timeoutMs
+            }
+          });
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
     } catch (error) {
+      if (error instanceof ForgeError) throw error;
       throw mapCloudflareSandboxError(error, 'processWait');
     }
   }
@@ -316,7 +351,7 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
         exitCode: 124,
-        mutatesFilesystem: false
+        mutatesFilesystem: this.processMutatesFilesystem.get(processId) ?? false
       };
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'processCancel');
@@ -473,11 +508,18 @@ export class CloudflareSandboxProvider implements SandboxProvider {
 
   constructor(private readonly env: CloudflareSandboxEnv) {}
 
-  private sandbox(providerId: string, options?: Pick<CreateSandboxInput, 'idleTimeout' | 'labels'>): Sandbox {
+  private sandbox(
+    providerId: string,
+    options?: Pick<CreateSandboxInput, 'idleTimeout' | 'labels' | 'keepAlive'>
+  ): Sandbox {
     return getSandbox(this.env.Sandbox, providerId, {
       enableDefaultSession: false,
       normalizeId: true,
-      sleepAfter: options?.idleTimeout ?? '90s',
+      // 10m matches the Sandbox SDK default. The previous 90s idle timeout let
+      // containers sleep (and wipe /workspace) between a finished install and the
+      // next shell command, which looked like "background writes do not persist".
+      sleepAfter: options?.idleTimeout ?? '10m',
+      keepAlive: options?.keepAlive ?? false,
       transport: TRANSPORT
     });
   }
@@ -500,6 +542,14 @@ export class CloudflareSandboxProvider implements SandboxProvider {
 
   async get(providerId: string): Promise<SandboxHandle> {
     return new CloudflareSandboxHandle(providerId, this.sandbox(providerId));
+  }
+
+  async setKeepAlive(providerId: string, keepAlive: boolean): Promise<void> {
+    try {
+      await this.sandbox(providerId).setKeepAlive(keepAlive);
+    } catch (error) {
+      throw mapCloudflareSandboxError(error, 'setKeepAlive');
+    }
   }
 
   async suspend(providerId: string): Promise<void> {

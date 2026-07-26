@@ -8,6 +8,8 @@ export interface CreateSandboxInput {
   runtimeProfile: RuntimeProfile;
   labels: Record<string, string>;
   idleTimeout: string;
+  /** When true, prevent automatic container sleep (Cloudflare keepAlive). */
+  keepAlive?: boolean;
 }
 
 export interface ExecInput {
@@ -33,6 +35,8 @@ export interface ExecResult {
 export interface StartProcessInput extends Omit<ExecInput, 'timeoutMs' | 'outputLimitBytes'> {
   processId: ProcessId;
   autoCleanup: boolean;
+  /** Whether Forge classified this command as mutating the filesystem. */
+  mutatesFilesystem?: boolean;
 }
 
 export type ProcessStatus = 'starting' | 'running' | 'exited' | 'failed' | 'stopped' | 'cancelled' | 'orphaned';
@@ -59,7 +63,12 @@ export interface ProcessRecord {
 }
 
 export interface ProcessLogsInput { processId: ProcessId; cursor?: string; limitBytes: number; }
-export interface ProcessLogsResult { data: string; nextCursor?: string; truncated: boolean; }
+export interface ProcessLogsResult {
+  data: string;
+  /** Opaque cursor for the next page. Absent/undefined when no more log bytes remain. */
+  nextCursor?: string;
+  truncated: boolean;
+}
 export interface FileReadInput { path: string; startLine?: number; endLine?: number; maxBytes: number; }
 export interface FileReadResult { path: string; content: string; sha256: string; sizeBytes: number; truncated: boolean; }
 export interface FileWriteInput { path: string; content: string; expectedSha256?: string; }
