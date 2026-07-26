@@ -18,6 +18,7 @@
     "@forge/browser-cloudflare": "workspace:*",
     "@forge/capabilities": "workspace:*",
     "@forge/core": "workspace:*",
+    "@forge/credentials": "workspace:*",
     "@forge/git-core": "workspace:*",
     "@forge/mcp-adapter-v1": "workspace:*",
     "@forge/mcp-core": "workspace:*",

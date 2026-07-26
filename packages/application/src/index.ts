@@ -3,6 +3,7 @@ import {
   ids,
   nextRevision,
   type ActorRef,
+  type CredentialProfileId,
   type OperationId,
   type ProcessId,
   type ProjectId,
@@ -47,6 +48,7 @@ export interface CreateWorkspaceInput {
   projectId: ProjectId;
   repository: RepositoryRef;
   ref: string;
+  credentialProfileId?: CredentialProfileId;
   runtimeProfile: 'node-22' | 'node-24' | 'python-3.13' | 'general-purpose';
   persistence: 'ephemeral' | 'snapshot_on_idle' | 'persistent';
   bootstrap: boolean;
@@ -126,6 +128,7 @@ export class ForgeApplicationService {
         projectId: input.projectId,
         repository: input.repository,
         requestedRef: input.ref,
+        ...(input.credentialProfileId ? { credentialProfileId: input.credentialProfileId } : {}),
         state: 'requested',
         persistenceMode: input.persistence,
         runtimeProfile: input.runtimeProfile,
@@ -256,6 +259,8 @@ export class ForgeApplicationService {
       const [currentCommit = '', currentBranch = ''] = gitState.stdout.trim().split('\n');
       record.workspace.currentCommit = currentCommit;
       record.workspace.currentBranch = currentBranch || record.workspace.requestedRef;
+      record.workspace.lastPushedCommit = currentCommit;
+      record.workspace.lastPushedBranch = record.workspace.currentBranch;
       record.workspace.state = 'ready';
       record.workspace.failure = undefined;
       record.workspace.revision = nextRevision(record.workspace.revision);
@@ -519,6 +524,29 @@ export class ForgeApplicationService {
     });
   }
 
+  async reconcileGitState(record: WorkspaceRuntimeRecord): Promise<boolean> {
+    const result = await (await this.handle(record)).exec({
+      command: 'git rev-parse HEAD && git branch --show-current',
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 10_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not reconcile the workspace Git state.', retryable: false });
+    const [currentCommit = '', currentBranch = ''] = result.stdout.trim().split('\n');
+    if (!currentCommit) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Workspace Git state has no checked-out commit.', retryable: false });
+    const changed = record.workspace.currentCommit !== currentCommit || record.workspace.currentBranch !== currentBranch;
+    const isInitialCheckedOutRef = !record.workspace.lastPushedCommit && currentBranch === record.workspace.requestedRef;
+    if (changed || isInitialCheckedOutRef) {
+      record.workspace.currentCommit = currentCommit;
+      record.workspace.currentBranch = currentBranch;
+      if (isInitialCheckedOutRef) {
+        record.workspace.lastPushedCommit = currentCommit;
+        record.workspace.lastPushedBranch = currentBranch;
+      }
+      record.workspace.updatedAt = new Date().toISOString();
+    }
+    return changed || isInitialCheckedOutRef;
+  }
+
   async exposePreview(
     record: WorkspaceRuntimeRecord,
     input: {
@@ -590,6 +618,13 @@ export class ForgeApplicationService {
     });
     return {
       raw: result.stdout,
+      branch: record.workspace.currentBranch,
+      commit: record.workspace.currentCommit,
+      sync: {
+        state: record.workspace.currentCommit && record.workspace.currentCommit === record.workspace.lastPushedCommit && record.workspace.currentBranch === record.workspace.lastPushedBranch ? 'pushed' : 'unpushed',
+        lastPushedCommit: record.workspace.lastPushedCommit ?? null,
+        lastPushedBranch: record.workspace.lastPushedBranch ?? null
+      },
       clean: !result.stdout
         .split('\n')
         .some(
@@ -613,6 +648,18 @@ export class ForgeApplicationService {
     });
   }
 
+  async assertDestroySafe(record: WorkspaceRuntimeRecord): Promise<void> {
+    const status = await this.gitStatus(record);
+    if (!status.clean || status.sync.state !== 'pushed') {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Forge will not destroy a workspace with uncommitted or unpushed work. Reconcile, commit, and push the current Forge branch first.',
+        retryable: false,
+        details: { clean: status.clean, sync: status.sync }
+      });
+    }
+  }
+
   async gitBranchCreate(
     record: WorkspaceRuntimeRecord,
     branch: string,
@@ -628,7 +675,7 @@ export class ForgeApplicationService {
       sessionId: 'system', networkPolicy: 'deny_all'
     });
     if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the branch.', retryable: false });
-    record.workspace.currentBranch = branch;
+    await this.reconcileGitState(record);
     return { branch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -663,8 +710,7 @@ export class ForgeApplicationService {
       }
     });
     if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
-    const head = await handle.exec({ command: 'git rev-parse HEAD', cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' });
-    record.workspace.currentCommit = head.stdout.trim();
+    await this.reconcileGitState(record);
     return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -704,6 +750,9 @@ export class ForgeApplicationService {
     } finally {
       await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
     }
+    record.workspace.lastPushedCommit = record.workspace.currentCommit;
+    record.workspace.lastPushedBranch = input.branch;
+    record.workspace.updatedAt = new Date().toISOString();
     return { branch: input.branch, commit: record.workspace.currentCommit, diffHash: outgoing.diffHash, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 

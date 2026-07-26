@@ -23,6 +23,9 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:packages/core
+      '@forge/credentials':
+        specifier: workspace:*
+        version: link:packages/credentials
       '@forge/mcp-core':
         specifier: workspace:*
         version: link:packages/mcp-core
@@ -77,6 +80,9 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@forge/credentials':
+        specifier: workspace:*
+        version: link:../../packages/credentials
       '@forge/git-core':
         specifier: workspace:*
         version: link:../../packages/git-core
@@ -185,6 +191,12 @@ importers:
         version: link:../core
 
   packages/core: {}
+
+  packages/credentials:
+    dependencies:
+      '@forge/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/events:
     dependencies:

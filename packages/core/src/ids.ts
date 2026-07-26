@@ -1,5 +1,5 @@
 const PREFIXES = {
-  tenant: 'ten', project: 'prj', workspace: 'ws', operation: 'op', snapshot: 'snap', approval: 'apr', artifact: 'art', preview: 'prv', process: 'proc'
+  tenant: 'ten', project: 'prj', workspace: 'ws', operation: 'op', snapshot: 'snap', approval: 'apr', artifact: 'art', preview: 'prv', process: 'proc', credentialProfile: 'crp'
 } as const;
 
 export type Branded<T, Brand extends string> = T & { readonly __brand: Brand };
@@ -12,6 +12,7 @@ export type ApprovalId = Branded<string, 'ApprovalId'>;
 export type ArtifactId = Branded<string, 'ArtifactId'>;
 export type PreviewId = Branded<string, 'PreviewId'>;
 export type ProcessId = Branded<string, 'ProcessId'>;
+export type CredentialProfileId = Branded<string, 'CredentialProfileId'>;
 
 function randomBase32(length: number): string {
   const alphabet = '0123456789abcdefghjkmnpqrstvwxyz';
@@ -32,7 +33,8 @@ export const ids = {
   approval: () => createId('approval') as ApprovalId,
   artifact: () => createId('artifact') as ArtifactId,
   preview: () => createId('preview') as PreviewId,
-  process: () => createId('process') as ProcessId
+  process: () => createId('process') as ProcessId,
+  credentialProfile: () => createId('credentialProfile') as CredentialProfileId
 };
 
 export function assertForgeId(value: string, prefix: string): void {

@@ -28,4 +28,15 @@ describe('Forge MCP public contracts', () => {
     expect(toolAnnotations('forge_files_read', 'none')).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     expect(toolAnnotations('forge_workspace_create', 'workspace')).toMatchObject({ idempotentHint: true });
   });
+
+  it('exposes credential profiles without exposing raw credential fields', () => {
+    for (const name of ['forge_credential_list', 'forge_credential_create', 'forge_credential_update', 'forge_credential_delete', 'forge_credential_switch', 'forge_credential_validate']) {
+      expect(forgeTools.some((candidate) => candidate.name === name)).toBe(true);
+    }
+    const create = tool('forge_credential_create').inputSchema as Record<string, unknown>;
+    expect(create).toHaveProperty('secret');
+    expect(create).toHaveProperty('metadata');
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_workspace_reconcile')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(true);
+  });
 });

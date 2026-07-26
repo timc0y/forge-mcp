@@ -31,6 +31,7 @@
     "@forge/audit": "workspace:*",
     "@forge/capabilities": "workspace:*",
     "@forge/core": "workspace:*",
+    "@forge/credentials": "workspace:*",
     "@forge/mcp-core": "workspace:*",
     "@forge/policy": "workspace:*",
     "@forge/project-detection": "workspace:*",

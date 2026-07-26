@@ -4,7 +4,7 @@ export async function reserveWorkspaceSlot(database: D1Database, workspaceId: st
   await database.prepare(
     `INSERT INTO workspace_slots (slot, workspace_id, claimed_at)
        SELECT candidate.slot, ?1, ?2
-         FROM (SELECT 1 AS slot UNION ALL SELECT 2 AS slot) AS candidate
+       FROM (SELECT 1 AS slot UNION ALL SELECT 2 AS slot UNION ALL SELECT 3 AS slot UNION ALL SELECT 4 AS slot UNION ALL SELECT 5 AS slot) AS candidate
         WHERE NOT EXISTS (SELECT 1 FROM workspace_slots AS claimed WHERE claimed.slot = candidate.slot)
         ORDER BY candidate.slot
         LIMIT 1
@@ -16,9 +16,9 @@ export async function reserveWorkspaceSlot(database: D1Database, workspaceId: st
   if (!reservation) {
     throw new ForgeError({
       code: 'FORGE_QUOTA_EXCEEDED',
-      message: 'Forge Cloud is already using both workspace slots. Finish or destroy one workspace, then retry.',
+      message: 'Forge Cloud is already using all five workspace slots. Finish or destroy one workspace, then retry.',
       retryable: true,
-      details: { maximum_workspaces: 2 }
+      details: { maximum_workspaces: 5 }
     });
   }
   return reservation.slot;

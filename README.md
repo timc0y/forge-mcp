@@ -33,6 +33,8 @@ Supporting ChatGPT and other MCP Apps hosts receive the optional `ui://forge/wor
 
 The Cloudflare Sandbox SDK is isolated in `packages/sandbox-cloudflare`. Domain packages do not import Cloudflare, GitHub, MCP SDK or UI framework types.
 
+Credential profiles are tenant-scoped, encrypted at rest, and provider-backed. See [credential profiles](docs/architecture/credentials.md) before configuring `FORGE_CREDENTIAL_ENCRYPTION_KEY` or migrating an installation.
+
 ## Repository layout
 
 - `apps/forge-edge-gateway` — HTTP, MCP session and preview gateway

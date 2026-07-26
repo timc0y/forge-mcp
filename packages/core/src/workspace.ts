@@ -1,4 +1,4 @@
-import type { ProjectId, SnapshotId, TenantId, WorkspaceId } from './ids';
+import type { CredentialProfileId, ProjectId, SnapshotId, TenantId, WorkspaceId } from './ids';
 
 export type WorkspaceLifecycleState =
   | 'requested'
@@ -37,7 +37,10 @@ export interface Workspace {
   projectId: ProjectId;
   repository: RepositoryRef;
   requestedRef: string;
+  credentialProfileId?: CredentialProfileId;
   currentCommit?: string;
+  lastPushedCommit?: string;
+  lastPushedBranch?: string;
   currentBranch?: string;
   state: WorkspaceLifecycleState;
   persistenceMode: PersistenceMode;

@@ -343,16 +343,25 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async gitStatus() {
-    return this.app.gitStatus(await this.getRecord());
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      if (await this.app.reconcileGitState(record)) await this.save(record);
+      return this.app.gitStatus(record);
+    });
   }
 
   async gitDiff(input: { staged: boolean }) {
-    return this.app.gitDiff(await this.getRecord(), input.staged);
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      if (await this.app.reconcileGitState(record)) await this.save(record);
+      return this.app.gitDiff(record, input.staged);
+    });
   }
 
   async gitBranchCreate(input: { branch: string; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
+      await this.app.reconcileGitState(record);
       const value = await this.app.gitBranchCreate(record, input.branch, input.expectedRevision, input.idempotencyKey);
       await this.save(record);
       return value;
@@ -362,6 +371,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async gitCommit(input: { message: string; paths: string[]; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
+      await this.app.reconcileGitState(record);
       const value = await this.app.gitCommit(record, input);
       await this.save(record);
       return value;
@@ -369,12 +379,17 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async gitOutgoingDiff(input: { base: string }) {
-    return this.app.gitOutgoingDiff(await this.getRecord(), input.base);
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      if (await this.app.reconcileGitState(record)) await this.save(record);
+      return this.app.gitOutgoingDiff(record, input.base);
+    });
   }
 
   async gitPush(input: { branch: string; base: string; expectedDiffHash: string; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
+      await this.app.reconcileGitState(record);
       const source = await repositoryPushSource(this.env, record.workspace, input.branch, record.workspace.currentCommit ?? '');
       const value = await this.app.gitPush(record, { ...input, source });
       await this.save(record);
@@ -418,6 +433,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
+      await this.app.reconcileGitState(record);
+      await this.app.assertDestroySafe(record);
       const value = this.app.requestDestroy(
         record,
         input.expectedRevision,

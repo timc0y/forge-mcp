@@ -1,13 +1,11 @@
 # Tool catalog
 
-The first vertical slice exposes thirteen tools:
+Forge exposes workspace, repository, file, shell, process, Git, preview, browser evidence, approval, and artifact tools. Machine-readable schemas are generated into `schemas/forge-tools.schema.json`.
 
-- `forge_workspace_create`, `forge_workspace_get`, `forge_workspace_destroy`
-- `forge_files_tree`, `forge_files_read`, `forge_files_patch`
-- `forge_shell_exec`
-- `forge_process_start`, `forge_process_logs`
-- `forge_git_status`, `forge_git_diff`
-- `forge_preview_expose`
-- `forge_browser_screenshot`
+## Credentials, recovery, and deployment
 
-Machine-readable schemas are generated into `schemas/forge-tools.schema.json`. Later phases add snapshot/resume, process stop, full Git/PR, browser accessibility/inspection, context and approvals without changing the existing names.
+- `forge_credential_list`, `forge_credential_create`, `forge_credential_update`, `forge_credential_delete`, `forge_credential_switch`, and `forge_credential_validate` manage tenant-scoped encrypted provider profiles. They never return a secret or ciphertext.
+- `forge_workspace_reconcile` reads the checkout and reports whether Forge has recorded the current commit as pushed. Run it after reconnecting before continuing an interrupted task.
+- `forge_cloudflare_deploy` runs `pnpm exec wrangler deploy` only after approval, using the selected validated Cloudflare profile as an ephemeral command environment. It supports an optional Wrangler environment and config path.
+
+Push remains approval-gated. Forge can reliably report local unpushed work, but it must not automatically publish a branch without the authenticated user's explicit approval.

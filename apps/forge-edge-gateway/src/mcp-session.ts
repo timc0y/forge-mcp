@@ -5,6 +5,7 @@ import {
   ids,
   workspaceIdFromIdempotency,
   type ProcessId,
+  type CredentialProfileId,
   type ProjectId,
   type TenantId,
   type WorkspaceId
@@ -20,6 +21,7 @@ import type { Env } from './env';
 import { registerForgeConsole } from './forge-console';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
 import { reserveWorkspaceSlot, releaseWorkspaceSlot } from './capacity';
+import { credentialService } from './credentials';
 import {
   authorizeRepository,
   completeApproval,
@@ -35,6 +37,8 @@ interface SessionProps extends Record<string, unknown> {
   projectId: string;
   clientId: string;
 }
+
+const SELECTED_CREDENTIAL_PROFILE_KEY = 'selected-credential-profile';
 
 function coordinator(env: Env, workspaceId: string): DurableObjectStub<WorkspaceCoordinator> {
   return env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
@@ -78,6 +82,10 @@ function optionalNumber(value: unknown): number | undefined {
 
 function asRecord(value: object): Record<string, unknown> {
   return value as unknown as Record<string, unknown>;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 async function sha256(value: string): Promise<string> {
@@ -124,9 +132,107 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     });
   }
 
+  private async selectedCredentialProfileId(identity: SessionProps): Promise<CredentialProfileId | undefined> {
+    const selected = await this.ctx.storage.get<string>(SELECTED_CREDENTIAL_PROFILE_KEY);
+    const profiles = await credentialService(this.env).list(identity.tenantId as TenantId);
+    if (selected && profiles.some((profile) => profile.id === selected)) return selected as CredentialProfileId;
+    const active = profiles.find((profile) => profile.active);
+    if (active) await this.ctx.storage.put(SELECTED_CREDENTIAL_PROFILE_KEY, active.id);
+    return active?.id;
+  }
+
   private handlers(): ForgeToolHandlers {
     const env = this.env;
     return {
+      forge_credential_list: async () => {
+        const identity = this.identity();
+        const selectedCredentialProfileId = await this.selectedCredentialProfileId(identity);
+        return { profiles: await credentialService(env).list(identity.tenantId as TenantId), selected_credential_profile_id: selectedCredentialProfileId ?? null };
+      },
+      forge_credential_create: async (input) => {
+        const identity = this.identity();
+        const profile = await credentialService(env).create({
+          tenantId: identity.tenantId as TenantId,
+          name: text(input.name), provider: 'cloudflare', secret: text(input.secret),
+          metadata: input.metadata as Record<string, string>, active: Boolean(input.make_active)
+        });
+        if (profile.active) await this.ctx.storage.put(SELECTED_CREDENTIAL_PROFILE_KEY, profile.id);
+        return { profile };
+      },
+      forge_credential_update: async (input) => {
+        const identity = this.identity();
+        const profile = await credentialService(env).update(identity.tenantId as TenantId, text(input.credential_profile_id) as CredentialProfileId, {
+          ...(input.name === undefined ? {} : { name: text(input.name) }),
+          ...(input.secret === undefined ? {} : { secret: text(input.secret) }),
+          ...(input.metadata === undefined ? {} : { metadata: input.metadata as Record<string, string> }),
+          ...(input.make_active === undefined ? {} : { active: Boolean(input.make_active) })
+        });
+        if (profile.active) await this.ctx.storage.put(SELECTED_CREDENTIAL_PROFILE_KEY, profile.id);
+        return { profile };
+      },
+      forge_credential_delete: async (input) => {
+        const identity = this.identity();
+        const profileId = text(input.credential_profile_id) as CredentialProfileId;
+        await credentialService(env).delete(identity.tenantId as TenantId, profileId);
+        if (await this.ctx.storage.get<string>(SELECTED_CREDENTIAL_PROFILE_KEY) === profileId) await this.ctx.storage.delete(SELECTED_CREDENTIAL_PROFILE_KEY);
+        return { deleted_credential_profile_id: profileId };
+      },
+      forge_credential_switch: async (input) => {
+        const identity = this.identity();
+        const profile = await credentialService(env).setActive(identity.tenantId as TenantId, text(input.credential_profile_id) as CredentialProfileId);
+        await this.ctx.storage.put(SELECTED_CREDENTIAL_PROFILE_KEY, profile.id);
+        return { profile, selected_credential_profile_id: profile.id };
+      },
+      forge_credential_validate: async (input) => {
+        const identity = this.identity();
+        const profile = await credentialService(env).validate(identity.tenantId as TenantId, text(input.credential_profile_id) as CredentialProfileId);
+        return { profile };
+      },
+      forge_workspace_reconcile: async (input) => {
+        const identity = this.identity();
+        const workspace = await authorizedCoordinator(env, identity, text(input.workspace_id));
+        const status = await workspace.gitStatus();
+        return {
+          ...asRecord(status),
+          recovery: status.sync.state === 'pushed'
+            ? 'Current Forge commit is recorded as pushed.'
+            : 'Current Forge commit has not been recorded as pushed. Inspect the outgoing diff, then request a push approval.'
+        };
+      },
+      forge_cloudflare_deploy: async (input) => {
+        const identity = this.identity();
+        const workspaceId = text(input.workspace_id);
+        const profileId = (input.credential_profile_id ? text(input.credential_profile_id) : await this.selectedCredentialProfileId(identity)) as CredentialProfileId | undefined;
+        if (!profileId) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Select a Cloudflare credential profile before deploying.', retryable: false });
+        const environment = input.environment === undefined ? undefined : text(input.environment);
+        const configPath = input.config_path === undefined ? undefined : text(input.config_path);
+        const command = `pnpm exec wrangler deploy${configPath ? ` --config ${shellQuote(configPath)}` : ''}${environment ? ` --env ${shellQuote(environment)}` : ''}`;
+        const payload = { profileId, command, environment: environment ?? null, configPath: configPath ?? null };
+        const approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        if (!approvalId) {
+          const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', 'Deploy this workspace with Cloudflare Wrangler; repository-controlled code receives the token for this one command.', payload);
+          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact Cloudflare deployment, then retry with approval_id.', retryable: false, details: approval });
+        }
+        await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', payload);
+        try {
+          const result = await credentialService(env).withSecret(identity.tenantId as TenantId, profileId, async (profile, secret) => {
+            if (profile.provider !== 'cloudflare') throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Only Cloudflare credential profiles can deploy with Wrangler.', retryable: false });
+            if (profile.state !== 'valid') throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Validate this Cloudflare credential profile before deploying.', retryable: false });
+            const value = await (await authorizedCoordinator(env, identity, workspaceId)).shellExec({
+              command, cwd: '/workspace/repo', timeoutMs: 900_000,
+              environment: { CLOUDFLARE_API_TOKEN: secret, ...(profile.metadata.account_id ? { CLOUDFLARE_ACCOUNT_ID: profile.metadata.account_id } : {}) },
+              networkPolicy: 'development', outputLimitBytes: 200_000,
+              expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key), approved: true
+            });
+            return { ...value, stdout: value.stdout.replaceAll(secret, '[REDACTED]'), stderr: value.stderr.replaceAll(secret, '[REDACTED]') };
+          });
+          await completeApproval(env, approvalId, true);
+          return asRecord(result);
+        } catch (error) {
+          await completeApproval(env, approvalId, false);
+          throw error;
+        }
+      },
       forge_repository_list: async () => {
         const identity = this.identity();
         return { repositories: await listAuthorizedRepositories(env, identity.tenantId) };
@@ -188,6 +294,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_workspace_create: async (input) => {
         const identity = this.identity();
+        const credentialProfileId = await this.selectedCredentialProfileId(identity);
         const repository = input.repository as { provider: 'github'; owner: string; name: string };
         await authorizeRepository(env, identity, repository);
         const idempotencyKey = text(input.idempotency_key);
@@ -204,6 +311,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             projectId: identity.projectId as ProjectId,
             repository,
             ref: text(input.ref),
+            ...(credentialProfileId ? { credentialProfileId: credentialProfileId as CredentialProfileId } : {}),
             runtimeProfile: text(input.runtime) as
               | 'node-22'
               | 'node-24'
@@ -241,7 +349,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           workspace_id: workspaceId,
           state: result.state,
           operation_id: result.operationId,
-          workspace_revision: result.revision
+          workspace_revision: result.revision,
+          ...(credentialProfileId ? { credential_profile_id: credentialProfileId } : {})
         };
       },
       forge_workspace_get: async (input) => {

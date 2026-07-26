@@ -10,6 +10,7 @@ const RETRY_SAFE_MUTATIONS = new Set([
   'forge_workspace_destroy'
 ]);
 const TRUE_READS = new Set([
+  'forge_credential_list', 'forge_workspace_reconcile',
   'forge_repository_list', 'forge_workspace_get', 'forge_files_tree', 'forge_files_read',
   'forge_process_logs', 'forge_git_status', 'forge_git_diff', 'forge_git_outgoing_diff',
   'forge_artifact_get'
