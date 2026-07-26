@@ -227,11 +227,16 @@ class FakeProvider implements SandboxProvider {
     private readonly install: { strict?: number; lenient?: number } = {}
   ) {}
 
+  keepAlive = false;
   async create(_input: CreateSandboxInput) {
     if (this.createError) throw this.createError;
     return this.handle;
   }
   async get() { return this.handle; }
+  async setKeepAlive(_providerId: string, keepAlive: boolean) {
+    this.keepAlive = keepAlive;
+    this.calls.push(`keepAlive:${keepAlive}`);
+  }
   async suspend() {}
   async resume() { return this.handle; }
   async destroy() { this.calls.push('destroy'); }
@@ -688,6 +693,95 @@ describe('Forge application service', () => {
       message: expect.stringContaining('not visible to the workspace shell')
     });
     expect(record.dependencyState).toMatchObject({ usable: false });
+  });
+
+  it('enables keepAlive for mutating managed processes and releases it after finalize', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.workspace.activeSnapshotId = undefined;
+    const started = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-keepalive-1',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in started) throw new Error('Unexpected replay.');
+    expect(provider.keepAlive).toBe(true);
+    const processId = started.value.id;
+    provider.processStates.set(processId, {
+      ...provider.processStates.get(processId)!,
+      status: 'exited',
+      completedAt: new Date().toISOString(),
+      exitCode: 0
+    });
+    await service.processWait(record, processId, 1_000);
+    expect(provider.keepAlive).toBe(false);
+    expect(provider.calls).toContain('keepAlive:true');
+    expect(provider.calls).toContain('keepAlive:false');
+  });
+
+  it('refuses checkpoint restore while a mutating process has uncheckpointed writes', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    await service.provisionWorkspace(record, false);
+    record.processes.proc_live_install = {
+      command: 'pnpm install',
+      startedAt: new Date().toISOString(),
+      mutatesFilesystem: true
+    };
+    provider.processStates.set('proc_live_install', {
+      id: 'proc_live_install',
+      providerProcessId: 'proc_live_install',
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      status: 'running',
+      pid: 42,
+      startedAt: new Date().toISOString(),
+      mutatesFilesystem: true
+    });
+    provider.workspacePresent = false;
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .rejects.toMatchObject({
+        code: 'FORGE_PROVIDER_UNAVAILABLE',
+        message: expect.stringContaining('will not restore a checkpoint')
+      });
+    expect(provider.calls).not.toContain('restore');
+  });
+
+  it('syncs finished processes so they stop blocking later work', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.workspace.activeSnapshotId = undefined;
+    const processId = 'proc_probe';
+    record.processes[processId] = {
+      command: 'touch .forge-persistence-probe',
+      startedAt: new Date().toISOString(),
+      mutatesFilesystem: true
+    };
+    provider.processStates.set(processId, {
+      id: processId,
+      providerProcessId: processId,
+      command: 'touch .forge-persistence-probe',
+      cwd: '/workspace/repo',
+      status: 'exited',
+      pid: 7,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      exitCode: 0,
+      mutatesFilesystem: true
+    });
+    const synced = await service.syncProcessLifecycle(record);
+    expect(synced.completed).toBe(1);
+    expect(synced.running).toBe(0);
+    expect(record.processes[processId]?.completedAt).toBeTruthy();
+    expect(record.processes[processId]?.checkpointAfter).toBeTruthy();
   });
 
   it('replays managed process starts with the original process id', async () => {

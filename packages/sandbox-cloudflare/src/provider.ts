@@ -504,11 +504,18 @@ export class CloudflareSandboxProvider implements SandboxProvider {
 
   constructor(private readonly env: CloudflareSandboxEnv) {}
 
-  private sandbox(providerId: string, options?: Pick<CreateSandboxInput, 'idleTimeout' | 'labels'>): Sandbox {
+  private sandbox(
+    providerId: string,
+    options?: Pick<CreateSandboxInput, 'idleTimeout' | 'labels' | 'keepAlive'>
+  ): Sandbox {
     return getSandbox(this.env.Sandbox, providerId, {
       enableDefaultSession: false,
       normalizeId: true,
-      sleepAfter: options?.idleTimeout ?? '90s',
+      // 10m matches the Sandbox SDK default. The previous 90s idle timeout let
+      // containers sleep (and wipe /workspace) between a finished install and the
+      // next shell command, which looked like "background writes do not persist".
+      sleepAfter: options?.idleTimeout ?? '10m',
+      keepAlive: options?.keepAlive ?? false,
       transport: TRANSPORT
     });
   }
@@ -531,6 +538,14 @@ export class CloudflareSandboxProvider implements SandboxProvider {
 
   async get(providerId: string): Promise<SandboxHandle> {
     return new CloudflareSandboxHandle(providerId, this.sandbox(providerId));
+  }
+
+  async setKeepAlive(providerId: string, keepAlive: boolean): Promise<void> {
+    try {
+      await this.sandbox(providerId).setKeepAlive(keepAlive);
+    } catch (error) {
+      throw mapCloudflareSandboxError(error, 'setKeepAlive');
+    }
   }
 
   async suspend(providerId: string): Promise<void> {

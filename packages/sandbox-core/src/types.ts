@@ -8,6 +8,8 @@ export interface CreateSandboxInput {
   runtimeProfile: RuntimeProfile;
   labels: Record<string, string>;
   idleTimeout: string;
+  /** When true, prevent automatic container sleep (Cloudflare keepAlive). */
+  keepAlive?: boolean;
 }
 
 export interface ExecInput {

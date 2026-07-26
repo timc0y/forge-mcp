@@ -541,7 +541,7 @@ export class ForgeApplicationService {
         tenantId: record.workspace.tenantId,
         repository: repositorySlug(record.workspace.repository)
       },
-      idleTimeout: '90s'
+      idleTimeout: '10m'
     };
   }
 
@@ -1075,7 +1075,7 @@ export class ForgeApplicationService {
           tenantId: record.workspace.tenantId,
           repository: repositorySlug(record.workspace.repository)
         },
-        idleTimeout: '90s'
+        idleTimeout: '10m'
       });
       const handle = await withTimeout(
         createPromise,
@@ -1314,7 +1314,24 @@ export class ForgeApplicationService {
     return this.provisionWorkspace(record, input.bootstrap);
   }
 
-  async handle(record: WorkspaceRuntimeRecord): Promise<SandboxHandle> {
+  /**
+   * True when restoring a checkpoint would discard filesystem writes that have
+   * not yet been captured (live or successfully completed mutating processes).
+   */
+  private hasUncheckpointedMutators(record: WorkspaceRuntimeRecord): boolean {
+    return Object.values(record.processes).some(
+      (entry) =>
+        entry.mutatesFilesystem &&
+        !entry.checkpointAfter &&
+        (!entry.completedAt || entry.exitCode === 0)
+    );
+  }
+
+  async handle(
+    record: WorkspaceRuntimeRecord,
+    options: { allowRestore?: boolean } = {}
+  ): Promise<SandboxHandle> {
+    const allowRestore = options.allowRestore !== false;
     if (
       record.workspace.state === 'destroyed' ||
       record.workspace.state === 'destroying'
@@ -1361,7 +1378,26 @@ export class ForgeApplicationService {
         }
       });
     }
-    if (inspection.state === 'mount_missing') return this.recoverActiveCheckpoint(record);
+    if (inspection.state === 'mount_missing') {
+      // Restoring a pre-process checkpoint while a managed install/mutation is
+      // still live (or finished but not yet checkpointed) discards its writes —
+      // the observed "pnpm install succeeded but node_modules is gone" failure.
+      if (!allowRestore || this.hasUncheckpointedMutators(record)) {
+        throw new ForgeError({
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: 'Workspace mount is missing, but Forge will not restore a checkpoint while managed mutating processes still have uncheckpointed filesystem writes.',
+          retryable: true,
+          details: {
+            workspaceId: record.workspace.id,
+            allowRestore,
+            uncheckpointedMutators: Object.entries(record.processes)
+              .filter(([, entry]) => entry.mutatesFilesystem && !entry.checkpointAfter)
+              .map(([id, entry]) => ({ id, command: entry.command, completedAt: entry.completedAt ?? null }))
+          }
+        });
+      }
+      return this.recoverActiveCheckpoint(record);
+    }
     const diagnosticCode = inspection.diagnostic?.providerCode ?? inspection.diagnostic?.code ?? 'UNKNOWN';
     throw new ForgeError({
       code: 'FORGE_PROVIDER_UNAVAILABLE',
@@ -1369,6 +1405,79 @@ export class ForgeApplicationService {
       retryable: true,
       details: { workspaceId: record.workspace.id, inspection: inspection.diagnostic ?? null, recoveryAttempted: true }
     });
+  }
+
+  /**
+   * Reconcile recorded process entries with the provider. Marks finished
+   * processes complete so they stop blocking checkpoints and read paths.
+   */
+  async syncProcessLifecycle(
+    record: WorkspaceRuntimeRecord,
+    options: { finalize?: boolean } = {}
+  ): Promise<{
+    running: number;
+    completed: number;
+  }> {
+    const finalize = options.finalize !== false;
+    const handle = await this.providerFor(record).get(record.providerId);
+    let running = 0;
+    let completed = 0;
+    for (const [id, entry] of Object.entries(record.processes)) {
+      if (entry.completedAt) {
+        completed += 1;
+        if (
+          finalize &&
+          entry.mutatesFilesystem &&
+          (entry.exitCode ?? 1) === 0 &&
+          !entry.checkpointAfter
+        ) {
+          await this.finalizeManagedProcess(record, handle, id as ProcessId, {
+            id: id as ProcessId,
+            providerProcessId: id,
+            command: entry.command,
+            cwd: '/workspace/repo',
+            status: 'exited',
+            startedAt: entry.startedAt,
+            completedAt: entry.completedAt,
+            exitCode: entry.exitCode ?? 0,
+            mutatesFilesystem: true
+          }).catch(() => undefined);
+        }
+        continue;
+      }
+      const { process: live, lookupFailed } = await this.lookupProcessWithRetry(handle, id as ProcessId);
+      if (lookupFailed) {
+        running += 1;
+        continue;
+      }
+      if (!live) {
+        entry.completedAt = new Date().toISOString();
+        entry.exitCode = entry.exitCode ?? 1;
+        completed += 1;
+        continue;
+      }
+      if (live.status === 'running' || live.status === 'starting') {
+        running += 1;
+        continue;
+      }
+      entry.completedAt = live.completedAt ?? new Date().toISOString();
+      entry.exitCode = live.exitCode ?? entry.exitCode;
+      completed += 1;
+      if (finalize && entry.mutatesFilesystem && (entry.exitCode ?? 1) === 0 && !entry.checkpointAfter) {
+        await this.finalizeManagedProcess(record, handle, id as ProcessId, live).catch(() => undefined);
+      }
+    }
+    if (finalize && !this.hasUncheckpointedMutators(record)) {
+      await this.setWorkspaceKeepAlive(record, false);
+    }
+    record.workspace.updatedAt = new Date().toISOString();
+    return { running, completed };
+  }
+
+  private async setWorkspaceKeepAlive(record: WorkspaceRuntimeRecord, keepAlive: boolean): Promise<void> {
+    const provider = this.providerFor(record);
+    if (!provider.setKeepAlive) return;
+    await provider.setKeepAlive(record.providerId, keepAlive).catch(() => undefined);
   }
 
   /**
@@ -1772,7 +1881,12 @@ export class ForgeApplicationService {
     }
     const processId = ids.process();
     const startedAt = new Date().toISOString();
-    const value = await (await this.handle(record)).startProcess({
+    const mutatesFilesystem = decision.classification !== 'read_only';
+    // Keep the container awake for the whole mutation. Cloudflare sleep wipes
+    // /workspace; without keepAlive a finished install can vanish before the
+    // next shell command or post-process checkpoint.
+    if (mutatesFilesystem) await this.setWorkspaceKeepAlive(record, true);
+    const value = await (await this.handle(record, { allowRestore: !mutatesFilesystem })).startProcess({
       processId,
       command: input.command,
       cwd: input.cwd,
@@ -1786,7 +1900,7 @@ export class ForgeApplicationService {
     record.processes[processId] = {
       command: input.command,
       startedAt,
-      mutatesFilesystem: decision.classification !== 'read_only'
+      mutatesFilesystem
     };
     record.idempotency[input.idempotencyKey] = {
       ...record.idempotency[input.idempotencyKey]!,
@@ -1844,7 +1958,7 @@ export class ForgeApplicationService {
     processId: ProcessId,
     cursor?: string
   ) {
-    return (await this.handle(record)).readProcessLogs({
+    return (await this.handle(record, { allowRestore: false })).readProcessLogs({
       processId,
       cursor,
       limitBytes: 200_000
@@ -1852,13 +1966,22 @@ export class ForgeApplicationService {
   }
 
   async processGet(record: WorkspaceRuntimeRecord, processId: ProcessId) {
-    const process = await (await this.handle(record)).getProcess(processId);
+    const handle = await this.handle(record, { allowRestore: false });
+    const process = await handle.getProcess(processId);
     if (!process) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
+    const entry = record.processes[processId];
+    if (entry && !entry.completedAt && process.status !== 'running' && process.status !== 'starting') {
+      entry.completedAt = process.completedAt ?? new Date().toISOString();
+      entry.exitCode = process.exitCode ?? entry.exitCode;
+      record.workspace.updatedAt = new Date().toISOString();
+    }
     return { workspaceId: record.workspace.id, process, recorded: record.processes[processId] ?? null, workspaceRevision: record.workspace.revision };
   }
 
   async processWait(record: WorkspaceRuntimeRecord, processId: ProcessId, timeoutMs?: number) {
-    const handle = await this.handle(record);
+    // Never restore a checkpoint while waiting — that would discard the process
+    // filesystem writes that this wait is supposed to publish.
+    const handle = await this.handle(record, { allowRestore: false });
     let process: ProcessRecord;
     if (handle.processWait) {
       process = await handle.processWait({ processId, timeoutMs });
@@ -1868,6 +1991,9 @@ export class ForgeApplicationService {
       process = current;
     }
     await this.finalizeManagedProcess(record, handle, processId, process);
+    if (!this.hasUncheckpointedMutators(record)) {
+      await this.setWorkspaceKeepAlive(record, false);
+    }
     return {
       workspaceId: record.workspace.id,
       process: {
@@ -2013,6 +2139,14 @@ export class ForgeApplicationService {
       inspection = await this.recoverUnavailableInspection(record, handle, inspection);
     }
     if (inspection.state === 'mount_missing') {
+      if (this.hasUncheckpointedMutators(record)) {
+        throw new ForgeError({
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: 'Workspace mount is missing, but Forge will not restore a checkpoint while managed mutating processes still have uncheckpointed filesystem writes.',
+          retryable: true,
+          details: { workspaceId: record.workspace.id }
+        });
+      }
       await this.recoverActiveCheckpoint(record);
       return true;
     }

@@ -183,9 +183,10 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (writeD1) this.lastD1 = { signature, atMs: now };
   }
 
-  private assertCheckpointQuiescent(record: WorkspaceRuntimeRecord): void {
-    // Only live processes block checkpoints. Terminal/adopted entries must not
-    // freeze the workspace after a managed install completes.
+  private async assertCheckpointQuiescent(record: WorkspaceRuntimeRecord): Promise<void> {
+    // Reap finished processes first. Otherwise a completed install/probe keeps
+    // blocking reads and writes forever with "stop workspace-owned processes".
+    await this.app.syncProcessLifecycle(record);
     const processIds = Object.entries(record.processes)
       .filter(([, entry]) => !entry.completedAt)
       .map(([id]) => id);
@@ -434,6 +435,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           destructiveRecoveryRequired: false
         };
       }
+      // Sync provider process status so completed background work no longer
+      // appears as forever-running and blocking later tools.
+      await this.app.syncProcessLifecycle(record).catch(() => ({ running: 0, completed: 0 }));
       return {
         ...record.workspace,
         processes: Object.entries(record.processes).map(([id, value]) => ({
@@ -647,7 +651,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
-        this.assertCheckpointQuiescent(record);
+        await this.assertCheckpointQuiescent(record);
         const value = await this.app.write(
           record,
           { path: input.path, content: input.content, expectedSha256: input.expectedSha256 },
@@ -670,7 +674,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
-        this.assertCheckpointQuiescent(record);
+        await this.assertCheckpointQuiescent(record);
         const value = await this.app.patch(
           record,
           { patch: input.patch, cwd: '/workspace/repo' },
@@ -757,8 +761,12 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         };
       };
       try {
-        if (input.idempotencyKey) this.assertCheckpointQuiescent(record);
         const decision = classifyCommand(input.command, input.networkPolicy);
+        // Read-only commands must never be blocked by leftover process records.
+        // Mutating commands sync/reap finished processes before the quiescent check.
+        if (input.idempotencyKey && decision.classification !== 'read_only') {
+          await this.assertCheckpointQuiescent(record);
+        }
         // Dependency installs always start as managed processes once approved.
         // Sync exec + timeout conversion restarted the install after the transport
         // deadline and left later shells unable to see node_modules.
@@ -968,7 +976,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
-        this.assertCheckpointQuiescent(record);
+        await this.assertCheckpointQuiescent(record);
         return await this.app.checkpoint(record, input.name);
       } finally {
         await this.save(record);
@@ -984,7 +992,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
-        this.assertCheckpointQuiescent(record);
+        await this.assertCheckpointQuiescent(record);
         const source = await repositoryCloneSource(this.env, record.workspace);
         return await this.app.restoreCheckpoint(
           record,
@@ -1013,7 +1021,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
-        this.assertCheckpointQuiescent(record);
+        await this.assertCheckpointQuiescent(record);
         await this.app.reconcileGitState(record);
         const value = await this.app.gitBranchCreate(record, input.branch, input.expectedRevision, input.idempotencyKey);
         const checkpoint = await this.app.checkpoint(record, `branch-${record.workspace.currentBranch ?? record.workspace.revision}`);
@@ -1028,7 +1036,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
-        this.assertCheckpointQuiescent(record);
+        await this.assertCheckpointQuiescent(record);
         await this.app.reconcileGitState(record);
         const value = await this.app.gitCommit(record, input);
         const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
