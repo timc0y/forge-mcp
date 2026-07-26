@@ -1096,7 +1096,7 @@ export async function requireApproval(
     // trivial, without re-deriving it themselves.
     throw new ForgeError({
       code: 'FORGE_APPROVAL_REQUIRED',
-      message: `The operation changed since it was approved: ${changed.map((c) => `${c.field} was ${String(c.approved)}, is now ${String(c.current)}`).join('; ')}. Re-run forge_git_outgoing_diff and request a fresh approval.`,
+      message: `The operation changed since it was approved: ${changed.map((c) => `${c.field} was ${String(c.approved)}, is now ${String(c.current)}`).join('; ')}. Re-run forge_git_diff and request a fresh approval.`,
       retryable: false,
       details: { changed }
     });

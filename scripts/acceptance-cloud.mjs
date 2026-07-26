@@ -253,7 +253,7 @@ try {
     throw new Error(`Gateway did not record a manifest-verified recovery: ${JSON.stringify(recoveryStatus)}`);
   }
 
-  const command = await mcp.call('forge_shell_exec', {
+  const command = await mcp.call('forge_shell', {
     workspace_id: workspaceId,
     command: "node --version && git rev-parse --short HEAD && git remote get-url origin && test -f index.html",
     cwd: '/workspace/repo',
@@ -269,12 +269,13 @@ try {
     throw new Error(`Workspace did not clone through the Forge GitHub App proxy: ${JSON.stringify(command.value)}`);
   }
 
-  const process = await mcp.call('forge_process_start', {
+  const process = await mcp.call('forge_shell', {
     workspace_id: workspaceId,
     command: 'python3 -m http.server 8000 --bind 0.0.0.0',
     cwd: '/workspace/repo',
     environment: {},
     network_policy: 'deny_all',
+    async: true,
     idempotency_key: key('server')
   });
   const processId = process.value.value?.id ?? process.value.processId ?? process.value.process_id;
@@ -317,7 +318,7 @@ try {
     throw new Error(`Private preview did not render through its scoped capability: ${authorizedPreview.status}`);
   }
 
-  const review = await mcp.call('forge_review_capture', {
+  const review = await mcp.call('forge_preview', {
     workspace_id: workspaceId,
     preview_id: previewId,
     captures: [{ selection: 'homepage', route: '/', state: 'entry' }],

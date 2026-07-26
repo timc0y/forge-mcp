@@ -405,14 +405,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     { name: 'Forge MCP', version: '0.1.0' },
     {
       instructions: [
-        'Forge is a remote development computer; Parallax is its review contract. Work in this order:',
-        '1. Need to see a live URL? Call forge_review — one call, no container, no polling, and the screenshots come back attached to the result. A url on its own captures it at phone and desktop; add captures for more routes. This is the right tool for any "what does this look like" question.',
-        '2. Starting a coding task? Call forge_task_start before creating a workspace, then create one workspace per task and reuse its workspace_id. forge_workspace_create waits for the workspace to be usable and returns it ready, so never build a polling loop around it.',
-        '3. Before choosing routes or making changes, read the repository instructions and any parallax/ files.',
-        '4. Screenshots come back attached to forge_review and forge_review_capture — look at those images directly and never claim a finding you have not seen. Only reach for forge_artifact_get when a result says captures were omitted; if a grid is too big to return at once, prefer re-running with fewer routes or one viewport.',
-        '5. Never claim a multi-step journey passed unless its interactions were actually executed and recorded.',
-        '6. Inspect the diff, then finish with forge_submit_for_review — it stages the work and queues the pull request for a human to approve in their own time. Never wait for a human: say the work is submitted and where to review it. Use forge_git_push / forge_pull_request_create only when the caller explicitly wants to block on an approval right now.',
-        '7. Destroy the workspace once the task or review is complete — submitted work is staged off-box and survives teardown.'
+        'Forge is a remote development computer; Parallax is its review contract. Keep the tool set small and work in this order:',
+        '1. Live URL look? forge_review — one call, no container; images come back attached.',
+        '2. Coding task? forge_task_create, then one forge_workspace_create (waits until ready — do not poll-loop). Reuse workspace_id.',
+        '3. Read repo instructions / parallax/ before edits. Use forge_shell (async:true for long work) + forge_process_wait; forge_deps_install for installs.',
+        '4. Workspace app look? forge_preview (starts the app if needed). Look at returned images; forge_artifact_get only if captures were omitted.',
+        '5. Inspect with forge_git_diff (scope:outgoing), then forge_submit — stages work and queues the PR. Never wait for a human; tell them the approval_url.',
+        '6. Secrets: create in the portal (/app/secrets) or forge_secret_create; attach with forge_secret_attach (approval).',
+        '7. Destroy the workspace when done — submitted work is staged off-box and survives teardown. On confusion, call forge_doctor or forge_operation_get.'
       ].join(' ')
     }
   );
@@ -500,7 +500,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       ({ repository, task }) =>
         userText(
-          `Start a coding task on ${repository}: ${task}. Create one Forge workspace for this task with forge_workspace_create and reuse its workspace_id, poll forge_workspace_get until it is ready, then read the repository instructions and any parallax/ files before making changes. Implement and verify the change, inspect the outgoing diff, then finish with forge_submit_for_review — it stages the work and queues the pull request for review, so do not wait for anyone. Tell me it is submitted and where to approve it, then destroy the workspace.`
+          `Start a coding task on ${repository}: ${task}. Prefer forge_task_create, then forge_workspace_create (it waits until ready — do not poll-loop) and reuse workspace_id. Read repository instructions and any parallax/ files before changes. Implement and verify, inspect with forge_git_diff scope:outgoing, then forge_submit. Tell me it is submitted and where to approve it, then destroy the workspace.`
         )
     );
 
@@ -517,7 +517,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         userText(
           `Submit the current work for review${
             workspace_id ? ` in workspace ${workspace_id}` : ''
-          } once tests pass. Run the tests and confirm they are green, inspect the outgoing diff with forge_git_outgoing_diff, then call forge_submit_for_review. It stages the branch and queues the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
+          } once tests pass. Run the tests and confirm they are green, inspect the outgoing diff with forge_git_diff, then call forge_submit. It stages the branch and queues the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
         )
     );
   }
@@ -683,50 +683,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         deployment: { cloudflare_wrangler: 'approval_required_with_validated_profile' },
         recovery: { checkpoint: true, destruction_with_uncommitted_or_unpushed_work: 'blocked' }
       }),
-      forge_credential_list: async () => {
-        const identity = this.identity();
-        const selectedCredentialProfileId = await this.selectedCredentialProfileId(identity);
-        return { profiles: await credentialService(env).list(identity.tenantId as TenantId), selected_credential_profile_id: selectedCredentialProfileId ?? null };
-      },
-      forge_credential_create: async (input) => {
-        const identity = this.identity();
-        const profile = await credentialService(env).create({
-          tenantId: identity.tenantId as TenantId,
-          name: text(input.name), provider: 'cloudflare', secret: text(input.secret),
-          metadata: input.metadata as Record<string, string>, active: Boolean(input.make_active)
-        });
-        if (profile.active) await this.ctx.storage.put(SELECTED_CREDENTIAL_PROFILE_KEY, profile.id);
-        return { profile };
-      },
-      forge_credential_update: async (input) => {
-        const identity = this.identity();
-        const profile = await credentialService(env).update(identity.tenantId as TenantId, text(input.credential_profile_id) as CredentialProfileId, {
-          ...(input.name === undefined ? {} : { name: text(input.name) }),
-          ...(input.secret === undefined ? {} : { secret: text(input.secret) }),
-          ...(input.metadata === undefined ? {} : { metadata: input.metadata as Record<string, string> }),
-          ...(input.make_active === undefined ? {} : { active: Boolean(input.make_active) })
-        });
-        if (profile.active) await this.ctx.storage.put(SELECTED_CREDENTIAL_PROFILE_KEY, profile.id);
-        return { profile };
-      },
-      forge_credential_delete: async (input) => {
-        const identity = this.identity();
-        const profileId = text(input.credential_profile_id) as CredentialProfileId;
-        await credentialService(env).delete(identity.tenantId as TenantId, profileId);
-        if (await this.ctx.storage.get<string>(SELECTED_CREDENTIAL_PROFILE_KEY) === profileId) await this.ctx.storage.delete(SELECTED_CREDENTIAL_PROFILE_KEY);
-        return { deleted_credential_profile_id: profileId };
-      },
-      forge_credential_switch: async (input) => {
-        const identity = this.identity();
-        const profile = await credentialService(env).setActive(identity.tenantId as TenantId, text(input.credential_profile_id) as CredentialProfileId);
-        await this.ctx.storage.put(SELECTED_CREDENTIAL_PROFILE_KEY, profile.id);
-        return { profile, selected_credential_profile_id: profile.id };
-      },
-      forge_credential_validate: async (input) => {
-        const identity = this.identity();
-        const profile = await credentialService(env).validate(identity.tenantId as TenantId, text(input.credential_profile_id) as CredentialProfileId);
-        return { profile };
-      },
       forge_secret_list: async () => {
         const identity = this.identity();
         const [secrets, attachments] = await Promise.all([
@@ -765,6 +721,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const secretId = text(input.secret_id) as SecretId;
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        if (input.attached === false) {
+          await vaultService(env).detach(identity.tenantId as TenantId, secretId, workspaceId);
+          return { attached: false, secret_id: secretId, workspace_id: workspaceId };
+        }
         const approvalId = input.approval_id ? text(input.approval_id) : undefined;
         if (!approvalId) {
           const secret = (await vaultService(env).list(identity.tenantId as TenantId)).find(
@@ -791,82 +751,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         await completeApproval(env, approvalId, true);
         return { attached: true, secret_id: secretId, workspace_id: workspaceId };
       },
-      forge_secret_detach: async (input) => {
-        const identity = this.identity();
-        const secretId = text(input.secret_id) as SecretId;
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        await vaultService(env).detach(identity.tenantId as TenantId, secretId, workspaceId);
-        return { detached: true, secret_id: secretId, workspace_id: workspaceId };
-      },
-      forge_workspace_reconcile: async (input) => {
+      forge_doctor: async (input) => {
         const identity = this.identity();
         const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
         return asRecord(await workspace.reconcile());
-      },
-      forge_workspace_prove: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).proveWorkspaceState());
-      },
-      forge_workspace_checkpoint: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).checkpoint({
-          ...(input.name === undefined ? {} : { name: text(input.name) })
-        }));
-      },
-      forge_workspace_restore: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).restoreCheckpoint({
-          snapshotId: text(input.snapshot_id), expectedRevision: optionalNumber(input.expected_revision)
-        }));
-      },
-      forge_work_export: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id) as WorkspaceId;
-        const exported = await (await authorizedCoordinator(env, identity, workspaceId)).exportRecoveryPatch({ maxBytes: number(input.max_bytes) });
-        const artifactId = ids.artifact();
-        const bytes = new TextEncoder().encode(exported.content).buffer;
-        const artifact = await new R2ArtifactStore(env.ARTIFACTS).put({
-          id: artifactId, tenantId: identity.tenantId as TenantId, workspaceId,
-          kind: 'recovery.patch', contentType: 'text/plain; charset=utf-8', bytes,
-          metadata: { base_commit: String(exported.proof.observed.baseCommit ?? ''), head_commit: String(exported.proof.observed.commit ?? ''), branch: String(exported.proof.observed.branch ?? '') }
-        });
-        return { workspace_id: workspaceId, recovery_artifact: artifact, proof: exported.proof, restore: 'Use the matching Forge checkpoint to restore untracked files and process state.' };
-      },
-      forge_cloudflare_deploy: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const profileId = (input.credential_profile_id ? text(input.credential_profile_id) : await this.selectedCredentialProfileId(identity)) as CredentialProfileId | undefined;
-        if (!profileId) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Select a Cloudflare credential profile before deploying.', retryable: false });
-        const environment = input.environment === undefined ? undefined : text(input.environment);
-        const configPath = input.config_path === undefined ? undefined : text(input.config_path);
-        const command = `pnpm exec wrangler deploy${configPath ? ` --config ${shellQuote(configPath)}` : ''}${environment ? ` --env ${shellQuote(environment)}` : ''}`;
-        const payload = { profileId, command, environment: environment ?? null, configPath: configPath ?? null };
-        const approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        if (!approvalId) {
-          const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', 'Deploy this workspace with Cloudflare Wrangler; repository-controlled code receives the token for this one command.', payload);
-          throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Open the Forge approval URL, approve this exact Cloudflare deployment, then retry with approval_id.', retryable: false, details: approval });
-        }
-        await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', payload);
-        try {
-          const result = await credentialService(env).withSecret(identity.tenantId as TenantId, profileId, async (profile, secret) => {
-            if (profile.provider !== 'cloudflare') throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Only Cloudflare credential profiles can deploy with Wrangler.', retryable: false });
-            if (profile.state !== 'valid') throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Validate this Cloudflare credential profile before deploying.', retryable: false });
-            const value = await (await authorizedCoordinator(env, identity, workspaceId)).shellExec({
-              command, cwd: '/workspace/repo', timeoutMs: 900_000,
-              environment: { CLOUDFLARE_API_TOKEN: secret, ...(profile.metadata.account_id ? { CLOUDFLARE_ACCOUNT_ID: profile.metadata.account_id } : {}) },
-              networkPolicy: 'development', outputLimitBytes: 200_000,
-              expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key), approved: true
-            });
-            const stdout = 'stdout' in value ? String(value.stdout ?? '') : '';
-            const stderr = 'stderr' in value ? String(value.stderr ?? '') : '';
-            return { ...value, stdout: stdout.replaceAll(secret, '[REDACTED]'), stderr: stderr.replaceAll(secret, '[REDACTED]') };
-          });
-          await completeApproval(env, approvalId, true);
-          return asRecord(result);
-        } catch (error) {
-          await completeApproval(env, approvalId, false);
-          throw error;
-        }
       },
       forge_repository_list: async () => {
         const identity = this.identity();
@@ -883,7 +771,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           next_step: `${diagnosis.detail} Ask the account owner to open ${diagnosis.installUrl} and connect the repositories — no repository work is possible until they do.`
         };
       },
-      forge_task_start: async (input) => {
+      forge_task_create: async (input) => {
         const identity = this.identity();
         const store = new D1TaskStore(env.METADATA);
         const task = createTask(ids.task(), new Date().toISOString(), {
@@ -903,58 +791,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const task = await this.loadTask(text(input.task_id) as TaskId);
         assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
-        return asRecord(task);
-      },
-      forge_task_summary: async (input) => {
-        const identity = this.identity();
-        const task = await this.loadTask(text(input.task_id) as TaskId);
-        assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
-        const summary = summarizeTask(task);
-        // No per-workspace deadline is tracked, but the slot TTL is the real
-        // ceiling on how long an idle workspace survives — surface it so an
-        // agent whose tool access is about to end can push/checkpoint instead
-        // of being cut off mid-verification with no warning (see incident:
-        // work committed but never pushed before the session ended).
-        const ttlMinutes = Math.round(slotTtlMs(env) / 60_000);
-        return asRecord({
-          ...summary,
-          sessionBudget: {
-            workspaceIdleTtlMinutes: ttlMinutes,
-            note: task.workspaceId
-              ? `An idle workspace is reclaimed after ~${ttlMinutes} minutes of inactivity. Push the forge/ branch and call forge_task_finish before then, or send any tool call to reset the idle clock.`
-              : 'No workspace attached yet.'
-          }
-        });
-      },
-      forge_task_handoff: async (input) => {
-        const identity = this.identity();
-        const store = new D1TaskStore(env.METADATA);
-        const task = await this.loadTask(text(input.task_id) as TaskId);
-        assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
-        const handoff: TaskHandoff = {
-          summary: text(input.summary),
-          nextSteps: (input.next_steps as string[]) ?? [],
-          ...(input.key_learnings ? { keyLearnings: input.key_learnings as string[] } : {}),
-          ...(input.modified_files ? { modifiedFiles: input.modified_files as string[] } : {}),
-          ...(input.blocked_by ? { blockedBy: text(input.blocked_by) } : {}),
-          createdAt: new Date().toISOString(),
-          authorAgent: 'chatgpt'
-        };
-        task.handoff = handoff;
-        task.updatedAt = new Date().toISOString();
-        task.revision += 1;
-        await store.put(task);
-        return {
-          task_id: task.id,
-          recorded: true,
-          handoff_created_at: handoff.createdAt,
-          next_step: 'Handoff recorded. Call forge_task_resume in any fresh ChatGPT session to pick up work immediately.'
-        };
-      },
-      forge_task_resume: async (input) => {
-        const identity = this.identity();
-        const task = await this.loadTask(text(input.task_id) as TaskId);
-        assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
+        const mode = input.mode === undefined ? 'full' : text(input.mode);
+        if (mode === 'full') return asRecord(task);
+        if (mode === 'summary') {
+          const summary = summarizeTask(task);
+          const ttlMinutes = Math.round(slotTtlMs(env) / 60_000);
+          return asRecord({
+            ...summary,
+            sessionBudget: {
+              workspaceIdleTtlMinutes: ttlMinutes,
+              note: task.workspaceId
+                ? `An idle workspace is reclaimed after ~${ttlMinutes} minutes of inactivity. Push the forge/ branch and call forge_task_update before then, or send any tool call to reset the idle clock.`
+                : 'No workspace attached yet.'
+            }
+          });
+        }
+        // mode === 'resume'
         let workspaceState: Record<string, unknown> | null = null;
         let gitSummary: Record<string, unknown> | null = null;
         const targetWorkspaceId = input.workspace_id ? text(input.workspace_id) : task.workspaceId;
@@ -1008,48 +860,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           next_step: task.handoff?.nextSteps?.[0] ?? summary.nextRecommendedAction
         };
       },
-      forge_context_pack: async (input) => {
-        const identity = this.identity();
-        const goal = text(input.goal);
-        const repository = input.repository as { provider: 'github'; owner: string; name: string };
-        const maxTokens = input.max_tokens ? number(input.max_tokens) : 4000;
-        let fileList: string[] = [];
-        if (input.paths && Array.isArray(input.paths) && input.paths.length > 0) {
-          fileList = (input.paths as string[]).map((p) => text(p));
-        } else {
-          try {
-            const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-            const tree = await (await authorizedCoordinator(env, identity, workspaceId)).filesTree({
-              path: '/workspace/repo',
-              depth: 10,
-              limit: 5000
-            });
-            fileList = (tree.entries as Array<{ path: string; type: string }>)
-              .filter((entry) => entry.type === 'file')
-              .map((entry) => entry.path.replace(/^\/workspace\/repo\//, ''));
-          } catch {
-            fileList = [];
-          }
-        }
-        const selection = selectContext({
-          goal,
-          files: fileList,
-          maxResults: 15
-        });
-        const packedFiles = selection.results.map((r) => ({
-          path: r.path,
-          reason: r.reason,
-          confidence: r.confidence,
-          adjacentTests: r.adjacentTests
-        }));
-        return {
-          repository,
-          goal,
-          packed_files: packedFiles,
-          token_budget: maxTokens,
-          next_step: 'Context pack prepared. Read top confidence files using forge_files_read paths:[...] when ready to edit.'
-        };
-      },
       forge_task_list: async (input) => {
         const identity = this.identity();
         const store = new D1TaskStore(env.METADATA);
@@ -1067,16 +877,55 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           : undefined;
         return { tasks: tasks.map((task) => summarizeTask(task)), returned: tasks.length, ...(hint ? { hint } : {}) };
       },
-      forge_task_finish: async (input) => {
+      forge_task_update: async (input) => {
         const identity = this.identity();
         const store = new D1TaskStore(env.METADATA);
-        const task = await this.loadTask(text(input.task_id) as TaskId);
+        let task = await this.loadTask(text(input.task_id) as TaskId);
         assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
+        const hasHandoff = input.handoff_summary !== undefined;
+        const hasOutcome = input.outcome !== undefined;
+        if (!hasHandoff && !hasOutcome) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'Provide outcome and/or handoff_summary (+ next_steps).',
+            retryable: false,
+            details: { taskId: task.id }
+          });
+        }
+        if (hasHandoff) {
+          const nextSteps = (input.next_steps as string[] | undefined) ?? [];
+          if (nextSteps.length === 0) {
+            throw new ForgeError({
+              code: 'FORGE_VALIDATION_FAILED',
+              message: 'handoff_summary requires next_steps (1–20 items).',
+              retryable: false,
+              details: { taskId: task.id }
+            });
+          }
+          const handoff: TaskHandoff = {
+            summary: text(input.handoff_summary),
+            nextSteps,
+            ...(input.key_learnings ? { keyLearnings: input.key_learnings as string[] } : {}),
+            ...(input.modified_files ? { modifiedFiles: input.modified_files as string[] } : {}),
+            ...(input.blocked_by ? { blockedBy: text(input.blocked_by) } : {}),
+            createdAt: new Date().toISOString(),
+            authorAgent: 'chatgpt'
+          };
+          task.handoff = handoff;
+          task.updatedAt = new Date().toISOString();
+          task.revision += 1;
+          if (!hasOutcome) {
+            await store.put(task);
+            return {
+              task_id: task.id,
+              recorded: true,
+              handoff_created_at: handoff.createdAt,
+              revision: task.revision,
+              next_step: 'Handoff recorded. Call forge_task_get with mode:resume in a fresh session to continue.'
+            };
+          }
+        }
         const outcome = text(input.outcome) as TaskState;
-        // Enforce the task state machine up front so an illegal finish (e.g.
-        // finishing an already-terminal task, or a transition the lifecycle does
-        // not permit) fails with a clear ForgeError before any store write.
-        // applyTaskPatch re-checks the same invariant as defense in depth.
         if (isTerminalTaskState(task.state)) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
@@ -1127,10 +976,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           },
           { workspaceId: updated.workspaceId }
         );
-        // A task can legitimately finish with work still queued for a human —
-        // that is the point of a deferred submission. Report it so the agent
-        // closes out by telling the human what is sitting in their queue,
-        // instead of implying the pull request already exists.
         const queued = updated.workspaceId
           ? await listDeferredActionsForWorkspace(env, identity.tenantId, updated.workspaceId)
               .then((actions) => actions.filter((action) => action.state === 'awaiting_approval' || action.state === 'failed'))
@@ -1140,6 +985,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           task_id: updated.id,
           state: updated.state,
           revision: updated.revision,
+          ...(updated.handoff ? { handoff_created_at: updated.handoff.createdAt } : {}),
           ...(queued.length > 0
             ? {
                 awaiting_review: queued.map((action) => ({
@@ -1153,67 +999,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 next_step: `Work is staged and waiting for a human. Tell them ${queued.length === 1 ? 'it is' : 'they are'} ready to review at ${env.FORGE_PUBLIC_ORIGIN}/app — they can approve whenever, and Forge will push and open the draft pull request then.`
               }
             : {})
-        };
-      },
-      forge_context_get: async (input) => {
-        const identity = this.identity();
-        const root = text(input.root);
-        const tree = await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesTree({
-          path: root,
-          depth: 20,
-          limit: 10000
-        });
-        const files = (tree.entries as Array<{ path: string; type: string }>)
-          .filter((entry) => entry.type === 'file')
-          .map((entry) => entry.path.replace(/^\/workspace\/repo\//, ''));
-        return asRecord(selectContext({
-          goal: text(input.goal),
-          files,
-          root: root.replace(/^\/workspace\/repo\/?/, ''),
-          maxResults: number(input.max_results),
-          categories: input.categories as ('source' | 'tests' | 'docs' | 'config')[] | undefined
-        }));
-      },
-      forge_diff_metadata: async (input) => {
-        const identity = this.identity();
-        // Summary of the WHOLE change, so it stays a reliable overview of a
-        // diff too large to read: the file list, line counts and path-derived
-        // facts come from --numstat and cover every file. Only the content-
-        // derived parts (changed symbols, possible secrets) need hunks, so
-        // those are computed over as much of the diff as fits one generous
-        // page, and `note` says when that fell short.
-        const outgoing = await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitOutgoingDiff({
-          base: text(input.base),
-          maxBytes: 400_000
-        });
-        const compact = analyzeDiff(outgoing.diff);
-        const analyzed = new Map(compact.files.map((file) => [file.path, file]));
-        const files = outgoing.files.map((file) => {
-          const seen = analyzed.get(file.path);
-          return {
-            path: file.path,
-            changeType: seen?.changeType ?? (file.binary ? 'binary' : 'modified'),
-            additions: file.additions,
-            deletions: file.deletions,
-            changedSymbols: seen?.changedSymbols ?? [],
-            possibleSecret: seen?.possibleSecret ?? false,
-            ...(seen?.facts === undefined ? {} : { facts: seen.facts })
-          };
-        });
-        const unanalyzed = files.length - compact.files.length;
-        return {
-          ...compact,
-          files,
-          totalAdditions: outgoing.totalAdditions,
-          totalDeletions: outgoing.totalDeletions,
-          diffHash: outgoing.diffHash,
-          base: outgoing.base,
-          branch: outgoing.branch,
-          suggestedChecks: suggestChecks(files.map((file) => file.path)),
-          rawDiffAvailableVia: 'forge_git_outgoing_diff',
-          note: unanalyzed > 0
-            ? `This is a syntax-only summary. File list and line counts cover all ${files.length} changed files; symbol and secret detection covers the first ${compact.files.length} (${unanalyzed} too large to scan here — read them with forge_git_outgoing_diff paths:[...]). Inspect the raw diff before any Git mutation.`
-            : 'This is a syntax-only summary. Inspect the raw diff before any Git mutation.'
         };
       },
       forge_review: async (input) => {
@@ -1574,13 +1359,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           operationId: text(input.operation_id) as OperationId
         }));
       },
-      forge_operation_reconcile: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).operationGet({
-          operationId: text(input.operation_id) as OperationId
-        }));
-      },
-      forge_files_tree: async (input) => {
+      forge_files_list: async (input) => {
         const identity = this.identity();
         const tree = await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesTree({
           path: text(input.path),
@@ -1652,14 +1431,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           idempotencyKey: idempotency(input.idempotency_key)
         }));
       },
-      forge_files_patch: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesPatch({
-          patch: text(input.patch),
-          idempotencyKey: idempotency(input.idempotency_key)
-        }));
-      },
-      forge_shell_exec: async (input) => {
+      forge_shell: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const command = text(input.command);
@@ -1704,7 +1476,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 code: 'FORGE_VALIDATION_FAILED',
                 message: 'async:true cannot be combined with mode:read_only. Use a foreground read-only command, or omit mode for a managed process.',
                 retryable: false,
-                details: { allowedNextActions: ['forge_shell_exec', 'forge_process_start'] }
+                details: { allowedNextActions: ['forge_shell'] }
               });
             }
             const proc = await workspace.processStart({
@@ -1770,87 +1542,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           throw error;
         }
       },
-      forge_process_start: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const command = text(input.command);
-        const cwd = text(input.cwd);
-        const networkPolicy = text(input.network_policy) as never;
-        const decision = classifyCommand(command, networkPolicy);
-        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        const userEnv = (input.environment as Record<string, string>) ?? {};
-        const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
-        const environment = { ...attached.vars, ...userEnv };
-        const environmentHash = await sha256(JSON.stringify(Object.entries(userEnv).sort(([left], [right]) => left.localeCompare(right))));
-        const approvalPayload = { command, cwd, networkPolicy, environmentHash };
-        let claimedApproval = false;
-        if (decision.allowed && decision.approvalRequired) {
-          if (mayAutoApproveShell(env, decision.classification, networkPolicy)) {
-            claimedApproval = true;
-          } else if (!approvalId) {
-            const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} process`, approvalPayload);
-            if (approval.already_approved) {
-              approvalId = approval.approval_id;
-              await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
-              claimedApproval = true;
-            } else {
-              const inline = await this.tryResolveApprovalInline(identity, approval, `Run ${decision.classification} process`);
-              if (!inline) {
-                throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This process needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
-              }
-              approvalId = inline;
-              await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
-              claimedApproval = true;
-            }
-          } else {
-            await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
-            claimedApproval = true;
-          }
-        }
-        try {
-          const started = await (await authorizedCoordinator(env, identity, workspaceId)).processStart({
-            command,
-            cwd,
-            environment,
-            networkPolicy,
-            expectedRevision: optionalNumber(input.expected_revision),
-            idempotencyKey: idempotency(input.idempotency_key),
-            approved: claimedApproval
-          });
-          if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
-          const startedRecord = started as unknown as Record<string, unknown>;
-          const value = (startedRecord.value && typeof startedRecord.value === 'object'
-            ? startedRecord.value
-            : startedRecord) as Record<string, unknown>;
-          const processId = value.id ?? startedRecord.processId ?? startedRecord.id;
-          if (typeof processId !== 'string' || !processId.startsWith('proc_')) {
-            throw new ForgeError({
-              code: 'FORGE_WORKSPACE_CONFLICT',
-              message: 'Managed process start did not return a process id; inspect forge_workspace_get before retrying with a new idempotency key.',
-              retryable: false,
-              details: { allowedNextActions: ['forge_workspace_get', 'forge_process_list'] }
-            });
-          }
-          return {
-            processId,
-            status: String(value.status ?? 'running'),
-            command,
-            mutatesFilesystem: value.mutatesFilesystem ?? true,
-            replay: Boolean(startedRecord.replay),
-            replayed: Boolean(startedRecord.replayed ?? startedRecord.replay),
-            operationId: startedRecord.operationId,
-            originalOperationId: startedRecord.originalOperationId ?? startedRecord.operationId,
-            idempotencyKey: startedRecord.idempotencyKey,
-            workspaceId,
-            workspaceRevision: startedRecord.workspaceRevision,
-            allowedNextActions: startedRecord.allowedNextActions ?? ['forge_process_wait', 'forge_process_logs', 'forge_process_get'],
-            next_step: `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for dependency installs).`
-          };
-        } catch (error) {
-          if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
-          throw error;
-        }
-      },
       forge_process_logs: async (input) => {
         const identity = this.identity();
         return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processLogs({
@@ -1858,23 +1549,23 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           cursor: input.cursor ? text(input.cursor) : undefined
         }));
       },
-      forge_process_get: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processGet({
-          processId: text(input.process_id) as ProcessId
-        }));
-      },
       forge_process_list: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processList());
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        if (input.process_id) {
+          return asRecord(await workspace.processGet({ processId: text(input.process_id) as ProcessId }));
+        }
+        return asRecord(await workspace.processList());
       },
       forge_process_stop: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processStop({
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const args = {
           processId: text(input.process_id) as ProcessId,
           expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: text(input.idempotency_key)
-        }));
+          idempotencyKey: idempotency(input.idempotency_key)
+        };
+        return asRecord(input.force ? await workspace.processCancel(args) : await workspace.processStop(args));
       },
       forge_process_wait: async (input) => {
         const identity = this.identity();
@@ -1883,40 +1574,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           timeoutMs: optionalNumber(input.timeout_ms) ?? 120_000
         }));
       },
-      forge_process_cancel: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processCancel({
-          processId: text(input.process_id) as ProcessId,
-          expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: text(input.idempotency_key)
-        }));
-      },
-      forge_check_start: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
-        const environment = { ...attached.vars, ...(input.environment as Record<string, string>) };
-        return asRecord(await (await authorizedCoordinator(env, identity, workspaceId)).checkStart({
-          name: text(input.name), command: text(input.command), cwd: text(input.cwd),
-          environment, networkPolicy: text(input.network_policy) as never,
-          expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
-        }));
-      },
-      forge_check_get: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).checkGet({
-          processId: text(input.process_id) as ProcessId
-        }));
-      },
-      forge_check_cancel: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processStop({
-          processId: text(input.process_id) as ProcessId,
-          expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: text(input.idempotency_key)
-        }));
-      },
-      forge_dependencies_install: async (input) => {
+      forge_deps_install: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const coordinator = await authorizedCoordinator(env, identity, workspaceId);
@@ -1936,12 +1594,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_git_diff: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitDiff({
-          staged: Boolean(input.staged),
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const scope = input.scope === undefined ? 'worktree' : text(input.scope);
+        if (scope === 'outgoing') {
+          return asRecord(await workspace.gitOutgoingDiff({
+            base: text(input.base),
+            ...diffPaging(input)
+          }));
+        }
+        return asRecord(await workspace.gitDiff({
+          staged: scope === 'staged',
           ...diffPaging(input)
         }));
       },
-      forge_git_branch_create: async (input) => {
+      forge_git_branch: async (input) => {
         const identity = this.identity();
         return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitBranchCreate({
           branch: text(input.branch), expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
@@ -1963,194 +1629,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           message, paths: input.paths as string[], expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
         }));
       },
-      forge_git_outgoing_diff: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitOutgoingDiff({
-          base: text(input.base),
-          ...diffPaging(input)
-        }));
-      },
-      forge_git_push: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const branch = text(input.branch);
-        const base = text(input.base);
-        const diffHash = text(input.expected_diff_hash);
-        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        const markTaskPushed = async () => {
-          // Best-effort: record the push against whichever task owns this
-          // workspace, so forge_task_finish can tell a pushed branch apart
-          // from committed-but-stranded work. Never blocks the push itself.
-          const store = new D1TaskStore(env.METADATA);
-          await store.getByWorkspace(workspaceId).then(async (task) => {
-            if (!task) return;
-            await store.put({ ...task, pushedAt: new Date().toISOString() });
-          }).catch(() => undefined);
-        };
-        const executePush = async () => {
-          const coordinator = await authorizedCoordinator(env, identity, workspaceId);
-          return coordinator.gitPush({
-            branch, base, expectedDiffHash: diffHash, expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
-          });
-        };
-
-        // Envelope fast path: a prior forge_task_authorize_push_envelope for
-        // this exact (workspace, branch, base) lets this push skip the human
-        // click entirely — but only while it still satisfies the envelope's
-        // invariant, re-checked fresh on every call: the branch fast-forwards
-        // from the last envelope-covered commit (no rewritten history), and
-        // every changed path is covered by allowed_paths. Anything that fails
-        // either check falls straight through to the normal per-push approval
-        // below — the envelope never widens itself.
-        if (!approvalId) {
-          const envelope = await findActiveEnvelope(env, identity.tenantId, workspaceId, branch, base);
-          if (envelope) {
-            const coordinator = await authorizedCoordinator(env, identity, workspaceId);
-            // Hash over the whole change, and the path list straight from
-            // `git diff --name-only` — never from the returned hunks, which
-            // are one page of files and would let anything after the page cut
-            // slip past allowed_paths unchecked. gitOutgoingPaths fails closed
-            // if it cannot enumerate every path.
-            const outgoing = await coordinator.gitOutgoingDiff({ base, maxBytes: 2_000 }).catch(() => undefined);
-            const changedPaths = outgoing ? await coordinator.gitOutgoingPaths({ base }).catch(() => undefined) : undefined;
-            const hashOk = outgoing?.diffHash === diffHash;
-            const pathsOk = hashOk && changedPaths !== undefined && pathsWithinEnvelope(changedPaths, envelope.allowedPaths);
-            const ffOk = pathsOk && (envelope.lastApprovedCommit
-              ? await coordinator.gitIsAncestor({ ancestor: envelope.lastApprovedCommit })
-              : true);
-            if (hashOk && pathsOk && ffOk) {
-              const result = await executePush();
-              await markTaskPushed();
-              const newCommit = (result as { commit?: string }).commit;
-              if (newCommit) await recordEnvelopePush(env, envelope.id, newCommit);
-              await this.recordAudit(
-                'git.push',
-                identity.tenantId,
-                { branch, base, diffHash, via: 'envelope', envelopeId: envelope.id },
-                { workspaceId }
-              );
-              return asRecord(result);
-            }
-          }
-        }
-
-        if (!approvalId) {
-          // Attach the actual outgoing diff so the human approves what they can
-          // see, not an opaque hash. Best-effort — `diff` is display-only; the
-          // diffHash remains the integrity check enforced by requireApproval.
-          const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
-            .gitOutgoingDiff({ base, maxBytes: 200_000 }).catch(() => undefined);
-          const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to GitHub`, { branch, base, diffHash, diff: outgoing?.diff ?? '', diffTotals: diffTotals(outgoing) });
-          const inline = await this.tryResolveApprovalInline(identity, approval, `Push ${branch} to GitHub`);
-          if (!inline) {
-            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact push was already approved. No need to open the URL again — retry the call with approval_id.' : 'This push needs human approval. Open the approval URL, approve this exact push, then retry the call with approval_id. To avoid a human click on every future push in this task, ask them to run forge_task_authorize_push_envelope once instead.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
-          }
-          approvalId = inline;
-        }
-        await requireApproval(env, identity, approvalId, workspaceId, 'git.push', { branch, base, diffHash });
-        try {
-          const result = await executePush();
-          await completeApproval(env, approvalId, true);
-          await markTaskPushed();
-          await this.recordAudit(
-            'git.push',
-            identity.tenantId,
-            { branch, base, diffHash },
-            { workspaceId }
-          );
-          return asRecord(result);
-        } catch (error) {
-          await completeApproval(env, approvalId, false);
-          throw error;
-        }
-      },
-      forge_task_authorize_push_envelope: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const branch = text(input.branch);
-        const base = text(input.base);
-        const taskId = input.task_id ? text(input.task_id) : undefined;
-        const ttlMinutes = number(input.ttl_minutes);
-        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        const coordinator = await authorizedCoordinator(env, identity, workspaceId);
-        // The envelope's default allow-list must cover every currently changed
-        // path, so it comes from the complete `--name-only` list rather than
-        // from a page of hunks — an under-wide default would quietly block
-        // later pushes, and is derived from the same source the push-time
-        // check uses.
-        const defaultPaths = [...new Set(await coordinator.gitOutgoingPaths({ base }).catch(() => []))];
-        const allowedPaths = (input.allowed_paths as string[] | undefined) ?? defaultPaths;
-        // Display-only, for the approval page: a bounded page of the diff plus
-        // the true totals, so the reviewer sees real scale even when the change
-        // is too large to render whole.
-        const envelopePreview = await coordinator.gitOutgoingDiff({ base, maxBytes: 200_000 }).catch(() => undefined);
-        if (allowedPaths.length === 0) {
-          throw new ForgeError({
-            code: 'FORGE_VALIDATION_FAILED',
-            message: 'No allowed_paths given and the current outgoing diff is empty — there is nothing to scope the envelope to. Make a change first, or pass allowed_paths explicitly.',
-            retryable: false
-          });
-        }
-        if (!approvalId) {
-          const approval = await requestApproval(
-            env, identity, workspaceId, 'task.push_envelope', `Pre-authorize pushes to ${branch}`,
-            { branch, base, allowedPaths, ttlMinutes, diff: envelopePreview?.diff ?? '', diffTotals: diffTotals(envelopePreview) }
-          );
-          const reason = `Pre-authorize pushes to ${branch} touching only ${allowedPaths.join(', ')}`;
-          const inline = await this.tryResolveApprovalInline(identity, approval, reason);
-          if (!inline) {
-            throw new ForgeError({
-              code: 'FORGE_APPROVAL_REQUIRED',
-              message: approval.already_approved
-                ? 'This exact envelope was already approved. No need to open the URL again — retry the call with approval_id.'
-                : `This authorizes Forge to auto-approve future pushes to ${branch} for the next ${ttlMinutes} minutes, as long as each one only touches ${allowedPaths.join(', ')} and fast-forwards with no rewritten history — every other push (and every pull request) still needs its own approval. Open the approval URL, approve it, then retry the call with approval_id.`,
-              retryable: false,
-              details: { kind: 'approval', action: 'task.push_envelope', ...approval }
-            });
-          }
-          approvalId = inline;
-        }
-        // Only compare primitives here — allowedPaths is an array and the
-        // generic equality check in requireApproval is a strict !==, which
-        // would never match a freshly-parsed array even when the content is
-        // identical. The approval page already showed the human the paths.
-        await requireApproval(env, identity, approvalId, workspaceId, 'task.push_envelope', { branch, base });
-        try {
-          const state = await coordinator.getState();
-          const envelope = await createPushEnvelope(env, {
-            tenantId: identity.tenantId,
-            workspaceId,
-            taskId,
-            branch,
-            base,
-            allowedPaths,
-            startCommit: (state as { currentCommit?: string }).currentCommit ?? null,
-            ttlMinutes
-          });
-          await completeApproval(env, approvalId, true);
-          await this.recordAudit(
-            'task.push_envelope.authorize',
-            identity.tenantId,
-            { branch, base, allowedPaths, ttlMinutes, envelopeId: envelope.id, taskId },
-            { workspaceId }
-          );
-          return {
-            envelope_id: envelope.id,
-            branch: envelope.branch,
-            base: envelope.base,
-            allowed_paths: envelope.allowedPaths,
-            expires_at: envelope.expiresAt,
-            next_step: 'Future forge_git_push calls to this branch will auto-satisfy while they stay inside this envelope. Pushes outside it (new paths, rewritten history, a different branch) still need a normal approval.'
-          };
-        } catch (error) {
-          await completeApproval(env, approvalId, false);
-          throw error;
-        }
-      },
-      // Finish-and-walk-away. Everything a submission needs is captured here and
-      // parked on a Forge-owned ref, so the agent never waits on a human and the
-      // workspace is free to die immediately afterwards. See deferred-actions.ts.
-      forge_submit_for_review: async (input) => {
+      forge_submit: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const branch = text(input.branch);
@@ -2258,7 +1737,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           { workspaceId }
         );
         // Mark the task pushed: the work is durable off-box now, which is the
-        // thing forge_task_finish actually cares about.
+        // thing forge_task_update actually cares about.
         await new D1TaskStore(env.METADATA).getByWorkspace(workspaceId).then(async (task) => {
           if (!task) return;
           await new D1TaskStore(env.METADATA).put({ ...task, pushedAt: new Date().toISOString() });
@@ -2278,61 +1757,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           auto_committed: autoCommitted,
           next_step: `Work is staged and queued for review. Tell the human it is done and waiting for them at ${approval.approval_url} (or in the Forge portal at ${env.FORGE_PUBLIC_ORIGIN}/app) — they can approve whenever they like, and Forge will push ${branch} and open the draft pull request then. Do not wait for them. This workspace can be destroyed now.`
         };
-      },
-      forge_pull_request_create: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const head = text(input.head);
-        const base = text(input.base);
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
-        const initialState = await workspace.getState();
-        if (base !== initialState.requestedRef) {
-          throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Draft PR target must match the immutable base ref recorded when this workspace was created.', retryable: false, details: { requestedBase: initialState.requestedRef, providedBase: base, baseCommit: initialState.baseCommit ?? null } });
-        }
-        let title = input.title === undefined ? '' : text(input.title);
-        let body = input.body === undefined ? '' : text(input.body);
-        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        // Blank title + AI on: summarise the branch diff into a title (and body
-        // only when the caller left the body blank too). Best-effort — the
-        // summariser never throws; if AI is disabled we keep prior behaviour.
-        if (!title.trim() && aiEnabled(env)) {
-          const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
-            .gitOutgoingDiff({ base }).catch(() => undefined);
-          if (outgoing?.diff?.trim()) {
-            const summary = await summarizeDiffForPr(env, outgoing.diff, { branch: head, base });
-            title = summary.title;
-            if (!body.trim()) body = summary.body;
-          }
-        }
-        if (!approvalId) {
-          // Show the branch's diff on the approval page so the PR is reviewed on
-          // its contents, not just a title. Display-only, best-effort.
-          const outgoing = await (await authorizedCoordinator(env, identity, workspaceId))
-            .gitOutgoingDiff({ base }).catch(() => undefined);
-          const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body, diff: outgoing?.diff ?? '', diffTotals: diffTotals(outgoing) });
-          const inline = await this.tryResolveApprovalInline(identity, approval, `Create draft pull request ${head} → ${base}`);
-          if (!inline) {
-            throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: approval.already_approved ? 'This exact draft PR was already approved. No need to open the URL again — retry the call with approval_id.' : 'This draft PR needs human approval. Open the approval URL, approve it, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });
-          }
-          approvalId = inline;
-        }
-        await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title, body });
-        try {
-          const state = await workspace.getState();
-          const result = await createDraftPullRequest(env, identity, state.repository, { head, base, title, body });
-          await completeApproval(env, approvalId, true);
-          await this.recordAudit(
-            'pull_request.create',
-            identity.tenantId,
-            { head, base, title, url: result.url },
-            { workspaceId }
-          );
-          // Expose the PR link under a clearly-named field for the widget.
-          return { ...result, pr_url: result.url };
-        } catch (error) {
-          await completeApproval(env, approvalId, false);
-          throw error;
-        }
       },
       forge_preview_expose: async (input) => {
         const identity = this.identity();
@@ -2368,7 +1792,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           preview_capability_header: 'x-forge-preview-capability'
         };
       },
-      forge_review_capture: async (input) => {
+            forge_preview: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id) as WorkspaceId;
         // Getting here used to cost four calls and a polling loop: start the dev
@@ -2400,7 +1824,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               throw new ForgeError({
                 code: 'FORGE_PREVIEW_UNAVAILABLE',
                 message: lastReason.includes('no dev server command')
-                  ? 'No dev server command was detected for this project, so there is nothing to screenshot. Start it yourself with forge_process_start, expose it with forge_preview_expose, and pass the preview_id.'
+                  ? 'No dev server command was detected for this project, so there is nothing to screenshot. Start the server with forge_shell async:true, then call forge_preview again (omit preview_id) or pass preview_id once exposed.'
                   : `The preview was not ready in time (${lastReason}). Check forge_process_logs, or raise preview_wait_ms.`,
                 retryable: true
               });
@@ -2412,7 +1836,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (new Date(detail.preview.expiresAt).getTime() <= Date.now()) {
           throw new ForgeError({
             code: 'FORGE_PREVIEW_UNAVAILABLE',
-            message: 'This preview has expired. Call forge_review_capture again without a preview_id and Forge will bring a fresh one up.',
+            message: 'This preview has expired. Call forge_preview again without a preview_id and Forge will bring a fresh one up.',
             retryable: true
           });
         }
@@ -2705,7 +2129,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           workspace_revision: request.workspaceRevision,
           replay: request.replay
         };
-      }
+      },
     };
   }
 }

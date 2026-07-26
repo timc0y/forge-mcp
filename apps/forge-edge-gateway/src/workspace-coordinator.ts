@@ -223,9 +223,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           allowedNextActions: [
             'forge_process_wait',
             'forge_process_list',
-            'forge_process_get',
+            'forge_process_list',
             'forge_process_stop',
-            'forge_process_cancel'
+            'forge_process_stop'
           ]
         }
       });
@@ -804,7 +804,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         code: 'FORGE_VALIDATION_FAILED',
         message: 'mode:read_only was requested but the command is classified as mutating; refuse to run it without a mutation path.',
         retryable: false,
-        details: { classification: shellDecision.classification, allowedNextActions: ['forge_shell_exec'] }
+        details: { classification: shellDecision.classification, allowedNextActions: ['forge_shell'] }
       });
     }
     const forcedReadOnly = input.mode === 'read_only' || shellDecision.classification === 'read_only';
@@ -888,8 +888,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
             ? `Managed process ${processId} already finished with exit ${entry.exitCode ?? 1}.`
             : `Call forge_process_wait with process_id ${processId} (use a timeout_ms of at least 600000 for large installs), then continue with shell commands.`,
           allowedNextActions: entry?.completedAt
-            ? ['forge_process_get', 'forge_shell_exec', 'forge_workspace_get']
-            : ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
+            ? ['forge_process_list', 'forge_shell', 'forge_workspace_get']
+            : ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
         };
       };
       try {
@@ -946,7 +946,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         // If the command was a mutating command with an idempotency key and it
         // timed out (FORGE_COMMAND_TIMEOUT), convert it to a managed background
         // process so it continues under Forge supervision. The caller can then
-        // use forge_process_wait / forge_process_get / forge_process_cancel.
+        // use forge_process_wait / forge_process_list / forge_process_stop.
         // Skip dependency_install: those are started as managed processes above,
         // and restarting them here would race two package managers on one tree.
         if (

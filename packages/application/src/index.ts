@@ -134,11 +134,9 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   if (active.length > 0) {
     return [
       'forge_process_wait',
-      'forge_process_get',
-      'forge_process_logs',
       'forge_process_list',
-      'forge_process_stop',
-      'forge_process_cancel'
+      'forge_process_logs',
+      'forge_process_stop'
     ];
   }
   if (!['ready', 'busy'].includes(record.workspace.state)) {
@@ -147,18 +145,17 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   const deps = dependencyStateView(record.dependencyState);
   if (deps.status !== 'ready') {
     return [
-      'forge_dependencies_install',
-      'forge_shell_exec',
-      'forge_process_start',
+      'forge_deps_install',
+      'forge_shell',
       'forge_git_status',
       'forge_workspace_get'
     ];
   }
   return [
-    'forge_shell_exec',
+    'forge_shell',
     'forge_git_status',
     'forge_git_commit',
-    'forge_submit_for_review',
+    'forge_submit',
     'forge_workspace_get'
   ];
 }
@@ -1921,8 +1918,8 @@ export class ForgeApplicationService {
               ? `Managed process ${processId} already finished with exit ${entry.exitCode ?? 1}.`
               : `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for large installs).`,
             allowedNextActions: entry.completedAt
-              ? ['forge_process_get', 'forge_shell_exec', 'forge_workspace_get']
-              : ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
+              ? ['forge_process_list', 'forge_shell', 'forge_workspace_get']
+              : ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
           };
         }
         return {
@@ -2000,7 +1997,7 @@ export class ForgeApplicationService {
       if (replayed) return replayed;
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_CONFLICT',
-        message: 'This process start was already accepted but its process id is no longer available; inspect forge_workspace_get and forge_process_get before retrying with a new idempotency key.',
+        message: 'This process start was already accepted but its process id is no longer available; inspect forge_workspace_get and forge_process_list before retrying with a new idempotency key.',
         retryable: false,
         details: {
           idempotencyKey: input.idempotencyKey,
@@ -2021,7 +2018,7 @@ export class ForgeApplicationService {
       command: input.command,
       cwd: input.cwd,
       environment: nonInteractiveShellEnv(input.environment ?? {}),
-      // Same session as forge_shell_exec so later foreground commands share the
+      // Same session as forge_shell so later foreground commands share the
       // shell environment and always observe the process filesystem writes.
       sessionId: 'agent-default',
       networkPolicy: input.networkPolicy,
@@ -2047,7 +2044,7 @@ export class ForgeApplicationService {
       head: record.workspace.currentCommit,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
+      allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
     };
   }
 
@@ -2083,8 +2080,8 @@ export class ForgeApplicationService {
       operationId,
       workspaceRevision: record.workspace.revision,
       allowedNextActions: entry.completedAt
-        ? ['forge_process_get', 'forge_process_logs', 'forge_shell_exec']
-        : ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
+        ? ['forge_process_list', 'forge_process_logs', 'forge_shell']
+        : ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
     };
   }
 
@@ -2121,8 +2118,8 @@ export class ForgeApplicationService {
       filesystemCommitted: Boolean(entry?.checkpointAfter),
       workspaceRevision: record.workspace.revision,
       allowedNextActions: status === 'running' || status === 'starting'
-        ? ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
-        : ['forge_process_get', 'forge_shell_exec', 'forge_workspace_get']
+        ? ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
+        : ['forge_process_list', 'forge_shell', 'forge_workspace_get']
     };
   }
 
@@ -2153,7 +2150,7 @@ export class ForgeApplicationService {
       workspaceRevision: record.workspace.revision,
       allowedNextActions: merged.status === 'running' || merged.status === 'starting'
         ? ['forge_process_wait', 'forge_process_logs', 'forge_process_stop']
-        : ['forge_shell_exec', 'forge_workspace_get']
+        : ['forge_shell', 'forge_workspace_get']
     };
   }
 
@@ -2228,8 +2225,8 @@ export class ForgeApplicationService {
       dependencyState: dependencyStateView(record.dependencyState),
       workspaceRevision: record.workspace.revision,
       allowedNextActions: status === 'active'
-        ? ['forge_process_wait', 'forge_process_get', 'forge_process_logs']
-        : ['forge_workspace_get', 'forge_process_list', 'forge_shell_exec']
+        ? ['forge_process_wait', 'forge_process_list', 'forge_process_logs']
+        : ['forge_workspace_get', 'forge_process_list', 'forge_shell']
     };
   }
 
@@ -2281,7 +2278,7 @@ export class ForgeApplicationService {
       filesystemCommitted: Boolean(entry?.checkpointAfter),
       finalLogCursor: null,
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: ['forge_shell_exec', 'forge_workspace_get', 'forge_process_logs'],
+      allowedNextActions: ['forge_shell', 'forge_workspace_get', 'forge_process_logs'],
       next_step: 'Process finished. Continue with shell commands or forge_workspace_get.'
     };
   }
@@ -2317,7 +2314,7 @@ export class ForgeApplicationService {
       finalLogCursor: null,
       suggestedTimeoutMs,
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_get', 'forge_process_list'],
+      allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
       next_step: `Process ${processId} is still running after ${timeoutMs}ms. Retry forge_process_wait with timeout_ms >= ${suggestedTimeoutMs} (use 600000 for large installs). Do not restart the install.`
     };
   }
@@ -2375,7 +2372,7 @@ export class ForgeApplicationService {
       originalOperationId: operation.operationId,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell_exec']
+      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell']
     };
   }
 
@@ -2426,7 +2423,7 @@ export class ForgeApplicationService {
       originalOperationId: operation.operationId,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell_exec']
+      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell']
     };
   }
 
@@ -2855,7 +2852,7 @@ export class ForgeApplicationService {
       state = 'unknown';
       reason = 'git_lock_file_present';
       recommendedAction = blockingProcessId
-        ? `Wait for or cancel process ${blockingProcessId}, then retry forge_workspace_reconcile.`
+        ? `Wait for or cancel process ${blockingProcessId}, then retry forge_doctor.`
         : 'A Git lock file exists but no managed process is blocking. Remove stale lock files or retry.';
     } else if (!gitHeadReadable) {
       state = 'corrupted';
@@ -2997,7 +2994,7 @@ export class ForgeApplicationService {
         reusedActiveProcess: true,
         operationId: prior?.operationId ?? record.idempotency[input.idempotencyKey]?.operationId ?? ids.operation(),
         workspaceRevision: record.workspace.revision,
-        allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_get'],
+        allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
         next_step: `An install is already running as ${activeProcessId}. Call forge_process_wait with timeout_ms >= 600000 — do not start another install.`
       };
     }
@@ -3113,7 +3110,7 @@ export class ForgeApplicationService {
           installCommand,
           lockfileHashAfter,
           processId,
-          allowedNextActions: ['forge_workspace_reconcile', 'forge_dependencies_install', 'forge_workspace_get']
+          allowedNextActions: ['forge_doctor', 'forge_deps_install', 'forge_workspace_get']
         }
       });
     }
@@ -3145,10 +3142,10 @@ export class ForgeApplicationService {
       stderr: logs.data.slice(-2_000),
       stdout: logs.data.slice(0, 1_000),
       allowedNextActions: success
-        ? ['forge_shell_exec', 'forge_git_status', 'forge_workspace_get']
-        : ['forge_dependencies_install', 'forge_workspace_reconcile', 'forge_workspace_get'],
+        ? ['forge_shell', 'forge_git_status', 'forge_workspace_get']
+        : ['forge_deps_install', 'forge_doctor', 'forge_workspace_get'],
       next_step: success
-        ? 'Dependencies are usable. Continue with forge_shell_exec / validation.'
+        ? 'Dependencies are usable. Continue with forge_shell / validation.'
         : 'Dependency install failed. Inspect logs with forge_process_logs, then retry with a new idempotency key only if needed.'
     };
   }

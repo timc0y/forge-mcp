@@ -4,16 +4,34 @@ import { toForgeError } from '@forge/core';
 import type { ZodRawShape } from 'zod';
 
 const RETRY_SAFE_MUTATIONS = new Set([
-  'forge_workspace_create', 'forge_files_write', 'forge_files_patch', 'forge_shell_exec', 'forge_process_start', 'forge_process_stop', 'forge_process_cancel', 'forge_check_start', 'forge_check_cancel',
-  'forge_git_branch_create', 'forge_git_commit', 'forge_git_push', 'forge_preview_expose',
-  'forge_workspace_destroy', 'forge_work_export', 'forge_dependencies_install'
+  'forge_workspace_create',
+  'forge_files_write',
+  'forge_shell',
+  'forge_process_stop',
+  'forge_git_branch',
+  'forge_git_commit',
+  'forge_workspace_destroy',
+  'forge_deps_install',
+  'forge_preview_expose'
 ]);
+
 const TRUE_READS = new Set([
-  'forge_capabilities', 'forge_credential_list', 'forge_workspace_reconcile', 'forge_workspace_prove',
-  'forge_repository_list', 'forge_workspace_get', 'forge_files_tree', 'forge_files_read',
-  'forge_process_logs', 'forge_process_get', 'forge_process_list', 'forge_process_wait', 'forge_check_get', 'forge_git_status', 'forge_git_diff', 'forge_git_outgoing_diff',
-  'forge_operation_get', 'forge_operation_reconcile', 'forge_artifact_get', 'forge_task_get', 'forge_task_summary', 'forge_task_list', 'forge_task_handoff', 'forge_task_resume',
-  'forge_context_get', 'forge_context_pack', 'forge_diff_metadata', 'forge_workspace_reconcile', 'forge_workspace_prove'
+  'forge_capabilities',
+  'forge_doctor',
+  'forge_repository_list',
+  'forge_workspace_get',
+  'forge_files_list',
+  'forge_files_read',
+  'forge_process_logs',
+  'forge_process_list',
+  'forge_process_wait',
+  'forge_git_status',
+  'forge_git_diff',
+  'forge_operation_get',
+  'forge_artifact_get',
+  'forge_task_get',
+  'forge_task_list',
+  'forge_secret_list'
 ]);
 
 // Tools that reach the open world of arbitrary external URLs (not just the
@@ -24,40 +42,37 @@ const OPEN_WORLD = new Set([
 ]);
 
 // Short (<=64 char) ChatGPT status strings surfaced through result/tool _meta.
-// NOTE: these are adapter-side defaults. The per-tool source of truth should
-// move to ForgeToolDefinition in @forge/mcp-core (see report).
 interface ToolInvocationStatus { invoking: string; invoked: string }
 const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_review: { invoking: 'Capturing screenshots…', invoked: 'Screenshots ready' },
-  forge_review_capture: { invoking: 'Capturing review evidence…', invoked: 'Evidence captured' },
+  forge_preview: { invoking: 'Capturing preview…', invoked: 'Preview captured' },
+  forge_preview_expose: { invoking: 'Exposing preview…', invoked: 'Preview ready' },
   forge_workspace_create: { invoking: 'Creating workspace…', invoked: 'Workspace requested' },
   forge_workspace_get: { invoking: 'Checking workspace…', invoked: 'Workspace status ready' },
   forge_workspace_destroy: { invoking: 'Destroying workspace…', invoked: 'Workspace destroyed' },
-  forge_files_tree: { invoking: 'Listing files…', invoked: 'File tree ready' },
+  forge_files_list: { invoking: 'Listing files…', invoked: 'File list ready' },
   forge_files_read: { invoking: 'Reading files…', invoked: 'Files read' },
   forge_files_write: { invoking: 'Writing file…', invoked: 'File written' },
-  forge_files_patch: { invoking: 'Applying patch…', invoked: 'Patch applied' },
-  forge_shell_exec: { invoking: 'Running command…', invoked: 'Command finished' },
-  forge_process_start: { invoking: 'Starting process…', invoked: 'Process started' },
+  forge_shell: { invoking: 'Running command…', invoked: 'Command finished' },
   forge_process_logs: { invoking: 'Reading logs…', invoked: 'Logs ready' },
   forge_process_list: { invoking: 'Listing processes…', invoked: 'Process list ready' },
   forge_process_wait: { invoking: 'Waiting for process…', invoked: 'Process finished' },
+  forge_process_stop: { invoking: 'Stopping process…', invoked: 'Process stopped' },
   forge_operation_get: { invoking: 'Checking operation…', invoked: 'Operation status ready' },
-  forge_operation_reconcile: { invoking: 'Reconciling operation…', invoked: 'Operation reconciled' },
+  forge_doctor: { invoking: 'Running doctor…', invoked: 'Doctor report ready' },
   forge_git_status: { invoking: 'Reading Git status…', invoked: 'Git status ready' },
   forge_git_diff: { invoking: 'Reading Git diff…', invoked: 'Git diff ready' },
-  forge_git_outgoing_diff: { invoking: 'Inspecting outgoing change…', invoked: 'Outgoing diff ready' },
-  forge_git_branch_create: { invoking: 'Creating branch…', invoked: 'Branch created' },
+  forge_git_branch: { invoking: 'Creating branch…', invoked: 'Branch created' },
   forge_git_commit: { invoking: 'Committing changes…', invoked: 'Commit created' },
-  forge_git_push: { invoking: 'Pushing branch…', invoked: 'Branch pushed' },
-  forge_pull_request_create: { invoking: 'Opening pull request…', invoked: 'Pull request created' },
-  forge_preview_expose: { invoking: 'Exposing preview…', invoked: 'Preview ready' },
+  forge_submit: { invoking: 'Submitting for review…', invoked: 'Submitted for review' },
   forge_repository_list: { invoking: 'Listing repositories…', invoked: 'Repositories ready' },
   forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' },
-  forge_dependencies_install: { invoking: 'Installing dependencies…', invoked: 'Dependencies installed' },
-  forge_task_handoff: { invoking: 'Recording handoff…', invoked: 'Handoff recorded' },
-  forge_task_resume: { invoking: 'Resuming task…', invoked: 'Task resumed' },
-  forge_context_pack: { invoking: 'Packing context…', invoked: 'Context pack ready' }
+  forge_deps_install: { invoking: 'Installing dependencies…', invoked: 'Dependencies installed' },
+  forge_task_create: { invoking: 'Creating task…', invoked: 'Task created' },
+  forge_task_get: { invoking: 'Loading task…', invoked: 'Task ready' },
+  forge_task_update: { invoking: 'Updating task…', invoked: 'Task updated' },
+  forge_secret_create: { invoking: 'Saving secret…', invoked: 'Secret saved' },
+  forge_secret_attach: { invoking: 'Updating secret attach…', invoked: 'Secret attach updated' }
 };
 
 export function toolAnnotations(name: string, sideEffect: 'none' | 'workspace' | 'external' | 'destructive') {

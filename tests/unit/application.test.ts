@@ -1003,7 +1003,7 @@ describe('Forge application service', () => {
     });
   });
 
-  it('runs forge_dependencies_install via managed process wait + visibility finalize', async () => {
+  it('runs forge_deps_install via managed process wait + visibility finalize', async () => {
     const provider = new FakeProvider();
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);

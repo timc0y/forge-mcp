@@ -23,10 +23,10 @@ describe('ChatGPT failure-loop contracts', () => {
     expect(schema.next_step.safeParse('retry wait').success).toBe(true);
   });
 
-  it('dependencies_install returns processId quickly and steers process_wait', () => {
-    const install = tool('forge_dependencies_install');
+  it('deps_install returns processId quickly and steers process_wait', () => {
+    const install = tool('forge_deps_install');
     expect(install.description).toMatch(/processId/i);
-    expect(install.description).toMatch(/do not start a second install/i);
+    expect(install.description).toMatch(/Do not start a second install/i);
     const schema = install.outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
     expect(schema.status.safeParse('running').success).toBe(true);
     expect(schema.started.safeParse(true).success).toBe(true);
@@ -34,17 +34,17 @@ describe('ChatGPT failure-loop contracts', () => {
     expect(schema.next_step.safeParse('Call forge_process_wait').success).toBe(true);
   });
 
-  it('shell_exec exposes mode:read_only and process_start accepts approval_id', () => {
-    const shell = tool('forge_shell_exec').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+  it('shell exposes mode:read_only and async for long-running managed processes', () => {
+    const shell = tool('forge_shell').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
     expect(shell.mode.safeParse('read_only').success).toBe(true);
-    const start = tool('forge_process_start').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
-    expect(start.approval_id.safeParse('apr_test').success).toBe(true);
+    expect(shell.async.safeParse(true).success).toBe(true);
+    expect(shell.approval_id.safeParse('apr_test').success).toBe(true);
   });
 
-  it('operation reconcile tools exist for uncertain disconnect outcomes', () => {
+  it('operation get + process list exist for uncertain disconnect outcomes', () => {
     expect(tool('forge_operation_get').sideEffect).toBe('none');
-    expect(tool('forge_operation_reconcile').sideEffect).toBe('none');
     expect(tool('forge_process_list').sideEffect).toBe('none');
+    expect(forgeTools.some((entry) => entry.name === 'forge_operation_reconcile')).toBe(false);
   });
 
   it('dependencyState schema never accepts null (ChatGPT schema reject loop)', () => {
