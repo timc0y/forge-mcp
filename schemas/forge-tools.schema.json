@@ -474,7 +474,7 @@
     },
     "forge_workspace_create": {
       "title": "Create Forge workspace",
-      "description": "Create a disposable isolated workspace from an authorized repository. Forge verifies the requested runtime before reporting provisioning success; Node 24 is available only where the configured provider image reports Node 24.",
+      "description": "Create a disposable isolated workspace from an authorized repository. Forge verifies the requested runtime before reporting provisioning success; the maintained Sandbox image defaults to Node 24.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -511,7 +511,7 @@
             "type": "string"
           },
           "runtime": {
-            "default": "node-22",
+            "default": "node-24",
             "type": "string",
             "enum": [
               "node-22",

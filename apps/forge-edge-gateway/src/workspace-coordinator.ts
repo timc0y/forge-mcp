@@ -289,10 +289,13 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const value = await this.app.write(record, input, input.expectedRevision, input.idempotencyKey);
-      const checkpoint = await this.app.checkpoint(record, `write-${record.workspace.revision}`);
-      await this.save(record);
-      return { ...value, checkpoint };
+      try {
+        const value = await this.app.write(record, input, input.expectedRevision, input.idempotencyKey);
+        const checkpoint = await this.app.checkpoint(record, `write-${record.workspace.revision}`);
+        return { ...value, checkpoint };
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
@@ -303,15 +306,18 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const value = await this.app.patch(
-        record,
-        { patch: input.patch, cwd: '/workspace/repo' },
-        input.expectedRevision,
-        input.idempotencyKey
-      );
-      const checkpoint = await this.app.checkpoint(record, `patch-${record.workspace.revision}`);
-      await this.save(record);
-      return { ...value, checkpoint };
+      try {
+        const value = await this.app.patch(
+          record,
+          { patch: input.patch, cwd: '/workspace/repo' },
+          input.expectedRevision,
+          input.idempotencyKey
+        );
+        const checkpoint = await this.app.checkpoint(record, `patch-${record.workspace.revision}`);
+        return { ...value, checkpoint };
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
@@ -330,20 +336,23 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     const action = async () => {
       const record = await this.getRecord();
       const before = record.workspace.revision;
-      const value = await this.app.exec(record, {
-        command: input.command,
-        cwd: input.cwd,
-        timeoutMs: input.timeoutMs,
-        environment: input.environment,
-        networkPolicy: input.networkPolicy,
-        outputLimitBytes: input.outputLimitBytes,
-        expectedRevision: input.expectedRevision,
-        idempotencyKey: input.idempotencyKey,
-        approved: input.approved
-      });
-      const checkpoint = value.classification === 'read_only' ? undefined : await this.app.checkpoint(record, `shell-${record.workspace.revision}`);
-      if (record.workspace.revision !== before) await this.save(record);
-      return checkpoint ? { ...value, checkpoint } : value;
+      try {
+        const value = await this.app.exec(record, {
+          command: input.command,
+          cwd: input.cwd,
+          timeoutMs: input.timeoutMs,
+          environment: input.environment,
+          networkPolicy: input.networkPolicy,
+          outputLimitBytes: input.outputLimitBytes,
+          expectedRevision: input.expectedRevision,
+          idempotencyKey: input.idempotencyKey,
+          approved: input.approved
+        });
+        const checkpoint = value.classification === 'read_only' ? undefined : await this.app.checkpoint(record, `shell-${record.workspace.revision}`);
+        return checkpoint ? { ...value, checkpoint } : value;
+      } finally {
+        if (record.workspace.revision !== before) await this.save(record);
+      }
     };
     return decisionRequiresSerialization ? this.serializeMutation(action) : action();
   }
@@ -444,9 +453,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async restoreCheckpoint(input: { snapshotId: string; expectedRevision?: number }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const value = await this.app.restoreCheckpoint(record, input.snapshotId as Parameters<ForgeApplicationService['restoreCheckpoint']>[1], input.expectedRevision);
-      await this.save(record);
-      return value;
+      try {
+        return await this.app.restoreCheckpoint(record, input.snapshotId as Parameters<ForgeApplicationService['restoreCheckpoint']>[1], input.expectedRevision);
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
@@ -461,22 +472,28 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async gitBranchCreate(input: { branch: string; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      await this.app.reconcileGitState(record);
-      const value = await this.app.gitBranchCreate(record, input.branch, input.expectedRevision, input.idempotencyKey);
-      const checkpoint = await this.app.checkpoint(record, `branch-${record.workspace.currentBranch ?? record.workspace.revision}`);
-      await this.save(record);
-      return { ...value, checkpoint };
+      try {
+        await this.app.reconcileGitState(record);
+        const value = await this.app.gitBranchCreate(record, input.branch, input.expectedRevision, input.idempotencyKey);
+        const checkpoint = await this.app.checkpoint(record, `branch-${record.workspace.currentBranch ?? record.workspace.revision}`);
+        return { ...value, checkpoint };
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
   async gitCommit(input: { message: string; paths: string[]; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      await this.app.reconcileGitState(record);
-      const value = await this.app.gitCommit(record, input);
-      const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
-      await this.save(record);
-      return { ...value, checkpoint };
+      try {
+        await this.app.reconcileGitState(record);
+        const value = await this.app.gitCommit(record, input);
+        const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
+        return { ...value, checkpoint };
+      } finally {
+        await this.save(record);
+      }
     });
   }
 

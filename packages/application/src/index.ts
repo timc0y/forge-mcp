@@ -15,6 +15,7 @@ import {
 import { assertCommandAllowed, classifyCommand } from '@forge/policy';
 import { detectProject, type ProjectDetection } from '@forge/project-detection';
 import type {
+  CreateSandboxInput,
   ExecInput,
   FileReadInput,
   FileWriteInput,
@@ -489,16 +490,30 @@ export class ForgeApplicationService {
     const snapshot = record.snapshots[snapshotId];
     if (!snapshot) throw new ForgeError({ code: 'FORGE_SNAPSHOT_INCOMPATIBLE', message: 'The requested workspace checkpoint is unavailable.', retryable: false, details: { snapshotId } });
     if (record.workspace.state === 'ready' || record.workspace.state === 'busy') await this.assertDestroySafe(record);
-    record.workspace.state = 'restoring';
-    record.workspace.revision = nextRevision(record.workspace.revision, expectedRevision);
-    record.workspace.updatedAt = new Date().toISOString();
-    await this.sandboxProvider.destroy(record.providerId).catch(() => undefined);
-    await this.sandboxProvider.restore(snapshot, {
+    const rollback = await this.sandboxProvider.snapshot(record.providerId, {
+      name: `rollback-before-${snapshotId}`,
+      ttlSeconds: 7 * 24 * 60 * 60,
+      excludeGitignored: false
+    });
+    record.snapshots[rollback.id] = rollback;
+    const restoreInput: CreateSandboxInput = {
       providerId: record.providerId,
       runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
       labels: { workspaceId: record.workspace.id, tenantId: record.workspace.tenantId, repository: repositorySlug(record.workspace.repository) },
       idleTimeout: '90s'
-    });
+    };
+    record.workspace.state = 'restoring';
+    record.workspace.revision = nextRevision(record.workspace.revision, expectedRevision);
+    record.workspace.updatedAt = new Date().toISOString();
+    try {
+      await this.sandboxProvider.destroy(record.providerId);
+      await this.sandboxProvider.restore(snapshot, restoreInput);
+    } catch (error) {
+      const recovered = await this.sandboxProvider.restore(rollback, restoreInput).then(() => true).catch(() => false);
+      record.workspace.state = recovered ? 'ready' : 'failed';
+      record.workspace.updatedAt = new Date().toISOString();
+      throw new ForgeError({ code: 'FORGE_SNAPSHOT_INCOMPATIBLE', message: recovered ? 'Forge could not restore the requested checkpoint; the previous workspace snapshot was recovered.' : 'Forge could not restore the requested checkpoint or recover the previous workspace snapshot.', retryable: recovered, details: { snapshotId, rollbackSnapshotId: rollback.id, recovered, cause: error instanceof Error ? error.message : String(error) } });
+    }
     record.processes = {};
     record.previews = {};
     record.workspace.activeSnapshotId = snapshotId;
@@ -824,7 +839,7 @@ export class ForgeApplicationService {
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 200_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (changed.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not enumerate workspace changes.', retryable: false });
+    if (changed.exitCode !== 0 || changed.truncated) throw new ForgeError({ code: 'FORGE_OUTPUT_TRUNCATED', message: 'Forge could not completely enumerate workspace changes.', retryable: false, details: { truncated: changed.truncated } });
     const changedPaths = [...new Set(changed.stdout.split('\0').filter(Boolean))];
     return {
       workspaceId: record.workspace.id,
@@ -882,7 +897,7 @@ export class ForgeApplicationService {
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 1_000_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not calculate the worktree state.', retryable: false });
+    if (result.exitCode !== 0 || result.truncated) throw new ForgeError({ code: 'FORGE_OUTPUT_TRUNCATED', message: 'Forge could not calculate a complete worktree state.', retryable: false, details: { truncated: result.truncated } });
     const untrackedFiles = await this.untrackedFiles(record);
     return { diff: result.stdout, untrackedFiles, hash: await sha256Text(JSON.stringify({ diff: result.stdout, untrackedFiles })) };
   }
@@ -899,7 +914,7 @@ export class ForgeApplicationService {
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 1_000_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (outgoing.exitCode !== 0) throw new ForgeError({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED', message: 'Forge could not prove the outgoing Git state against the immutable base.', retryable: false, details: { baseCommit } });
+    if (outgoing.exitCode !== 0 || outgoing.truncated) throw new ForgeError({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED', message: 'Forge could not prove the complete outgoing Git state against the immutable base.', retryable: false, details: { baseCommit, truncated: outgoing.truncated } });
     const marker = '\n__FORGE_DIFF__\n';
     const separator = outgoing.stdout.indexOf(marker);
     if (separator < 0) throw new ForgeError({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED', message: 'Forge received an incomplete Git proof response.', retryable: false });
@@ -972,6 +987,22 @@ export class ForgeApplicationService {
         details: { clean: status.clean, sync: status.sync }
       });
     }
+    await this.assertRemoteRef(record, await this.handle(record));
+  }
+
+  private async assertRemoteRef(record: WorkspaceRuntimeRecord, handle: SandboxHandle): Promise<void> {
+    const branch = record.workspace.lastPushedBranch;
+    const commit = record.workspace.lastPushedCommit;
+    if (!branch || !commit) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Forge cannot prove a remote branch without a recorded pushed branch and commit.', retryable: false });
+    const remote = await handle.exec({
+      command: `git ls-remote --exit-code origin ${quoted(`refs/heads/${branch}`)}`,
+      cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 10_000,
+      sessionId: 'system', networkPolicy: 'development'
+    });
+    const remoteCommit = remote.stdout.trim().split(/\s+/u)[0] ?? '';
+    if (remote.exitCode !== 0 || remote.truncated || remoteCommit !== commit) {
+      throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Forge will not destroy a workspace until the remote branch is proven to resolve to the recorded pushed commit.', retryable: false, details: { branch, expectedCommit: commit, observedRemoteCommit: remoteCommit || null, truncated: remote.truncated, stderr: remote.stderr.slice(0, 2_000) } });
+    }
   }
 
   async gitBranchCreate(
@@ -1041,7 +1072,7 @@ export class ForgeApplicationService {
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 1_000_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not calculate the outgoing change.', retryable: false });
+    if (result.exitCode !== 0 || result.truncated) throw new ForgeError({ code: 'FORGE_OUTPUT_TRUNCATED', message: 'Forge could not calculate a complete outgoing change for approval.', retryable: false, details: { truncated: result.truncated } });
     return { diff: result.stdout, diffHash: await sha256Text(result.stdout), branch: record.workspace.currentBranch, baseRef: base, baseCommit: immutableBase };
   }
 
@@ -1140,6 +1171,7 @@ export class ForgeApplicationService {
         details: { currentCommit: currentCommit ?? null, currentBranch: currentBranch ?? null, dirty, lastPushedCommit: record.workspace.lastPushedCommit ?? null, lastPushedBranch: record.workspace.lastPushedBranch ?? null }
       });
     }
+    await this.assertRemoteRef(record, handle);
     for (const preview of Object.values(record.previews)) {
       await handle.revokePort(preview.port).catch(() => undefined);
     }

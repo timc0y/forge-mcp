@@ -42,6 +42,9 @@ class FakeProvider implements SandboxProvider {
       if (input.command === 'git status --porcelain=v2 --branch') {
         return { exitCode: 0, stdout: '# branch.head main\n', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
+      if (input.command.startsWith('git ls-remote --exit-code origin ')) {
+        return { exitCode: 0, stdout: `${this.head}\trefs/heads/main\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+      }
       if (input.command.startsWith('sha256sum -- ')) {
         const path = input.command.match(/'([^']+)'$/u)?.[1] ?? '';
         const content = this.files.get(path) ?? '';
