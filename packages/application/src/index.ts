@@ -609,9 +609,18 @@ export class ForgeApplicationService {
       const hasCheckout = scaffold.entries.some((entry) => entry.path === '/workspace/repo/.git' || entry.path.startsWith('/workspace/repo/.git/'));
       const hasFileLikeContent = scaffold.entries.some((entry) => entry.type === 'file' || entry.type === 'symlink');
       if (!hasCheckout && !hasFileLikeContent) return { state: 'mount_missing' };
-      return { state: 'unavailable', diagnostic: { code: 'FORGE_WORKSPACE_MARKER_MISSING', operation: 'workspace_scaffold_probe' } };
+      // `readFile()` can transiently miss a file that is visible through the
+      // restored FUSE overlay. A real checkout is never part of the base image,
+      // so only in that narrow case continue to the independent shell marker
+      // check below. Any other residual file-like content remains ambiguous and
+      // is deliberately fail-closed.
+      if (!hasCheckout) {
+        return { state: 'unavailable', diagnostic: { code: 'FORGE_WORKSPACE_MARKER_MISSING', operation: 'workspace_scaffold_probe' } };
+      }
     }
-    if (markerFile.truncated) return { state: 'unavailable', diagnostic: { code: 'FORGE_OUTPUT_TRUNCATED', operation: 'workspace_marker_read' } };
+    if (!('error' in markerFile) && markerFile.truncated) {
+      return { state: 'unavailable', diagnostic: { code: 'FORGE_OUTPUT_TRUNCATED', operation: 'workspace_marker_read' } };
+    }
     const marker = await handle.exec({
       command: `test "$(cat /workspace/forge/workspace-id 2>/dev/null)" = ${quoted(record.workspace.id)} && test -d /workspace/repo/.git`,
       cwd: '/workspace',
