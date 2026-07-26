@@ -383,7 +383,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
 
 export class CloudflareSandboxProvider implements SandboxProvider {
   readonly kind = 'cloudflare' as const;
-  readonly version = '0.12.3';
+  readonly version = '0.12.4';
 
   constructor(private readonly env: CloudflareSandboxEnv) {}
 
