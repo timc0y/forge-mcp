@@ -315,20 +315,29 @@ export default {
         const missingSecrets = Object.entries(requiredSecrets)
           .filter(([, present]) => !present)
           .map(([name]) => name);
+        const backupConfiguration = Boolean(
+          env.BACKUP_BUCKET_NAME?.trim() && env.CLOUDFLARE_ACCOUNT_ID?.trim()
+        );
         const [database] = await Promise.all([
           env.METADATA.prepare('SELECT 1 AS ok').first<{ ok: number }>(),
           env.ARTIFACTS.list({ limit: 1 }),
           env.BACKUP_BUCKET.list({ limit: 1 })
         ]);
-        const ready = database?.ok === 1 && missingSecrets.length === 0;
+        const ready = database?.ok === 1 && missingSecrets.length === 0 && backupConfiguration;
         return json({
           ok: ready,
           service: 'forge-edge-gateway',
           environment: env.FORGE_ENVIRONMENT,
           bindings: { metadata: 'ready', artifacts: 'ready', backups: 'ready', browser: 'configured', sandbox: 'configured' },
-          recovery: missingSecrets.length === 0
-            ? { state: 'configured' }
-            : { state: 'blocked', missing: missingSecrets }
+          recovery: ready
+            ? { state: 'configured', verified: false }
+            : {
+                state: 'blocked',
+                missing: [
+                  ...missingSecrets,
+                  ...(backupConfiguration ? [] : ['backupConfiguration'])
+                ]
+              }
         }, ready ? 200 : 503);
       }
       if (

@@ -13,7 +13,11 @@ class FakeProvider implements SandboxProvider {
   readonly calls: string[] = [];
   readonly files = new Map<string, string>();
   head = 'abcdef';
+  branch = 'main';
   workspacePresent = true;
+  workspaceMarkerPresent = true;
+  workspaceProbeFails = false;
+  worktreeDiff = '';
   readonly handle: SandboxHandle = {
     providerId: 'fake',
     exec: async (input) => {
@@ -35,15 +39,24 @@ class FakeProvider implements SandboxProvider {
         return { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.startsWith('git rev-parse')) {
-        return { exitCode: 0, stdout: `${this.head}\nmain\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+        return { exitCode: 0, stdout: `${this.head}\n${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+      }
+      if (input.command === 'test ! -e /workspace/repo && test ! -e /workspace/forge/workspace-id') {
+        if (this.workspaceProbeFails) throw new Error('sandbox probe timed out');
+        return this.workspacePresent
+          ? { exitCode: 1, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] }
+          : { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.includes('/workspace/forge/workspace-id')) {
-        return this.workspacePresent
-          ? { exitCode: 0, stdout: `${this.head}\nmain\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] }
+        return this.workspacePresent && this.workspaceMarkerPresent
+          ? { exitCode: 0, stdout: `${this.head}\n${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] }
           : { exitCode: 1, stdout: '', stderr: 'workspace mount is unavailable', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.startsWith('git status --porcelain=v2 --branch &&')) {
         return { exitCode: 0, stdout: `# branch.head main\n${this.head}\nmain\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+      }
+      if (input.command === 'git diff --no-ext-diff --binary && git diff --cached --no-ext-diff --binary') {
+        return { exitCode: 0, stdout: this.worktreeDiff, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command === 'git status --porcelain=v2 --branch') {
         return { exitCode: 0, stdout: '# branch.head main\n', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
@@ -93,7 +106,7 @@ class FakeProvider implements SandboxProvider {
   async resume() { return this.handle; }
   async destroy() { this.calls.push('destroy'); }
   async snapshot() { return { id: ids.snapshot(), providerSnapshotId: 'snapshot', providerVersion: this.version, createdAt: new Date().toISOString() }; }
-  async restore() { this.calls.push('restore'); this.workspacePresent = true; return this.handle; }
+  async restore() { this.calls.push('restore'); this.workspacePresent = true; this.workspaceMarkerPresent = true; return this.handle; }
 }
 
 function initialized(service: ForgeApplicationService): WorkspaceRuntimeRecord {
@@ -152,6 +165,69 @@ describe('Forge application service', () => {
     expect(provider.calls).toContain('restore');
     expect(record.processes).toEqual({});
     expect(record.previews).toEqual({});
+  });
+
+  it('never restores over a workspace whose marker is missing but repository mount remains', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    await service.provisionWorkspace(record, false);
+    provider.workspaceMarkerPresent = false;
+
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .rejects.toMatchObject({ code: 'FORGE_PROVIDER_UNAVAILABLE' });
+    expect(provider.calls).not.toContain('restore');
+  });
+
+  it('never restores when the workspace probe itself is unavailable', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    await service.provisionWorkspace(record, false);
+    provider.workspaceProbeFails = true;
+
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .rejects.toMatchObject({ code: 'FORGE_PROVIDER_UNAVAILABLE' });
+    expect(provider.calls).not.toContain('restore');
+  });
+
+  it('never restores over a live Git divergence', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    await service.provisionWorkspace(record, false);
+    provider.head = 'different-commit';
+
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .rejects.toMatchObject({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED' });
+    expect(provider.calls).not.toContain('restore');
+  });
+
+  it('rejects a restored filesystem that does not match its checkpoint manifest', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    await service.provisionWorkspace(record, false);
+    provider.workspacePresent = false;
+    provider.worktreeDiff = 'diff --git a/file b/file\n';
+
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .rejects.toMatchObject({ code: 'FORGE_SNAPSHOT_INCOMPATIBLE' });
+    expect(provider.calls).toContain('restore');
+  });
+
+  it('keeps a detached checkout distinct from a checked-out branch', async () => {
+    const provider = new FakeProvider();
+    provider.branch = '';
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    record.workspace.requestedRef = 'v1.0.0';
+
+    await service.provisionWorkspace(record, false);
+    expect(record.workspace.currentBranch).toBeUndefined();
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .resolves.toMatchObject({ entries: [] });
+    expect(provider.calls).not.toContain('restore');
   });
 
   it('keeps retryable provisioning failures non-terminal until retries are exhausted', async () => {
@@ -218,7 +294,9 @@ describe('Forge application service', () => {
     record.workspace.state = 'ready';
     const checkpoint = await service.checkpoint(record, 'before-submit');
     expect(record.workspace.activeSnapshotId).toBe(checkpoint.snapshotId);
-    expect(record.snapshots[checkpoint.snapshotId]).toBeDefined();
+    expect(record.snapshots[checkpoint.snapshotId]).toMatchObject({
+      manifest: { commit: 'abcdef', branch: 'main' }
+    });
   });
 
   it('restores a checkpoint only when newer local work is safe', async () => {
@@ -244,8 +322,8 @@ describe('Forge application service', () => {
     record.workspace.lastPushedBranch = 'main';
     const checkpoint = await service.checkpoint(record);
     provider.head = 'new-local-commit';
-    await expect(service.restoreCheckpoint(record, checkpoint.snapshotId)).rejects.toMatchObject({ code: 'FORGE_GIT_PUSH_BLOCKED' });
-    expect(record.workspace.currentCommit).toBe('new-local-commit');
+    await expect(service.restoreCheckpoint(record, checkpoint.snapshotId)).rejects.toMatchObject({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED' });
+    expect(record.lastGitDivergence).toMatchObject({ observedCommit: 'new-local-commit', observedBranch: 'main' });
   });
 
   it('turns a long-running validation into a durable check with a process handle', async () => {

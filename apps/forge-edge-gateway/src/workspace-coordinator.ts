@@ -59,6 +59,24 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     ]);
   }
 
+  private async readWithRecovery<T>(action: (record: WorkspaceRuntimeRecord) => Promise<T>): Promise<T> {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const revision = record.workspace.revision;
+      const updatedAt = record.workspace.updatedAt;
+      const divergenceAt = record.lastGitDivergence?.observedAt;
+      try {
+        return await action(record);
+      } finally {
+        if (
+          record.workspace.revision !== revision ||
+          record.workspace.updatedAt !== updatedAt ||
+          record.lastGitDivergence?.observedAt !== divergenceAt
+        ) await this.save(record);
+      }
+    });
+  }
+
   async acquireLease(input: {
     holder: string;
     ttlSeconds: number;
@@ -232,8 +250,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async getState() {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
+    return this.readWithRecovery(async (record) => {
       if (['ready', 'busy'].includes(record.workspace.state) && await this.app.reconcileGitState(record)) await this.save(record);
       const lease = await this.ctx.storage.get<MutationLease>(LEASE_KEY);
       return {
@@ -268,7 +285,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async filesTree(input: { path: string; depth: number; limit: number }) {
-    return this.app.tree(await this.getRecord(), input);
+    return this.readWithRecovery((record) => this.app.tree(record, input));
   }
 
   async filesRead(input: {
@@ -277,7 +294,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     endLine?: number;
     maxBytes: number;
   }) {
-    return this.app.read(await this.getRecord(), input);
+    return this.readWithRecovery((record) => this.app.read(record, input));
   }
 
   async filesWrite(input: {
@@ -374,15 +391,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async processLogs(input: { processId: ProcessId; cursor?: string }) {
-    return this.app.processLogs(
-      await this.getRecord(),
-      input.processId,
-      input.cursor
-    );
+    return this.readWithRecovery((record) => this.app.processLogs(record, input.processId, input.cursor));
   }
 
   async processGet(input: { processId: ProcessId }) {
-    return this.app.processGet(await this.getRecord(), input.processId);
+    return this.readWithRecovery((record) => this.app.processGet(record, input.processId));
   }
 
   async processStop(input: { processId: ProcessId; expectedRevision?: number; idempotencyKey: string }) {
@@ -412,13 +425,12 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async checkGet(input: { processId: ProcessId }) {
-    return this.app.checkGet(await this.getRecord(), input.processId);
+    return this.readWithRecovery((record) => this.app.checkGet(record, input.processId));
   }
 
   async gitStatus() {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      if (await this.app.reconcileGitState(record)) await this.save(record);
+    return this.readWithRecovery(async (record) => {
+      await this.app.reconcileGitState(record);
       return this.app.gitStatus(record);
     });
   }
@@ -462,9 +474,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async gitDiff(input: { staged: boolean }) {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      if (await this.app.reconcileGitState(record)) await this.save(record);
+    return this.readWithRecovery(async (record) => {
+      await this.app.reconcileGitState(record);
       return this.app.gitDiff(record, input.staged);
     });
   }
@@ -498,9 +509,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async gitOutgoingDiff(input: { base: string }) {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      if (await this.app.reconcileGitState(record)) await this.save(record);
+    return this.readWithRecovery(async (record) => {
+      await this.app.reconcileGitState(record);
       return this.app.gitOutgoingDiff(record, input.base);
     });
   }
