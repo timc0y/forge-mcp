@@ -86,9 +86,7 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
     case 'killed': return 'stopped';
     default: return 'exited';
   }
-}
-
-class CloudflareSandboxHandle implements SandboxHandle {
+}class CloudflareSandboxHandle implements SandboxHandle {
   constructor(readonly providerId: string, private readonly sandbox: Sandbox) {}
 
   private async session(id: string, cwd = ROOT): Promise<ExecutionSession> {
@@ -184,7 +182,9 @@ class CloudflareSandboxHandle implements SandboxHandle {
         command: process.command,
         cwd: input.cwd,
         status: mapProcessStatus(process.status),
-        pid: process.pid
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        mutatesFilesystem: false
       };
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'startProcess');
@@ -195,13 +195,18 @@ class CloudflareSandboxHandle implements SandboxHandle {
     try {
       const process = await this.sandbox.getProcess(processId);
       if (!process) return null;
+      const status = mapProcessStatus(process.status);
+      const isTerminal = status === 'exited' || status === 'failed' || status === 'stopped';
       return {
         id: processId,
         providerProcessId: process.id,
         command: process.command,
         cwd: REPO,
-        status: mapProcessStatus(process.status),
-        pid: process.pid
+        status,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        mutatesFilesystem: false,
+        ...(isTerminal ? { completedAt: new Date().toISOString(), exitCode: process.exitCode ?? 0 } : {})
       };
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'getProcess');
@@ -234,6 +239,87 @@ class CloudflareSandboxHandle implements SandboxHandle {
       if (process) await process.kill('SIGTERM');
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'stopProcess');
+    }
+  }
+
+  async processWait(input: { processId: ProcessId; timeoutMs?: number }): Promise<ProcessRecord> {
+    try {
+      const process = await this.sandbox.getProcess(input.processId);
+      if (!process) {
+        return {
+          id: input.processId,
+          providerProcessId: input.processId,
+          command: '',
+          cwd: REPO,
+          status: 'failed',
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          exitCode: 1,
+          mutatesFilesystem: false
+        };
+      }
+      const timeoutMs = input.timeoutMs ?? 120_000;
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const status = mapProcessStatus(process.status);
+        if (status !== 'running' && status !== 'starting') {
+          return {
+            id: input.processId,
+            providerProcessId: process.id,
+            command: process.command,
+            cwd: REPO,
+            status,
+            pid: process.pid,
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            exitCode: process.exitCode ?? 0,
+            mutatesFilesystem: false
+          };
+        }
+        if (Date.now() >= deadline) {
+          await process.kill('SIGKILL');
+          return {
+            id: input.processId,
+            providerProcessId: process.id,
+            command: process.command,
+            cwd: REPO,
+            status: 'cancelled',
+            pid: process.pid,
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            exitCode: 124,
+            mutatesFilesystem: false
+          };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    } catch (error) {
+      throw mapCloudflareSandboxError(error, 'processWait');
+    }
+  }
+
+  async processCancel(processId: ProcessId): Promise<ProcessRecord> {
+    try {
+      const process = await this.sandbox.getProcess(processId);
+      if (process) {
+        await process.kill('SIGTERM');
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        try { await process.kill('SIGKILL'); } catch {}
+      }
+      return {
+        id: processId,
+        providerProcessId: process?.id ?? processId,
+        command: process?.command ?? '',
+        cwd: REPO,
+        status: 'cancelled',
+        pid: process?.pid,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        exitCode: 124,
+        mutatesFilesystem: false
+      };
+    } catch (error) {
+      throw mapCloudflareSandboxError(error, 'processCancel');
     }
   }
 

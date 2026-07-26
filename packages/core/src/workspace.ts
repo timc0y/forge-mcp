@@ -96,4 +96,13 @@ export interface WorkspaceMutationResult<T> {
   value: T;
   workspaceRevision: number;
   operationId: string;
+  /** Why the workspace revision changed, for optimistic concurrency transparency. */
+  revisionChange?: {
+    from: number;
+    to: number;
+    reason: 'checkpoint_created' | 'mutation_applied' | 'process_state_changed' | 'state_transition' | 'recovery';
+    filesystemChanged: boolean;
+    gitChanged: boolean;
+    processStateChanged: boolean;
+  };
 }

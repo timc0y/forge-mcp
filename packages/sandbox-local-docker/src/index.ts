@@ -225,6 +225,7 @@ class LocalDockerHandle implements SandboxHandle {
     const processDir = '/workspace/forge/processes';
     const log = `${processDir}/${input.processId}.log`;
     const pid = `${processDir}/${input.processId}.pid`;
+    const startedAt = new Date().toISOString();
     const command = `mkdir -p ${processDir}; setsid /bin/sh -lc ${JSON.stringify(input.command)} > ${log} 2>&1 < /dev/null & echo $! > ${pid}`;
     const result = await run('docker', [
       ...this.dockerExecArgs({
@@ -238,7 +239,7 @@ class LocalDockerHandle implements SandboxHandle {
     if (result.exitCode !== 0) throw new Error(result.stderr || 'Failed to start process.');
     const detail = await this.getProcess(input.processId);
     if (!detail) throw new Error('Process did not start.');
-    return detail;
+    return { ...detail, startedAt };
   }
 
   async getProcess(id: ProcessId): Promise<ProcessRecord | null> {
@@ -251,13 +252,18 @@ class LocalDockerHandle implements SandboxHandle {
     ]);
     if (result.exitCode !== 0 || !result.stdout.includes(':')) return null;
     const [status, rawPid] = result.stdout.trim().split(':');
+    const pid = Number(rawPid);
+    const isRunning = status === 'running';
     return {
       id,
       providerProcessId: id,
       command: '',
       cwd: '/workspace/repo',
-      status: status === 'running' ? 'running' : 'exited',
-      pid: Number(rawPid)
+      status: isRunning ? 'running' : 'exited',
+      pid,
+      startedAt: new Date().toISOString(),
+      mutatesFilesystem: false,
+      ...(isRunning ? {} : { completedAt: new Date().toISOString(), exitCode: 0 })
     };
   }
 
@@ -288,6 +294,60 @@ class LocalDockerHandle implements SandboxHandle {
       '-lc',
       `test -f ${pidFile} && kill -TERM -- -$(cat ${pidFile}) 2>/dev/null || true`
     ]);
+  }
+
+  async processWait(input: { processId: ProcessId; timeoutMs?: number }): Promise<ProcessRecord> {
+    const { processId, timeoutMs = 120_000 } = input;
+    const pidFile = `/workspace/forge/processes/${processId}.pid`;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const record = await this.getProcess(processId);
+      if (!record) {
+        return {
+          id: processId,
+          providerProcessId: processId,
+          command: '',
+          cwd: '/workspace/repo',
+          status: 'failed',
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          exitCode: 1,
+          mutatesFilesystem: false
+        };
+      }
+      if (record.status === 'running') {
+        if (Date.now() >= deadline) {
+          await this.processCancel(processId);
+          return { ...record, status: 'cancelled', completedAt: new Date().toISOString(), exitCode: 124, mutatesFilesystem: false };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
+      }
+      return record;
+    }
+  }
+
+  async processCancel(processId: ProcessId): Promise<ProcessRecord> {
+    const pidFile = `/workspace/forge/processes/${processId}.pid`;
+    const result = await run('docker', [
+      ...this.dockerExecArgs({ cwd: '/workspace' }),
+      '/bin/sh',
+      '-lc',
+      `if test -f ${pidFile}; then pid=$(cat ${pidFile}); kill -TERM -- -"$pid" 2>/dev/null; sleep 1; kill -KILL -- -"$pid" 2>/dev/null; rm -f ${pidFile}; echo cancelled; else echo already_exited; fi`
+    ]);
+    const existing = await this.getProcess(processId);
+    return {
+      id: processId,
+      providerProcessId: processId,
+      command: existing?.command ?? '',
+      cwd: existing?.cwd ?? '/workspace/repo',
+      status: 'cancelled',
+      startedAt: existing?.startedAt ?? new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      exitCode: 124,
+      mutatesFilesystem: existing?.mutatesFilesystem ?? false,
+      pid: existing?.pid
+    };
   }
 
   async readFile(input: FileReadInput): Promise<FileReadResult> {

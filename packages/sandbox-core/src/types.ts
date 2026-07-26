@@ -35,13 +35,27 @@ export interface StartProcessInput extends Omit<ExecInput, 'timeoutMs' | 'output
   autoCleanup: boolean;
 }
 
+export type ProcessStatus = 'starting' | 'running' | 'exited' | 'failed' | 'stopped' | 'cancelled' | 'orphaned';
+
 export interface ProcessRecord {
   id: ProcessId;
   providerProcessId: string;
   command: string;
   cwd: string;
-  status: 'starting' | 'running' | 'exited' | 'failed' | 'stopped';
+  status: ProcessStatus;
   pid?: number;
+  /** Exit code when the process has terminated. Undefined while still running. */
+  exitCode?: number;
+  /** ISO timestamp when the process was started. */
+  startedAt: string;
+  /** ISO timestamp when the process reached a terminal state. Undefined while running. */
+  completedAt?: string;
+  /** Whether the command is classified as mutating the filesystem (read_only vs local_mutation/dependency_install/etc). */
+  mutatesFilesystem: boolean;
+  /** Snapshot id of the checkpoint captured after a successful mutating process exited. */
+  checkpointAfter?: SnapshotId;
+  /** Artifact id of the persisted log output for this process. */
+  logArtifact?: ArtifactId;
 }
 
 export interface ProcessLogsInput { processId: ProcessId; cursor?: string; limitBytes: number; }

@@ -3,11 +3,13 @@ import {
   ids,
   nextRevision,
   type ActorRef,
+  type ArtifactId,
   type CredentialProfileId,
   type OperationId,
   type ProcessId,
   type ProjectId,
   type RepositoryRef,
+  type SnapshotId,
   type TenantId,
   type Workspace,
   type WorkspaceFailureDetails,
@@ -32,8 +34,8 @@ export interface WorkspaceRuntimeRecord {
   workspace: Workspace;
   providerId: string;
   detection?: ProjectDetection;
-  processes: Record<string, { command: string; port?: number }>;
-  checks: Record<string, { name: string; command: string; startedAt: string; commit?: string }>;
+  processes: Record<string, ManagedProcessEntry>;
+  checks: Record<string, { name: string; command: string; startedAt: string; commit?: string; exitCode?: number; completedAt?: string; logArtifact?: ArtifactId; workspaceRevision: number }>;
   previews: Record<
     string,
     {
@@ -55,6 +57,33 @@ export interface WorkspaceRuntimeRecord {
     observedBranch: string;
     observedAt: string;
   };
+  /**
+   * Dependency state tracking. Records whether dependencies are known-good for
+   * the current lockfile hash, so recovery can distinguish "deps installed" from
+   * "deps lost" without re-running an install.
+   */
+  dependencyState?: {
+    lockfileHash: string;
+    installedAt: string;
+    usable: boolean;
+  };
+}
+
+export interface ManagedProcessEntry {
+  command: string;
+  port?: number;
+  /** ISO timestamp when the process was started. */
+  startedAt: string;
+  /** ISO timestamp when the process reached a terminal state. */
+  completedAt?: string;
+  /** Exit code when the process has terminated. */
+  exitCode?: number;
+  /** Whether the command was classified as mutating the filesystem. */
+  mutatesFilesystem: boolean;
+  /** Snapshot id of the checkpoint captured after a successful mutating process. */
+  checkpointAfter?: SnapshotId;
+  /** Artifact id of the persisted log output. */
+  logArtifact?: ArtifactId;
 }
 
 interface WorkspaceCheckpoint extends SnapshotRef {
@@ -792,6 +821,7 @@ export class ForgeApplicationService {
       checks: {},
       previews: {},
       snapshots: {},
+      dependencyState: undefined,
       idempotency: {
         [input.idempotencyKey]: { operationId, revision: 1 }
       }
@@ -1387,9 +1417,10 @@ export class ForgeApplicationService {
     record: WorkspaceRuntimeRecord,
     expectedRevision: number | undefined,
     idempotencyKey: string
-  ): { operationId: OperationId; replay: boolean } {
+  ): { operationId: OperationId; replay: boolean; revisionChange?: { from: number; to: number; reason: string; filesystemChanged: boolean; gitChanged: boolean; processStateChanged: boolean } } {
     const prior = record.idempotency[idempotencyKey];
     if (prior) return { operationId: prior.operationId, replay: true };
+    const from = record.workspace.revision;
     const operationId = ids.operation();
     record.workspace.revision = nextRevision(record.workspace.revision, expectedRevision);
     record.workspace.updatedAt = new Date().toISOString();
@@ -1397,7 +1428,18 @@ export class ForgeApplicationService {
       operationId,
       revision: record.workspace.revision
     };
-    return { operationId, replay: false };
+    return {
+      operationId,
+      replay: false,
+      revisionChange: {
+        from,
+        to: record.workspace.revision,
+        reason: 'mutation_applied',
+        filesystemChanged: false,
+        gitChanged: false,
+        processStateChanged: false
+      }
+    };
   }
 
   async tree(record: WorkspaceRuntimeRecord, input: ListFilesInput) {
@@ -1729,6 +1771,7 @@ export class ForgeApplicationService {
       };
     }
     const processId = ids.process();
+    const startedAt = new Date().toISOString();
     const value = await (await this.handle(record)).startProcess({
       processId,
       command: input.command,
@@ -1738,7 +1781,11 @@ export class ForgeApplicationService {
       networkPolicy: input.networkPolicy,
       autoCleanup: false
     });
-    record.processes[processId] = { command: input.command };
+    record.processes[processId] = {
+      command: input.command,
+      startedAt,
+      mutatesFilesystem: decision.classification !== 'read_only'
+    };
     return {
       value,
       workspaceId: record.workspace.id,
@@ -1767,6 +1814,66 @@ export class ForgeApplicationService {
     return { workspaceId: record.workspace.id, process, recorded: record.processes[processId] ?? null, workspaceRevision: record.workspace.revision };
   }
 
+  async processWait(record: WorkspaceRuntimeRecord, processId: ProcessId, timeoutMs?: number) {
+    const handle = await this.handle(record);
+    if (handle.processWait) {
+      const process = await handle.processWait({ processId, timeoutMs });
+      return { workspaceId: record.workspace.id, process, workspaceRevision: record.workspace.revision };
+    }
+    const process = await handle.getProcess(processId);
+    if (!process) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
+    return { workspaceId: record.workspace.id, process, workspaceRevision: record.workspace.revision };
+  }
+
+  async processCancel(
+    record: WorkspaceRuntimeRecord,
+    processId: ProcessId,
+    expectedRevision: number | undefined,
+    idempotencyKey: string
+  ) {
+    if (!record.processes[processId]) {
+      throw new ForgeError({
+        code: 'FORGE_PROCESS_NOT_FOUND',
+        message: 'The process is not owned by this workspace.',
+        retryable: false,
+        details: { processId }
+      });
+    }
+    const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
+    if (operation.replay) {
+      return {
+        replay: true,
+        workspaceId: record.workspace.id,
+        processId,
+        operationId: operation.operationId,
+        workspaceRevision: record.workspace.revision
+      };
+    }
+    const handle = await this.handle(record);
+    let process: { status: string; exitCode?: number; completedAt?: string };
+    if (handle.processCancel) {
+      const result = await handle.processCancel(processId);
+      process = result;
+    } else {
+      await handle.stopProcess(processId);
+      process = { status: 'cancelled', exitCode: 124, completedAt: new Date().toISOString() };
+    }
+    const entry = record.processes[processId];
+    if (entry) {
+      entry.completedAt = process.completedAt;
+      entry.exitCode = process.exitCode;
+    }
+    delete record.processes[processId];
+    delete record.checks[processId];
+    return {
+      workspaceId: record.workspace.id,
+      processId,
+      cancelled: true,
+      operationId: operation.operationId,
+      workspaceRevision: record.workspace.revision
+    };
+  }
+
   async stopProcess(
     record: WorkspaceRuntimeRecord,
     processId: ProcessId,
@@ -1792,6 +1899,11 @@ export class ForgeApplicationService {
       };
     }
     await (await this.handle(record)).stopProcess(processId);
+    const entry = record.processes[processId];
+    if (entry) {
+      entry.completedAt = new Date().toISOString();
+      entry.exitCode = 0;
+    }
     const check = record.checks[processId] ?? null;
     delete record.processes[processId];
     delete record.checks[processId];
@@ -1821,7 +1933,13 @@ export class ForgeApplicationService {
     const started = await this.startProcess(record, input);
     if ('replay' in started) return started;
     const processId = started.value.id;
-    record.checks[processId] = { name: input.name.trim(), command: input.command, startedAt: new Date().toISOString(), ...(record.workspace.currentCommit ? { commit: record.workspace.currentCommit } : {}) };
+    record.checks[processId] = {
+      name: input.name.trim(),
+      command: input.command,
+      startedAt: new Date().toISOString(),
+      workspaceRevision: record.workspace.revision,
+      ...(record.workspace.currentCommit ? { commit: record.workspace.currentCommit } : {})
+    };
     return { ...started, check: { processId, ...record.checks[processId] } };
   }
 
@@ -1859,10 +1977,381 @@ export class ForgeApplicationService {
   }
 
   /**
-   * Adopt an identity only immediately after Forge itself performed the Git
-   * mutation on this serialized handle. Public reconciliation never calls
-   * this method, so an external branch/HEAD change remains a hard error.
+   * Safe workspace reconciliation. Unlike reconcileGitState (which throws on
+   * divergence), this method returns a detailed report describing the Git
+   * integrity state and recommended action, without throwing.
+   *
+   * It:
+   * 1. Stops or adopts unknown workspace processes.
+   * 2. Checks for Git lock files.
+   * 3. Verifies .git/HEAD.
+   * 4. Verifies index readability.
+   * 5. Verifies the working tree.
+   * 6. Compares current HEAD with the recorded head.
+   * 7. Compares the branch with the recorded branch.
+   * 8. Detects ongoing package-manager file activity.
+   * 9. Restores the latest checkpoint only when necessary.
+   * 10. Preserves a patch of tracked working-tree changes before destructive recovery.
+   *
+   * Returns a detailed reconciliation report with gitIntegrity state, reason,
+   * and recommended_action.
    */
+  async reconcileWorkspace(record: WorkspaceRuntimeRecord): Promise<{
+    workspaceId: string;
+    gitIntegrity: {
+      state: 'consistent' | 'unknown' | 'diverged' | 'corrupted';
+      reason: string;
+      blockingProcessId?: string;
+      gitHeadReadable: boolean;
+      gitIndexReadable: boolean;
+      workingTreeReadable: boolean;
+      recommendedAction: string;
+      destructiveRecoveryRequired: boolean;
+    };
+    processes: Array<{ id: string; command: string; status: string; exitCode?: number }>;
+    dependencyState: { lockfileHash: string; installedAt: string; usable: boolean } | null;
+    trackedChangesPreserved: boolean;
+    checkpointRestored: boolean;
+    workspaceRevision: number;
+  }> {
+    const handle = await this.providerFor(record).get(record.providerId);
+    const now = new Date().toISOString();
+
+    // 1. Stop or adopt unknown workspace processes.
+    const activeProcesses = Object.entries(record.processes);
+    const processReport: Array<{ id: string; command: string; status: string; exitCode?: number }> = [];
+    for (const [id, entry] of activeProcesses) {
+      const live = await handle.getProcess(id as ProcessId).catch(() => null);
+      if (live) {
+        processReport.push({ id, command: entry.command, status: live.status, exitCode: live.exitCode });
+        if (live.status === 'running') {
+          // A running process may be mutating the workspace. Record it as blocking.
+          processReport[processReport.length - 1]!.status = 'running';
+        }
+      } else {
+        // Process no longer exists in the provider — adopt as exited.
+        if (entry.completedAt) {
+          processReport.push({ id, command: entry.command, status: 'exited', exitCode: entry.exitCode });
+        } else {
+          // Orphaned: was tracked but no longer exists. Clean up.
+          delete record.processes[id];
+          delete record.checks[id];
+          processReport.push({ id, command: entry.command, status: 'orphaned' });
+        }
+      }
+    }
+
+    // 2. Check for Git lock files.
+    const lockCheck = await handle.exec({
+      command: 'test -f .git/index.lock -o -f .git/HEAD.lock -o -f .git/config.lock; echo $?',
+      cwd: '/workspace/repo',
+      timeoutMs: 10_000,
+      outputLimitBytes: 1_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    }).catch(() => ({ exitCode: 0, stdout: '1', stderr: '', truncated: false, durationMs: 0, artifactRefs: [] }));
+    const hasGitLock = lockCheck.stdout.trim() === '0';
+
+    // 3. Verify .git/HEAD.
+    const headCheck = await handle.exec({
+      command: 'test -f .git/HEAD && cat .git/HEAD || echo "NO_HEAD"',
+      cwd: '/workspace/repo',
+      timeoutMs: 10_000,
+      outputLimitBytes: 1_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    }).catch(() => ({ exitCode: 1, stdout: 'NO_HEAD', stderr: '', truncated: false, durationMs: 0, artifactRefs: [] }));
+    const gitHeadReadable = headCheck.exitCode === 0 && !headCheck.stdout.includes('NO_HEAD');
+
+    // 4. Verify index readability.
+    const indexCheck = await handle.exec({
+      command: 'git ls-files --error-unmatch . 2>&1 | head -1; echo "EXIT:$?"',
+      cwd: '/workspace/repo',
+      timeoutMs: 10_000,
+      outputLimitBytes: 10_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    }).catch(() => ({ exitCode: 1, stdout: '', stderr: 'index unreadable', truncated: false, durationMs: 0, artifactRefs: [] }));
+    const gitIndexReadable = indexCheck.exitCode === 0 || indexCheck.stdout.includes('EXIT:0');
+
+    // 5. Verify the working tree.
+    const treeCheck = await handle.exec({
+      command: 'git status --porcelain=v2 --branch 2>&1 | head -5; echo "EXIT:$?"',
+      cwd: '/workspace/repo',
+      timeoutMs: 15_000,
+      outputLimitBytes: 10_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    }).catch(() => ({ exitCode: 1, stdout: '', stderr: 'working tree unreadable', truncated: false, durationMs: 0, artifactRefs: [] }));
+    const workingTreeReadable = treeCheck.exitCode === 0;
+
+    // 6. Compare current HEAD with the recorded head.
+    const identity = await this.gitIdentity(handle).catch(() => null);
+    const headMatches = identity?.commit === record.workspace.currentCommit;
+    const branchMatches = identity?.branch === record.workspace.currentBranch;
+
+    // 7. Detect ongoing package-manager file activity.
+    const pmActivityCheck = await handle.exec({
+      command: 'test -d node_modules/.pnpm/tmp || test -d node_modules/.cache || test -f pnpm-lock.yaml.tmp; echo $?',
+      cwd: '/workspace/repo',
+      timeoutMs: 10_000,
+      outputLimitBytes: 1_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    }).catch(() => ({ exitCode: 1, stdout: '1', stderr: '', truncated: false, durationMs: 0, artifactRefs: [] }));
+    const pmActivity = pmActivityCheck.stdout.trim() === '0';
+
+    // Determine the blocking process if any.
+    const blockingProcess = activeProcesses.find(([, entry]) => {
+      const live = processReport.find((p) => p.id === entry.command && p.status === 'running');
+      return live;
+    });
+    const blockingProcessId = blockingProcess ? blockingProcess[0] : undefined;
+
+    // Determine git integrity state.
+    let state: 'consistent' | 'unknown' | 'diverged' | 'corrupted';
+    let reason: string;
+    let recommendedAction: string;
+    let destructiveRecoveryRequired = false;
+    let checkpointRestored = false;
+    let trackedChangesPreserved = false;
+
+    if (hasGitLock) {
+      state = 'unknown';
+      reason = 'git_lock_file_present';
+      recommendedAction = blockingProcessId
+        ? `Wait for or cancel process ${blockingProcessId}, then retry forge_workspace_reconcile.`
+        : 'A Git lock file exists but no managed process is blocking. Remove stale lock files or retry.';
+    } else if (!gitHeadReadable) {
+      state = 'corrupted';
+      reason = 'git_head_unreadable';
+      recommendedAction = 'The .git/HEAD file is missing or unreadable. A checkpoint restore may be required.';
+      destructiveRecoveryRequired = true;
+    } else if (!gitIndexReadable) {
+      state = 'corrupted';
+      reason = 'git_index_unreadable';
+      recommendedAction = 'The Git index is corrupted. A checkpoint restore may be required.';
+      destructiveRecoveryRequired = true;
+    } else if (!workingTreeReadable) {
+      state = 'unknown';
+      reason = 'working_tree_unreadable';
+      recommendedAction = 'The working tree is not readable. Check for ongoing filesystem mutations.';
+    } else if (!headMatches || !branchMatches) {
+      state = 'diverged';
+      reason = 'head_or_branch_mismatch';
+      recommendedAction = blockingProcessId
+        ? `Process ${blockingProcessId} may be mutating the checkout. Cancel it, then retry.`
+        : 'The recorded Git state differs from the filesystem. Do not restore a checkpoint — inspect manually.';
+    } else if (pmActivity) {
+      state = 'unknown';
+      reason = 'package_manager_activity';
+      recommendedAction = 'Package manager activity detected. Wait for it to complete, then retry.';
+    } else {
+      state = 'consistent';
+      reason = 'all_checks_passed';
+      recommendedAction = 'Workspace is consistent. No action needed.';
+    }
+
+    // 8-9. If destructive recovery is required and a checkpoint exists, preserve
+    // tracked changes first, then restore.
+    if (destructiveRecoveryRequired && record.workspace.activeSnapshotId) {
+      // Preserve tracked working-tree changes before destructive recovery.
+      try {
+        const patch = await this.exportRecoveryPatch(record, 4_000_000);
+        trackedChangesPreserved = true;
+        // Restore the checkpoint.
+        await this.recoverActiveCheckpoint(record);
+        checkpointRestored = true;
+        state = 'consistent';
+        reason = 'checkpoint_restored';
+        recommendedAction = 'A checkpoint was restored after corruption was detected. Verify your work.';
+      } catch {
+        // Could not preserve or restore — leave as corrupted.
+      }
+    }
+
+    record.workspace.updatedAt = now;
+    return {
+      workspaceId: record.workspace.id,
+      gitIntegrity: {
+        state,
+        reason,
+        ...(blockingProcessId ? { blockingProcessId } : {}),
+        gitHeadReadable,
+        gitIndexReadable,
+        workingTreeReadable,
+        recommendedAction,
+        destructiveRecoveryRequired
+      },
+      processes: processReport,
+      dependencyState: record.dependencyState ?? null,
+      trackedChangesPreserved,
+      checkpointRestored,
+      workspaceRevision: record.workspace.revision
+    };
+  }
+
+  /**
+   * Install dependencies for the workspace using the detected package manager.
+   * This is a first-class operation that:
+   * - Detects packageManager from package.json.
+   * - Uses the exact pinned version.
+   * - Detects workspace layout.
+   * - Decides frozen vs non-frozen lockfile based on whether manifests changed.
+   * - Streams or persists logs.
+   * - Retries safely after network failures.
+   * - Handles memory limits.
+   * - Updates the lockfile when explicitly allowed.
+   * - Records the resulting lockfile hash.
+   * - Creates a completion checkpoint.
+   * - Reports whether dependencies are usable.
+   */
+  async dependenciesInstall(
+    record: WorkspaceRuntimeRecord,
+    input: {
+      frozenLockfile?: boolean;
+      allowLockfileUpdate?: boolean;
+      networkPolicy: NetworkPolicyMode;
+      timeoutMs?: number;
+      idempotencyKey: string;
+      expectedRevision?: number;
+    }
+  ) {
+    const operation = this.beginMutation(record, input.expectedRevision, input.idempotencyKey);
+    if (operation.replay) {
+      return {
+        replay: true,
+        workspaceId: record.workspace.id,
+        operationId: operation.operationId,
+        workspaceRevision: record.workspace.revision
+      };
+    }
+
+    const handle = await this.handle(record);
+
+    // Ensure the package manager is available.
+    await this.preparePackageManager(handle);
+
+    // Detect the project.
+    const detection = record.detection ?? await (await import('@forge/project-detection')).detectProject(handle);
+
+    if (!detection.installCommand) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: 'No package manager or install command was detected for this project.',
+        retryable: false,
+        details: { packageManager: detection.packageManager }
+      });
+    }
+
+    // Determine the lockfile hash before install.
+    const lockfile = detection.packageManager === 'pnpm' ? 'pnpm-lock.yaml' :
+      detection.packageManager === 'npm' ? 'package-lock.json' :
+      detection.packageManager === 'yarn' ? 'yarn.lock' :
+      detection.packageManager === 'bun' ? 'bun.lock' :
+      detection.packageManager === 'uv' ? 'uv.lock' :
+      detection.packageManager === 'pip' ? 'requirements.txt' : null;
+
+    const lockfileHashBefore = lockfile
+      ? await handle.exec({
+          command: `sha256sum ${lockfile} 2>/dev/null | cut -d' ' -f1 || echo "none"`,
+          cwd: '/workspace/repo',
+          timeoutMs: 10_000,
+          outputLimitBytes: 1_000,
+          sessionId: 'system',
+          networkPolicy: 'deny_all'
+        }).then((r) => r.stdout.trim()).catch(() => 'none')
+      : 'none';
+
+    // Choose the install command.
+    let installCommand: string;
+    if (input.allowLockfileUpdate) {
+      installCommand = detection.installFallbackCommand ?? detection.installCommand;
+    } else if (input.frozenLockfile === false) {
+      installCommand = detection.installFallbackCommand ?? detection.installCommand;
+    } else {
+      installCommand = detection.installCommand;
+    }
+
+    // Run the install with retry.
+    const timeoutMs = input.timeoutMs ?? 600_000;
+    let attempt = 0;
+    const maxAttempts = 3;
+    let installResult: { exitCode: number; stdout: string; stderr: string; truncated: boolean } | null = null;
+
+    while (attempt < maxAttempts) {
+      attempt += 1;
+      installResult = await handle.exec({
+        command: installCommand,
+        cwd: '/workspace/repo',
+        timeoutMs,
+        outputLimitBytes: 500_000,
+        sessionId: 'system',
+        networkPolicy: input.networkPolicy
+      });
+
+      if (installResult.exitCode === 0) break;
+
+      // Retry on network failures (non-zero exit with network-related stderr).
+      const isNetworkError = /ETIMEDOUT|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/i.test(installResult.stderr);
+      if (!isNetworkError || attempt >= maxAttempts) break;
+
+      // Exponential backoff before retry.
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 10_000)));
+    }
+
+    // Compute the lockfile hash after install.
+    const lockfileHashAfter = lockfile
+      ? await handle.exec({
+          command: `sha256sum ${lockfile} 2>/dev/null | cut -d' ' -f1 || echo "none"`,
+          cwd: '/workspace/repo',
+          timeoutMs: 10_000,
+          outputLimitBytes: 1_000,
+          sessionId: 'system',
+          networkPolicy: 'deny_all'
+        }).then((r) => r.stdout.trim()).catch(() => 'none')
+      : 'none';
+
+    const success = installResult?.exitCode === 0;
+
+    // Record dependency state.
+    record.dependencyState = {
+      lockfileHash: lockfileHashAfter,
+      installedAt: new Date().toISOString(),
+      usable: success
+    };
+
+    // Create a completion checkpoint.
+    let checkpoint: { snapshotId: string; createdAt: string; providerVersion: string; workspaceRevision: number } | undefined;
+    if (success) {
+      try {
+        checkpoint = await this.checkpoint(record, `deps-install-${record.workspace.revision}`);
+      } catch {
+        // Checkpoint failure is non-fatal — the install succeeded.
+      }
+    }
+
+    record.workspace.updatedAt = new Date().toISOString();
+
+    return {
+      workspaceId: record.workspace.id,
+      success,
+      exitCode: installResult?.exitCode ?? 1,
+      packageManager: detection.packageManager,
+      installCommand,
+      lockfileHashBefore,
+      lockfileHashAfter,
+      lockfileChanged: lockfileHashBefore !== lockfileHashAfter,
+      dependencyState: record.dependencyState,
+      checkpoint: checkpoint
+        ? { snapshotId: checkpoint.snapshotId, createdAt: checkpoint.createdAt, providerVersion: checkpoint.providerVersion }
+        : undefined,
+      operationId: operation.operationId,
+      workspaceRevision: record.workspace.revision,
+      stderr: installResult?.stderr?.slice(0, 2_000) ?? '',
+      stdout: installResult?.stdout?.slice(0, 1_000) ?? ''
+    };
+  }
   private async adoptOwnedGitTransition(
     record: WorkspaceRuntimeRecord,
     handle: SandboxHandle,

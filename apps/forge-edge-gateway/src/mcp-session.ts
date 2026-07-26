@@ -799,13 +799,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_workspace_reconcile: async (input) => {
         const identity = this.identity();
         const workspace = await authorizedCoordinator(env, identity, text(input.workspace_id));
-        const status = await workspace.gitStatus();
-        return {
-          ...asRecord(status),
-          recovery: status.sync.state === 'pushed'
-            ? 'Current Forge commit is recorded as pushed.'
-            : 'Current Forge commit has not been recorded as pushed. Inspect the outgoing diff, then request a push approval.'
-        };
+        return asRecord(await workspace.reconcile());
       },
       forge_workspace_prove: async (input) => {
         const identity = this.identity();
@@ -1619,6 +1613,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           idempotencyKey: text(input.idempotency_key)
         }));
       },
+      forge_process_wait: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processWait({
+          processId: text(input.process_id) as ProcessId,
+          timeoutMs: optionalNumber(input.timeout_ms) ?? 120_000
+        }));
+      },
+      forge_process_cancel: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processCancel({
+          processId: text(input.process_id) as ProcessId,
+          expectedRevision: optionalNumber(input.expected_revision),
+          idempotencyKey: text(input.idempotency_key)
+        }));
+      },
       forge_check_start: async (input) => {
         const identity = this.identity();
         const workspaceId = text(input.workspace_id);
@@ -1643,6 +1652,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: text(input.idempotency_key)
         }));
+      },
+      forge_dependencies_install: async (input) => {
+        const identity = this.identity();
+        const workspaceId = text(input.workspace_id);
+        const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
+        const environment = { ...attached.vars };
+        const coordinator = await authorizedCoordinator(env, identity, workspaceId);
+        const result = await coordinator.dependenciesInstall({
+          frozenLockfile: Boolean(input.frozen_lockfile),
+          allowLockfileUpdate: Boolean(input.allow_lockfile_update),
+          networkPolicy: text(input.network_policy) as never,
+          timeoutMs: optionalNumber(input.timeout_ms) ?? 600_000,
+          expectedRevision: optionalNumber(input.expected_revision),
+          idempotencyKey: idempotency(input.idempotency_key)
+        });
+        return asRecord(result);
       },
       forge_git_status: async (input) => {
         const identity = this.identity();

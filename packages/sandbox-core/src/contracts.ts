@@ -40,6 +40,16 @@ export interface SandboxHandle {
   getProcess(processId: ProcessId): Promise<ProcessRecord | null>;
   readProcessLogs(input: ProcessLogsInput): Promise<ProcessLogsResult>;
   stopProcess(processId: ProcessId): Promise<void>;
+  /**
+   * Wait for a managed process to reach a terminal state, or reject on timeout.
+   * Returns the final ProcessRecord. Does not throw if the process already exited.
+   */
+  processWait?(input: { processId: ProcessId; timeoutMs?: number }): Promise<ProcessRecord>;
+  /**
+   * Cancel (SIGTERM then SIGKILL) a managed process. Returns the final
+   * ProcessRecord with status 'cancelled'. No-op if the process already exited.
+   */
+  processCancel?(processId: ProcessId): Promise<ProcessRecord>;
   readFile(input: FileReadInput): Promise<FileReadResult>;
   writeFile(input: FileWriteInput): Promise<FileWriteResult>;
   applyPatch(input: PatchInput): Promise<PatchResult>;

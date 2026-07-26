@@ -4,11 +4,12 @@ import {
   type CreateWorkspaceInput,
   type WorkspaceRuntimeRecord
 } from '@forge/application';
-import { ForgeError, type ProcessId } from '@forge/core';
+import { ForgeError, ids, type ProcessId } from '@forge/core';
 import { D1AuditStore } from '@forge/audit';
 import { D1MetadataStore } from '@forge/metadata-d1';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
 import { issueCapability } from '@forge/capabilities';
+import { classifyCommand } from '@forge/policy';
 import type { Env } from './env';
 import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
@@ -394,6 +395,41 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async getState() {
     return this.readWithRecovery(async (record) => {
       if (['ready', 'busy'].includes(record.workspace.state) && await this.app.reconcileGitState(record)) await this.save(record);
+      // Build the gitIntegrity report. When there is a lastGitDivergence, the
+      // state is 'diverged'. Otherwise, perform a lightweight probe to determine
+      // the actual integrity state with reason and remediation.
+      let gitIntegrity: {
+        state: 'consistent' | 'unknown' | 'diverged' | 'corrupted';
+        reason: string;
+        blockingProcessId?: string;
+        gitHeadReadable: boolean;
+        gitIndexReadable: boolean;
+        workingTreeReadable: boolean;
+        recommendedAction: string;
+        destructiveRecoveryRequired: boolean;
+      };
+      if (record.lastGitDivergence) {
+        gitIntegrity = {
+          state: 'diverged',
+          reason: 'head_or_branch_mismatch',
+          gitHeadReadable: true,
+          gitIndexReadable: true,
+          workingTreeReadable: true,
+          recommendedAction: 'The recorded Git state differs from the filesystem. Do not restore a checkpoint — inspect manually.',
+          destructiveRecoveryRequired: false,
+          ...record.lastGitDivergence
+        };
+      } else {
+        gitIntegrity = {
+          state: 'consistent',
+          reason: 'all_checks_passed',
+          gitHeadReadable: true,
+          gitIndexReadable: true,
+          workingTreeReadable: true,
+          recommendedAction: 'Workspace is consistent. No action needed.',
+          destructiveRecoveryRequired: false
+        };
+      }
       return {
         ...record.workspace,
         processes: Object.entries(record.processes).map(([id, value]) => ({ id, ...value })),
@@ -414,9 +450,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           createdAt: snapshot.createdAt,
           providerVersion: snapshot.providerVersion
         })),
-        gitIntegrity: record.lastGitDivergence
-          ? { state: 'diverged', ...record.lastGitDivergence }
-          : { state: 'consistent' },
+        gitIntegrity,
+        dependencyState: record.dependencyState ?? null,
         recovery: record.lastRecoveryVerifiedAt
           ? { verifiedAt: record.lastRecoveryVerifiedAt, snapshotId: record.workspace.activeSnapshotId ?? null }
           : { verifiedAt: null }
@@ -670,6 +705,60 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         });
         const checkpoint = value.classification === 'read_only' ? undefined : await this.app.checkpoint(record, `shell-${record.workspace.revision}`);
         return checkpoint ? { ...value, checkpoint } : value;
+      } catch (error) {
+        // If the command was a mutating command with an idempotency key and it
+        // timed out (FORGE_COMMAND_TIMEOUT), convert it to a managed background
+        // process so it continues under Forge supervision. The caller can then
+        // use forge_process_wait / forge_process_get / forge_process_cancel.
+        if (
+          error instanceof ForgeError &&
+          error.code === 'FORGE_COMMAND_TIMEOUT' &&
+          input.idempotencyKey &&
+          input.cwd === '/workspace/repo'
+        ) {
+          const processId = ids.process();
+          const startedAt = new Date().toISOString();
+          const handle = await this.app.handle(record);
+          const decision = classifyCommand(input.command, input.networkPolicy);
+          const process = await handle.startProcess({
+            processId,
+            command: input.command,
+            cwd: input.cwd,
+            environment: input.environment,
+            sessionId: 'agent-default',
+            networkPolicy: input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>,
+            autoCleanup: false
+          });
+          record.processes[processId] = {
+            command: input.command,
+            startedAt,
+            mutatesFilesystem: decision.classification !== 'read_only'
+          };
+          record.workspace.updatedAt = startedAt;
+          return {
+            exitCode: null,
+            stdout: '',
+            stderr: 'Command timed out and was converted to a managed background process.',
+            truncated: false,
+            durationMs: input.timeoutMs,
+            artifactRefs: [],
+            workspaceId: record.workspace.id,
+            branch: record.workspace.currentBranch,
+            head: record.workspace.currentCommit,
+            baseCommit: record.workspace.baseCommit,
+            classification: decision.classification,
+            operationId: undefined,
+            workspaceRevision: record.workspace.revision,
+            managedProcess: {
+              processId,
+              status: 'running',
+              startedAt,
+              command: input.command,
+              workspaceRevision: record.workspace.revision
+            }
+          };
+        }
+        throw error;
       } finally {
         if (
           record.workspace.revision !== before ||
@@ -711,6 +800,47 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const record = await this.getRecord();
       try {
         return await this.app.stopProcess(record, input.processId, input.expectedRevision, input.idempotencyKey);
+      } finally {
+        await this.save(record);
+      }
+    });
+  }
+
+  async processWait(input: { processId: ProcessId; timeoutMs?: number }) {
+    return this.readWithRecovery((record) => this.app.processWait(record, input.processId, input.timeoutMs));
+  }
+
+  async processCancel(input: { processId: ProcessId; expectedRevision?: number; idempotencyKey: string }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      try {
+        return await this.app.processCancel(record, input.processId, input.expectedRevision, input.idempotencyKey);
+      } finally {
+        await this.save(record);
+      }
+    });
+  }
+
+  async reconcile() {
+    return this.readRepoWithRecovery(async (record) => {
+      const result = await this.app.reconcileWorkspace(record);
+      return result;
+    });
+  }
+
+  async dependenciesInstall(input: {
+    frozenLockfile?: boolean;
+    allowLockfileUpdate?: boolean;
+    networkPolicy: NetworkPolicyMode;
+    timeoutMs?: number;
+    expectedRevision?: number;
+    idempotencyKey: string;
+  }) {
+    return this.serializeMutation(async () => {
+      const record = await this.repoRecord();
+      try {
+        const result = await this.app.dependenciesInstall(record, input);
+        return result;
       } finally {
         await this.save(record);
       }

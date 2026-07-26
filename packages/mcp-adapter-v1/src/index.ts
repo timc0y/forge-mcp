@@ -4,14 +4,14 @@ import { toForgeError } from '@forge/core';
 import type { ZodRawShape } from 'zod';
 
 const RETRY_SAFE_MUTATIONS = new Set([
-  'forge_workspace_create', 'forge_files_write', 'forge_files_patch', 'forge_shell_exec', 'forge_process_start', 'forge_process_stop', 'forge_check_start', 'forge_check_cancel',
+  'forge_workspace_create', 'forge_files_write', 'forge_files_patch', 'forge_shell_exec', 'forge_process_start', 'forge_process_stop', 'forge_process_cancel', 'forge_check_start', 'forge_check_cancel',
   'forge_git_branch_create', 'forge_git_commit', 'forge_git_push', 'forge_preview_expose',
-  'forge_workspace_destroy', 'forge_work_export'
+  'forge_workspace_destroy', 'forge_work_export', 'forge_dependencies_install'
 ]);
 const TRUE_READS = new Set([
   'forge_capabilities', 'forge_credential_list', 'forge_workspace_reconcile', 'forge_workspace_prove',
   'forge_repository_list', 'forge_workspace_get', 'forge_files_tree', 'forge_files_read',
-  'forge_process_logs', 'forge_process_get', 'forge_check_get', 'forge_git_status', 'forge_git_diff', 'forge_git_outgoing_diff',
+  'forge_process_logs', 'forge_process_get', 'forge_process_wait', 'forge_check_get', 'forge_git_status', 'forge_git_diff', 'forge_git_outgoing_diff',
   'forge_artifact_get', 'forge_task_get', 'forge_task_summary', 'forge_task_list',
   'forge_context_get', 'forge_diff_metadata'
 ]);
@@ -40,6 +40,7 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_shell_exec: { invoking: 'Running command…', invoked: 'Command finished' },
   forge_process_start: { invoking: 'Starting process…', invoked: 'Process started' },
   forge_process_logs: { invoking: 'Reading logs…', invoked: 'Logs ready' },
+  forge_process_wait: { invoking: 'Waiting for process…', invoked: 'Process finished' },
   forge_git_status: { invoking: 'Reading Git status…', invoked: 'Git status ready' },
   forge_git_diff: { invoking: 'Reading Git diff…', invoked: 'Git diff ready' },
   forge_git_outgoing_diff: { invoking: 'Inspecting outgoing change…', invoked: 'Outgoing diff ready' },
@@ -49,7 +50,8 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_pull_request_create: { invoking: 'Opening pull request…', invoked: 'Pull request created' },
   forge_preview_expose: { invoking: 'Exposing preview…', invoked: 'Preview ready' },
   forge_repository_list: { invoking: 'Listing repositories…', invoked: 'Repositories ready' },
-  forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' }
+  forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' },
+  forge_dependencies_install: { invoking: 'Installing dependencies…', invoked: 'Dependencies installed' }
 };
 
 export function toolAnnotations(name: string, sideEffect: 'none' | 'workspace' | 'external' | 'destructive') {
