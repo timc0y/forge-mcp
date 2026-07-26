@@ -24,8 +24,10 @@ A task is a persistent coding-session record; none of these tools start a contai
 | Tool | Approval | Description |
 | --- | --- | --- |
 | `forge_task_start` | none | Create a durable coding-session record that survives MCP reconnects, context compression, and container sleep. Call first for any coherent piece of work; attach a workspace later only when execution is needed. |
-| `forge_task_get` | none | Return the full durable task record: branch, workspace, previews, files read/changed, checks, evidence ids. |
-| `forge_task_summary` | none | Return a compact reconnect summary (goal, decisions, non-goals, state, files, checks, evidence, outstanding work, next recommended action) so a fresh turn can resume without replaying the session. |
+| `forge_task_get` | none | Return the full durable task record: branch, workspace, previews, files read/changed, checks, evidence ids. Supports `compact: true` for tight context. |
+| `forge_task_summary` | none | Return a compact reconnect summary (goal, decisions, non-goals, state, files, checks, evidence, outstanding work, next recommended action) so a fresh turn can resume without replaying the session. Supports `compact: true`. |
+| `forge_task_handoff` | none | Record structured handoff notes (`summary`, `next_steps`, `key_learnings`, `modified_files`, `blocked_by`) on a task so another agent or a fresh ChatGPT session can pick up work without context loss. |
+| `forge_task_resume` | none | Single-turn recovery for a fresh ChatGPT chat session or new agent. Returns task goal, workspace state, latest Git diff summary, checks, and handoff notes in one response. |
 | `forge_task_list` | none | List recent durable tasks for the account, most-recently-updated first, optionally filtered by state. |
 | `forge_task_finish` | none | Move a task to a terminal state (`complete` / `failed` / `cancelled`). The record and its evidence stay retrievable afterwards. |
 
@@ -44,6 +46,7 @@ Deterministic, model-free tools — no embeddings, syntax-only analysis.
 | Tool | Approval | Description |
 | --- | --- | --- |
 | `forge_context_get` | none | Rank the most relevant repository files for a goal deterministically. Returns paths with reasons, governing instructions, adjacent tests, and package context — never file contents; the client decides what to read. |
+| `forge_context_pack` | none | Extract and pack essential file signatures, exports, instructions, and path context into a single token-optimized context block for ChatGPT turn initialization. Container-free. |
 | `forge_diff_metadata` | none | Summarize the outgoing diff: changed files, additions/deletions, changed exports, tests, config, migrations, possible secret exposure, risk areas, suggested hunks, and targeted verification suggestions. Syntax-only — inspect the raw diff via `forge_git_outgoing_diff` before any Git mutation. |
 
 ## Files

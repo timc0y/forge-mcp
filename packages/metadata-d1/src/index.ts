@@ -215,6 +215,7 @@ type TaskDocument = Pick<
   | 'evidenceIds'
   | 'outstanding'
   | 'pushedAt'
+  | 'handoff'
 >;
 
 function parseRepository(value: string): RepositoryRef {
@@ -239,7 +240,8 @@ export class D1TaskStore implements TaskStore {
       checks: task.checks,
       evidenceIds: task.evidenceIds,
       outstanding: task.outstanding,
-      pushedAt: task.pushedAt
+      pushedAt: task.pushedAt,
+      handoff: task.handoff
     };
     await this.db
       .prepare(`
@@ -299,6 +301,7 @@ export class D1TaskStore implements TaskStore {
       evidenceIds: document.evidenceIds,
       outstanding: document.outstanding,
       ...(document.pushedAt ? { pushedAt: document.pushedAt } : {}),
+      ...(document.handoff ? { handoff: document.handoff } : {}),
       state: row.state as TaskState,
       revision: Number(row.revision),
       createdAt: row.created_at,

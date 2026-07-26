@@ -12,8 +12,8 @@ const TRUE_READS = new Set([
   'forge_capabilities', 'forge_credential_list', 'forge_workspace_reconcile', 'forge_workspace_prove',
   'forge_repository_list', 'forge_workspace_get', 'forge_files_tree', 'forge_files_read',
   'forge_process_logs', 'forge_process_get', 'forge_process_wait', 'forge_check_get', 'forge_git_status', 'forge_git_diff', 'forge_git_outgoing_diff',
-  'forge_artifact_get', 'forge_task_get', 'forge_task_summary', 'forge_task_list',
-  'forge_context_get', 'forge_diff_metadata'
+  'forge_artifact_get', 'forge_task_get', 'forge_task_summary', 'forge_task_list', 'forge_task_handoff', 'forge_task_resume',
+  'forge_context_get', 'forge_context_pack', 'forge_diff_metadata'
 ]);
 
 // Tools that reach the open world of arbitrary external URLs (not just the
@@ -51,7 +51,10 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_preview_expose: { invoking: 'Exposing preview…', invoked: 'Preview ready' },
   forge_repository_list: { invoking: 'Listing repositories…', invoked: 'Repositories ready' },
   forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' },
-  forge_dependencies_install: { invoking: 'Installing dependencies…', invoked: 'Dependencies installed' }
+  forge_dependencies_install: { invoking: 'Installing dependencies…', invoked: 'Dependencies installed' },
+  forge_task_handoff: { invoking: 'Recording handoff…', invoked: 'Handoff recorded' },
+  forge_task_resume: { invoking: 'Resuming task…', invoked: 'Task resumed' },
+  forge_context_pack: { invoking: 'Packing context…', invoked: 'Context pack ready' }
 };
 
 export function toolAnnotations(name: string, sideEffect: 'none' | 'workspace' | 'external' | 'destructive') {

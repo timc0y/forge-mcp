@@ -34,7 +34,8 @@ import {
   hasBlockingCompletionGaps,
   type RepositoryRef,
   type TaskId,
-  type TaskState
+  type TaskState,
+  type TaskHandoff
 } from '@forge/task-core';
 import type { BrowserActionStep } from '@forge/browser-core';
 import { selectBrowserProvider } from './browser-router';
@@ -922,6 +923,122 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
         });
       },
+      forge_task_handoff: async (input) => {
+        const identity = this.identity();
+        const store = new D1TaskStore(env.METADATA);
+        const task = await this.loadTask(text(input.task_id) as TaskId);
+        assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
+        const handoff: TaskHandoff = {
+          summary: text(input.summary),
+          nextSteps: (input.next_steps as string[]) ?? [],
+          ...(input.key_learnings ? { keyLearnings: input.key_learnings as string[] } : {}),
+          ...(input.modified_files ? { modifiedFiles: input.modified_files as string[] } : {}),
+          ...(input.blocked_by ? { blockedBy: text(input.blocked_by) } : {}),
+          createdAt: new Date().toISOString(),
+          authorAgent: 'chatgpt'
+        };
+        task.handoff = handoff;
+        task.updatedAt = new Date().toISOString();
+        task.revision += 1;
+        await store.put(task);
+        return {
+          task_id: task.id,
+          recorded: true,
+          handoff_created_at: handoff.createdAt,
+          next_step: 'Handoff recorded. Call forge_task_resume in any fresh ChatGPT session to pick up work immediately.'
+        };
+      },
+      forge_task_resume: async (input) => {
+        const identity = this.identity();
+        const task = await this.loadTask(text(input.task_id) as TaskId);
+        assertTaskOwnership(task, { tenantId: identity.tenantId as TenantId });
+        let workspaceState: Record<string, unknown> | null = null;
+        let gitSummary: Record<string, unknown> | null = null;
+        const targetWorkspaceId = input.workspace_id ? text(input.workspace_id) : task.workspaceId;
+        if (targetWorkspaceId) {
+          try {
+            const workspace = await authorizedCoordinator(env, identity, targetWorkspaceId);
+            const state = await workspace.getState();
+            workspaceState = {
+              workspaceId: state.id,
+              state: state.state,
+              currentBranch: state.currentBranch,
+              hasUnpushedWork: state.hasUnpushedWork
+            };
+            const status = await workspace.gitStatus();
+            gitSummary = {
+              clean: status.clean,
+              branch: status.branch,
+              hasUnpushedWork: status.hasUnpushedWork
+            };
+          } catch {
+            // Best effort workspace lookup
+          }
+        }
+        const summary = summarizeTask(task);
+        const compact = input.compact !== false;
+        return {
+          task: compact
+            ? {
+                id: task.id,
+                goal: summary.goal,
+                state: task.state,
+                branch: summary.branch,
+                handoff: task.handoff,
+                nextRecommendedAction: summary.nextRecommendedAction,
+                knownLimitations: summary.knownLimitations,
+                outstanding: summary.outstanding,
+                filesChanged: summary.filesChanged
+              }
+            : summary,
+          workspace: workspaceState,
+          git: gitSummary,
+          handoff: task.handoff ?? null,
+          next_step: task.handoff?.nextSteps?.[0] ?? summary.nextRecommendedAction
+        };
+      },
+      forge_context_pack: async (input) => {
+        const identity = this.identity();
+        const goal = text(input.goal);
+        const repository = input.repository as { provider: 'github'; owner: string; name: string };
+        const maxTokens = input.max_tokens ? number(input.max_tokens) : 4000;
+        let fileList: string[] = [];
+        if (input.paths && Array.isArray(input.paths) && input.paths.length > 0) {
+          fileList = (input.paths as string[]).map((p) => text(p));
+        } else {
+          try {
+            const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+            const tree = await (await authorizedCoordinator(env, identity, workspaceId)).filesTree({
+              path: '/workspace/repo',
+              depth: 10,
+              limit: 5000
+            });
+            fileList = (tree.entries as Array<{ path: string; type: string }>)
+              .filter((entry) => entry.type === 'file')
+              .map((entry) => entry.path.replace(/^\/workspace\/repo\//, ''));
+          } catch {
+            fileList = [];
+          }
+        }
+        const selection = selectContext({
+          goal,
+          files: fileList,
+          maxResults: 15
+        });
+        const packedFiles = selection.results.map((r) => ({
+          path: r.path,
+          reason: r.reason,
+          confidence: r.confidence,
+          adjacentTests: r.adjacentTests
+        }));
+        return {
+          repository,
+          goal,
+          packed_files: packedFiles,
+          token_budget: maxTokens,
+          next_step: 'Context pack prepared. Read top confidence files using forge_files_read paths:[...] when ready to edit.'
+        };
+      },
       forge_task_list: async (input) => {
         const identity = this.identity();
         const store = new D1TaskStore(env.METADATA);
@@ -1556,6 +1673,27 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
         }
         try {
+          if (input.async === true) {
+            const proc = await workspace.processStart({
+              command,
+              cwd,
+              environment,
+              networkPolicy,
+              expectedRevision: optionalNumber(input.expected_revision),
+              idempotencyKey: idempotency(input.idempotency_key)
+            });
+            if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
+            const procRecord = proc as unknown as Record<string, unknown>;
+            const processId = String(procRecord.processId ?? procRecord.id ?? 'proc_started');
+            const status = String(procRecord.status ?? 'running');
+            return {
+              processId,
+              status,
+              command,
+              async: true,
+              next_step: `Command started in background as process ${processId}. Call forge_process_wait to await completion or forge_process_logs to inspect output.`
+            };
+          }
           const result = await workspace.shellExec({
             command,
             cwd,

@@ -76,6 +76,57 @@ describe('Forge MCP public contracts', () => {
     expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(true);
   });
 
+  it('exposes all 6 secret vault tools in the tool catalog', () => {
+    const expected = ['forge_secret_list', 'forge_secret_create', 'forge_secret_update', 'forge_secret_delete', 'forge_secret_attach', 'forge_secret_detach'];
+    for (const name of expected) {
+      expect(forgeTools.some((candidate) => candidate.name === name)).toBe(true);
+    }
+  });
+
+  it('forge_secret_create rejects an empty env map', () => {
+    const schema = tool('forge_secret_create').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean; error?: unknown } }>;
+    expect(schema.label.safeParse('CF Production').success).toBe(true);
+    expect(schema.label.safeParse('').success).toBe(false);
+    expect(schema.label.safeParse('a'.repeat(101)).success).toBe(false);
+    expect(schema.provider.safeParse('cloudflare').success).toBe(true);
+    expect(schema.provider.safeParse('shopify').success).toBe(true);
+    expect(schema.provider.safeParse('generic').success).toBe(true);
+    expect(schema.provider.safeParse('aws').success).toBe(false);
+    expect(schema.env.safeParse({ API_KEY: 'secret' }).success).toBe(true);
+    expect(schema.env.safeParse({}).success).toBe(false);
+  });
+
+  it('forge_secret_update accepts partial updates', () => {
+    const schema = tool('forge_secret_update').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(schema.secret_id.safeParse('sec_00000000000000000000000000').success).toBe(true);
+    expect(schema.secret_id.safeParse('crp_00000000000000000000000000').success).toBe(false);
+    expect(schema.secret_id.safeParse('not-an-id').success).toBe(false);
+    expect(schema.label.safeParse('New Label').success).toBe(true);
+    expect(schema.provider.safeParse(undefined).success).toBe(true);
+    expect(schema.env.safeParse(undefined).success).toBe(true);
+  });
+
+  it('forge_secret_attach requires a valid secret_id and workspace_id', () => {
+    const schema = tool('forge_secret_attach').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(schema.secret_id.safeParse('sec_00000000000000000000000000').success).toBe(true);
+    expect(schema.secret_id.safeParse('sec_bad').success).toBe(false);
+    expect(schema.approval_id.safeParse(undefined).success).toBe(true);
+    expect(schema.approval_id.safeParse('apr_00000000000000000000000000').success).toBe(true);
+    expect(schema.approval_id.safeParse('not-an-approval').success).toBe(false);
+  });
+
+  it('forge_secret_delete rejects invalid secret ids', () => {
+    const schema = tool('forge_secret_delete').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(schema.secret_id.safeParse('sec_00000000000000000000000000').success).toBe(true);
+    expect(schema.secret_id.safeParse('').success).toBe(false);
+  });
+
+  it('forge_secret_detach validates secret_id and workspace_id', () => {
+    const schema = tool('forge_secret_detach').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(schema.secret_id.safeParse('sec_00000000000000000000000000').success).toBe(true);
+    expect(schema.workspace_id.safeParse(undefined).success).toBe(true);
+  });
+
   it('exposes a full-file write tool and multi-file read for headless agents', () => {
     const write = tool('forge_files_write');
     expect(write.sideEffect).toBe('workspace');

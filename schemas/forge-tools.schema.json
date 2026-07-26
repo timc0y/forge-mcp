@@ -185,9 +185,222 @@
         "additionalProperties": false
       }
     },
+    "forge_secret_list": {
+      "title": "List secrets",
+      "description": "List stored secrets with their labels, providers, and environment variable names. Values are never returned.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "forge_secret_create": {
+      "title": "Create a secret",
+      "description": "Store environment variables as a named, labeled secret. Values are encrypted at rest and never returned. Labels must be unique per tenant.",
+      "sideEffect": "external",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Human-readable label, e.g. \"CF Production\" or \"Shopify - Store A\"."
+          },
+          "provider": {
+            "default": "generic",
+            "type": "string",
+            "enum": [
+              "cloudflare",
+              "shopify",
+              "generic"
+            ]
+          },
+          "env": {
+            "type": "object",
+            "propertyNames": {
+              "$ref": "#/$defs/__schema0"
+            },
+            "additionalProperties": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "description": "Environment variable key-value pairs to store."
+          }
+        },
+        "required": [
+          "label",
+          "provider",
+          "env"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string"
+          },
+          "__schema1": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "forge_secret_update": {
+      "title": "Update a secret",
+      "description": "Update a stored secret's label, provider, or environment variables. Replacing env vars resets validation state.",
+      "sideEffect": "external",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "secret_id": {
+            "type": "string",
+            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Secret id (sec_...)."
+          },
+          "label": {
+            "description": "New label.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "provider": {
+            "default": "generic",
+            "type": "string",
+            "enum": [
+              "cloudflare",
+              "shopify",
+              "generic"
+            ]
+          },
+          "env": {
+            "type": "object",
+            "propertyNames": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "additionalProperties": {
+              "$ref": "#/$defs/__schema2"
+            },
+            "description": "Environment variable key-value pairs to store."
+          }
+        },
+        "required": [
+          "secret_id"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "__schema1": {
+            "type": "string"
+          },
+          "__schema2": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "forge_secret_delete": {
+      "title": "Delete a secret",
+      "description": "Permanently delete a stored secret and detach it from any workspaces.",
+      "sideEffect": "destructive",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "secret_id": {
+            "type": "string",
+            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Secret id (sec_...)."
+          }
+        },
+        "required": [
+          "secret_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_secret_attach": {
+      "title": "Attach secret to workspace",
+      "description": "Attach a stored secret's environment variables to a workspace. After human approval, the variables are injected into every command in that workspace. Retry with the returned approval_id once approved.",
+      "sideEffect": "external",
+      "approval": "required",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "secret_id": {
+            "type": "string",
+            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Secret id (sec_...)."
+          },
+          "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "approval_id": {
+            "description": "Approval id from a prior approval page.",
+            "$ref": "#/$defs/__schema1"
+          }
+        },
+        "required": [
+          "secret_id"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          }
+        }
+      }
+    },
+    "forge_secret_detach": {
+      "title": "Detach secret from workspace",
+      "description": "Remove a stored secret's environment variables from a workspace.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "secret_id": {
+            "type": "string",
+            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Secret id (sec_...)."
+          },
+          "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        "required": [
+          "secret_id"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          }
+        }
+      }
+    },
     "forge_workspace_reconcile": {
       "title": "Reconcile workspace recovery state",
-      "description": "Read the checked-out Git state, reconcile durable metadata, and report whether the current Forge commit has been pushed.",
+      "description": "Inspect and reconcile the workspace Git state, processes, and dependency state. Stops or adopts unknown processes, checks for Git lock files, verifies .git/HEAD and index readability, compares HEAD and branch with recorded values, detects package-manager activity, and restores a checkpoint only when necessary. Returns a detailed gitIntegrity report with state, reason, blocking process, and recommended action. Safe to call when Git inspection fails — it never throws, it reports.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -556,12 +769,21 @@
             "type": "string",
             "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
             "description": "Target task id (task_...)."
+          },
+          "compact": {
+            "description": "Return a token-efficient compact summary.",
+            "$ref": "#/$defs/__schema0"
           }
         },
         "required": [
           "task_id"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "boolean"
+          }
+        }
       }
     },
     "forge_task_summary": {
@@ -577,12 +799,234 @@
             "type": "string",
             "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
             "description": "Target task id (task_...)."
+          },
+          "compact": {
+            "description": "Return a token-efficient compact summary.",
+            "$ref": "#/$defs/__schema0"
           }
         },
         "required": [
           "task_id"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "forge_task_handoff": {
+      "title": "Record task handoff",
+      "description": "Record a structured handoff note on a task so another agent or a fresh ChatGPT chat session can resume work cleanly without context loss.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Progress summary so far."
+          },
+          "next_steps": {
+            "minItems": 1,
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema0"
+            },
+            "description": "Actionable next steps for the resuming agent."
+          },
+          "key_learnings": {
+            "description": "Key architecture or bug findings discovered during this session.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "modified_files": {
+            "description": "Key paths edited or intended for modification.",
+            "$ref": "#/$defs/__schema3"
+          },
+          "blocked_by": {
+            "description": "Any blocker or approval currently required.",
+            "$ref": "#/$defs/__schema5"
+          }
+        },
+        "required": [
+          "task_id",
+          "summary",
+          "next_steps"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema1": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema2"
+            }
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema3": {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema4"
+            }
+          },
+          "__schema4": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema5": {
+            "type": "string",
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "forge_task_resume": {
+      "title": "Resume task in fresh session",
+      "description": "Single-turn recovery for a fresh ChatGPT session or new agent. Returns task goal, active workspace state, latest Git diff summary, checks, and handoff notes in one compact response.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
+          },
+          "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "compact": {
+            "default": true,
+            "description": "Return a tight, context-optimized summary for fast turn recovery.",
+            "$ref": "#/$defs/__schema1"
+          }
+        },
+        "required": [
+          "task_id",
+          "compact"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "forge_context_pack": {
+      "title": "Pack bounded context",
+      "description": "Extract and pack essential file signatures, exports, instructions, and path context into a single token-optimized context block for ChatGPT turn initialization. Container-free.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "repository": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "$ref": "#/$defs/__schema0"
+              },
+              "owner": {
+                "$ref": "#/$defs/__schema1"
+              },
+              "name": {
+                "$ref": "#/$defs/__schema2"
+              }
+            },
+            "required": [
+              "provider",
+              "owner",
+              "name"
+            ],
+            "additionalProperties": false,
+            "description": "Authorized GitHub repository to act on."
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "paths": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema3"
+            }
+          },
+          "task_id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target task id (task_...)."
+          },
+          "max_tokens": {
+            "default": 4000,
+            "description": "Approximate token budget for the packed output.",
+            "$ref": "#/$defs/__schema4"
+          }
+        },
+        "required": [
+          "repository",
+          "goal",
+          "max_tokens"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "const": "github"
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "__schema3": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "__schema4": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 10000
+          }
+        }
       }
     },
     "forge_task_list": {
@@ -989,6 +1433,10 @@
           "workspace_id": {
             "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
             "$ref": "#/$defs/__schema0"
+          },
+          "compact": {
+            "description": "Return a token-efficient compact summary.",
+            "$ref": "#/$defs/__schema1"
           }
         },
         "additionalProperties": false,
@@ -997,6 +1445,9 @@
             "type": "string",
             "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
             "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "boolean"
           }
         }
       }
@@ -1037,6 +1488,10 @@
           "categories": {
             "description": "Restrict results to these file categories.",
             "$ref": "#/$defs/__schema4"
+          },
+          "compact": {
+            "description": "Return a token-efficient compact summary.",
+            "$ref": "#/$defs/__schema6"
           }
         },
         "required": [
@@ -1080,6 +1535,9 @@
               "docs",
               "config"
             ]
+          },
+          "__schema6": {
+            "type": "boolean"
           }
         }
       }
@@ -1101,6 +1559,10 @@
             "default": "main",
             "description": "Base branch to diff the current branch against.",
             "$ref": "#/$defs/__schema1"
+          },
+          "compact": {
+            "description": "Return a token-efficient compact summary.",
+            "$ref": "#/$defs/__schema2"
           }
         },
         "required": [
@@ -1117,6 +1579,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 255
+          },
+          "__schema2": {
+            "type": "boolean"
           }
         }
       }
@@ -1212,6 +1677,10 @@
             "default": 200000,
             "description": "Per-file byte ceiling.",
             "$ref": "#/$defs/__schema6"
+          },
+          "compact": {
+            "description": "Omit verbose wrapper metadata for tight context windows.",
+            "$ref": "#/$defs/__schema7"
           }
         },
         "required": [
@@ -1254,6 +1723,9 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 500000
+          },
+          "__schema7": {
+            "type": "boolean"
           }
         }
       }
@@ -1369,7 +1841,7 @@
     },
     "forge_shell_exec": {
       "title": "Run a command",
-      "description": "Run a foreground command in the workspace with timeout, output and network-policy bounds. Risky commands return a real user approval URL; idempotency_key must be unique per distinct command.",
+      "description": "Run a command in the workspace with timeout, output and network-policy bounds. Set async: true to run as a non-blocking process immediately and return proc_ id to avoid HTTP timeouts on long commands. Risky commands return a real user approval URL; idempotency_key must be unique per distinct command.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -1411,17 +1883,25 @@
             "description": "Truncate captured output past this many bytes.",
             "$ref": "#/$defs/__schema5"
           },
+          "async": {
+            "description": "Set true to start as a background process immediately and return proc_ id in <300ms to avoid chat transport timeout.",
+            "$ref": "#/$defs/__schema6"
+          },
+          "compact": {
+            "description": "Return compact output for tight context.",
+            "$ref": "#/$defs/__schema7"
+          },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema6"
+            "$ref": "#/$defs/__schema8"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema7"
+            "$ref": "#/$defs/__schema9"
           },
           "approval_id": {
             "description": "Approval id returned by a prior blocked call.",
-            "$ref": "#/$defs/__schema8"
+            "$ref": "#/$defs/__schema10"
           }
         },
         "required": [
@@ -1473,17 +1953,23 @@
             "maximum": 1000000
           },
           "__schema6": {
+            "type": "boolean"
+          },
+          "__schema7": {
+            "type": "boolean"
+          },
+          "__schema8": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
-          "__schema7": {
+          "__schema9": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
             "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           },
-          "__schema8": {
+          "__schema10": {
             "type": "string",
             "pattern": "^apr_.*"
           }
@@ -1702,6 +2188,99 @@
         }
       }
     },
+    "forge_process_wait": {
+      "title": "Wait for managed process",
+      "description": "Wait for a managed process to reach a terminal state (exit, failure, or cancellation), or time out. Returns the final process record. This is the safe way to wait for a long-running command that may outlive the chat transport deadline — the process continues under Forge supervision even if the client disconnects.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "process_id": {
+            "type": "string",
+            "pattern": "^proc_.*",
+            "description": "Process id from forge_process_start."
+          },
+          "timeout_ms": {
+            "default": 120000,
+            "description": "Maximum time to wait for the process to finish.",
+            "$ref": "#/$defs/__schema1"
+          }
+        },
+        "required": [
+          "process_id",
+          "timeout_ms"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          }
+        }
+      }
+    },
+    "forge_process_cancel": {
+      "title": "Cancel managed process",
+      "description": "Cancel (SIGTERM then SIGKILL) one explicit workspace-owned managed process. The process is marked as cancelled and removed from the workspace process table. Use this instead of forge_process_stop when you want to signal that the process was intentionally aborted rather than gracefully stopped.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "process_id": {
+            "type": "string",
+            "pattern": "^proc_.*"
+          },
+          "expected_revision": {
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "idempotency_key": {
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema2"
+          }
+        },
+        "required": [
+          "process_id"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+          }
+        }
+      }
+    },
     "forge_check_start": {
       "title": "Start durable workspace check",
       "description": "Start a long-running validation command as a managed workspace check and return immediately with a process id, commit and durable status/log handle.",
@@ -1872,6 +2451,96 @@
         }
       }
     },
+    "forge_dependencies_install": {
+      "title": "Install workspace dependencies",
+      "description": "Install dependencies using the detected package manager with the exact pinned version. Detects packageManager from package.json, decides frozen vs non-frozen lockfile, retries safely after network failures, records the resulting lockfile hash, creates a completion checkpoint, and reports whether dependencies are usable. For this repository, Forge automatically selects pnpm with the pinned version from package.json.",
+      "sideEffect": "workspace",
+      "approval": "policy",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "frozen_lockfile": {
+            "default": true,
+            "description": "Use --frozen-lockfile / --immutable when true (fails if the lockfile is out of sync). Set false to allow lockfile updates.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "allow_lockfile_update": {
+            "default": false,
+            "description": "Allow the install to update the lockfile when it is out of sync with the manifest.",
+            "$ref": "#/$defs/__schema2"
+          },
+          "network_policy": {
+            "default": "package_install",
+            "description": "Outbound network policy for this install.",
+            "$ref": "#/$defs/__schema3"
+          },
+          "timeout_ms": {
+            "default": 600000,
+            "description": "Kill the install after this many milliseconds.",
+            "$ref": "#/$defs/__schema4"
+          },
+          "expected_revision": {
+            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "$ref": "#/$defs/__schema5"
+          },
+          "idempotency_key": {
+            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "$ref": "#/$defs/__schema6"
+          }
+        },
+        "required": [
+          "frozen_lockfile",
+          "allow_lockfile_update",
+          "network_policy",
+          "timeout_ms"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "boolean"
+          },
+          "__schema2": {
+            "type": "boolean"
+          },
+          "__schema3": {
+            "type": "string",
+            "enum": [
+              "deny_all",
+              "package_install",
+              "development",
+              "custom_allowlist",
+              "unrestricted_with_approval"
+            ]
+          },
+          "__schema4": {
+            "type": "integer",
+            "minimum": 10000,
+            "maximum": 900000
+          },
+          "__schema5": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "__schema6": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+          }
+        }
+      }
+    },
     "forge_git_status": {
       "title": "Read Git status",
       "description": "Get the workspace repository's working-tree and branch status. Read-only.",
@@ -1926,6 +2595,10 @@
           "paths": {
             "description": "Restrict the diff to these exact paths (from `files`). Use this to read one large file's change directly instead of paging to it.",
             "$ref": "#/$defs/__schema4"
+          },
+          "compact": {
+            "description": "Return compact hunk representation.",
+            "$ref": "#/$defs/__schema6"
           }
         },
         "required": [
@@ -1962,6 +2635,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 400
+          },
+          "__schema6": {
+            "type": "boolean"
           }
         }
       }
@@ -2120,6 +2796,10 @@
           "paths": {
             "description": "Restrict the diff to these exact paths (from `files`). Use this to read one large file's change directly instead of paging to it.",
             "$ref": "#/$defs/__schema4"
+          },
+          "compact": {
+            "description": "Return compact hunk representation.",
+            "$ref": "#/$defs/__schema6"
           }
         },
         "required": [
@@ -2158,6 +2838,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 400
+          },
+          "__schema6": {
+            "type": "boolean"
           }
         }
       }

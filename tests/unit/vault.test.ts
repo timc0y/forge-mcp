@@ -44,6 +44,10 @@ class MemoryDb {
             if (normalized.startsWith('DELETE FROM secrets')) {
               const id = args[1] as string;
               const deleted = self.secrets.delete(id);
+              // Simulate ON DELETE CASCADE
+              for (const key of self.attachments.keys()) {
+                if (key.endsWith(`\0${id}`)) self.attachments.delete(key);
+              }
               return { meta: { changes: deleted ? 1 : 0 } };
             }
             if (normalized.startsWith('DELETE FROM attached_workspace_secrets')) {
@@ -245,5 +249,86 @@ describe('vault secrets', () => {
     await service.create(tenantId, 'Encrypted', 'generic', { PASSWORD: 'hunter2' });
     const decoded = await service.decodeVars(tenantId, (await service.list(tenantId))[0].id);
     expect(decoded).toEqual({ PASSWORD: 'hunter2' });
+  });
+
+  it('rejects label longer than 100 characters', async () => {
+    const service = createService();
+    await expect(service.create(tenantId, 'a'.repeat(101), 'generic', { KEY: 'value' })).rejects.toThrow('between 1 and 100');
+  });
+
+  it('rejects env var name starting with digit', async () => {
+    const service = createService();
+    await expect(service.create(tenantId, 'Bad Var', 'generic', { '1INVALID': 'value' })).rejects.toThrow('Invalid environment variable name');
+  });
+
+  it('rejects env var name with special characters', async () => {
+    const service = createService();
+    await expect(service.create(tenantId, 'Bad Var 2', 'generic', { 'MY-KEY': 'value' })).rejects.toThrow('Invalid environment variable name');
+    await expect(service.create(tenantId, 'Bad Var 3', 'generic', { 'MY.KEY': 'value' })).rejects.toThrow('Invalid environment variable name');
+  });
+
+  it('accepts env var name with underscore and uppercase', async () => {
+    const service = createService();
+    const secret = await service.create(tenantId, 'Valid Env', 'generic', { 'MY_COOL_VAR': 'value', 'ANOTHER_VAR': 'val2' });
+    expect(secret.varNames).toEqual(['MY_COOL_VAR', 'ANOTHER_VAR']);
+  });
+
+  it('detach removes only the specified workspace attachment', async () => {
+    const service = createService();
+    const s1 = await service.create(tenantId, 'WS-A', 'generic', { KEY: 'val1' });
+    const s2 = await service.create(tenantId, 'WS-B', 'generic', { KEY: 'val2' });
+    await service.attach(tenantId, s1.id, wsId);
+    await service.attach(tenantId, s2.id, wsId);
+    expect(await service.attachedSecrets(tenantId)).toHaveLength(2);
+    await service.detach(tenantId, s1.id, wsId);
+    const remaining = await service.attachedSecrets(tenantId);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].secretId).toBe(s2.id);
+  });
+
+  it('first-attached wins when same var name exists in multiple attached secrets', async () => {
+    const service = createService();
+    const s1 = await service.create(tenantId, 'First', 'generic', { SHARED_KEY: 'first-value' });
+    const s2 = await service.create(tenantId, 'Second', 'generic', { SHARED_KEY: 'second-value' });
+    await service.attach(tenantId, s1.id, wsId);
+    await service.attach(tenantId, s2.id, wsId);
+    const { vars } = await service.attachedEnv(tenantId, wsId);
+    expect(vars).toEqual({ SHARED_KEY: 'first-value' });
+  });
+
+  it('redact skips values shorter than 4 characters', async () => {
+    const service = createService();
+    const secret = await service.create(tenantId, 'Short', 'generic', { KEY: 'ab' });
+    await service.attach(tenantId, secret.id, wsId);
+    const redacted = await service.redactOutput('value ab here', tenantId, wsId);
+    expect(redacted).toBe('value ab here');
+  });
+
+  it('returns empty env for unattached workspace', async () => {
+    const service = createService();
+    const otherWs = 'ws_99999999999999999999999999' as WorkspaceId;
+    const { vars, redact } = await service.attachedEnv(tenantId, otherWs);
+    expect(vars).toEqual({});
+    expect(redact.size).toBe(0);
+  });
+
+  it('handles delete cascading to attached records', async () => {
+    const service = createService();
+    const secret = await service.create(tenantId, 'Cascade', 'generic', { KEY: 'val' });
+    await service.attach(tenantId, secret.id, wsId);
+    await service.delete(tenantId, secret.id);
+    expect(await service.attachedSecrets(tenantId)).toHaveLength(0);
+  });
+
+  it('allows different tenants to have same label', async () => {
+    const service = createService();
+    const tenantB = 'ten_bbbbbbbbbbbbbbbbbbbbbbbbbb' as TenantId;
+    await service.create(tenantId, 'Same Label', 'generic', { A: '1' });
+    const b = await service.create(tenantB, 'Same Label', 'generic', { B: '2' });
+    expect(b.label).toBe('Same Label');
+    const aList = await service.list(tenantId);
+    const bList = await service.list(tenantB);
+    expect(aList).toHaveLength(1);
+    expect(bList).toHaveLength(1);
   });
 });

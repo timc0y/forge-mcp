@@ -72,6 +72,17 @@ export interface RepositoryRef {
   name: string;
 }
 
+/** Structured handoff note saved by an agent to allow a fresh session to pick up work. */
+export interface TaskHandoff {
+  summary: string;
+  nextSteps: string[];
+  keyLearnings?: string[];
+  modifiedFiles?: string[];
+  blockedBy?: string;
+  createdAt: string;
+  authorAgent?: string;
+}
+
 export interface Task {
   id: TaskId;
   tenantId: TenantId;
@@ -100,6 +111,8 @@ export interface Task {
    * implicitly by comparing against changedFiles at completion time — a task
    * with unpushed changes may not transition to complete. */
   pushedAt?: string;
+  /** Structured handoff note saved by an agent to allow a fresh session to resume. */
+  handoff?: TaskHandoff;
   state: TaskState;
   outstanding: string[];
   /** Optimistic-concurrency guard shared with the durable store. */

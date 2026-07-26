@@ -1,4 +1,4 @@
-import type { Task } from './task';
+import type { Task, TaskHandoff } from './task';
 
 /**
  * A compact, portable summary of a durable task. This is the single most
@@ -23,6 +23,7 @@ export interface TaskSummary {
   checks: Array<{ command: string; status: string }>;
   evidence: string[];
   outstanding: string[];
+  handoff?: TaskHandoff;
   knownLimitations: string[];
   nextRecommendedAction: string;
   state: Task['state'];
@@ -139,6 +140,7 @@ export function summarizeTask(task: Task): TaskSummary {
     })),
     evidence: task.evidenceIds.slice(0, MAX_LIST),
     outstanding: boundedRedacted(task.outstanding),
+    handoff: task.handoff,
     knownLimitations: deriveLimitations(task),
     nextRecommendedAction: recommendNextAction(task),
     state: task.state,
