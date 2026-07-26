@@ -37,6 +37,8 @@ export interface Workspace {
   projectId: ProjectId;
   repository: RepositoryRef;
   requestedRef: string;
+  baseCommit?: string;
+  initialHeadCommit?: string;
   credentialProfileId?: CredentialProfileId;
   currentCommit?: string;
   lastPushedCommit?: string;

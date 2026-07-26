@@ -386,9 +386,16 @@ export class LocalDockerSandboxProvider implements SandboxProvider {
   readonly version = '0.2.0';
 
   constructor(
-    private readonly image =
-      process.env.FORGE_LOCAL_DOCKER_IMAGE ?? 'node:22-bookworm-slim'
+    private readonly imageOverride = process.env.FORGE_LOCAL_DOCKER_IMAGE
   ) {}
+
+  private imageFor(runtimeProfile: CreateSandboxInput['runtimeProfile']): string {
+    if (this.imageOverride) return this.imageOverride;
+    if (runtimeProfile === 'node-24') return 'node:24-bookworm-slim';
+    if (runtimeProfile === 'node-22') return 'node:22-bookworm-slim';
+    if (runtimeProfile === 'python-3.13') return 'python:3.13-slim';
+    return 'node:22-bookworm-slim';
+  }
 
   async create(input: CreateSandboxInput): Promise<SandboxHandle> {
     const providerId = safeName(input.providerId);
@@ -397,6 +404,7 @@ export class LocalDockerSandboxProvider implements SandboxProvider {
     await mkdir(join(root, 'repo'), { recursive: true });
     await mkdir(join(root, 'forge', 'processes'), { recursive: true });
     await run('docker', ['rm', '-f', containerName]);
+    const image = this.imageFor(input.runtimeProfile);
     const result = await run('docker', [
       'run',
       '-d',
@@ -410,13 +418,13 @@ export class LocalDockerSandboxProvider implements SandboxProvider {
       `${root}:/workspace`,
       '-w',
       '/workspace',
-      this.image,
+      image,
       '/bin/sh',
       '-lc',
       'sleep infinity'
     ], { timeoutMs: 120_000 });
     if (result.exitCode !== 0) throw new Error(result.stderr || 'Docker sandbox failed to start.');
-    const record = { root, containerName, image: this.image };
+    const record = { root, containerName, image };
     sandboxes.set(providerId, record);
     return new LocalDockerHandle(providerId, record);
   }

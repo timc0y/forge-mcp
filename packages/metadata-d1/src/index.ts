@@ -16,6 +16,8 @@ interface WorkspaceRow extends Record<string, unknown> {
   project_id: string;
   repository: string;
   requested_ref: string;
+  base_commit: string | null;
+  initial_head_commit: string | null;
   credential_profile_id: string | null;
   state: string;
   persistence_mode: string;
@@ -41,13 +43,15 @@ export class D1MetadataStore implements MetadataStore {
     await this.db
       .prepare(`
         INSERT INTO workspaces (
-          id, tenant_id, project_id, repository, requested_ref, credential_profile_id, state,
+          id, tenant_id, project_id, repository, requested_ref, base_commit, initial_head_commit, credential_profile_id, state,
           persistence_mode, runtime_profile, provider_kind, provider_version,
           revision, created_by, created_at, updated_at, current_commit,
           current_branch, last_pushed_commit, last_pushed_branch, idle_deadline, active_snapshot_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           state = excluded.state,
+          base_commit = excluded.base_commit,
+          initial_head_commit = excluded.initial_head_commit,
           credential_profile_id = excluded.credential_profile_id,
           persistence_mode = excluded.persistence_mode,
           revision = excluded.revision,
@@ -65,6 +69,8 @@ export class D1MetadataStore implements MetadataStore {
         workspace.projectId,
         `${workspace.repository.owner}/${workspace.repository.name}`,
         workspace.requestedRef,
+        workspace.baseCommit ?? null,
+        workspace.initialHeadCommit ?? null,
         workspace.credentialProfileId ?? null,
         workspace.state,
         workspace.persistenceMode,
@@ -100,6 +106,8 @@ export class D1MetadataStore implements MetadataStore {
       projectId: row.project_id as ProjectId,
       repository: { provider: 'github', owner, name },
       requestedRef: row.requested_ref,
+      ...(row.base_commit ? { baseCommit: row.base_commit } : {}),
+      ...(row.initial_head_commit ? { initialHeadCommit: row.initial_head_commit } : {}),
       ...(row.credential_profile_id ? { credentialProfileId: row.credential_profile_id as Workspace['credentialProfileId'] } : {}),
       state: row.state as Workspace['state'],
       persistenceMode: row.persistence_mode as Workspace['persistenceMode'],

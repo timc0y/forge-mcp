@@ -144,6 +144,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   private handlers(): ForgeToolHandlers {
     const env = this.env;
     return {
+      forge_capabilities: async () => ({
+        workspace: { explicit_workspace_id_required: true, filesystem_read_after_write: 'verified_by_forge_files_write', durable_checkpoints: true },
+        git: { immutable_base_commit: true, workspace_proof: true, branch_push: 'approval_required', draft_pull_request: 'approval_required', direct_merge: 'disabled' },
+        processes: { managed_status: true, persistent_logs: true, preview_requires_exact_process_id: true },
+        deployment: { cloudflare_wrangler: 'approval_required_with_validated_profile' },
+        recovery: { checkpoint: true, destruction_with_uncommitted_or_unpushed_work: 'blocked' }
+      }),
       forge_credential_list: async () => {
         const identity = this.identity();
         const selectedCredentialProfileId = await this.selectedCredentialProfileId(identity);
@@ -198,6 +205,35 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             ? 'Current Forge commit is recorded as pushed.'
             : 'Current Forge commit has not been recorded as pushed. Inspect the outgoing diff, then request a push approval.'
         };
+      },
+      forge_workspace_prove: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).proveWorkspaceState());
+      },
+      forge_workspace_checkpoint: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).checkpoint({
+          ...(input.name === undefined ? {} : { name: text(input.name) })
+        }));
+      },
+      forge_workspace_restore: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).restoreCheckpoint({
+          snapshotId: text(input.snapshot_id), expectedRevision: optionalNumber(input.expected_revision)
+        }));
+      },
+      forge_work_export: async (input) => {
+        const identity = this.identity();
+        const workspaceId = text(input.workspace_id) as WorkspaceId;
+        const exported = await (await authorizedCoordinator(env, identity, workspaceId)).exportRecoveryPatch({ maxBytes: number(input.max_bytes) });
+        const artifactId = ids.artifact();
+        const bytes = new TextEncoder().encode(exported.content).buffer;
+        const artifact = await new R2ArtifactStore(env.ARTIFACTS).put({
+          id: artifactId, tenantId: identity.tenantId as TenantId, workspaceId,
+          kind: 'recovery.patch', contentType: 'text/plain; charset=utf-8', bytes,
+          metadata: { base_commit: String(exported.proof.observed.baseCommit ?? ''), head_commit: String(exported.proof.observed.commit ?? ''), branch: String(exported.proof.observed.branch ?? '') }
+        });
+        return { workspace_id: workspaceId, recovery_artifact: artifact, proof: exported.proof, restore: 'Use the matching Forge checkpoint to restore untracked files and process state.' };
       },
       forge_cloudflare_deploy: async (input) => {
         const identity = this.identity();
@@ -374,6 +410,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           maxBytes: number(input.max_bytes)
         }));
       },
+      forge_files_write: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).filesWrite({
+          path: text(input.path), content: text(input.content),
+          ...(input.expected_sha256 === undefined ? {} : { expectedSha256: text(input.expected_sha256) }),
+          expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+        }));
+      },
       forge_files_patch: async (input) => {
         const identity = this.identity();
         return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).filesPatch({
@@ -440,6 +484,42 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           cursor: input.cursor ? text(input.cursor) : undefined
         }));
       },
+      forge_process_get: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processGet({
+          processId: text(input.process_id) as ProcessId
+        }));
+      },
+      forge_process_stop: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processStop({
+          processId: text(input.process_id) as ProcessId,
+          expectedRevision: optionalNumber(input.expected_revision),
+          idempotencyKey: text(input.idempotency_key)
+        }));
+      },
+      forge_check_start: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).checkStart({
+          name: text(input.name), command: text(input.command), cwd: text(input.cwd),
+          environment: input.environment as Record<string, string>, networkPolicy: text(input.network_policy) as never,
+          expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
+        }));
+      },
+      forge_check_get: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).checkGet({
+          processId: text(input.process_id) as ProcessId
+        }));
+      },
+      forge_check_cancel: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processStop({
+          processId: text(input.process_id) as ProcessId,
+          expectedRevision: optionalNumber(input.expected_revision),
+          idempotencyKey: text(input.idempotency_key)
+        }));
+      },
       forge_git_status: async (input) => {
         const identity = this.identity();
         return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).gitStatus());
@@ -496,6 +576,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const base = text(input.base);
         const title = text(input.title);
         const body = text(input.body);
+        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const initialState = await workspace.getState();
+        if (base !== initialState.requestedRef) {
+          throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Draft PR target must match the immutable base ref recorded when this workspace was created.', retryable: false, details: { requestedBase: initialState.requestedRef, providedBase: base, baseCommit: initialState.baseCommit ?? null } });
+        }
         const approvalId = input.approval_id ? text(input.approval_id) : undefined;
         if (!approvalId) {
           const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft pull request ${head} → ${base}`, { head, base, title, body });
@@ -503,7 +588,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
         await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', { head, base, title, body });
         try {
-          const state = await (await authorizedCoordinator(env, identity, workspaceId)).getState();
+          const state = await workspace.getState();
           const result = await createDraftPullRequest(env, identity, state.repository, { head, base, title, body });
           await completeApproval(env, approvalId, true);
           return result;

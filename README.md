@@ -35,6 +35,8 @@ The Cloudflare Sandbox SDK is isolated in `packages/sandbox-cloudflare`. Domain 
 
 Credential profiles are tenant-scoped, encrypted at rest, and provider-backed. See [credential profiles](docs/architecture/credentials.md) before configuring `FORGE_CREDENTIAL_ENCRYPTION_KEY` or migrating an installation.
 
+For the filesystem, Git, checkpoint, export, and runtime guarantees required for long-lived agent work, see the [workspace reliability contract](docs/architecture/reliability.md).
+
 ## Repository layout
 
 - `apps/forge-edge-gateway` — HTTP, MCP session and preview gateway

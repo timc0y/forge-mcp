@@ -17,18 +17,21 @@ import { detectProject, type ProjectDetection } from '@forge/project-detection';
 import type {
   ExecInput,
   FileReadInput,
+  FileWriteInput,
   ListFilesInput,
   NetworkPolicyMode,
   PatchInput,
   SandboxHandle,
   SandboxProvider
 } from '@forge/sandbox-core';
+import type { SnapshotRef } from '@forge/sandbox-core';
 
 export interface WorkspaceRuntimeRecord {
   workspace: Workspace;
   providerId: string;
   detection?: ProjectDetection;
   processes: Record<string, { command: string; port?: number }>;
+  checks: Record<string, { name: string; command: string; startedAt: string; commit?: string }>;
   previews: Record<
     string,
     {
@@ -40,6 +43,14 @@ export interface WorkspaceRuntimeRecord {
     }
   >;
   idempotency: Record<string, { operationId: OperationId; revision: number }>;
+  snapshots: Record<string, SnapshotRef>;
+  lastGitDivergence?: {
+    recordedCommit?: string;
+    recordedBranch?: string;
+    observedCommit: string;
+    observedBranch: string;
+    observedAt: string;
+  };
 }
 
 export interface CreateWorkspaceInput {
@@ -93,6 +104,24 @@ function quoted(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+async function assertRuntimeProfile(handle: SandboxHandle, profile: CreateWorkspaceInput['runtimeProfile']): Promise<void> {
+  if (profile === 'python-3.13') {
+    const result = await handle.exec({ command: 'python3 --version', cwd: '/workspace', timeoutMs: 30_000, outputLimitBytes: 10_000, sessionId: 'system', networkPolicy: 'deny_all' });
+    const pythonVersion = result.stdout.trim() || result.stderr.trim();
+    if (result.exitCode !== 0 || !pythonVersion.startsWith('Python 3.13.')) {
+      throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: `Requested ${profile}, but the provisioned runtime reports ${pythonVersion || 'no Python version'}.`, retryable: false, details: { requestedRuntime: profile, observedPythonVersion: pythonVersion || null, stage: 'runtime_verification' } });
+    }
+    return;
+  }
+  if (!profile.startsWith('node-')) return;
+  const expectedMajor = profile.slice('node-'.length).split('.')[0];
+  const result = await handle.exec({ command: 'node --version && corepack --version', cwd: '/workspace', timeoutMs: 30_000, outputLimitBytes: 10_000, sessionId: 'system', networkPolicy: 'deny_all' });
+  const nodeVersion = result.stdout.split('\n')[0]?.trim() ?? '';
+  if (result.exitCode !== 0 || !nodeVersion.startsWith(`v${expectedMajor}.`)) {
+    throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: `Requested ${profile}, but the provisioned runtime reports ${nodeVersion || 'no Node version'}.`, retryable: false, details: { requestedRuntime: profile, observedNodeVersion: nodeVersion || null, stage: 'runtime_verification' } });
+  }
+}
+
 function assertForgeBranch(branch: string): void {
   if (
     !/^forge\/[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$/u.test(branch) ||
@@ -143,7 +172,9 @@ export class ForgeApplicationService {
       },
       providerId: sandboxProviderId(id),
       processes: {},
+      checks: {},
       previews: {},
+      snapshots: {},
       idempotency: {
         [input.idempotencyKey]: { operationId, revision: 1 }
       }
@@ -181,6 +212,7 @@ export class ForgeApplicationService {
         },
         idleTimeout: '90s'
       });
+      await assertRuntimeProfile(handle, record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile']);
 
       const source = cloneSource ?? {
         url: `https://github.com/${repositorySlug(record.workspace.repository)}.git`
@@ -259,6 +291,8 @@ export class ForgeApplicationService {
       const [currentCommit = '', currentBranch = ''] = gitState.stdout.trim().split('\n');
       record.workspace.currentCommit = currentCommit;
       record.workspace.currentBranch = currentBranch || record.workspace.requestedRef;
+      record.workspace.baseCommit = currentCommit;
+      record.workspace.initialHeadCommit = currentCommit;
       record.workspace.lastPushedCommit = currentCommit;
       record.workspace.lastPushedBranch = record.workspace.currentBranch;
       record.workspace.state = 'ready';
@@ -365,6 +399,32 @@ export class ForgeApplicationService {
     return (await this.handle(record)).readFile(input);
   }
 
+  async write(
+    record: WorkspaceRuntimeRecord,
+    input: FileWriteInput,
+    expectedRevision: number | undefined,
+    idempotencyKey: string
+  ) {
+    const handle = await this.handle(record);
+    const previous = await handle.readFile({ path: input.path, maxBytes: 1_000_000 }).catch(() => undefined);
+    if (input.expectedSha256 && previous?.sha256 !== input.expectedSha256) {
+      throw new ForgeError({ code: 'FORGE_FILE_CONFLICT', message: 'The file no longer matches the expected content hash.', retryable: false, details: { path: input.path, expectedSha256: input.expectedSha256, actualSha256: previous?.sha256 } });
+    }
+    const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
+    if (operation.replay) return { replay: true, workspaceId: record.workspace.id, path: input.path, operationId: operation.operationId, filesystemRevision: record.workspace.revision };
+    const written = await handle.writeFile(input);
+    const observed = await handle.readFile({ path: input.path, maxBytes: new TextEncoder().encode(input.content).byteLength + 1 });
+    if (observed.sha256 !== written.sha256 || observed.content !== input.content || observed.truncated) {
+      throw new ForgeError({ code: 'FORGE_FILE_CONFLICT', message: 'Forge could not verify a read-after-write filesystem result.', retryable: false, operationId: operation.operationId, details: { path: input.path, expectedSha256: written.sha256, observedSha256: observed.sha256 } });
+    }
+    const shellSha256 = await this.shellFileSha256(record, input.path);
+    if (shellSha256 !== observed.sha256) {
+      throw new ForgeError({ code: 'FORGE_FILE_CONFLICT', message: 'Forge shell and file APIs did not observe the same written bytes.', retryable: false, operationId: operation.operationId, details: { path: input.path, fileSha256: observed.sha256, shellSha256 } });
+    }
+    const worktree = await this.gitWorktree(record);
+    return { workspaceId: record.workspace.id, path: input.path, previousSha256: previous?.sha256 ?? null, resultingSha256: observed.sha256, shellSha256, sizeBytes: observed.sizeBytes, filesystemRevision: record.workspace.revision, gitWorktreeHash: worktree.hash, readAfterWriteVerified: true, operationId: operation.operationId };
+  }
+
   async patch(
     record: WorkspaceRuntimeRecord,
     input: PatchInput,
@@ -389,11 +449,62 @@ export class ForgeApplicationService {
         details: { output: value.output.slice(0, 4_000) }
       });
     }
+    const files = await Promise.all(value.changedFiles.map(async (path) => {
+      const absolutePath = path.startsWith('/workspace/') ? path : `/workspace/repo/${path}`;
+      const observed = await (await this.handle(record)).readFile({ path: absolutePath, maxBytes: 1_000_000 }).catch(() => undefined);
+      if (!observed) {
+        const absent = await (await this.handle(record)).exec({ command: `test ! -e ${quoted(absolutePath)}`, cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' });
+        if (absent.exitCode !== 0) throw new ForgeError({ code: 'FORGE_FILE_CONFLICT', message: 'Forge could not verify a deleted patch path.', retryable: false, operationId: operation.operationId, details: { path: absolutePath } });
+        return { path: absolutePath, deleted: true };
+      }
+      const shellSha256 = await this.shellFileSha256(record, absolutePath);
+      if (shellSha256 !== observed.sha256) throw new ForgeError({ code: 'FORGE_FILE_CONFLICT', message: 'Forge shell and file APIs did not observe the same patched bytes.', retryable: false, operationId: operation.operationId, details: { path: absolutePath, fileSha256: observed.sha256, shellSha256 } });
+      return { path: absolutePath, resultingSha256: observed.sha256, shellSha256, sizeBytes: observed.sizeBytes };
+    }));
+    const worktree = await this.gitWorktree(record);
     return {
       value,
+      workspaceId: record.workspace.id,
+      files,
+      gitWorktreeHash: worktree.hash,
+      readAfterWriteVerified: true,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision
     };
+  }
+
+  async checkpoint(record: WorkspaceRuntimeRecord, name?: string) {
+    const snapshot = await this.sandboxProvider.snapshot(record.providerId, {
+      name: name ?? `forge-${record.workspace.id}-${record.workspace.revision}`,
+      ttlSeconds: 7 * 24 * 60 * 60,
+      excludeGitignored: false
+    });
+    record.snapshots[snapshot.id] = snapshot;
+    record.workspace.activeSnapshotId = snapshot.id;
+    record.workspace.updatedAt = new Date().toISOString();
+    return { snapshotId: snapshot.id, createdAt: snapshot.createdAt, providerVersion: snapshot.providerVersion, workspaceRevision: record.workspace.revision };
+  }
+
+  async restoreCheckpoint(record: WorkspaceRuntimeRecord, snapshotId: SnapshotRef['id'], expectedRevision?: number) {
+    const snapshot = record.snapshots[snapshotId];
+    if (!snapshot) throw new ForgeError({ code: 'FORGE_SNAPSHOT_INCOMPATIBLE', message: 'The requested workspace checkpoint is unavailable.', retryable: false, details: { snapshotId } });
+    if (record.workspace.state === 'ready' || record.workspace.state === 'busy') await this.assertDestroySafe(record);
+    record.workspace.state = 'restoring';
+    record.workspace.revision = nextRevision(record.workspace.revision, expectedRevision);
+    record.workspace.updatedAt = new Date().toISOString();
+    await this.sandboxProvider.destroy(record.providerId).catch(() => undefined);
+    await this.sandboxProvider.restore(snapshot, {
+      providerId: record.providerId,
+      runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
+      labels: { workspaceId: record.workspace.id, tenantId: record.workspace.tenantId, repository: repositorySlug(record.workspace.repository) },
+      idleTimeout: '90s'
+    });
+    record.processes = {};
+    record.previews = {};
+    record.workspace.activeSnapshotId = snapshotId;
+    record.workspace.state = 'ready';
+    await this.reconcileGitState(record);
+    return { workspaceId: record.workspace.id, restoredSnapshotId: snapshotId, workspaceRevision: record.workspace.revision, branch: record.workspace.currentBranch, commit: record.workspace.currentCommit };
   }
 
   async exec(
@@ -435,6 +546,10 @@ export class ForgeApplicationService {
           durationMs: 0,
           artifactRefs: [],
           replay: true,
+          workspaceId: record.workspace.id,
+          branch: record.workspace.currentBranch,
+          head: record.workspace.currentCommit,
+          classification: decision.classification,
           operationId,
           workspaceRevision: record.workspace.revision
         };
@@ -452,6 +567,10 @@ export class ForgeApplicationService {
     });
     return {
       ...result,
+      workspaceId: record.workspace.id,
+      branch: record.workspace.currentBranch,
+      head: record.workspace.currentCommit,
+      baseCommit: record.workspace.baseCommit,
       classification: decision.classification,
       operationId,
       workspaceRevision: record.workspace.revision
@@ -490,6 +609,9 @@ export class ForgeApplicationService {
     if (operation.replay) {
       return {
         replay: true,
+        workspaceId: record.workspace.id,
+        branch: record.workspace.currentBranch,
+        head: record.workspace.currentCommit,
         operationId: operation.operationId,
         workspaceRevision: record.workspace.revision
       };
@@ -507,6 +629,9 @@ export class ForgeApplicationService {
     record.processes[processId] = { command: input.command };
     return {
       value,
+      workspaceId: record.workspace.id,
+      branch: record.workspace.currentBranch,
+      head: record.workspace.currentCommit,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision
     };
@@ -524,6 +649,75 @@ export class ForgeApplicationService {
     });
   }
 
+  async processGet(record: WorkspaceRuntimeRecord, processId: ProcessId) {
+    const process = await (await this.handle(record)).getProcess(processId);
+    if (!process) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
+    return { workspaceId: record.workspace.id, process, recorded: record.processes[processId] ?? null, workspaceRevision: record.workspace.revision };
+  }
+
+  async stopProcess(
+    record: WorkspaceRuntimeRecord,
+    processId: ProcessId,
+    expectedRevision: number | undefined,
+    idempotencyKey: string
+  ) {
+    if (!record.processes[processId]) {
+      throw new ForgeError({
+        code: 'FORGE_PROCESS_NOT_FOUND',
+        message: 'The process is not owned by this workspace.',
+        retryable: false,
+        details: { processId }
+      });
+    }
+    const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
+    if (operation.replay) {
+      return {
+        replay: true,
+        workspaceId: record.workspace.id,
+        processId,
+        operationId: operation.operationId,
+        workspaceRevision: record.workspace.revision
+      };
+    }
+    await (await this.handle(record)).stopProcess(processId);
+    const check = record.checks[processId] ?? null;
+    delete record.processes[processId];
+    delete record.checks[processId];
+    return {
+      workspaceId: record.workspace.id,
+      processId,
+      stopped: true,
+      check,
+      operationId: operation.operationId,
+      workspaceRevision: record.workspace.revision
+    };
+  }
+
+  async startCheck(
+    record: WorkspaceRuntimeRecord,
+    input: {
+      name: string;
+      command: string;
+      cwd: string;
+      environment?: Record<string, string>;
+      networkPolicy: NetworkPolicyMode;
+      idempotencyKey: string;
+      expectedRevision?: number;
+    }
+  ) {
+    if (!input.name.trim() || input.name.length > 100) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Check name is invalid.', retryable: false });
+    const started = await this.startProcess(record, input);
+    if ('replay' in started) return started;
+    const processId = started.value.id;
+    record.checks[processId] = { name: input.name.trim(), command: input.command, startedAt: new Date().toISOString(), ...(record.workspace.currentCommit ? { commit: record.workspace.currentCommit } : {}) };
+    return { ...started, check: { processId, ...record.checks[processId] } };
+  }
+
+  async checkGet(record: WorkspaceRuntimeRecord, processId: ProcessId) {
+    const value = await this.processGet(record, processId);
+    return { ...value, check: record.checks[processId] ?? null };
+  }
+
   async reconcileGitState(record: WorkspaceRuntimeRecord): Promise<boolean> {
     const result = await (await this.handle(record)).exec({
       command: 'git rev-parse HEAD && git branch --show-current',
@@ -536,6 +730,15 @@ export class ForgeApplicationService {
     const changed = record.workspace.currentCommit !== currentCommit || record.workspace.currentBranch !== currentBranch;
     const isInitialCheckedOutRef = !record.workspace.lastPushedCommit && currentBranch === record.workspace.requestedRef;
     if (changed || isInitialCheckedOutRef) {
+      if (changed) {
+        record.lastGitDivergence = {
+          recordedCommit: record.workspace.currentCommit,
+          recordedBranch: record.workspace.currentBranch,
+          observedCommit: currentCommit,
+          observedBranch: currentBranch,
+          observedAt: new Date().toISOString()
+        };
+      }
       record.workspace.currentCommit = currentCommit;
       record.workspace.currentBranch = currentBranch;
       if (isInitialCheckedOutRef) {
@@ -616,10 +819,22 @@ export class ForgeApplicationService {
       outputLimitBytes: 200_000,
       networkPolicy: 'deny_all'
     });
+    const changed = await (await this.handle(record)).exec({
+      command: 'git diff --name-only -z && git diff --cached --name-only -z && git ls-files --others --exclude-standard -z',
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 200_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (changed.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not enumerate workspace changes.', retryable: false });
+    const changedPaths = [...new Set(changed.stdout.split('\0').filter(Boolean))];
     return {
+      workspaceId: record.workspace.id,
+      repository: record.workspace.repository,
       raw: result.stdout,
       branch: record.workspace.currentBranch,
       commit: record.workspace.currentCommit,
+      baseCommit: record.workspace.baseCommit ?? null,
+      filesystemRevision: record.workspace.revision,
+      changedPaths,
       sync: {
         state: record.workspace.currentCommit && record.workspace.currentCommit === record.workspace.lastPushedCommit && record.workspace.currentBranch === record.workspace.lastPushedBranch ? 'pushed' : 'unpushed',
         lastPushedCommit: record.workspace.lastPushedCommit ?? null,
@@ -636,8 +851,88 @@ export class ForgeApplicationService {
     };
   }
 
+  private async untrackedFiles(record: WorkspaceRuntimeRecord) {
+    const handle = await this.handle(record);
+    const listed = await handle.exec({
+      command: 'git ls-files --others --exclude-standard -z',
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 200_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (listed.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not enumerate untracked files.', retryable: false });
+    return Promise.all(listed.stdout.split('\0').filter(Boolean).map(async (path) => {
+      const file = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 1 });
+      return { path, sha256: file.sha256, sizeBytes: file.sizeBytes };
+    }));
+  }
+
+  private async shellFileSha256(record: WorkspaceRuntimeRecord, path: string) {
+    const result = await (await this.handle(record)).exec({
+      command: `sha256sum -- ${quoted(path)}`,
+      cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    const sha256 = result.stdout.trim().split(/\s+/u)[0] ?? '';
+    if (result.exitCode !== 0 || !/^[a-f0-9]{64}$/u.test(sha256)) throw new ForgeError({ code: 'FORGE_FILE_CONFLICT', message: 'Forge could not verify the file through the shell filesystem mount.', retryable: false, details: { path } });
+    return sha256;
+  }
+
+  private async gitWorktree(record: WorkspaceRuntimeRecord) {
+    const result = await (await this.handle(record)).exec({
+      command: 'git diff --no-ext-diff --binary && git diff --cached --no-ext-diff --binary',
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 1_000_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not calculate the worktree state.', retryable: false });
+    const untrackedFiles = await this.untrackedFiles(record);
+    return { diff: result.stdout, untrackedFiles, hash: await sha256Text(JSON.stringify({ diff: result.stdout, untrackedFiles })) };
+  }
+
+  async proveWorkspaceState(record: WorkspaceRuntimeRecord) {
+    const recorded = { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, baseCommit: record.workspace.baseCommit };
+    await this.reconcileGitState(record);
+    const status = await this.gitStatus(record);
+    const worktree = await this.gitWorktree(record);
+    const baseCommit = record.workspace.baseCommit ?? record.workspace.currentCommit;
+    const handle = await this.handle(record);
+    const outgoing = await handle.exec({
+      command: `git diff --name-only -z ${quoted(baseCommit ?? 'HEAD')}...HEAD; printf '\n__FORGE_DIFF__\n'; git diff --binary ${quoted(baseCommit ?? 'HEAD')}...HEAD`,
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 1_000_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (outgoing.exitCode !== 0) throw new ForgeError({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED', message: 'Forge could not prove the outgoing Git state against the immutable base.', retryable: false, details: { baseCommit } });
+    const marker = '\n__FORGE_DIFF__\n';
+    const separator = outgoing.stdout.indexOf(marker);
+    if (separator < 0) throw new ForgeError({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED', message: 'Forge received an incomplete Git proof response.', retryable: false });
+    const names = outgoing.stdout.slice(0, separator).split('\0').filter(Boolean);
+    const diff = outgoing.stdout.slice(separator + marker.length);
+    const files = await Promise.all(names.slice(0, 200).map(async (path) => {
+      const filesystem = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 1_000_000 }).catch(() => undefined);
+      const head = await handle.exec({ command: `git show HEAD:${quoted(path)}`, cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000_000, sessionId: 'system', networkPolicy: 'deny_all' });
+      return { path, filesystemSha256: filesystem?.sha256 ?? null, headSha256: head.exitCode === 0 ? await sha256Text(head.stdout) : null };
+    }));
+    const uncommittedFiles = await Promise.all(status.changedPaths.slice(0, 200).map(async (path) => {
+      const filesystem = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 1_000_000 }).catch(() => undefined);
+      const head = await handle.exec({ command: `git show HEAD:${quoted(path)}`, cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000_000, sessionId: 'system', networkPolicy: 'deny_all' });
+      return { path, filesystemSha256: filesystem?.sha256 ?? null, headSha256: head.exitCode === 0 ? await sha256Text(head.stdout) : null };
+    }));
+    return { workspaceId: record.workspace.id, repository: record.workspace.repository, recorded, observed: { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, baseCommit }, status, uncommittedDiffHash: worktree.hash, untrackedFiles: worktree.untrackedFiles, committedOutgoingDiffHash: await sha256Text(diff), changedPaths: names, files, uncommittedFiles, gitDivergence: record.lastGitDivergence ?? null, remoteBranch: { state: 'not_verified', reason: 'Remote verification requires a fresh repository-scoped capability and is not inferred from local metadata.' } };
+  }
+
+  async exportRecoveryPatch(record: WorkspaceRuntimeRecord, maxBytes: number) {
+    const proof = await this.proveWorkspaceState(record);
+    const baseCommit = record.workspace.baseCommit ?? record.workspace.currentCommit ?? 'HEAD';
+    const result = await (await this.handle(record)).exec({
+      command: `git diff --binary ${quoted(baseCommit)}...HEAD; printf '\n__FORGE_UNCOMMITTED__\n'; git diff --no-ext-diff --binary; git diff --cached --no-ext-diff --binary; printf '\n__FORGE_UNTRACKED_ARCHIVE_BASE64__\n'; list=/workspace/tmp/forge-untracked-$$.list; git ls-files --others --exclude-standard -z > "$list"; if [ -s "$list" ]; then tar --null --files-from="$list" -czf - | base64; fi; rm -f "$list"`,
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: maxBytes,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (result.exitCode !== 0 || result.truncated) throw new ForgeError({ code: 'FORGE_OUTPUT_TRUNCATED', message: 'Forge could not create a complete recovery patch within the requested export limit.', retryable: false, details: { maxBytes, truncated: result.truncated } });
+    const manifest = JSON.stringify({ schemaVersion: 2, exportedAt: new Date().toISOString(), proof, includes: ['committed binary diff against immutable base', 'uncommitted staged and unstaged binary diff', 'base64 tar.gz archive of every untracked file'], restore: 'Apply the committed and uncommitted patch sections to a checkout of baseCommit, then decode the __FORGE_UNTRACKED_ARCHIVE_BASE64__ section with base64 -d | tar -xzf -.' }, null, 2);
+    return { content: `${manifest}\n\n__FORGE_PATCH__\n${result.stdout}`, proof };
+  }
+
   async gitDiff(record: WorkspaceRuntimeRecord, staged = false) {
-    return this.exec(record, {
+    const diff = await this.exec(record, {
       command: staged
         ? 'git diff --cached --no-ext-diff'
         : 'git diff --no-ext-diff',
@@ -646,9 +941,28 @@ export class ForgeApplicationService {
       outputLimitBytes: 500_000,
       networkPolicy: 'deny_all'
     });
+    const names = await (await this.handle(record)).exec({
+      command: staged ? 'git diff --cached --name-status -z' : 'git diff --name-status -z',
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 200_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (names.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not enumerate changed paths.', retryable: false });
+    const values = names.stdout.split('\0').filter(Boolean);
+    const files: Array<{ status: string; path: string; previousPath?: string }> = [];
+    for (let index = 0; index < values.length;) {
+      const status = values[index++];
+      const path = values[index++];
+      if (!status || !path) break;
+      if (status.startsWith('R') || status.startsWith('C')) {
+        const nextPath = values[index++];
+        if (nextPath) files.push({ status, previousPath: path, path: nextPath });
+      } else files.push({ status, path });
+    }
+    return { ...diff, files, workspaceId: record.workspace.id, branch: record.workspace.currentBranch, head: record.workspace.currentCommit, filesystemRevision: record.workspace.revision };
   }
 
   async assertDestroySafe(record: WorkspaceRuntimeRecord): Promise<void> {
+    await this.reconcileGitState(record);
     const status = await this.gitStatus(record);
     if (!status.clean || status.sync.state !== 'pushed') {
       throw new ForgeError({
@@ -676,6 +990,7 @@ export class ForgeApplicationService {
     });
     if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the branch.', retryable: false });
     await this.reconcileGitState(record);
+    record.lastGitDivergence = undefined;
     return { branch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -711,18 +1026,23 @@ export class ForgeApplicationService {
     });
     if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
     await this.reconcileGitState(record);
+    record.lastGitDivergence = undefined;
     return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
   async gitOutgoingDiff(record: WorkspaceRuntimeRecord, base: string) {
     assertRef(base);
+    if (base !== record.workspace.requestedRef) {
+      throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Forge only compares and submits against the immutable base ref recorded when this workspace was created.', retryable: false, details: { requestedBase: record.workspace.requestedRef, providedBase: base, baseCommit: record.workspace.baseCommit ?? null } });
+    }
+    const immutableBase = record.workspace.baseCommit ?? base;
     const result = await (await this.handle(record)).exec({
-      command: `git diff --no-ext-diff --binary ${quoted(base)}...HEAD`,
+      command: `git diff --no-ext-diff --binary ${quoted(immutableBase)}...HEAD`,
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 1_000_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
     if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not calculate the outgoing change.', retryable: false });
-    return { diff: result.stdout, diffHash: await sha256Text(result.stdout), branch: record.workspace.currentBranch, base };
+    return { diff: result.stdout, diffHash: await sha256Text(result.stdout), branch: record.workspace.currentBranch, baseRef: base, baseCommit: immutableBase };
   }
 
   async gitPush(
@@ -747,6 +1067,16 @@ export class ForgeApplicationService {
         environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
       });
       if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'GitHub rejected the Forge branch push.', retryable: false, details: { stderr: result.stderr.slice(0, 2_000) } });
+      const remote = await handle.exec({
+        command: `git ls-remote --exit-code ${quoted(input.source.url)} ${quoted(`refs/heads/${input.branch}`)}`,
+        cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 10_000,
+        sessionId: 'system', networkPolicy: 'development',
+        environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+      });
+      const remoteCommit = remote.stdout.trim().split(/\s+/u)[0] ?? '';
+      if (remote.exitCode !== 0 || remoteCommit !== record.workspace.currentCommit) {
+        throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Forge pushed the branch but could not verify that the remote ref resolves to the submitted commit.', retryable: false, details: { branch: input.branch, expectedCommit: record.workspace.currentCommit, observedRemoteCommit: remoteCommit || null, stderr: remote.stderr.slice(0, 2_000) } });
+      }
     } finally {
       await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
     }
@@ -793,6 +1123,23 @@ export class ForgeApplicationService {
       });
     }
     const handle = await this.sandboxProvider.get(record.providerId);
+    const git = await handle.exec({
+      command: 'git status --porcelain=v2 --branch && git rev-parse HEAD && git branch --show-current',
+      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 200_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    const lines = git.stdout.split('\n');
+    const currentCommit = lines.find((line) => /^[a-f0-9]{4,64}$/iu.test(line.trim()))?.trim();
+    const currentBranch = lines.map((line) => line.trim()).filter(Boolean).at(-1);
+    const dirty = lines.some((line) => line.startsWith('1 ') || line.startsWith('2 ') || line.startsWith('? '));
+    if (git.exitCode !== 0 || dirty || currentCommit !== record.workspace.lastPushedCommit || currentBranch !== record.workspace.lastPushedBranch) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Forge refused teardown because the checked-out Git state changed after destroy was requested.',
+        retryable: false,
+        details: { currentCommit: currentCommit ?? null, currentBranch: currentBranch ?? null, dirty, lastPushedCommit: record.workspace.lastPushedCommit ?? null, lastPushedBranch: record.workspace.lastPushedBranch ?? null }
+      });
+    }
     for (const preview of Object.values(record.previews)) {
       await handle.revokePort(preview.port).catch(() => undefined);
     }
@@ -804,6 +1151,7 @@ export class ForgeApplicationService {
     record.workspace.revision = nextRevision(record.workspace.revision);
     record.workspace.updatedAt = new Date().toISOString();
     record.processes = {};
+    record.checks = {};
     record.previews = {};
     return { workspaceRevision: record.workspace.revision, replay: false };
   }

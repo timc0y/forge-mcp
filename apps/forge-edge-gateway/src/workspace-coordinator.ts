@@ -49,7 +49,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         retryable: false
       });
     }
-    return record;
+    return { ...record, snapshots: record.snapshots ?? {}, checks: record.checks ?? {} };
   }
 
   private async save(record: WorkspaceRuntimeRecord): Promise<void> {
@@ -232,27 +232,39 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async getState() {
-    const record = await this.getRecord();
-    const lease = await this.ctx.storage.get<MutationLease>(LEASE_KEY);
-    return {
-      ...record.workspace,
-      processes: record.processes,
-      previews: Object.fromEntries(
-        Object.entries(record.previews).map(([id, value]) => [
-          id,
-          {
-            port: value.port,
-            processId: value.processId,
-            access: value.access,
-            expiresAt: value.expiresAt
-          }
-        ])
-      ),
-      lease:
-        lease && Date.parse(lease.expiresAt) > Date.now()
-          ? { holder: lease.holder, expiresAt: lease.expiresAt }
-          : null
-    };
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      if (['ready', 'busy'].includes(record.workspace.state) && await this.app.reconcileGitState(record)) await this.save(record);
+      const lease = await this.ctx.storage.get<MutationLease>(LEASE_KEY);
+      return {
+        ...record.workspace,
+        processes: record.processes,
+        checks: record.checks,
+        previews: Object.fromEntries(
+          Object.entries(record.previews).map(([id, value]) => [
+            id,
+            {
+              port: value.port,
+              processId: value.processId,
+              access: value.access,
+              expiresAt: value.expiresAt
+            }
+          ])
+        ),
+        checkpoints: Object.values(record.snapshots).map((snapshot) => ({
+          snapshotId: snapshot.id,
+          createdAt: snapshot.createdAt,
+          providerVersion: snapshot.providerVersion
+        })),
+        gitIntegrity: record.lastGitDivergence
+          ? { state: 'diverged', ...record.lastGitDivergence }
+          : { state: 'consistent' },
+        lease:
+          lease && Date.parse(lease.expiresAt) > Date.now()
+            ? { holder: lease.holder, expiresAt: lease.expiresAt }
+            : null
+      };
+    });
   }
 
   async filesTree(input: { path: string; depth: number; limit: number }) {
@@ -268,6 +280,22 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.app.read(await this.getRecord(), input);
   }
 
+  async filesWrite(input: {
+    path: string;
+    content: string;
+    expectedSha256?: string;
+    expectedRevision?: number;
+    idempotencyKey: string;
+  }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const value = await this.app.write(record, input, input.expectedRevision, input.idempotencyKey);
+      const checkpoint = await this.app.checkpoint(record, `write-${record.workspace.revision}`);
+      await this.save(record);
+      return { ...value, checkpoint };
+    });
+  }
+
   async filesPatch(input: {
     patch: string;
     expectedRevision?: number;
@@ -281,8 +309,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         input.expectedRevision,
         input.idempotencyKey
       );
+      const checkpoint = await this.app.checkpoint(record, `patch-${record.workspace.revision}`);
       await this.save(record);
-      return value;
+      return { ...value, checkpoint };
     });
   }
 
@@ -312,8 +341,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         idempotencyKey: input.idempotencyKey,
         approved: input.approved
       });
+      const checkpoint = value.classification === 'read_only' ? undefined : await this.app.checkpoint(record, `shell-${record.workspace.revision}`);
       if (record.workspace.revision !== before) await this.save(record);
-      return value;
+      return checkpoint ? { ...value, checkpoint } : value;
     };
     return decisionRequiresSerialization ? this.serializeMutation(action) : action();
   }
@@ -342,11 +372,81 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     );
   }
 
+  async processGet(input: { processId: ProcessId }) {
+    return this.app.processGet(await this.getRecord(), input.processId);
+  }
+
+  async processStop(input: { processId: ProcessId; expectedRevision?: number; idempotencyKey: string }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const value = await this.app.stopProcess(record, input.processId, input.expectedRevision, input.idempotencyKey);
+      await this.save(record);
+      return value;
+    });
+  }
+
+  async checkStart(input: {
+    name: string;
+    command: string;
+    cwd: string;
+    environment: Record<string, string>;
+    networkPolicy: Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>;
+    expectedRevision?: number;
+    idempotencyKey: string;
+  }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const value = await this.app.startCheck(record, input);
+      await this.save(record);
+      return value;
+    });
+  }
+
+  async checkGet(input: { processId: ProcessId }) {
+    return this.app.checkGet(await this.getRecord(), input.processId);
+  }
+
   async gitStatus() {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       if (await this.app.reconcileGitState(record)) await this.save(record);
       return this.app.gitStatus(record);
+    });
+  }
+
+  async proveWorkspaceState() {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const value = await this.app.proveWorkspaceState(record);
+      await this.save(record);
+      return value;
+    });
+  }
+
+  async checkpoint(input: { name?: string }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const value = await this.app.checkpoint(record, input.name);
+      await this.save(record);
+      return value;
+    });
+  }
+
+  async exportRecoveryPatch(input: { maxBytes: number }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const value = await this.app.exportRecoveryPatch(record, input.maxBytes);
+      await this.save(record);
+      return value;
+    });
+  }
+
+  async restoreCheckpoint(input: { snapshotId: string; expectedRevision?: number }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const value = await this.app.restoreCheckpoint(record, input.snapshotId as Parameters<ForgeApplicationService['restoreCheckpoint']>[1], input.expectedRevision);
+      await this.save(record);
+      return value;
     });
   }
 
@@ -363,8 +463,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const record = await this.getRecord();
       await this.app.reconcileGitState(record);
       const value = await this.app.gitBranchCreate(record, input.branch, input.expectedRevision, input.idempotencyKey);
+      const checkpoint = await this.app.checkpoint(record, `branch-${record.workspace.currentBranch ?? record.workspace.revision}`);
       await this.save(record);
-      return value;
+      return { ...value, checkpoint };
     });
   }
 
@@ -373,8 +474,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const record = await this.getRecord();
       await this.app.reconcileGitState(record);
       const value = await this.app.gitCommit(record, input);
+      const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
       await this.save(record);
-      return value;
+      return { ...value, checkpoint };
     });
   }
 

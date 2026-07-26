@@ -27,6 +27,7 @@ describe('Forge MCP public contracts', () => {
     expect(toolAnnotations('forge_browser_screenshot', 'workspace')).toMatchObject({ idempotentHint: false });
     expect(toolAnnotations('forge_files_read', 'none')).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     expect(toolAnnotations('forge_workspace_create', 'workspace')).toMatchObject({ idempotentHint: true });
+    expect(toolAnnotations('forge_files_write', 'workspace')).toMatchObject({ idempotentHint: true });
   });
 
   it('exposes credential profiles without exposing raw credential fields', () => {
@@ -37,6 +38,13 @@ describe('Forge MCP public contracts', () => {
     expect(create).toHaveProperty('secret');
     expect(create).toHaveProperty('metadata');
     expect(forgeTools.some((candidate) => candidate.name === 'forge_workspace_reconcile')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_workspace_prove')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_workspace_checkpoint')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_workspace_restore')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_work_export')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_files_write')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_process_stop')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_check_cancel')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(true);
   });
 });

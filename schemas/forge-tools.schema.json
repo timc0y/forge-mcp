@@ -4,6 +4,18 @@
   "version": 1,
   "generatedAt": "deterministic",
   "tools": {
+    "forge_capabilities": {
+      "title": "Get Forge capability manifest",
+      "description": "Return the stable repository, workspace, Git, recovery, browser, deployment, and approval capabilities available to this MCP session.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
     "forge_credential_list": {
       "title": "List credential profiles",
       "description": "List the tenant credential profiles. Secrets and encrypted payloads are never returned.",
@@ -189,6 +201,108 @@
         "additionalProperties": false
       }
     },
+    "forge_workspace_prove": {
+      "title": "Prove workspace state",
+      "description": "Produce one evidence receipt from the actual checkout: immutable base, branch, HEAD, changed paths, filesystem and HEAD file hashes, worktree hash, committed outgoing hash, and recorded-state divergence.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_workspace_checkpoint": {
+      "title": "Create durable workspace checkpoint",
+      "description": "Create a provider snapshot containing the workspace filesystem and Git data before a risky operation. The checkpoint is retained independently from the active session.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_workspace_restore": {
+      "title": "Restore durable workspace checkpoint",
+      "description": "Restore a recorded provider checkpoint into this workspace. Forge blocks restoration over dirty or unpushed work so recovery cannot silently discard a newer change.",
+      "sideEffect": "destructive",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "pattern": "^snap_.*"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "workspace_id",
+          "snapshot_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_work_export": {
+      "title": "Export recoverable work",
+      "description": "Persist an evidence-backed recovery bundle to Forge artifacts before risky Git, session, or teardown operations. The export contains committed and uncommitted binary diffs plus a base64 tar.gz archive of all untracked files.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "max_bytes": {
+            "default": 3000000,
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 4000000
+          }
+        },
+        "required": [
+          "workspace_id",
+          "max_bytes"
+        ],
+        "additionalProperties": false
+      }
+    },
     "forge_cloudflare_deploy": {
       "title": "Deploy with Cloudflare Wrangler",
       "description": "Deploy the workspace with pnpm exec wrangler using the selected Cloudflare profile for this one approved command. The API token is redacted from all results and is never persisted in the sandbox.",
@@ -360,7 +474,7 @@
     },
     "forge_workspace_create": {
       "title": "Create Forge workspace",
-      "description": "Create a disposable isolated workspace from an authorized repository. Returns immediately with the current lifecycle state and revision.",
+      "description": "Create a disposable isolated workspace from an authorized repository. Forge verifies the requested runtime before reporting provisioning success; Node 24 is available only where the configured provider image reports Node 24.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -530,6 +644,52 @@
           "workspace_id",
           "path",
           "max_bytes"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_files_write": {
+      "title": "Write workspace file",
+      "description": "Atomically replace one workspace file, then re-read it from the same filesystem before acknowledging success. Returns previous and resulting hashes, workspace revision, and worktree hash.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 1000,
+            "pattern": "^\\/workspace\\/repo\\/.*"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 4000000
+          },
+          "expected_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "path",
+          "content",
+          "idempotency_key"
         ],
         "additionalProperties": false
       }
@@ -744,6 +904,199 @@
         "required": [
           "workspace_id",
           "process_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_process_get": {
+      "title": "Get managed process status",
+      "description": "Read the actual managed process status, command, working directory, and PID for one workspace-owned process.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "process_id": {
+            "type": "string",
+            "pattern": "^proc_.*"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "process_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_process_stop": {
+      "title": "Stop managed process",
+      "description": "Stop one workspace-owned managed process. This never selects a host process by port or name.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "process_id": {
+            "type": "string",
+            "pattern": "^proc_.*"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "process_id",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_check_start": {
+      "title": "Start durable workspace check",
+      "description": "Start a long-running validation command as a managed workspace check. Returns immediately with a process ID, commit, and durable log/status handle instead of relying on a foreground response timeout.",
+      "sideEffect": "workspace",
+      "approval": "policy",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "cwd": {
+            "default": "/workspace/repo",
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "environment": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "network_policy": {
+            "default": "development",
+            "type": "string",
+            "enum": [
+              "deny_all",
+              "package_install",
+              "development",
+              "custom_allowlist"
+            ]
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "name",
+          "command",
+          "cwd",
+          "environment",
+          "network_policy",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_check_get": {
+      "title": "Get workspace check",
+      "description": "Read the current status, command, commit, and process details for a managed validation check.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "process_id": {
+            "type": "string",
+            "pattern": "^proc_.*"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "process_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_check_cancel": {
+      "title": "Cancel workspace check",
+      "description": "Cancel a managed validation check and persist that cancellation as a workspace mutation.",
+      "sideEffect": "workspace",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$"
+          },
+          "process_id": {
+            "type": "string",
+            "pattern": "^proc_.*"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "workspace_id",
+          "process_id",
+          "idempotency_key"
         ],
         "additionalProperties": false
       }
