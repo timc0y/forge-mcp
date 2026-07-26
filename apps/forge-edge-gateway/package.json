@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "0.12.3",
+    "@cloudflare/sandbox": "0.12.4",
     "@forge/application": "workspace:*",
     "@forge/artifacts-r2": "workspace:*",
     "@forge/browser-cloudflare": "workspace:*",

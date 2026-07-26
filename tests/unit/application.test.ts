@@ -104,6 +104,17 @@ class FakeProvider implements SandboxProvider {
     readProcessLogs: async () => ({ data: '', truncated: false }),
     stopProcess: async () => undefined,
     readFile: async ({ path, maxBytes }) => {
+      if (path === '/workspace/forge/workspace-id') {
+        if (this.workspaceProbeFails) {
+          throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: 'sandbox probe timed out', retryable: true });
+        }
+        if (!this.workspacePresent || !this.workspaceMarkerPresent) {
+          throw new ForgeError({ code: 'FORGE_FILE_NOT_FOUND', message: 'Sandbox file was not found.', retryable: false });
+        }
+        const content = 'forge-workspace-marker';
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+        return { path, content, sha256: Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(''), sizeBytes: content.length, truncated: false };
+      }
       const content = this.files.get(path);
       if (content === undefined) throw new Error('FILE_NOT_FOUND');
       const bytes = new TextEncoder().encode(content);
@@ -116,7 +127,33 @@ class FakeProvider implements SandboxProvider {
       return { path, sha256: Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(''), sizeBytes: new TextEncoder().encode(content).byteLength };
     },
     applyPatch: async () => { this.files.set('/workspace/repo/src/app.ts', 'patched'); return { applied: true, output: '', changedFiles: ['src/app.ts'] }; },
-    listFiles: async () => ({ entries: [], truncated: false }),
+    listFiles: async () => {
+      if (this.workspaceProbeFails) throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: 'sandbox probe timed out', retryable: true });
+      if (!this.workspacePresent && this.workspaceOtherContentPresent) return {
+        entries: [{ path: '/workspace/repo/untracked.txt', type: 'file' as const }],
+        truncated: false
+      };
+      if (!this.workspacePresent) return {
+        entries: [
+          { path: '/workspace/repo', type: 'directory' as const },
+          { path: '/workspace/forge', type: 'directory' as const },
+          { path: '/workspace/cache', type: 'directory' as const }
+        ],
+        truncated: false
+      };
+      if (!this.workspaceMarkerPresent) return {
+        entries: [
+          { path: '/workspace/repo', type: 'directory' as const },
+          { path: '/workspace/repo/.git', type: 'directory' as const }
+        ],
+        truncated: false
+      };
+      if (this.workspaceOtherContentPresent) return {
+        entries: [{ path: '/workspace/repo/untracked.txt', type: 'file' as const }],
+        truncated: false
+      };
+      return { entries: [], truncated: false };
+    },
     exposePort: async () => ({ port: 5173, providerUrl: 'https://provider.invalid', name: 'preview' }),
     revokePort: async () => undefined
   };
@@ -206,10 +243,6 @@ describe('Forge application service', () => {
     await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
       .resolves.toMatchObject({ entries: [] });
     expect(provider.calls).toContain('restore');
-    // The production image and SDK can create empty scaffolding before the
-    // probe. It is safe only when no marker, checkout, file, symlink, socket or
-    // pipe could hold real workspace data.
-    expect(provider.calls.some((command) => command.includes('test ! -d /workspace/repo/.git') && command.includes('-type f -o -type l -o -type s -o -type p'))).toBe(true);
     expect(record.processes).toEqual({});
     expect(record.previews).toEqual({});
   });

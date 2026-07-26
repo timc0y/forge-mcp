@@ -1,5 +1,5 @@
 {
   "name":"@forge/sandbox-cloudflare","version":"0.1.0","type":"module","exports":"./src/index.ts",
-  "dependencies":{"@cloudflare/sandbox":"0.12.3","@forge/core":"workspace:*","@forge/sandbox-core":"workspace:*"},
+  "dependencies":{"@cloudflare/sandbox":"0.12.4","@forge/core":"workspace:*","@forge/sandbox-core":"workspace:*"},
   "scripts":{"typecheck":"tsc -p tsconfig.json --noEmit"}
 }

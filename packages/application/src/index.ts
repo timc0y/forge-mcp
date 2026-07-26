@@ -580,29 +580,38 @@ export class ForgeApplicationService {
       }
       return { code: 'UNKNOWN' };
     };
-    let mount: Awaited<ReturnType<SandboxHandle['exec']>>;
-    try {
-      mount = await handle.exec({
-      // Cloudflare restarts the image after an idle sleep. Our image deliberately
-      // seeds empty directories under /workspace, and the SDK/session layer may
-      // add further empty directories before this probe runs. A true FUSE-mount
-      // loss is therefore not literally an empty directory. The safe invariant
-      // is stricter where it matters: no Forge marker, no Git checkout, and no
-      // file-like object (regular file, symlink, socket or pipe) anywhere under
-      // /workspace. Any possible user bytes make the state ambiguous and stop
-      // automatic recovery.
-      command: 'test -d /workspace && test ! -e /workspace/forge/workspace-id && test ! -d /workspace/repo/.git && test -z "$(find /workspace -mindepth 1 \( -type f -o -type l -o -type s -o -type p \) -print -quit 2>/dev/null)"',
-      cwd: '/workspace',
-      timeoutMs: 30_000,
-      outputLimitBytes: 10_000,
-      sessionId: 'system',
-      networkPolicy: 'deny_all'
-      });
-    } catch (error) {
-      return { state: 'unavailable', diagnostic: diagnostic(error) };
+    // Do not start recovery by opening a shell session. After a Sandbox idle
+    // restart the session RPC can wait indefinitely before its command timeout
+    // applies, which prevents Forge from noticing the lost FUSE overlay. File
+    // APIs wake a sandbox independently, so first ask for our immutable marker.
+    const markerFile = await handle.readFile({
+      path: '/workspace/forge/workspace-id',
+      maxBytes: 512
+    }).catch((error) => ({ error }));
+    if ('error' in markerFile) {
+      const markerDiagnostic = diagnostic(markerFile.error);
+      if (markerDiagnostic.code !== 'FORGE_FILE_NOT_FOUND') {
+        return { state: 'unavailable', diagnostic: markerDiagnostic };
+      }
+      // The image deliberately seeds empty directories, so a missing marker
+      // alone is insufficient evidence. Enumerate through the file API and
+      // restore only when there is no checkout and no file/symlink that could
+      // contain user data. A truncated listing is intentionally ambiguous.
+      const scaffold = await handle.listFiles({
+        path: '/workspace',
+        depth: 16,
+        limit: 4_000
+      }).catch((error) => ({ error }));
+      if ('error' in scaffold) return { state: 'unavailable', diagnostic: diagnostic(scaffold.error) };
+      if (scaffold.truncated) {
+        return { state: 'unavailable', diagnostic: { code: 'FORGE_OUTPUT_TRUNCATED', operation: 'workspace_scaffold_probe' } };
+      }
+      const hasCheckout = scaffold.entries.some((entry) => entry.path === '/workspace/repo/.git' || entry.path.startsWith('/workspace/repo/.git/'));
+      const hasFileLikeContent = scaffold.entries.some((entry) => entry.type === 'file' || entry.type === 'symlink');
+      if (!hasCheckout && !hasFileLikeContent) return { state: 'mount_missing' };
+      return { state: 'unavailable', diagnostic: { code: 'FORGE_WORKSPACE_MARKER_MISSING', operation: 'workspace_scaffold_probe' } };
     }
-    if (mount.truncated) return { state: 'unavailable', diagnostic: { code: 'FORGE_OUTPUT_TRUNCATED', operation: 'workspace_mount_probe' } };
-    if (mount.exitCode === 0) return { state: 'mount_missing' };
+    if (markerFile.truncated) return { state: 'unavailable', diagnostic: { code: 'FORGE_OUTPUT_TRUNCATED', operation: 'workspace_marker_read' } };
     const marker = await handle.exec({
       command: `test "$(cat /workspace/forge/workspace-id 2>/dev/null)" = ${quoted(record.workspace.id)} && test -d /workspace/repo/.git`,
       cwd: '/workspace',

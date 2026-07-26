@@ -29,7 +29,7 @@ function base64url(value) {
   return Buffer.from(value).toString('base64url');
 }
 
-async function responseBody(response) {
+async function responseBody(response, expectedRequestId) {
   const body = await response.text();
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}: ${body.slice(0, 1_000)}`);
   if (!body) return undefined;
@@ -41,7 +41,16 @@ async function responseBody(response) {
     .map((line) => line.slice(5).trim())
     .filter(Boolean);
   if (data.length === 0) throw new Error(`MCP returned an empty event stream: ${body.slice(0, 500)}`);
-  return JSON.parse(data.at(-1));
+  // Streamable HTTP can append progress/auxiliary events after the tool
+  // response. Bind the stream frame to the exact JSON-RPC request id; choosing
+  // the last frame (or merely one with a result-like field) can turn a real
+  // successful destroy into `{ value: undefined }`.
+  const messages = data.map((line) => JSON.parse(line));
+  const rpcResponse = typeof expectedRequestId === 'number'
+    ? messages.findLast((message) => message && typeof message === 'object' && message.id === expectedRequestId && ('result' in message || 'error' in message))
+    : messages.findLast((message) => message && typeof message === 'object' && ('result' in message || 'error' in message));
+  if (!rpcResponse) throw new Error(`MCP event stream had no JSON-RPC response: ${body.slice(0, 500)}`);
+  return rpcResponse;
 }
 
 async function oauth() {
@@ -99,13 +108,14 @@ async function connect(accessToken) {
       'mcp-protocol-version': protocolVersion
     };
     if (sessionId) headers['mcp-session-id'] = sessionId;
+    const jsonRpcId = notification ? undefined : ++requestId;
     const response = await fetch(`${origin}/mcp`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id: ++requestId }), method, params })
+      body: JSON.stringify({ jsonrpc: '2.0', ...(jsonRpcId === undefined ? {} : { id: jsonRpcId }), method, params })
     });
     sessionId ??= response.headers.get('mcp-session-id') ?? undefined;
-    const message = await responseBody(response);
+    const message = await responseBody(response, jsonRpcId);
     if (message?.error) throw new Error(`MCP ${method} failed: ${JSON.stringify(message.error)}`);
     return message?.result;
   }
@@ -118,6 +128,9 @@ async function connect(accessToken) {
   return {
     async call(name, args) {
       const result = await request('tools/call', { name, arguments: args });
+      if (!result || typeof result !== 'object') {
+        throw new Error(`${name} returned an invalid MCP tool result.`);
+      }
       if (result?.isError) throw new Error(`${name} failed: ${JSON.stringify(result.structuredContent)}`);
       return { value: result?.structuredContent, content: result?.content ?? [] };
     }
@@ -152,14 +165,24 @@ const accessToken = await oauth();
 const mcp = await connect(accessToken);
 const cleanupWorkspace = process.env.FORGE_CLEANUP_WORKSPACE;
 if (cleanupWorkspace) {
+  const inspected = await mcp.call('forge_workspace_get', { workspace_id: cleanupWorkspace });
+  if (!inspected.value || typeof inspected.value !== 'object') {
+    throw new Error('forge_workspace_get did not return structured workspace state.');
+  }
+  console.log(`workspace ${cleanupWorkspace}: current state ${inspected.value.state}`);
   const cleanup = await mcp.call('forge_workspace_destroy', {
     workspace_id: cleanupWorkspace,
     preserve_artifacts: true,
     idempotency_key: key('cleanup')
   });
-  console.log(`workspace ${cleanupWorkspace}: ${cleanup.value.state}`);
-  process.exit(0);
+  if (!cleanup.value || typeof cleanup.value !== 'object') {
+    throw new Error('forge_workspace_destroy did not return structured workspace state.');
+  }
+  process.stdout.write(`workspace ${cleanupWorkspace}: ${cleanup.value.state}\n`);
+  await new Promise((resolveFlush) => setImmediate(resolveFlush));
 }
+
+if (!cleanupWorkspace) {
 let workspaceId;
 let destroyed = false;
 let previewAccess;
@@ -350,4 +373,5 @@ try {
     console.log(`workspace ${workspaceId}: ${reportedState ?? result.value.error}`);
   }
   if (workspaceId && !destroyed) process.exitCode = 1;
+}
 }
