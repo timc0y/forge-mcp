@@ -371,6 +371,13 @@ export async function logout(request: Request, env: Env): Promise<Response> {
 export async function installGitHubApp(request: Request, env: Env): Promise<Response> {
   const user = await getWebSession(request, env);
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github`, 302);
+  if (!hasForgeAccess(user)) return accessPendingPage(env, user, user.access_state ?? 'pending');
+  // This pilot deliberately uses a private GitHub App. Sending a collaborator
+  // to GitHub's installation URL produces GitHub's indistinguishable 404, which
+  // looks like a broken Forge button. The Forge owner installs/selects repos;
+  // approved collaborators inherit that shared project and never install the
+  // App themselves.
+  if (user.is_owner !== 1) return privateAppInstallHelpPage(env);
   const state = randomToken('ghinstall');
   await env.METADATA.prepare('INSERT INTO github_install_states (state_hash, user_id, expires_at) VALUES (?1, ?2, ?3)')
     .bind(await hash(state), user.id, new Date(Date.now() + LOGIN_STATE_SECONDS * 1000).toISOString()).run();
@@ -495,6 +502,8 @@ async function syncInstallation(env: Env, user: UserRow, installationId: string)
 export async function finishGitHubInstall(request: Request, env: Env): Promise<Response> {
   const user = await getWebSession(request, env);
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
+  if (!hasForgeAccess(user)) return accessPendingPage(env, user, user.access_state ?? 'pending');
+  if (user.is_owner !== 1) return privateAppInstallHelpPage(env);
   const installationId = new URL(request.url).searchParams.get('installation_id') ?? '';
   if (!/^\d+$/.test(installationId)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'GitHub installation ID is invalid.', retryable: false });
   const existing = await env.METADATA.prepare('SELECT tenant_id FROM github_installations WHERE installation_id=?1')
@@ -541,6 +550,10 @@ export async function reconnectGitHub(request: Request, env: Env): Promise<Respo
   if (!user) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent('/app')}`, 302);
   if (!hasForgeAccess(user)) return accessPendingPage(env, user, user.access_state ?? 'pending');
   assertSameOrigin(request, env);
+  // Installations belong to the pilot owner. A collaborator has no installation
+  // to discover, so an attempted reconnect should explain that instead of
+  // reporting a misleading "no installation found" state.
+  if (user.is_owner !== 1) return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/app?reconnect=owner_required`, 303);
   try {
     const installations = await githubJson<Array<{ id: number; account?: { id?: number; login?: string; type?: string } }>>(
       'https://api.github.com/app/installations?per_page=100',
@@ -609,7 +622,7 @@ export async function repositoryAccessDiagnosis(
     };
   }
   const user = await env.METADATA.prepare(
-    'SELECT github_login FROM users WHERE tenant_id=?1 ORDER BY created_at ASC LIMIT 1'
+    'SELECT github_login FROM users WHERE tenant_id=?1 AND is_owner=1 LIMIT 1'
   ).bind(tenantId).first<{ github_login: string }>().catch(() => null);
   if (user && installation.account_login && user.github_login !== installation.account_login) {
     return {
@@ -644,10 +657,37 @@ export async function resolveAccessRequest(
   if (!target || (decision !== 'approved' && decision !== 'denied')) {
     return new Response('Invalid decision', { status: 400 });
   }
+  // This is a small private pilot, not a multi-tenant App marketplace. When
+  // the owner approves somebody, move their Forge identity into the owner's
+  // existing tenant/project. That gives the collaborator the repositories the
+  // owner has explicitly installed without asking them to visit GitHub's
+  // private-App URL (which GitHub correctly answers with a 404 for non-owners).
+  // Their GitHub identity remains their own and every action stays audited to it.
+  const ownerScope = decision === 'approved'
+    ? await env.METADATA.prepare(
+        'SELECT tenant_id, project_id FROM users WHERE id=?1 AND is_owner=1 LIMIT 1'
+      ).bind(user.id).first<{ tenant_id: string; project_id: string }>()
+    : null;
+  if (decision === 'approved' && !ownerScope) {
+    throw new ForgeError({
+      code: 'FORGE_INTERNAL_ERROR',
+      message: 'Forge could not resolve the owner project for this access request.',
+      retryable: false
+    });
+  }
   await env.METADATA.prepare(
-    `UPDATE users SET access_state=?1, access_resolved_at=?2, access_resolved_by=?3
-      WHERE id=?4 AND is_owner=0`
-  ).bind(decision, new Date().toISOString(), `github:${user.github_user_id}`, target).run();
+    `UPDATE users SET access_state=?1, access_resolved_at=?2, access_resolved_by=?3,
+       tenant_id=CASE WHEN ?1='approved' THEN ?4 ELSE tenant_id END,
+       project_id=CASE WHEN ?1='approved' THEN ?5 ELSE project_id END
+      WHERE id=?6 AND is_owner=0`
+  ).bind(
+    decision,
+    new Date().toISOString(),
+    `github:${user.github_user_id}`,
+    ownerScope?.tenant_id ?? '',
+    ownerScope?.project_id ?? '',
+    target
+  ).run();
   return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/app`, 303);
 }
 
@@ -669,6 +709,23 @@ export function accessPendingPage(env: Env, user: UserRow, state: string): Respo
 <p>${declined
   ? 'Your request to use Forge was not approved. If you think that is a mistake, contact whoever runs this instance.'
   : `Thanks ${escapeHtml(user.github_login)} — your request is with the owner. You will be able to sign in here once it is approved.`}</p></div>`
+  });
+}
+
+/**
+ * GitHub intentionally hides private Apps from people who do not own them. Do
+ * not turn that into an opaque 404: say exactly who installs the App and what
+ * an approved collaborator should do next.
+ */
+export function privateAppInstallHelpPage(env: Env): Response {
+  return page({
+    title: 'Forge — private GitHub connection',
+    topRight: '<a href="/app">Back to Forge</a>',
+    css: '.centre{max-width:42rem;margin:clamp(3rem,10vw,6rem) auto}.steps{padding-left:1.25rem}.steps li{margin:.75rem 0}',
+    body: `<div class="centre"><h1>Your GitHub connection is managed by the Forge owner</h1>
+<p>Forge is running a <strong>private</strong> GitHub App. GitHub intentionally returns a 404 when a collaborator opens a private App installation link, so there is nothing for you to install here.</p>
+<ol class="steps"><li>The Forge owner installs the App on the repository and selects the repositories Forge may use.</li><li>The owner adds you as a GitHub collaborator for the repository.</li><li>You sign in to Forge and request access; after the owner approves it, the selected repositories appear in your Forge workspace.</li></ol>
+<p>If your request is already approved but no repository appears, ask the owner to reconnect the GitHub App from their Forge dashboard.</p></div>`
   });
 }
 
@@ -738,9 +795,19 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
     : reconnectParam === 'none'
       ? '<p class="note"><strong>No installation found for your GitHub account.</strong> The Forge App is not installed — use Install below, not Reconnect.</p>'
       : reconnectParam === 'failed'
-        ? '<p class="note"><strong>Reconnect failed.</strong> GitHub did not return a usable installation; try Install below.</p>'
+      ? '<p class="note"><strong>Reconnect failed.</strong> GitHub did not return a usable installation; try Install below.</p>'
+      : reconnectParam === 'owner_required'
+        ? '<p class="note"><strong>Your GitHub connection is owner-managed.</strong> The Forge owner installs and reconnects the private GitHub App; you do not need an installation link.</p>'
         : '';
   const mcpUrl = `${env.FORGE_PUBLIC_ORIGIN}/mcp`;
+  const githubControls = user.is_owner === 1
+    ? `<div class="row"><form method="post" action="${env.FORGE_PUBLIC_ORIGIN}/github/reconnect"><button class="${repositories.length === 0 ? 'primary' : ''}" type="submit">Reconnect GitHub</button></form>
+<a class="btn" href="/github/install">Install or add repositories</a></div>
+<details><summary>Invite a collaborator to this private Forge</summary><ol><li>Add their <strong>GitHub username</strong> as a repository collaborator in GitHub. An email address alone cannot identify a GitHub account until the invitation is accepted.</li><li>Have them sign in at Forge and choose <strong>Request access</strong>.</li><li>Approve their request above. Forge then shares this approved project and its installed repositories with their audited GitHub identity.</li></ol></details>`
+    : `<p class="note"><strong>Private owner-managed connection.</strong> You do not install the GitHub App. Your owner selects repositories, adds you as a GitHub collaborator, then approves your Forge request.</p>`;
+  const noRepositoryCopy = user.is_owner === 1
+    ? 'Forge cannot open, build or change any repository until you reconnect the private GitHub App.'
+    : 'No repository has been shared with you yet. Ask the Forge owner to add you as a GitHub collaborator, select the repository in the private App, and approve your access request.';
   return page({
     title: 'Forge — your workspace',
     topRight: `<span>${escapeHtml(user.github_login)}</span><a href="/logout">Sign out</a>`,
@@ -772,9 +839,8 @@ ${accessSection}${reviewSection}
 <p class="note">${usedSlots} of ${caps.perTenant} active. Idle workspaces are reclaimed after ${ttlMinutes} minutes.</p>
 ${occupantRows}</section>
 <section class="section${repositories.length === 0 ? ' alert' : ''}"><h2>GitHub repositories</h2>${reconnectNote}
-${repositories.length === 0 ? '<p>Forge cannot open, build or change any repository until this is reconnected.</p>' : ''}
-<div class="row"><form method="post" action="${env.FORGE_PUBLIC_ORIGIN}/github/reconnect"><button class="${repositories.length === 0 ? 'primary' : ''}" type="submit">Reconnect GitHub</button></form>
-<a class="btn" href="/github/install">Install or add repositories</a></div>
+${repositories.length === 0 ? `<p>${noRepositoryCopy}</p>` : ''}
+${githubControls}
 <ul class="list">${rows}</ul>${moreRows}</section>
 </aside></div>
 <footer>Forge — ${escapeHtml(env.FORGE_ENVIRONMENT)}</footer>`

@@ -18,9 +18,11 @@ const manifest = {
   callback_urls: [`${origin}/login/github/callback`],
   setup_url: `${origin}/github/setup`,
   setup_on_update: true,
-  // Forge is an installation service: a private App returns GitHub's
-  // intentional 404 to every non-owner and makes access requests impossible.
-  public: true,
+  // Forge's private-pilot workflow is deliberately owner-installed. The owner
+  // installs this App on the selected repositories, then approves Forge access
+  // for collaborators. This avoids exposing a public installation surface just
+  // so a small trusted team can use the service.
+  public: false,
   default_permissions: { contents: 'write', pull_requests: 'write' },
   // Installation lifecycle events are implicit and GitHub rejects them when
   // explicitly listed in an App manifest.

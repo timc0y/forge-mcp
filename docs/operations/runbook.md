@@ -38,9 +38,27 @@ pnpm dev
 7. verify the preview and capability fail after destruction;
 8. record the deployment date, Worker version, Sandbox SDK version and Cloudflare account in the PR evidence.
 
-## GitHub App access
+## Private GitHub App access
 
-Forge's GitHub App must be **public** when people outside the owning GitHub account need to install it. A private GitHub App intentionally returns GitHub's 404-style denial to non-owners, which makes a normal access request indistinguishable from a broken link. Set visibility in GitHub App settings → Advanced → **Make public**, then verify the GitHub installation flow from a non-owner account. GitHub repository invitations require the recipient's GitHub username; an email address alone is not an installable GitHub identity.
+This Forge instance is a private pilot: keep the GitHub App **private**. Only
+the Forge owner installs it and selects the repositories it may access. GitHub
+intentionally returns a 404-style denial when a collaborator opens a private
+App installation URL; Forge now intercepts that route with an explanation
+instead of sending collaborators into that dead end.
+
+To add a trusted collaborator:
+
+1. Invite their **GitHub username** to the repository in GitHub. An email such
+   as `james.coy.design@gmail.com` can receive GitHub's invitation, but Forge
+   cannot grant access from an email alone—the person must accept the invitation
+   and sign in to Forge with their GitHub account.
+2. They sign in to Forge and choose **Request access**.
+3. The owner approves the pending request in the Forge dashboard. Approval
+   places that user's audited Forge identity in the owner's existing project,
+   so the already-installed, selected repositories become available without
+   any public App installation page.
+4. The owner uses **Reconnect GitHub** after changing the App's repository
+   selection. Collaborators never use the private App install/reconnect routes.
 
 ## Incident handling
 

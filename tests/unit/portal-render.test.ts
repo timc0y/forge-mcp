@@ -17,7 +17,7 @@ const DIFF = `diff --git a/src/site.ts b/src/site.ts
 
 const user = {
   id: 'usr_1', github_user_id: '1', github_login: 'octocat',
-  avatar_url: null, tenant_id: 'ten_1', project_id: 'prj_1'
+  avatar_url: null, tenant_id: 'ten_1', project_id: 'prj_1', is_owner: 1
 };
 
 const deferred = {
@@ -111,5 +111,31 @@ describe('reviewer-facing pages', () => {
     // Approving happens on a phone; keep the tap target at the page's own 44px.
     // Tap targets come from the shared sheet now, so every surface gets them.
     expect(html).toMatch(/\.btn,button\{[^}]*min-height:44px/);
+  });
+
+  it('explains the private-App collaboration flow without linking collaborators to GitHub 404s', async () => {
+    const collaboratorEnv = env();
+    collaboratorEnv.METADATA.prepare = (sql: string) => {
+      const statement: Record<string, unknown> = {
+        bind: () => statement,
+        first: async () => {
+          if (sql.includes('FROM web_sessions')) return { ...user, id: 'usr_bro', github_login: 'bro', is_owner: 0 };
+          if (sql.includes('FROM approvals')) return { requested_action: 'work.submit', state: 'pending', expires_at: new Date(Date.now() + 3_600_000).toISOString() };
+          return null;
+        },
+        all: async () => {
+          if (sql.includes('deferred_actions')) return { results: [] };
+          if (sql.includes('repositories')) return { results: [] };
+          return { results: [] };
+        },
+        run: async () => ({ meta: { changes: 1 } })
+      };
+      return statement as never;
+    };
+    const response = await appDashboard(request('https://forge.test/app'), collaboratorEnv);
+    const html = await response.text();
+    expect(html).toContain('Private owner-managed connection');
+    expect(html).toContain('do not install the GitHub App');
+    expect(html).not.toContain('Install or add repositories');
   });
 });
