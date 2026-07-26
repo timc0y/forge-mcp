@@ -117,7 +117,7 @@ async function connect(accessToken) {
     sessionId ??= response.headers.get('mcp-session-id') ?? undefined;
     const message = await responseBody(response, jsonRpcId);
     if (message?.error) throw new Error(`MCP ${method} failed: ${JSON.stringify(message.error)}`);
-    return message?.result;
+    return message;
   }
   await request('initialize', {
     protocolVersion,
@@ -127,9 +127,10 @@ async function connect(accessToken) {
   await request('notifications/initialized', {}, true);
   return {
     async call(name, args) {
-      const result = await request('tools/call', { name, arguments: args });
+      const message = await request('tools/call', { name, arguments: args });
+      const result = message?.result;
       if (!result || typeof result !== 'object') {
-        throw new Error(`${name} returned an invalid MCP tool result.`);
+        throw new Error(`${name} returned an invalid MCP tool result: ${JSON.stringify(message).slice(0, 2_000)}`);
       }
       if (result?.isError) throw new Error(`${name} failed: ${JSON.stringify(result.structuredContent)}`);
       return { value: result?.structuredContent, content: result?.content ?? [] };
