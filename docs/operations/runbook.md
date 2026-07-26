@@ -20,7 +20,7 @@ Production is the top-level environment; development uses the same file with
 `--env development`.
 
 ```bash
-pnpm deploy
+pnpm run deploy
 ```
 
 Local iteration runs the same config with an auth-relaxed identity:

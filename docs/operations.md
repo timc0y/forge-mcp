@@ -19,7 +19,7 @@ allocation, Browser Run, OAuth, D1, R2, Workflows, or preview routing.
 Forge has one deployable environment, defined by `infra/wrangler/forge.jsonc`.
 
 ```bash
-pnpm deploy
+pnpm run deploy
 ```
 
 **Deploy applies D1 migrations first.** `migrations/d1/` (`0001`…`0011` today)
@@ -43,7 +43,7 @@ Deployment checklist:
 2. Set Worker secrets: `FORGE_CAPABILITY_SIGNING_KEY` (required),
    `FORGE_SESSION_SIGNING_KEY` (optional, see [security.md](security.md)),
    `FORGE_DEV_AUTH_TOKEN`, `FORGE_INTERNAL_PREVIEW_KEY`.
-3. Deploy the Worker; migrations apply automatically as part of `pnpm deploy`.
+3. Deploy the Worker; migrations apply automatically as part of `pnpm run deploy`.
 4. Check `/health`, `/ready`, and the RFC 9728 OAuth protected-resource
    metadata endpoint.
 5. Run an end-to-end acceptance pass through a real MCP client (workspace
