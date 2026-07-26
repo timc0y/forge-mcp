@@ -436,7 +436,17 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       }
       return {
         ...record.workspace,
-        processes: Object.entries(record.processes).map(([id, value]) => ({ id, ...value })),
+        processes: Object.entries(record.processes).map(([id, value]) => ({
+          id,
+          ...value,
+          status: value.completedAt
+            ? value.exitCode === 0
+              ? 'exited'
+              : value.exitCode === 124
+                ? 'cancelled'
+                : 'failed'
+            : 'running'
+        })),
         checks: record.checks,
         previews: Object.fromEntries(
           Object.entries(record.previews).map(([id, value]) => [
@@ -689,11 +699,63 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     // Even read-only commands serialize: a repo probe may recover a sleeping
     // checkout, and that state transition must not overwrite a newer mutation.
     return this.serializeMutation(async () => {
-      const touchesRepo = input.cwd === '/workspace/repo' || input.cwd.startsWith('/workspace/repo/');
+      const normalizedCwd = input.cwd.replace(/\/+$/u, '') || '/';
+      const touchesRepo = normalizedCwd === '/workspace/repo' || normalizedCwd.startsWith('/workspace/repo/');
       const record = touchesRepo ? await this.repoRecord() : await this.getRecord();
       const before = record.workspace.revision;
       const updatedAt = record.workspace.updatedAt;
       const divergenceAt = record.lastGitDivergence?.observedAt;
+      const managedProcessResult = (
+        started: {
+          value: { id: string; status?: string };
+          operationId: unknown;
+          replay?: boolean;
+        },
+        decision: { classification: string },
+        stderr: string,
+        durationMs: number
+      ) => {
+        const processId = started.value.id;
+        const entry = record.processes[processId];
+        const startedAt = entry?.startedAt ?? new Date().toISOString();
+        const status = entry?.completedAt
+          ? entry.exitCode === 0
+            ? 'exited'
+            : entry.exitCode === 124
+              ? 'cancelled'
+              : 'failed'
+          : (started.value.status ?? 'running');
+        return {
+          // Omit numeric exitCode until the process is terminal so agents do not
+          // treat "started" as success (`!exitCode` / null-as-zero).
+          status: entry?.completedAt ? 'completed' : 'started',
+          ...(entry?.completedAt ? { exitCode: entry.exitCode ?? 1 } : {}),
+          stdout: '',
+          stderr,
+          truncated: false,
+          durationMs,
+          artifactRefs: [] as string[],
+          ...(started.replay ? { replay: true } : {}),
+          workspaceId: record.workspace.id,
+          branch: record.workspace.currentBranch,
+          head: record.workspace.currentCommit,
+          baseCommit: record.workspace.baseCommit,
+          classification: decision.classification,
+          operationId: started.operationId,
+          workspaceRevision: record.workspace.revision,
+          managedProcess: {
+            processId,
+            status,
+            startedAt,
+            command: input.command,
+            workspaceRevision: record.workspace.revision,
+            ...(entry?.completedAt ? { completedAt: entry.completedAt, exitCode: entry.exitCode } : {})
+          },
+          next_step: entry?.completedAt
+            ? `Managed process ${processId} already finished with exit ${entry.exitCode ?? 1}.`
+            : `Call forge_process_wait with process_id ${processId} (use a timeout_ms of at least 600000 for large installs), then continue with shell commands.`
+        };
+      };
       try {
         if (input.idempotencyKey) this.assertCheckpointQuiescent(record);
         const decision = classifyCommand(input.command, input.networkPolicy);
@@ -704,64 +766,33 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           decision.classification === 'dependency_install' &&
           input.approved &&
           input.idempotencyKey &&
-          input.cwd === '/workspace/repo'
+          touchesRepo
         ) {
           const started = await this.app.startProcess(record, {
             command: input.command,
-            cwd: input.cwd,
+            cwd: normalizedCwd,
             environment: input.environment,
             networkPolicy: input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>,
             expectedRevision: input.expectedRevision,
             idempotencyKey: input.idempotencyKey,
             approved: true
           });
-          if ('replay' in started) {
-            return {
-              exitCode: 0,
-              stdout: '',
-              stderr: '',
-              truncated: false,
-              durationMs: 0,
-              artifactRefs: [],
-              replay: true,
-              workspaceId: record.workspace.id,
-              branch: record.workspace.currentBranch,
-              head: record.workspace.currentCommit,
-              baseCommit: record.workspace.baseCommit,
-              classification: decision.classification,
+          return managedProcessResult(
+            {
+              value: started.value,
               operationId: started.operationId,
-              workspaceRevision: record.workspace.revision
-            };
-          }
-          const processId = started.value.id;
-          const startedAt = record.processes[processId]?.startedAt ?? new Date().toISOString();
-          return {
-            exitCode: null,
-            stdout: '',
-            stderr: 'Dependency install started as a managed background process so it can outlive the transport deadline without being restarted.',
-            truncated: false,
-            durationMs: 0,
-            artifactRefs: [],
-            workspaceId: record.workspace.id,
-            branch: record.workspace.currentBranch,
-            head: record.workspace.currentCommit,
-            baseCommit: record.workspace.baseCommit,
-            classification: decision.classification,
-            operationId: started.operationId,
-            workspaceRevision: record.workspace.revision,
-            managedProcess: {
-              processId,
-              status: 'running',
-              startedAt,
-              command: input.command,
-              workspaceRevision: record.workspace.revision
+              replay: 'replay' in started && started.replay === true
             },
-            next_step: `Call forge_process_wait with process_id ${processId} (use a timeout_ms of at least 600000 for large installs), then continue with shell commands.`
-          };
+            decision,
+            'replay' in started && started.replay
+              ? 'Replayed dependency install managed process.'
+              : 'Dependency install started as a managed background process so it can outlive the transport deadline without being restarted.',
+            0
+          );
         }
         const value = await this.app.exec(record, {
           command: input.command,
-          cwd: input.cwd,
+          cwd: normalizedCwd,
           timeoutMs: input.timeoutMs,
           environment: input.environment,
           networkPolicy: input.networkPolicy,
@@ -783,61 +814,31 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           error instanceof ForgeError &&
           error.code === 'FORGE_COMMAND_TIMEOUT' &&
           input.idempotencyKey &&
-          input.cwd === '/workspace/repo'
+          touchesRepo
         ) {
           const decision = classifyCommand(input.command, input.networkPolicy);
           if (decision.classification === 'dependency_install') throw error;
           const started = await this.app.startProcess(record, {
             command: input.command,
-            cwd: input.cwd,
+            cwd: normalizedCwd,
             environment: input.environment,
             networkPolicy: input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>,
             expectedRevision: input.expectedRevision,
             idempotencyKey: `${input.idempotencyKey}:bg`,
             approved: input.approved
           });
-          if ('replay' in started) {
-            return {
-              exitCode: 0,
-              stdout: '',
-              stderr: '',
-              truncated: false,
-              durationMs: 0,
-              artifactRefs: [],
-              replay: true,
-              workspaceId: record.workspace.id,
-              branch: record.workspace.currentBranch,
-              head: record.workspace.currentCommit,
-              baseCommit: record.workspace.baseCommit,
-              classification: decision.classification,
+          return managedProcessResult(
+            {
+              value: started.value,
               operationId: started.operationId,
-              workspaceRevision: record.workspace.revision
-            };
-          }
-          const processId = started.value.id;
-          const startedAt = record.processes[processId]?.startedAt ?? new Date().toISOString();
-          return {
-            exitCode: null,
-            stdout: '',
-            stderr: 'Command timed out and was converted to a managed background process.',
-            truncated: false,
-            durationMs: input.timeoutMs,
-            artifactRefs: [],
-            workspaceId: record.workspace.id,
-            branch: record.workspace.currentBranch,
-            head: record.workspace.currentCommit,
-            baseCommit: record.workspace.baseCommit,
-            classification: decision.classification,
-            operationId: started.operationId,
-            workspaceRevision: record.workspace.revision,
-            managedProcess: {
-              processId,
-              status: 'running',
-              startedAt,
-              command: input.command,
-              workspaceRevision: record.workspace.revision
-            }
-          };
+              replay: 'replay' in started && started.replay === true
+            },
+            decision,
+            'replay' in started && started.replay
+              ? 'Replayed managed background process for a timed-out command.'
+              : 'Command timed out and was converted to a managed background process.',
+            input.timeoutMs
+          );
         }
         throw error;
       } finally {

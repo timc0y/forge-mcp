@@ -2190,7 +2190,7 @@
     },
     "forge_process_wait": {
       "title": "Wait for managed process",
-      "description": "Wait for a managed process to reach a terminal state (exit, failure, or cancellation), or time out. Returns the final process record. This is the safe way to wait for a long-running command that may outlive the chat transport deadline — the process continues under Forge supervision even if the client disconnects.",
+      "description": "Wait for a managed process to reach a terminal state (exit, failure, or cancellation), or time out. Returns the final process record. This is the safe way to wait for a long-running command that may outlive the chat transport deadline — the process continues under Forge supervision even if the client disconnects. Wait timeouts are observational: the process is not killed; retry with a larger timeout_ms.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {

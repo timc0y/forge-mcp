@@ -47,7 +47,7 @@ export interface WorkspaceRuntimeRecord {
       expiresAt: string;
     }
   >;
-  idempotency: Record<string, { operationId: OperationId; revision: number }>;
+  idempotency: Record<string, { operationId: OperationId; revision: number; processId?: ProcessId }>;
   snapshots: Record<string, WorkspaceCheckpoint>;
   /** Set only after a manifest-verified provider restore. */
   lastRecoveryVerifiedAt?: string;
@@ -1761,14 +1761,14 @@ export class ForgeApplicationService {
       input.idempotencyKey
     );
     if (operation.replay) {
-      return {
-        replay: true,
-        workspaceId: record.workspace.id,
-        branch: record.workspace.currentBranch,
-        head: record.workspace.currentCommit,
-        operationId: operation.operationId,
-        workspaceRevision: record.workspace.revision
-      };
+      const replayed = this.replayManagedProcess(record, input.idempotencyKey, input.cwd, operation.operationId);
+      if (replayed) return replayed;
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_CONFLICT',
+        message: 'This process start was already accepted but its process id is no longer available; inspect forge_workspace_get and forge_process_get before retrying with a new idempotency key.',
+        retryable: false,
+        details: { idempotencyKey: input.idempotencyKey, operationId: operation.operationId }
+      });
     }
     const processId = ids.process();
     const startedAt = new Date().toISOString();
@@ -1788,12 +1788,53 @@ export class ForgeApplicationService {
       startedAt,
       mutatesFilesystem: decision.classification !== 'read_only'
     };
+    record.idempotency[input.idempotencyKey] = {
+      ...record.idempotency[input.idempotencyKey]!,
+      processId
+    };
     return {
       value,
       workspaceId: record.workspace.id,
       branch: record.workspace.currentBranch,
       head: record.workspace.currentCommit,
       operationId: operation.operationId,
+      workspaceRevision: record.workspace.revision
+    };
+  }
+
+  private replayManagedProcess(
+    record: WorkspaceRuntimeRecord,
+    idempotencyKey: string,
+    cwd: string,
+    operationId: OperationId
+  ) {
+    const processId = record.idempotency[idempotencyKey]?.processId;
+    if (!processId) return null;
+    const entry = record.processes[processId];
+    if (!entry) return null;
+    const status = entry.completedAt
+      ? entry.exitCode === 0
+        ? 'exited' as const
+        : entry.exitCode === 124
+          ? 'cancelled' as const
+          : 'failed' as const
+      : 'running' as const;
+    return {
+      replay: true as const,
+      value: {
+        id: processId,
+        providerProcessId: processId,
+        command: entry.command,
+        cwd,
+        status,
+        startedAt: entry.startedAt,
+        mutatesFilesystem: entry.mutatesFilesystem,
+        ...(entry.completedAt ? { completedAt: entry.completedAt, exitCode: entry.exitCode ?? 1 } : {})
+      },
+      workspaceId: record.workspace.id,
+      branch: record.workspace.currentBranch,
+      head: record.workspace.currentCommit,
+      operationId,
       workspaceRevision: record.workspace.revision
     };
   }
@@ -2027,10 +2068,37 @@ export class ForgeApplicationService {
     };
   }
 
+  private async lookupProcessWithRetry(
+    handle: SandboxHandle,
+    processId: ProcessId
+  ): Promise<{ process: ProcessRecord | null; lookupFailed: boolean }> {
+    let lookupFailed = false;
+    let process: ProcessRecord | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        process = await handle.getProcess(processId);
+        lookupFailed = false;
+        if (process) return { process, lookupFailed };
+      } catch {
+        lookupFailed = true;
+        process = null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return { process, lookupFailed };
+  }
+
   private async adoptOrReapProcesses(record: WorkspaceRuntimeRecord, handle: SandboxHandle): Promise<void> {
     for (const [id, entry] of Object.entries(record.processes)) {
-      const live = await handle.getProcess(id as ProcessId).catch(() => null);
+      if (entry.completedAt && entry.checkpointAfter) continue;
+      const { process: live, lookupFailed } = await this.lookupProcessWithRetry(handle, id as ProcessId);
+      if (lookupFailed) {
+        // Provider blip — keep the process live so checkpoints stay blocked.
+        continue;
+      }
       if (!live) {
+        // Confirmed missing after retries. Adopt as exited, but do not pretend
+        // a successful mutating install completed.
         if (!entry.completedAt) {
           entry.completedAt = new Date().toISOString();
           entry.exitCode = entry.exitCode ?? 1;
@@ -2046,6 +2114,9 @@ export class ForgeApplicationService {
           completedAt: entry.completedAt,
           exitCode: entry.exitCode
         };
+      }
+      if (entry.mutatesFilesystem && (entry.exitCode ?? 1) === 0 && !entry.checkpointAfter) {
+        await this.finalizeManagedProcess(record, handle, id as ProcessId, live).catch(() => undefined);
       }
     }
     record.workspace.updatedAt = new Date().toISOString();
@@ -2080,19 +2151,27 @@ export class ForgeApplicationService {
       record.workspace.updatedAt = new Date().toISOString();
       return;
     }
+    // Idempotent: a prior successful finalize already proved visibility and
+    // captured a checkpoint for this process.
+    if (entry.checkpointAfter && record.dependencyState?.usable !== false) {
+      record.workspace.updatedAt = new Date().toISOString();
+      return;
+    }
+
+    const decision = classifyCommand(entry.command, 'package_install');
+    const isNodeInstall = decision.classification === 'dependency_install'
+      && /(^|\s)(npm|pnpm|yarn|bun)\s+/i.test(entry.command);
+    const isPythonInstall = decision.classification === 'dependency_install'
+      && /(^|\s)(pip|uv)\s+install(\s|$)/i.test(entry.command);
 
     // Flush and prove the install/mutation is visible through the same session
     // foreground shells use (`agent-default`), before we publish success.
     const visibility = await handle.exec({
       command: [
         'sync',
-        'if [ -d node_modules ]; then',
-        '  echo "FORGE_NODE_MODULES=present"',
-        '  if [ -d node_modules/.bin ] || [ -d node_modules/.pnpm ]; then echo "FORGE_DEPS_LAYOUT=ok"; else echo "FORGE_DEPS_LAYOUT=missing"; fi',
-        'else',
-        '  echo "FORGE_NODE_MODULES=absent"',
-        'fi',
-        'if [ -f pnpm-lock.yaml ] || [ -f package-lock.json ] || [ -f yarn.lock ] || [ -f bun.lock ]; then echo "FORGE_LOCKFILE=present"; fi'
+        'if [ -d node_modules ] || [ -f .pnp.cjs ] || [ -f .pnp.js ]; then echo "FORGE_NODE_MODULES=present"; else echo "FORGE_NODE_MODULES=absent"; fi',
+        'if [ -d .venv ] || [ -d venv ] || ls -d site-packages >/dev/null 2>&1; then echo "FORGE_PYTHON_ENV=present"; else echo "FORGE_PYTHON_ENV=absent"; fi',
+        'if [ -f pnpm-lock.yaml ] || [ -f package-lock.json ] || [ -f yarn.lock ] || [ -f bun.lock ] || [ -f requirements.txt ] || [ -f uv.lock ]; then echo "FORGE_LOCKFILE=present"; fi'
       ].join('; '),
       cwd: '/workspace/repo',
       timeoutMs: 30_000,
@@ -2101,16 +2180,28 @@ export class ForgeApplicationService {
       networkPolicy: 'deny_all'
     }).catch(() => null);
 
-    const decision = classifyCommand(entry.command, 'package_install');
     if (decision.classification === 'dependency_install') {
-      const usable = Boolean(
-        visibility &&
-        visibility.exitCode === 0 &&
-        visibility.stdout.includes('FORGE_NODE_MODULES=present') &&
-        visibility.stdout.includes('FORGE_DEPS_LAYOUT=ok')
-      );
+      let usable = Boolean(visibility && visibility.exitCode === 0);
+      if (isNodeInstall) {
+        usable = Boolean(
+          visibility &&
+          visibility.exitCode === 0 &&
+          visibility.stdout.includes('FORGE_NODE_MODULES=present')
+        );
+      } else if (isPythonInstall) {
+        // Python installs do not create node_modules; trust a successful sync
+        // plus either a virtualenv marker or lock/requirements presence.
+        usable = Boolean(
+          visibility &&
+          visibility.exitCode === 0 &&
+          (
+            visibility.stdout.includes('FORGE_PYTHON_ENV=present') ||
+            visibility.stdout.includes('FORGE_LOCKFILE=present')
+          )
+        );
+      }
       const lockfileHash = await handle.exec({
-        command: 'sha256sum pnpm-lock.yaml package-lock.json yarn.lock bun.lock 2>/dev/null | head -1 | cut -d" " -f1 || echo none',
+        command: 'sha256sum pnpm-lock.yaml package-lock.json yarn.lock bun.lock uv.lock requirements.txt 2>/dev/null | head -1 | cut -d" " -f1 || echo none',
         cwd: '/workspace/repo',
         timeoutMs: 10_000,
         outputLimitBytes: 1_000,
@@ -2138,11 +2229,13 @@ export class ForgeApplicationService {
       }
     }
 
-    try {
-      const checkpoint = await this.checkpoint(record, `process-${processId}`, handle);
-      entry.checkpointAfter = checkpoint.snapshotId as SnapshotId;
-    } catch {
-      // Non-fatal: the process succeeded; recovery may need a later checkpoint.
+    if (!entry.checkpointAfter) {
+      try {
+        const checkpoint = await this.checkpoint(record, `process-${processId}`, handle);
+        entry.checkpointAfter = checkpoint.snapshotId as SnapshotId;
+      } catch {
+        // Non-fatal: the process succeeded; recovery may need a later checkpoint.
+      }
     }
     record.workspace.updatedAt = new Date().toISOString();
   }
@@ -2192,23 +2285,32 @@ export class ForgeApplicationService {
     const activeProcesses = Object.entries(record.processes);
     const processReport: Array<{ id: string; command: string; status: string; exitCode?: number }> = [];
     for (const [id, entry] of activeProcesses) {
-      const live = await handle.getProcess(id as ProcessId).catch(() => null);
+      const { process: live, lookupFailed } = await this.lookupProcessWithRetry(handle, id as ProcessId);
+      if (lookupFailed) {
+        // Provider blip — keep the tracked process and report uncertainty.
+        processReport.push({ id, command: entry.command, status: entry.completedAt ? 'exited' : 'unknown', exitCode: entry.exitCode });
+        continue;
+      }
       if (live) {
         processReport.push({ id, command: entry.command, status: live.status, exitCode: live.exitCode });
-        if (live.status === 'running') {
-          // A running process may be mutating the workspace. Record it as blocking.
-          processReport[processReport.length - 1]!.status = 'running';
+        if (live.status === 'running' || live.status === 'starting') continue;
+        if (!entry.completedAt) {
+          entry.completedAt = live.completedAt ?? new Date().toISOString();
+          entry.exitCode = live.exitCode ?? entry.exitCode;
         }
+        if (entry.mutatesFilesystem && (entry.exitCode ?? 1) === 0 && !entry.checkpointAfter) {
+          await this.finalizeManagedProcess(record, handle, id as ProcessId, live).catch(() => undefined);
+        }
+        continue;
+      }
+      // Confirmed missing after retries.
+      if (entry.completedAt) {
+        processReport.push({ id, command: entry.command, status: 'exited', exitCode: entry.exitCode });
       } else {
-        // Process no longer exists in the provider — adopt as exited.
-        if (entry.completedAt) {
-          processReport.push({ id, command: entry.command, status: 'exited', exitCode: entry.exitCode });
-        } else {
-          // Orphaned: was tracked but no longer exists. Clean up.
-          delete record.processes[id];
-          delete record.checks[id];
-          processReport.push({ id, command: entry.command, status: 'orphaned' });
-        }
+        // Orphaned: was tracked but no longer exists. Clean up.
+        delete record.processes[id];
+        delete record.checks[id];
+        processReport.push({ id, command: entry.command, status: 'orphaned' });
       }
     }
 
@@ -2273,11 +2375,9 @@ export class ForgeApplicationService {
     const pmActivity = pmActivityCheck.stdout.trim() === '0';
 
     // Determine the blocking process if any.
-    const blockingProcess = activeProcesses.find(([, entry]) => {
-      const live = processReport.find((p) => p.id === entry.command && p.status === 'running');
-      return live;
-    });
-    const blockingProcessId = blockingProcess ? blockingProcess[0] : undefined;
+    const blockingProcessId = processReport.find(
+      (process) => process.status === 'running' || process.status === 'starting' || process.status === 'unknown'
+    )?.id;
 
     // Determine git integrity state.
     let state: 'consistent' | 'unknown' | 'diverged' | 'corrupted';
@@ -2429,7 +2529,7 @@ export class ForgeApplicationService {
           cwd: '/workspace/repo',
           timeoutMs: 10_000,
           outputLimitBytes: 1_000,
-          sessionId: 'system',
+          sessionId: 'agent-default',
           networkPolicy: 'deny_all'
         }).then((r) => r.stdout.trim()).catch(() => 'none')
       : 'none';
@@ -2444,7 +2544,8 @@ export class ForgeApplicationService {
       installCommand = detection.installCommand;
     }
 
-    // Run the install with retry.
+    // Run the install with retry on the same session shells use so installed
+    // binaries are immediately visible afterwards.
     const timeoutMs = input.timeoutMs ?? 600_000;
     let attempt = 0;
     const maxAttempts = 3;
@@ -2457,7 +2558,7 @@ export class ForgeApplicationService {
         cwd: '/workspace/repo',
         timeoutMs,
         outputLimitBytes: 500_000,
-        sessionId: 'system',
+        sessionId: 'agent-default',
         networkPolicy: input.networkPolicy
       });
 
@@ -2478,23 +2579,44 @@ export class ForgeApplicationService {
           cwd: '/workspace/repo',
           timeoutMs: 10_000,
           outputLimitBytes: 1_000,
-          sessionId: 'system',
+          sessionId: 'agent-default',
           networkPolicy: 'deny_all'
         }).then((r) => r.stdout.trim()).catch(() => 'none')
       : 'none';
 
     const success = installResult?.exitCode === 0;
+    let usable = success;
+    if (success) {
+      const visibility = await handle.exec({
+        command: 'sync; if [ -d node_modules ] || [ -f .pnp.cjs ] || [ -f .pnp.js ] || [ -d .venv ] || [ -d venv ]; then echo FORGE_DEPS_VISIBLE; else echo FORGE_DEPS_MISSING; fi',
+        cwd: '/workspace/repo',
+        timeoutMs: 30_000,
+        outputLimitBytes: 1_000,
+        sessionId: 'agent-default',
+        networkPolicy: 'deny_all'
+      }).catch(() => null);
+      usable = Boolean(visibility && visibility.exitCode === 0 && visibility.stdout.includes('FORGE_DEPS_VISIBLE'));
+    }
 
     // Record dependency state.
     record.dependencyState = {
       lockfileHash: lockfileHashAfter,
       installedAt: new Date().toISOString(),
-      usable: success
+      usable
     };
+
+    if (success && !usable) {
+      throw new ForgeError({
+        code: 'FORGE_PROVIDER_UNAVAILABLE',
+        message: 'Dependency install exited successfully but the installed package tree is not visible to the workspace shell.',
+        retryable: true,
+        details: { installCommand, lockfileHashAfter }
+      });
+    }
 
     // Create a completion checkpoint.
     let checkpoint: { snapshotId: string; createdAt: string; providerVersion: string; workspaceRevision: number } | undefined;
-    if (success) {
+    if (success && usable) {
       try {
         checkpoint = await this.checkpoint(record, `deps-install-${record.workspace.revision}`);
       } catch {
@@ -2506,7 +2628,7 @@ export class ForgeApplicationService {
 
     return {
       workspaceId: record.workspace.id,
-      success,
+      success: success && usable,
       exitCode: installResult?.exitCode ?? 1,
       packageManager: detection.packageManager,
       installCommand,

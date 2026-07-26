@@ -26,6 +26,10 @@ describe('Forge policy', () => {
       expect.objectContaining({ code: 'FORGE_APPROVAL_REQUIRED' })
     );
     expect(() => assertCommandAllowed('pnpm install', 'package_install', true)).not.toThrow();
+    expect(classifyCommand('npm ci', 'package_install')).toMatchObject({
+      classification: 'dependency_install',
+      approvalRequired: true
+    });
   });
 
   it('blocks privileged escape attempts', () => {

@@ -29,12 +29,12 @@ class FakeProvider implements SandboxProvider {
     providerId: 'fake',
     exec: async (input) => {
       this.calls.push(input.command);
-      if (input.command.includes('FORGE_NODE_MODULES=')) {
+      if (input.command.includes('FORGE_NODE_MODULES=') || input.command.includes('FORGE_DEPS_VISIBLE')) {
         return {
           exitCode: 0,
           stdout: this.nodeModulesVisible
-            ? 'FORGE_NODE_MODULES=present\nFORGE_DEPS_LAYOUT=ok\nFORGE_LOCKFILE=present\n'
-            : 'FORGE_NODE_MODULES=absent\n',
+            ? 'FORGE_NODE_MODULES=present\nFORGE_PYTHON_ENV=absent\nFORGE_LOCKFILE=present\nFORGE_DEPS_VISIBLE\n'
+            : 'FORGE_NODE_MODULES=absent\nFORGE_PYTHON_ENV=absent\nFORGE_DEPS_MISSING\n',
           stderr: '',
           truncated: false,
           durationMs: 1,
@@ -688,6 +688,57 @@ describe('Forge application service', () => {
       message: expect.stringContaining('not visible to the workspace shell')
     });
     expect(record.dependencyState).toMatchObject({ usable: false });
+  });
+
+  it('replays managed process starts with the original process id', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.workspace.activeSnapshotId = undefined;
+    const first = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-replay-1',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in first) throw new Error('Unexpected first replay.');
+    const second = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-replay-1',
+      expectedRevision: 1,
+      approved: true
+    });
+    if (!('replay' in second) || !second.replay) throw new Error('Expected idempotent replay.');
+    expect(second.value.id).toBe(first.value.id);
+    expect(second.value.status).toBe('running');
+  });
+
+  it('does not mark a process complete on a transient provider lookup failure', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    await service.provisionWorkspace(record, false);
+    const processId = 'proc_still_live';
+    record.processes[processId] = {
+      command: 'pnpm install',
+      startedAt: new Date().toISOString(),
+      mutatesFilesystem: true
+    };
+    let lookups = 0;
+    provider.handle.getProcess = async () => {
+      lookups += 1;
+      throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: 'blip', retryable: true });
+    };
+    provider.workspaceProbeFails = true;
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .rejects.toMatchObject({ code: 'FORGE_PROVIDER_UNAVAILABLE' });
+    expect(lookups).toBeGreaterThan(0);
+    expect(record.processes[processId]?.completedAt).toBeUndefined();
   });
 
   it('adopts tracked processes and retries before failing closed on unavailable inspection', async () => {

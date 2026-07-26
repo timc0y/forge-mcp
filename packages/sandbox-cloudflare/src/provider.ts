@@ -248,23 +248,47 @@ class CloudflareSandboxHandle implements SandboxHandle {
     try {
       const timeoutMs = input.timeoutMs ?? 120_000;
       const deadline = Date.now() + timeoutMs;
+      let consecutiveMisses = 0;
+      let lastSeen: { id: string; command: string; pid?: number } | null = null;
       for (;;) {
         // Re-fetch each poll. A stale Process object can keep reporting
         // `running` forever, which previously made wait SIGKILL healthy work.
-        const process = await this.sandbox.getProcess(input.processId);
-        if (!process) {
-          return {
-            id: input.processId,
-            providerProcessId: input.processId,
-            command: '',
-            cwd: REPO,
-            status: 'failed',
-            startedAt: new Date().toISOString(),
-            completedAt: new Date().toISOString(),
-            exitCode: 1,
-            mutatesFilesystem: false
-          };
+        let process: Awaited<ReturnType<Sandbox['getProcess']>> | null = null;
+        try {
+          process = await this.sandbox.getProcess(input.processId);
+        } catch {
+          process = null;
         }
+        if (!process) {
+          consecutiveMisses += 1;
+          // Transient provider blips can briefly return null for a live process.
+          // Only declare failure after repeated confirmed misses.
+          if (consecutiveMisses >= 5 && Date.now() >= deadline) {
+            return {
+              id: input.processId,
+              providerProcessId: lastSeen?.id ?? input.processId,
+              command: lastSeen?.command ?? '',
+              cwd: REPO,
+              status: 'failed',
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString(),
+              exitCode: 1,
+              mutatesFilesystem: false
+            };
+          }
+          if (Date.now() >= deadline) {
+            throw new ForgeError({
+              code: 'FORGE_COMMAND_TIMEOUT',
+              message: `Timed out waiting for process ${input.processId} after ${timeoutMs}ms; process lookup was intermittently unavailable.`,
+              retryable: true,
+              details: { processId: input.processId, status: 'unknown', timeoutMs, consecutiveMisses }
+            });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
+        }
+        consecutiveMisses = 0;
+        lastSeen = { id: process.id, command: process.command, pid: process.pid };
         const status = mapProcessStatus(process.status);
         if (status !== 'running' && status !== 'starting') {
           return {

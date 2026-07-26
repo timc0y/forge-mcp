@@ -109,7 +109,7 @@ const prohibited = [
 ];
 
 const destructive = [/(^|\s)rm\s+-[^\n]*r[^\n]*f/i, /git\s+reset\s+--hard/i, /git\s+clean\s+-[^\n]*f/i];
-const installs = [/(^|\s)(npm|pnpm|yarn|bun)\s+(install|add|i)(\s|$)/i, /(^|\s)(pip|uv)\s+install(\s|$)/i];
+const installs = [/(^|\s)(npm|pnpm|yarn|bun)\s+(install|ci|add|i)(\s|$)/i, /(^|\s)(pip|uv)\s+install(\s|$)/i];
 const network = [/(^|\s)(curl|wget|ssh|scp|rsync)(\s|$)/i];
 
 // Commands that only read. `sed` is deliberately absent: `sed -i` edits in place,

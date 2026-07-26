@@ -1678,7 +1678,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if (input.async === true) {
             const proc = await workspace.processStart({
               command,
-              cwd,
+              cwd: cwd.replace(/\/+$/u, '') || cwd,
               environment,
               networkPolicy,
               expectedRevision: optionalNumber(input.expected_revision),
@@ -1690,14 +1690,23 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             const value = (procRecord.value && typeof procRecord.value === 'object'
               ? procRecord.value
               : procRecord) as Record<string, unknown>;
-            const processId = String(value.id ?? procRecord.processId ?? procRecord.id ?? 'proc_started');
+            const processId = value.id ?? procRecord.processId ?? procRecord.id;
+            if (typeof processId !== 'string' || !processId.startsWith('proc_')) {
+              throw new ForgeError({
+                code: 'FORGE_WORKSPACE_CONFLICT',
+                message: 'Managed process start did not return a process id; inspect forge_workspace_get before retrying with a new idempotency key.',
+                retryable: false,
+                details: { replay: Boolean(procRecord.replay) }
+              });
+            }
             const status = String(value.status ?? procRecord.status ?? 'running');
             return {
               processId,
               status,
               command,
               async: true,
-              next_step: `Command started in background as process ${processId}. Call forge_process_wait to await completion or forge_process_logs to inspect output. For dependency installs use timeout_ms >= 600000.`
+              replay: Boolean(procRecord.replay),
+              next_step: `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for dependency installs), or forge_process_logs to inspect output.`
             };
           }
           const result = await workspace.shellExec({
