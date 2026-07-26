@@ -5,7 +5,12 @@ import { resolve } from 'node:path';
 
 const origin = (process.env.FORGE_ORIGIN ?? 'https://forge.timcoy.uk').replace(/\/$/, '');
 const ownerTokenFile = process.env.FORGE_OWNER_TOKEN_FILE ?? resolve(homedir(), '.config/forge-mcp/cloud-owner-token');
-const redirectUri = 'http://127.0.0.1:47123/callback';
+// Production DCR correctly rejects loopback callbacks: a remotely reachable
+// service must not issue authorization codes to an arbitrary machine's local
+// listener. This acceptance client consumes the 302 manually and never follows
+// it, so use a stable, allow-listed HTTPS callback by default. Operators can
+// still override it for a controlled integration environment.
+const redirectUri = process.env.FORGE_ACCEPTANCE_REDIRECT_URI ?? 'https://chatgpt.com/forge-acceptance';
 const protocolVersion = '2025-11-25';
 const recoveryWaitMs = Number.parseInt(process.env.FORGE_RECOVERY_WAIT_MS ?? '100000', 10);
 const acceptanceStartedAt = new Date().toISOString();
