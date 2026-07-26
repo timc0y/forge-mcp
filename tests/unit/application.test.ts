@@ -128,7 +128,7 @@ class FakeProvider implements SandboxProvider {
         status: 'running',
         pid: 123,
         startedAt: new Date().toISOString(),
-        mutatesFilesystem: true
+        mutatesFilesystem: input.mutatesFilesystem ?? true
       });
       return this.processStates.get(input.processId)!;
     },
@@ -162,7 +162,17 @@ class FakeProvider implements SandboxProvider {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
     },
-    readProcessLogs: async () => ({ data: '', truncated: false }),
+    readProcessLogs: async (input) => {
+      const full = 'line1\nline2\nDone in 3m\n';
+      const start = Number.parseInt(input.cursor ?? '0', 10) || 0;
+      const data = full.slice(start, start + input.limitBytes);
+      const next = start + data.length;
+      return {
+        data,
+        nextCursor: next < full.length ? String(next) : undefined,
+        truncated: next < full.length
+      };
+    },
     stopProcess: async (processId) => {
       const current = this.processStates.get(processId);
       if (current) this.processStates.set(processId, { ...current, status: 'stopped', completedAt: new Date().toISOString(), exitCode: 0 });
@@ -658,7 +668,9 @@ describe('Forge application service', () => {
       exitCode: 0
     });
     const waited = await service.processWait(record, processId, 1_000);
-    expect(waited.process).toMatchObject({ status: 'exited', exitCode: 0 });
+    expect(waited.process).toMatchObject({ status: 'exited', exitCode: 0, mutatesFilesystem: true });
+    expect(waited.dependencyState).toMatchObject({ status: 'ready', usable: true, lockfileHash: 'b'.repeat(64) });
+    expect(waited.filesystemCommitted).toBe(true);
     expect(record.dependencyState).toMatchObject({ usable: true, lockfileHash: 'b'.repeat(64) });
     expect(record.processes[processId]?.completedAt).toBeTruthy();
     expect(record.processes[processId]?.checkpointAfter).toBeTruthy();
@@ -897,5 +909,97 @@ describe('Forge application service', () => {
     provider.head = '1234567';
     await expect(service.completeDestroy(record)).rejects.toMatchObject({ code: 'FORGE_GIT_PUSH_BLOCKED' });
     expect(record.workspace.state).toBe('destroying');
+  });
+
+  it('returns incremental process logs with status and null nextCursor when done', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    const started = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-logs-1',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in started) throw new Error('Unexpected replay.');
+    const first = await service.processLogs(record, started.value.id);
+    expect(first.data.length).toBeGreaterThan(0);
+    expect(first.hasMore).toBe(false);
+    expect(first.nextCursor).toBeNull();
+    expect(first.status).toBe('running');
+    expect(first.mutatesFilesystem).toBe(true);
+  });
+
+  it('lists processes and reconciles operations by id', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    const started = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-op-1',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in started) throw new Error('Unexpected replay.');
+    const listed = await service.processList(record);
+    expect(listed.processes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: started.value.id, status: 'running', mutatesFilesystem: true })
+    ]));
+    expect(listed.dependencyState).toMatchObject({ status: 'unknown', reason: 'not_observed' });
+    const operation = await service.operationGet(record, started.operationId);
+    expect(operation).toMatchObject({
+      operationId: started.operationId,
+      status: 'active',
+      processId: started.value.id,
+      idempotencyKey: 'install-op-1'
+    });
+    const replayed = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-op-1',
+      expectedRevision: 1,
+      approved: true
+    });
+    expect(replayed).toMatchObject({
+      replayed: true,
+      idempotencyKey: 'install-op-1',
+      originalOperationId: started.operationId,
+      value: { id: started.value.id }
+    });
+  });
+
+  it('injects non-interactive environment for managed processes', async () => {
+    const provider = new FakeProvider();
+    const seenEnv: Record<string, string>[] = [];
+    const original = provider.handle.startProcess;
+    provider.handle.startProcess = async (input) => {
+      seenEnv.push(input.environment ?? {});
+      return original.call(provider.handle, input);
+    };
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-env-1',
+      expectedRevision: 1,
+      approved: true,
+      environment: { CUSTOM: '1' }
+    });
+    expect(seenEnv[0]).toMatchObject({
+      CI: '1',
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
+      GIT_TERMINAL_PROMPT: '0',
+      CUSTOM: '1'
+    });
   });
 });

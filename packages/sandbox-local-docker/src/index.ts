@@ -239,7 +239,13 @@ class LocalDockerHandle implements SandboxHandle {
     if (result.exitCode !== 0) throw new Error(result.stderr || 'Failed to start process.');
     const detail = await this.getProcess(input.processId);
     if (!detail) throw new Error('Process did not start.');
-    return { ...detail, startedAt };
+    return {
+      ...detail,
+      startedAt,
+      command: input.command,
+      cwd: input.cwd,
+      mutatesFilesystem: input.mutatesFilesystem ?? detail.mutatesFilesystem
+    };
   }
 
   async getProcess(id: ProcessId): Promise<ProcessRecord | null> {

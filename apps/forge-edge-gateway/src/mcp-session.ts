@@ -7,6 +7,7 @@ import {
   ids,
   workspaceIdFromIdempotency,
   type ProcessId,
+  type OperationId,
   type CredentialProfileId,
   type ProjectId,
   type SecretId,
@@ -1555,7 +1556,15 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_workspace_get: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).getState());
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).getState({
+          compact: Boolean(input.compact)
+        }));
+      },
+      forge_operation_get: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).operationGet({
+          operationId: text(input.operation_id) as OperationId
+        }));
       },
       forge_files_tree: async (input) => {
         const identity = this.identity();
@@ -1756,9 +1765,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_get: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processGet({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processGet({
           processId: text(input.process_id) as ProcessId
         }));
+      },
+      forge_process_list: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processList());
       },
       forge_process_stop: async (input) => {
         const identity = this.identity();

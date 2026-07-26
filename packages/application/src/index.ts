@@ -15,7 +15,7 @@ import {
   type WorkspaceFailureDetails,
   type WorkspaceId
 } from '@forge/core';
-import { assertCommandAllowed, classifyCommand } from '@forge/policy';
+import { assertCommandAllowed, classifyCommand, nonInteractiveShellEnv } from '@forge/policy';
 import { parseDetection, DETECTION_SCRIPT, type ProjectDetection } from '@forge/project-detection';
 import type {
   CreateSandboxInput,
@@ -85,6 +85,82 @@ export interface ManagedProcessEntry {
   checkpointAfter?: SnapshotId;
   /** Artifact id of the persisted log output. */
   logArtifact?: ArtifactId;
+}
+
+/** Schema-safe dependency state for strict MCP hosts that reject null. */
+export type DependencyStateView = {
+  status: 'unknown' | 'ready' | 'missing' | 'unusable';
+  reason: string;
+  lockfileHash?: string;
+  installedAt?: string;
+  usable: boolean;
+};
+
+export function dependencyStateView(
+  state?: { lockfileHash: string; installedAt: string; usable: boolean } | null
+): DependencyStateView {
+  if (!state) {
+    return { status: 'unknown', reason: 'not_observed', usable: false };
+  }
+  if (state.usable) {
+    return {
+      status: 'ready',
+      reason: 'installed',
+      lockfileHash: state.lockfileHash,
+      installedAt: state.installedAt,
+      usable: true
+    };
+  }
+  return {
+    status: 'unusable',
+    reason: 'install_not_visible',
+    lockfileHash: state.lockfileHash,
+    installedAt: state.installedAt,
+    usable: false
+  };
+}
+
+export function managedProcessStatus(
+  entry: ManagedProcessEntry
+): 'running' | 'exited' | 'failed' | 'cancelled' {
+  if (!entry.completedAt) return 'running';
+  if (entry.exitCode === 0) return 'exited';
+  if (entry.exitCode === 124) return 'cancelled';
+  return 'failed';
+}
+
+export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): string[] {
+  const active = Object.entries(record.processes).filter(([, entry]) => !entry.completedAt);
+  if (active.length > 0) {
+    return [
+      'forge_process_wait',
+      'forge_process_get',
+      'forge_process_logs',
+      'forge_process_list',
+      'forge_process_stop',
+      'forge_process_cancel'
+    ];
+  }
+  if (!['ready', 'busy'].includes(record.workspace.state)) {
+    return ['forge_workspace_get'];
+  }
+  const deps = dependencyStateView(record.dependencyState);
+  if (deps.status !== 'ready') {
+    return [
+      'forge_dependencies_install',
+      'forge_shell_exec',
+      'forge_process_start',
+      'forge_git_status',
+      'forge_workspace_get'
+    ];
+  }
+  return [
+    'forge_shell_exec',
+    'forge_git_status',
+    'forge_git_commit',
+    'forge_submit_for_review',
+    'forge_workspace_get'
+  ];
 }
 
 interface WorkspaceCheckpoint extends SnapshotRef {
@@ -846,7 +922,8 @@ export class ForgeApplicationService {
       timeoutMs: 120_000,
       outputLimitBytes: 20_000,
       sessionId: 'system',
-      networkPolicy: 'package_install'
+      networkPolicy: 'package_install',
+      environment: nonInteractiveShellEnv()
     }).catch(() => undefined);
   }
 
@@ -1815,6 +1892,9 @@ export class ForgeApplicationService {
           durationMs: 0,
           artifactRefs: [],
           replay: true,
+          replayed: true,
+          idempotencyKey: input.idempotencyKey,
+          originalOperationId: operation.operationId,
           workspaceId: record.workspace.id,
           branch: record.workspace.currentBranch,
           head: record.workspace.currentCommit,
@@ -1829,7 +1909,7 @@ export class ForgeApplicationService {
       command: input.command,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
-      environment: input.environment,
+      environment: nonInteractiveShellEnv(input.environment ?? {}),
       stdin: input.stdin,
       outputLimitBytes: input.outputLimitBytes,
       sessionId: input.sessionId ?? 'agent-default',
@@ -1843,6 +1923,9 @@ export class ForgeApplicationService {
       baseCommit: record.workspace.baseCommit,
       classification: decision.classification,
       operationId,
+      ...(operationId && input.idempotencyKey
+        ? { idempotencyKey: input.idempotencyKey, replayed: false, originalOperationId: operationId }
+        : {}),
       workspaceRevision: record.workspace.revision
     };
   }
@@ -1876,7 +1959,11 @@ export class ForgeApplicationService {
         code: 'FORGE_WORKSPACE_CONFLICT',
         message: 'This process start was already accepted but its process id is no longer available; inspect forge_workspace_get and forge_process_get before retrying with a new idempotency key.',
         retryable: false,
-        details: { idempotencyKey: input.idempotencyKey, operationId: operation.operationId }
+        details: {
+          idempotencyKey: input.idempotencyKey,
+          operationId: operation.operationId,
+          allowedNextActions: ['forge_workspace_get', 'forge_process_list', 'forge_operation_get']
+        }
       });
     }
     const processId = ids.process();
@@ -1890,12 +1977,13 @@ export class ForgeApplicationService {
       processId,
       command: input.command,
       cwd: input.cwd,
-      environment: input.environment,
+      environment: nonInteractiveShellEnv(input.environment ?? {}),
       // Same session as forge_shell_exec so later foreground commands share the
       // shell environment and always observe the process filesystem writes.
       sessionId: 'agent-default',
       networkPolicy: input.networkPolicy,
-      autoCleanup: false
+      autoCleanup: false,
+      mutatesFilesystem
     });
     record.processes[processId] = {
       command: input.command,
@@ -1907,12 +1995,16 @@ export class ForgeApplicationService {
       processId
     };
     return {
-      value,
+      value: { ...value, mutatesFilesystem },
+      replayed: false,
+      idempotencyKey: input.idempotencyKey,
+      originalOperationId: operation.operationId,
       workspaceId: record.workspace.id,
       branch: record.workspace.currentBranch,
       head: record.workspace.currentCommit,
       operationId: operation.operationId,
-      workspaceRevision: record.workspace.revision
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
     };
   }
 
@@ -1926,15 +2018,12 @@ export class ForgeApplicationService {
     if (!processId) return null;
     const entry = record.processes[processId];
     if (!entry) return null;
-    const status = entry.completedAt
-      ? entry.exitCode === 0
-        ? 'exited' as const
-        : entry.exitCode === 124
-          ? 'cancelled' as const
-          : 'failed' as const
-      : 'running' as const;
+    const status = managedProcessStatus(entry);
     return {
       replay: true as const,
+      replayed: true as const,
+      idempotencyKey,
+      originalOperationId: operationId,
       value: {
         id: processId,
         providerProcessId: processId,
@@ -1949,7 +2038,10 @@ export class ForgeApplicationService {
       branch: record.workspace.currentBranch,
       head: record.workspace.currentCommit,
       operationId,
-      workspaceRevision: record.workspace.revision
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: entry.completedAt
+        ? ['forge_process_get', 'forge_process_logs', 'forge_shell_exec']
+        : ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
     };
   }
 
@@ -1958,11 +2050,37 @@ export class ForgeApplicationService {
     processId: ProcessId,
     cursor?: string
   ) {
-    return (await this.handle(record, { allowRestore: false })).readProcessLogs({
+    const handle = await this.handle(record, { allowRestore: false });
+    const logs = await handle.readProcessLogs({
       processId,
       cursor,
       limitBytes: 200_000
     });
+    const process = await handle.getProcess(processId);
+    const entry = record.processes[processId];
+    if (entry && process && !entry.completedAt && process.status !== 'running' && process.status !== 'starting') {
+      entry.completedAt = process.completedAt ?? new Date().toISOString();
+      entry.exitCode = process.exitCode ?? entry.exitCode;
+      record.workspace.updatedAt = new Date().toISOString();
+    }
+    const status = process?.status
+      ?? (entry ? managedProcessStatus(entry) : 'orphaned');
+    const hasMore = Boolean(logs.nextCursor);
+    return {
+      data: logs.data,
+      nextCursor: logs.nextCursor ?? null,
+      hasMore,
+      truncated: logs.truncated,
+      status,
+      exitCode: process?.exitCode ?? entry?.exitCode,
+      completedAt: process?.completedAt ?? entry?.completedAt ?? null,
+      mutatesFilesystem: entry?.mutatesFilesystem ?? process?.mutatesFilesystem ?? false,
+      filesystemCommitted: Boolean(entry?.checkpointAfter),
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: status === 'running' || status === 'starting'
+        ? ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
+        : ['forge_process_get', 'forge_shell_exec', 'forge_workspace_get']
+    };
   }
 
   async processGet(record: WorkspaceRuntimeRecord, processId: ProcessId) {
@@ -1975,7 +2093,98 @@ export class ForgeApplicationService {
       entry.exitCode = process.exitCode ?? entry.exitCode;
       record.workspace.updatedAt = new Date().toISOString();
     }
-    return { workspaceId: record.workspace.id, process, recorded: record.processes[processId] ?? null, workspaceRevision: record.workspace.revision };
+    const merged = {
+      ...process,
+      command: entry?.command || process.command,
+      mutatesFilesystem: entry?.mutatesFilesystem ?? process.mutatesFilesystem,
+      checkpointAfter: entry?.checkpointAfter,
+      ...(entry?.completedAt
+        ? { completedAt: entry.completedAt, exitCode: entry.exitCode ?? process.exitCode }
+        : {})
+    };
+    return {
+      workspaceId: record.workspace.id,
+      process: merged,
+      recorded: entry ?? null,
+      dependencyState: dependencyStateView(record.dependencyState),
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: merged.status === 'running' || merged.status === 'starting'
+        ? ['forge_process_wait', 'forge_process_logs', 'forge_process_stop']
+        : ['forge_shell_exec', 'forge_workspace_get']
+    };
+  }
+
+  async processList(record: WorkspaceRuntimeRecord) {
+    await this.syncProcessLifecycle(record);
+    const processes = Object.entries(record.processes).map(([id, entry]) => ({
+      id,
+      command: entry.command,
+      status: managedProcessStatus(entry),
+      exitCode: entry.exitCode,
+      startedAt: entry.startedAt,
+      completedAt: entry.completedAt,
+      mutatesFilesystem: entry.mutatesFilesystem,
+      checkpointAfter: entry.checkpointAfter,
+      filesystemCommitted: Boolean(entry.checkpointAfter)
+    }));
+    return {
+      workspaceId: record.workspace.id,
+      processes,
+      dependencyState: dependencyStateView(record.dependencyState),
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: workspaceAllowedNextActions(record)
+    };
+  }
+
+  async operationGet(record: WorkspaceRuntimeRecord, operationId: OperationId) {
+    const match = Object.entries(record.idempotency).find(([, value]) => value.operationId === operationId);
+    if (!match) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: 'No operation with that id is recorded for this workspace.',
+        retryable: false,
+        details: { operationId, allowedNextActions: ['forge_workspace_get', 'forge_process_list'] }
+      });
+    }
+    const [idempotencyKey, entry] = match;
+    const processId = entry.processId;
+    const processEntry = processId ? record.processes[processId] : undefined;
+    let status: 'accepted' | 'active' | 'completed' | 'failed' | 'cancelled' = 'accepted';
+    if (processEntry) {
+      const processStatus = managedProcessStatus(processEntry);
+      status = processStatus === 'running'
+        ? 'active'
+        : processStatus === 'exited'
+          ? 'completed'
+          : processStatus === 'cancelled'
+            ? 'cancelled'
+            : 'failed';
+    }
+    return {
+      workspaceId: record.workspace.id,
+      operationId,
+      idempotencyKey,
+      replayed: false,
+      originalOperationId: operationId,
+      status,
+      processId: processId ?? null,
+      process: processEntry
+        ? {
+            id: processId,
+            command: processEntry.command,
+            status: managedProcessStatus(processEntry),
+            exitCode: processEntry.exitCode,
+            completedAt: processEntry.completedAt,
+            mutatesFilesystem: processEntry.mutatesFilesystem,
+            filesystemCommitted: Boolean(processEntry.checkpointAfter)
+          }
+        : null,
+      dependencyState: dependencyStateView(record.dependencyState),
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: status === 'active'
+        ? ['forge_process_wait', 'forge_process_get', 'forge_process_logs']
+        : ['forge_workspace_get', 'forge_process_list', 'forge_shell_exec']
+    };
   }
 
   async processWait(record: WorkspaceRuntimeRecord, processId: ProcessId, timeoutMs?: number) {
@@ -1994,18 +2203,24 @@ export class ForgeApplicationService {
     if (!this.hasUncheckpointedMutators(record)) {
       await this.setWorkspaceKeepAlive(record, false);
     }
+    const entry = record.processes[processId];
     return {
       workspaceId: record.workspace.id,
       process: {
         ...process,
-        mutatesFilesystem: record.processes[processId]?.mutatesFilesystem ?? process.mutatesFilesystem,
-        checkpointAfter: record.processes[processId]?.checkpointAfter,
-        ...(record.processes[processId]?.completedAt
-          ? { completedAt: record.processes[processId]!.completedAt, exitCode: record.processes[processId]!.exitCode }
+        mutatesFilesystem: entry?.mutatesFilesystem ?? process.mutatesFilesystem,
+        checkpointAfter: entry?.checkpointAfter,
+        ...(entry?.completedAt
+          ? { completedAt: entry.completedAt, exitCode: entry.exitCode }
           : {})
       },
-      dependencyState: record.dependencyState ?? null,
-      workspaceRevision: record.workspace.revision
+      dependencyState: dependencyStateView(record.dependencyState),
+      filesystemCommitted: Boolean(entry?.checkpointAfter),
+      finalLogCursor: null,
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: entry && !entry.completedAt
+        ? ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
+        : ['forge_shell_exec', 'forge_workspace_get', 'forge_process_logs']
     };
   }
 
@@ -2407,10 +2622,11 @@ export class ForgeApplicationService {
       destructiveRecoveryRequired: boolean;
     };
     processes: Array<{ id: string; command: string; status: string; exitCode?: number }>;
-    dependencyState: { lockfileHash: string; installedAt: string; usable: boolean } | null;
+    dependencyState: DependencyStateView;
     trackedChangesPreserved: boolean;
     checkpointRestored: boolean;
     workspaceRevision: number;
+    allowedNextActions: string[];
   }> {
     const handle = await this.providerFor(record).get(record.providerId);
     const now = new Date().toISOString();
@@ -2589,10 +2805,11 @@ export class ForgeApplicationService {
         destructiveRecoveryRequired
       },
       processes: processReport,
-      dependencyState: record.dependencyState ?? null,
+      dependencyState: dependencyStateView(record.dependencyState),
       trackedChangesPreserved,
       checkpointRestored,
-      workspaceRevision: record.workspace.revision
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: workspaceAllowedNextActions(record)
     };
   }
 
@@ -2626,9 +2843,14 @@ export class ForgeApplicationService {
     if (operation.replay) {
       return {
         replay: true,
+        replayed: true,
+        idempotencyKey: input.idempotencyKey,
+        originalOperationId: operation.operationId,
         workspaceId: record.workspace.id,
         operationId: operation.operationId,
-        workspaceRevision: record.workspace.revision
+        dependencyState: dependencyStateView(record.dependencyState),
+        workspaceRevision: record.workspace.revision,
+        allowedNextActions: workspaceAllowedNextActions(record)
       };
     }
 
@@ -2693,7 +2915,8 @@ export class ForgeApplicationService {
         timeoutMs,
         outputLimitBytes: 500_000,
         sessionId: 'agent-default',
-        networkPolicy: input.networkPolicy
+        networkPolicy: input.networkPolicy,
+        environment: nonInteractiveShellEnv()
       });
 
       if (installResult.exitCode === 0) break;
@@ -2769,14 +2992,20 @@ export class ForgeApplicationService {
       lockfileHashBefore,
       lockfileHashAfter,
       lockfileChanged: lockfileHashBefore !== lockfileHashAfter,
-      dependencyState: record.dependencyState,
+      dependencyState: dependencyStateView(record.dependencyState),
       checkpoint: checkpoint
         ? { snapshotId: checkpoint.snapshotId, createdAt: checkpoint.createdAt, providerVersion: checkpoint.providerVersion }
         : undefined,
+      replayed: false,
+      idempotencyKey: input.idempotencyKey,
+      originalOperationId: operation.operationId,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision,
       stderr: installResult?.stderr?.slice(0, 2_000) ?? '',
-      stdout: installResult?.stdout?.slice(0, 1_000) ?? ''
+      stdout: installResult?.stdout?.slice(0, 1_000) ?? '',
+      allowedNextActions: success && usable
+        ? ['forge_shell_exec', 'forge_git_status', 'forge_workspace_get']
+        : ['forge_dependencies_install', 'forge_workspace_reconcile', 'forge_workspace_get']
     };
   }
   private async adoptOwnedGitTransition(

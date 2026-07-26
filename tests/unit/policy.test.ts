@@ -3,7 +3,8 @@ import {
   assertAllowedForgeBranch,
   assertCommandAllowed,
   assertPublicHost,
-  classifyCommand
+  classifyCommand,
+  nonInteractiveShellEnv
 } from '@forge/policy';
 
 describe('Forge policy', () => {
@@ -150,5 +151,14 @@ describe('Forge policy', () => {
     for (const host of ['registry.npmjs.org', 'github.com', '93.184.216.34', '8.8.8.8', 'api.github.com.']) {
       expect(() => assertPublicHost(host), host).not.toThrow();
     }
+  });
+
+  it('injects non-interactive defaults that caller overrides can replace', () => {
+    expect(nonInteractiveShellEnv({ CI: '0', EXTRA: 'yes' })).toMatchObject({
+      CI: '0',
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
+      GIT_TERMINAL_PROMPT: '0',
+      EXTRA: 'yes'
+    });
   });
 });

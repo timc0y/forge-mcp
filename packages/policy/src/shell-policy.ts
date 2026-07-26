@@ -474,3 +474,23 @@ export function assertCommandAllowed(command: string, networkPolicy: NetworkPoli
   if (decision.approvalRequired && !hasApproval) throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: decision.reason, retryable: false, details: { classification: decision.classification } });
   return decision;
 }
+
+/**
+ * Environment defaults that keep package managers and CLIs non-interactive.
+ * ChatGPT/tool hosts cannot answer Corepack, pnpm, or login prompts inside a
+ * foreground command, so Forge always injects these and lets caller overrides win.
+ */
+export function nonInteractiveShellEnv(
+  extra: Record<string, string> = {}
+): Record<string, string> {
+  return {
+    CI: '1',
+    npm_config_yes: 'true',
+    PNPM_CONFIRM_MODULES_PURGE: 'false',
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
+    COREPACK_ENABLE_AUTO_PIN: '0',
+    GIT_TERMINAL_PROMPT: '0',
+    DEBIAN_FRONTEND: 'noninteractive',
+    ...extra
+  };
+}

@@ -186,7 +186,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
         status: mapProcessStatus(process.status),
         pid: process.pid,
         startedAt: new Date().toISOString(),
-        mutatesFilesystem: false
+        mutatesFilesystem: input.mutatesFilesystem ?? false
       };
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'startProcess');

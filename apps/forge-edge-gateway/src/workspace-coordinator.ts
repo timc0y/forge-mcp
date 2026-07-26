@@ -1,15 +1,18 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   ForgeApplicationService,
+  dependencyStateView,
+  managedProcessStatus,
+  workspaceAllowedNextActions,
   type CreateWorkspaceInput,
   type WorkspaceRuntimeRecord
 } from '@forge/application';
-import { ForgeError, type ProcessId } from '@forge/core';
+import { ForgeError, type OperationId, type ProcessId } from '@forge/core';
 import { D1AuditStore } from '@forge/audit';
 import { D1MetadataStore } from '@forge/metadata-d1';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
 import { issueCapability } from '@forge/capabilities';
-import { classifyCommand } from '@forge/policy';
+import { classifyCommand, nonInteractiveShellEnv } from '@forge/policy';
 import type { Env } from './env';
 import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
@@ -195,7 +198,18 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         code: 'FORGE_WORKSPACE_CONFLICT',
         message: 'Stop workspace-owned processes before a filesystem mutation or checkpoint so Forge can capture an immutable recovery snapshot.',
         retryable: true,
-        details: { processIds }
+        details: {
+          status: 'blocked',
+          reason: 'active_process',
+          processIds,
+          allowedNextActions: [
+            'forge_process_wait',
+            'forge_process_stop',
+            'forge_process_cancel',
+            'forge_process_get',
+            'forge_process_list'
+          ]
+        }
       });
     }
   }
@@ -397,7 +411,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.getState();
   }
 
-  async getState() {
+  async getState(options: { compact?: boolean } = {}) {
     return this.readWithRecovery(async (record) => {
       if (['ready', 'busy'].includes(record.workspace.state) && await this.app.reconcileGitState(record)) await this.save(record);
       // Build the gitIntegrity report. When there is a lastGitDivergence, the
@@ -438,19 +452,56 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       // Sync provider process status so completed background work no longer
       // appears as forever-running and blocking later tools.
       await this.app.syncProcessLifecycle(record).catch(() => ({ running: 0, completed: 0 }));
+      const processes = Object.entries(record.processes).map(([id, value]) => ({
+        id,
+        ...value,
+        status: managedProcessStatus(value)
+      }));
+      const activeProcessIds = processes.filter((process) => !process.completedAt).map((process) => process.id);
+      const allowedNextActions = workspaceAllowedNextActions(record);
+      const dependencyState = dependencyStateView(record.dependencyState);
+      if (options.compact) {
+        return {
+          id: record.workspace.id,
+          tenantId: record.workspace.tenantId,
+          projectId: record.workspace.projectId,
+          state: record.workspace.state,
+          repository: record.workspace.repository,
+          requestedRef: record.workspace.requestedRef,
+          baseCommit: record.workspace.baseCommit,
+          currentBranch: record.workspace.currentBranch,
+          currentCommit: record.workspace.currentCommit,
+          revision: record.workspace.revision,
+          hasUnpushedWork: record.workspace.hasUnpushedWork,
+          persistenceMode: record.workspace.persistenceMode,
+          runtimeProfile: record.workspace.runtimeProfile,
+          createdAt: record.workspace.createdAt,
+          updatedAt: record.workspace.updatedAt,
+          dependencyState,
+          gitIntegrity: {
+            state: gitIntegrity.state,
+            reason: gitIntegrity.reason,
+            recommendedAction: gitIntegrity.recommendedAction,
+            ...(gitIntegrity.blockingProcessId ? { blockingProcessId: gitIntegrity.blockingProcessId } : {})
+          },
+          activeProcessIds,
+          processes: processes.map((process) => ({
+            id: process.id,
+            status: process.status,
+            exitCode: process.exitCode,
+            mutatesFilesystem: process.mutatesFilesystem,
+            command: process.command.slice(0, 120)
+          })),
+          previewCount: Object.keys(record.previews).length,
+          allowedNextActions,
+          next_step: allowedNextActions[0]
+            ? `Next safe tool: ${allowedNextActions[0]}`
+            : 'Inspect forge_workspace_get for details.'
+        };
+      }
       return {
         ...record.workspace,
-        processes: Object.entries(record.processes).map(([id, value]) => ({
-          id,
-          ...value,
-          status: value.completedAt
-            ? value.exitCode === 0
-              ? 'exited'
-              : value.exitCode === 124
-                ? 'cancelled'
-                : 'failed'
-            : 'running'
-        })),
+        processes,
         checks: record.checks,
         previews: Object.fromEntries(
           Object.entries(record.previews).map(([id, value]) => [
@@ -469,7 +520,12 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           providerVersion: snapshot.providerVersion
         })),
         gitIntegrity,
-        dependencyState: record.dependencyState ?? null,
+        dependencyState,
+        activeProcessIds,
+        allowedNextActions,
+        next_step: allowedNextActions[0]
+          ? `Next safe tool: ${allowedNextActions[0]}`
+          : 'Inspect forge_workspace_get for details.',
         recovery: record.lastRecoveryVerifiedAt
           ? { verifiedAt: record.lastRecoveryVerifiedAt, snapshotId: record.workspace.activeSnapshotId ?? null }
           : { verifiedAt: null }
@@ -757,11 +813,15 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           },
           next_step: entry?.completedAt
             ? `Managed process ${processId} already finished with exit ${entry.exitCode ?? 1}.`
-            : `Call forge_process_wait with process_id ${processId} (use a timeout_ms of at least 600000 for large installs), then continue with shell commands.`
+            : `Call forge_process_wait with process_id ${processId} (use a timeout_ms of at least 600000 for large installs), then continue with shell commands.`,
+          allowedNextActions: entry?.completedAt
+            ? ['forge_process_get', 'forge_shell_exec', 'forge_workspace_get']
+            : ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
         };
       };
       try {
         const decision = classifyCommand(input.command, input.networkPolicy);
+        const environment = nonInteractiveShellEnv(input.environment);
         // Read-only commands must never be blocked by leftover process records.
         // Mutating commands sync/reap finished processes before the quiescent check.
         if (input.idempotencyKey && decision.classification !== 'read_only') {
@@ -779,7 +839,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           const started = await this.app.startProcess(record, {
             command: input.command,
             cwd: normalizedCwd,
-            environment: input.environment,
+            environment,
             networkPolicy: input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>,
             expectedRevision: input.expectedRevision,
             idempotencyKey: input.idempotencyKey,
@@ -802,7 +862,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           command: input.command,
           cwd: normalizedCwd,
           timeoutMs: input.timeoutMs,
-          environment: input.environment,
+          environment,
           networkPolicy: input.networkPolicy,
           outputLimitBytes: input.outputLimitBytes,
           expectedRevision: input.expectedRevision,
@@ -829,7 +889,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           const started = await this.app.startProcess(record, {
             command: input.command,
             cwd: normalizedCwd,
-            environment: input.environment,
+            environment: nonInteractiveShellEnv(input.environment),
             networkPolicy: input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>,
             expectedRevision: input.expectedRevision,
             idempotencyKey: `${input.idempotencyKey}:bg`,
@@ -910,6 +970,14 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         await this.save(record);
       }
     });
+  }
+
+  async processList() {
+    return this.readWithRecovery((record) => this.app.processList(record));
+  }
+
+  async operationGet(input: { operationId: OperationId }) {
+    return this.readWithRecovery((record) => this.app.operationGet(record, input.operationId));
   }
 
   async reconcile() {
