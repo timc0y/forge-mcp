@@ -20,6 +20,7 @@ import {
 } from './oauth';
 import type { Env } from './env';
 import { galleryPage } from './review-gallery';
+import { secretsDashboard } from './secrets-ui';
 import { forgeGlyph } from './ui';
 import {
   appDashboard,
@@ -717,6 +718,7 @@ export default {
       if (url.pathname === '/login/github/callback') return await finishGitHubLogin(request, env);
       if (url.pathname === '/logout') return await logout(request, env);
       if (url.pathname === '/app') return await appDashboard(request, env);
+      if (url.pathname === '/app/secrets') return await secretsDashboard(request, env);
       if (url.pathname === '/app/access' && request.method === 'POST') return await resolveAccessRequest(request, env);
       if (url.pathname === '/github/install') return await installGitHubApp(request, env);
       if (url.pathname === '/github/reconnect' && request.method === 'POST') return await reconnectGitHub(request, env);

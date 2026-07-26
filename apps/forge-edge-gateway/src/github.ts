@@ -802,7 +802,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
   const mcpUrl = `${env.FORGE_PUBLIC_ORIGIN}/mcp`;
   const githubControls = user.is_owner === 1
     ? `<div class="row"><form method="post" action="${env.FORGE_PUBLIC_ORIGIN}/github/reconnect"><button class="${repositories.length === 0 ? 'primary' : ''}" type="submit">Reconnect GitHub</button></form>
-<a class="btn" href="/github/install">Install or add repositories</a></div>
+<a class="btn" href="/github/install">Install or add repositories</a><a class="btn" href="/app/secrets">Secrets</a></div>
 <details><summary>Invite a collaborator to this private Forge</summary><ol><li>Add their <strong>GitHub username</strong> as a repository collaborator in GitHub. An email address alone cannot identify a GitHub account until the invitation is accepted.</li><li>Have them sign in at Forge and choose <strong>Request access</strong>.</li><li>Approve their request above. Forge then shares this approved project and its installed repositories with their audited GitHub identity.</li></ol></details>`
     : `<p class="note"><strong>Private owner-managed connection.</strong> You do not install the GitHub App. Your owner selects repositories, adds you as a GitHub collaborator, then approves your Forge request.</p>`;
   const noRepositoryCopy = user.is_owner === 1
@@ -1011,7 +1011,7 @@ export async function requestApproval(
   env: Env,
   identity: Pick<AuthenticatedContext, 'tenantId' | 'subject'>,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach',
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string; already_approved: boolean }> {
@@ -1066,7 +1066,7 @@ export async function requireApproval(
   identity: Pick<AuthenticatedContext, 'tenantId'>,
   approvalId: string,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach',
   expected: Record<string, unknown>
 ): Promise<void> {
   const row = await env.METADATA.prepare(

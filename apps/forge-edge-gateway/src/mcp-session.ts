@@ -9,6 +9,7 @@ import {
   type ProcessId,
   type CredentialProfileId,
   type ProjectId,
+  type SecretId,
   type TenantId,
   type WorkspaceId
 } from '@forge/core';
@@ -46,6 +47,7 @@ import type { CommandClass } from '@forge/policy';
 import type { Env } from './env';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
 import { credentialService } from './credentials';
+import { vaultService } from './vault';
 import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
 import { snapshotsEnabled } from './snapshots';
 import { aiEnabled, generateCommitMessage, summarizeDiffForPr } from './ai';
@@ -722,6 +724,77 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const profile = await credentialService(env).validate(identity.tenantId as TenantId, text(input.credential_profile_id) as CredentialProfileId);
         return { profile };
+      },
+      forge_secret_list: async () => {
+        const identity = this.identity();
+        const [secrets, attachments] = await Promise.all([
+          vaultService(env).list(identity.tenantId as TenantId),
+          vaultService(env).attachedSecrets(identity.tenantId as TenantId)
+        ]);
+        return { secrets, attached: attachments };
+      },
+      forge_secret_create: async (input) => {
+        const identity = this.identity();
+        const secret = await vaultService(env).create(
+          identity.tenantId as TenantId,
+          text(input.label), input.provider as 'cloudflare' | 'shopify' | 'generic',
+          input.env as Record<string, string>
+        );
+        return { secret };
+      },
+      forge_secret_update: async (input) => {
+        const identity = this.identity();
+        const secret = await vaultService(env).update(
+          identity.tenantId as TenantId, text(input.secret_id) as SecretId,
+          {
+            ...(input.label === undefined ? {} : { label: text(input.label) }),
+            ...(input.provider === undefined ? {} : { provider: input.provider as 'cloudflare' | 'shopify' | 'generic' }),
+            ...(input.env === undefined ? {} : { env: input.env as Record<string, string> })
+          }
+        );
+        return { secret };
+      },
+      forge_secret_delete: async (input) => {
+        const identity = this.identity();
+        await vaultService(env).delete(identity.tenantId as TenantId, text(input.secret_id) as SecretId);
+        return { deleted_secret_id: text(input.secret_id) };
+      },
+      forge_secret_attach: async (input) => {
+        const identity = this.identity();
+        const secretId = text(input.secret_id) as SecretId;
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        if (!approvalId) {
+          const secret = (await vaultService(env).list(identity.tenantId as TenantId)).find(
+            (s) => s.id === secretId
+          );
+          const varNames = secret?.varNames.join(', ') ?? 'unknown';
+          const approval = await requestApproval(env, identity, workspaceId, 'secret.attach',
+            `Attach secret "${secret?.label ?? secretId}" to workspace ${workspaceId}`,
+            { secret_id: secretId, workspace_id: workspaceId, var_names: varNames }
+          );
+          if (approval.already_approved) {
+            await vaultService(env).attach(identity.tenantId as TenantId, secretId, workspaceId);
+            return { attached: true, secret_id: secretId, workspace_id: workspaceId };
+          }
+          throw new ForgeError({
+            code: 'FORGE_APPROVAL_REQUIRED', message: 'This attach needs human approval. Open the approval URL, approve it, then retry with approval_id.',
+            retryable: false, details: { kind: 'approval', action: 'secret.attach', ...approval }
+          });
+        }
+        await requireApproval(env, identity, approvalId, workspaceId, 'secret.attach',
+          { secret_id: secretId, workspace_id: workspaceId }
+        );
+        await vaultService(env).attach(identity.tenantId as TenantId, secretId, workspaceId);
+        await completeApproval(env, approvalId, true);
+        return { attached: true, secret_id: secretId, workspace_id: workspaceId };
+      },
+      forge_secret_detach: async (input) => {
+        const identity = this.identity();
+        const secretId = text(input.secret_id) as SecretId;
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        await vaultService(env).detach(identity.tenantId as TenantId, secretId, workspaceId);
+        return { detached: true, secret_id: secretId, workspace_id: workspaceId };
       },
       forge_workspace_reconcile: async (input) => {
         const identity = this.identity();
@@ -1459,33 +1532,24 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const workspace = await authorizedCoordinator(env, identity, workspaceId);
         const decision = classifyCommand(command, networkPolicy);
         let approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        const environment = input.environment as Record<string, string>;
-        const environmentHash = await sha256(JSON.stringify(Object.entries(environment).sort(([left], [right]) => left.localeCompare(right))));
+        const userEnv = input.environment as Record<string, string>;
+        const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
+        const environment = { ...attached.vars, ...userEnv };
+        const environmentHash = await sha256(JSON.stringify(Object.entries(userEnv).sort(([left], [right]) => left.localeCompare(right))));
         const approvalPayload = { command, cwd, networkPolicy, environmentHash };
         let claimedApproval = false;
         if (decision.allowed && decision.approvalRequired) {
           if (mayAutoApproveShell(env, decision.classification, networkPolicy)) {
-            // Operator policy auto-approves ONLY low-risk gated shell (dependency
-            // installs). Destructive commands and unrestricted_with_approval
-            // network egress fall through to the real human approval URL below,
-            // even when FORGE_AUTO_APPROVE_SHELL is on. GitHub writes are gated on
-            // their own path and unaffected.
             claimedApproval = true;
           } else if (!approvalId) {
             const approval = await requestApproval(env, identity, workspaceId, 'shell.exec', `Run ${decision.classification} command`, approvalPayload);
             if (approval.already_approved) {
-              // The human has already said yes to this exact command in this exact
-              // workspace and the approval is still live. Making the agent bounce
-              // off an error just to hand the same id straight back is pure
-              // ceremony — take it and run.
               approvalId = approval.approval_id;
               await requireApproval(env, identity, approvalId, workspaceId, 'shell.exec', approvalPayload);
               claimedApproval = true;
             } else {
               const inline = await this.tryResolveApprovalInline(identity, approval, `Run ${decision.classification} command`);
               if (!inline) {
-                // Expose approval_id / approval_url as machine-readable fields so the
-                // widget can render an Approve button; kind discriminates the shape.
                 throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This command needs human approval. Open the approval URL, approve this exact command, then retry the call with approval_id.', retryable: false, details: { kind: 'approval', action: 'shell.exec', ...approval } });
               }
               approvalId = inline;
@@ -1509,10 +1573,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             idempotencyKey: idempotency(input.idempotency_key),
             approved: claimedApproval
           });
-          // Re-arm rather than spend: the human approved this exact command, and
-          // a test-fix loop re-runs it verbatim. See completeApproval.
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
-          return asRecord(result);
+          return {
+            ...asRecord(result),
+            stdout: attached.redact.size > 0 ? await vaultService(env).redactOutput(String(result.stdout ?? ''), identity.tenantId as TenantId, workspaceId) : result.stdout,
+            stderr: attached.redact.size > 0 ? await vaultService(env).redactOutput(String(result.stderr ?? ''), identity.tenantId as TenantId, workspaceId) : result.stderr
+          };
         } catch (error) {
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
           throw error;
@@ -1520,10 +1586,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_start: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processStart({
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
+        const environment = { ...attached.vars, ...(input.environment as Record<string, string>) };
+        return asRecord(await (await authorizedCoordinator(env, identity, workspaceId)).processStart({
           command: text(input.command),
           cwd: text(input.cwd),
-          environment: input.environment as Record<string, string>,
+          environment,
           networkPolicy: text(input.network_policy) as never,
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: idempotency(input.idempotency_key)
@@ -1552,9 +1621,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_check_start: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).checkStart({
+        const workspaceId = text(input.workspace_id);
+        const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
+        const environment = { ...attached.vars, ...(input.environment as Record<string, string>) };
+        return asRecord(await (await authorizedCoordinator(env, identity, workspaceId)).checkStart({
           name: text(input.name), command: text(input.command), cwd: text(input.cwd),
-          environment: input.environment as Record<string, string>, networkPolicy: text(input.network_policy) as never,
+          environment, networkPolicy: text(input.network_policy) as never,
           expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key)
         }));
       },
