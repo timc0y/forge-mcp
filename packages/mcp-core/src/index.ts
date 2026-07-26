@@ -117,7 +117,7 @@ const workspaceGetOutput = {
     lockfileHash: z.string(),
     installedAt: z.string(),
     usable: z.boolean()
-  }).optional().describe('Dependency installation state. Null when dependencies have not been installed.'),
+  }).nullable().optional().describe('Dependency installation state. Null when dependencies have not been installed.'),
   previews: z.record(z.string(), z.object({ port: z.number(), processId: z.string(), access: z.string(), expiresAt: z.string() }))
 } satisfies ZodRawShape;
 

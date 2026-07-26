@@ -25,10 +25,11 @@ import type {
   ListFilesInput,
   NetworkPolicyMode,
   PatchInput,
+  ProcessRecord,
   SandboxHandle,
-  SandboxProvider
+  SandboxProvider,
+  SnapshotRef
 } from '@forge/sandbox-core';
-import type { SnapshotRef } from '@forge/sandbox-core';
 
 export interface WorkspaceRuntimeRecord {
   workspace: Workspace;
@@ -1336,7 +1337,13 @@ export class ForgeApplicationService {
     // unit/provider adapters) still use the checkout-health path below. New
     // workspaces always have an active checkpoint before becoming ready.
     if (!record.workspace.activeSnapshotId) return handle;
-    const inspection = await this.inspectWorkspace(handle, record);
+    let inspection = await this.inspectWorkspace(handle, record);
+    if (inspection.state === 'unavailable') {
+      // A Durable Object reset mid-command often leaves process bookkeeping and
+      // the sandbox briefly disagreeing. Adopt/reap tracked processes and retry
+      // before failing closed as opaque UNKNOWN.
+      inspection = await this.recoverUnavailableInspection(record, handle, inspection);
+    }
     if (inspection.state === 'matches') return handle;
     if (inspection.state === 'diverged') {
       this.noteGitDivergence(record, inspection);
@@ -1358,9 +1365,9 @@ export class ForgeApplicationService {
     const diagnosticCode = inspection.diagnostic?.providerCode ?? inspection.diagnostic?.code ?? 'UNKNOWN';
     throw new ForgeError({
       code: 'FORGE_PROVIDER_UNAVAILABLE',
-      message: `Forge could not safely inspect the workspace filesystem; recovery was not attempted (${diagnosticCode}).`,
+      message: `Forge could not safely inspect the workspace filesystem after process adoption/reap (${diagnosticCode}).`,
       retryable: true,
-      details: { workspaceId: record.workspace.id, inspection: inspection.diagnostic ?? null }
+      details: { workspaceId: record.workspace.id, inspection: inspection.diagnostic ?? null, recoveryAttempted: true }
     });
   }
 
@@ -1740,21 +1747,14 @@ export class ForgeApplicationService {
       networkPolicy: NetworkPolicyMode;
       idempotencyKey: string;
       expectedRevision?: number;
+      approved?: boolean;
     }
   ) {
     const decision = classifyCommand(input.command, input.networkPolicy);
-    if (
-      decision.classification === 'dependency_install' ||
-      decision.approvalRequired
-    ) {
-      throw new ForgeError({
-        code: 'FORGE_APPROVAL_REQUIRED',
-        message: 'This background process requires approval.',
-        retryable: false,
-        details: { classification: decision.classification }
-      });
-    }
-    assertCommandAllowed(input.command, input.networkPolicy, false);
+    // Approved dependency installs must be allowed as managed processes. Blocking
+    // them forced the timeout-conversion path, which restarted installs and left
+    // a torn node_modules tree invisible to later shells.
+    assertCommandAllowed(input.command, input.networkPolicy, input.approved ?? false);
     const operation = this.beginMutation(
       record,
       input.expectedRevision,
@@ -1777,7 +1777,9 @@ export class ForgeApplicationService {
       command: input.command,
       cwd: input.cwd,
       environment: input.environment,
-      sessionId: 'dev-server',
+      // Same session as forge_shell_exec so later foreground commands share the
+      // shell environment and always observe the process filesystem writes.
+      sessionId: 'agent-default',
       networkPolicy: input.networkPolicy,
       autoCleanup: false
     });
@@ -1816,13 +1818,28 @@ export class ForgeApplicationService {
 
   async processWait(record: WorkspaceRuntimeRecord, processId: ProcessId, timeoutMs?: number) {
     const handle = await this.handle(record);
+    let process: ProcessRecord;
     if (handle.processWait) {
-      const process = await handle.processWait({ processId, timeoutMs });
-      return { workspaceId: record.workspace.id, process, workspaceRevision: record.workspace.revision };
+      process = await handle.processWait({ processId, timeoutMs });
+    } else {
+      const current = await handle.getProcess(processId);
+      if (!current) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
+      process = current;
     }
-    const process = await handle.getProcess(processId);
-    if (!process) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
-    return { workspaceId: record.workspace.id, process, workspaceRevision: record.workspace.revision };
+    await this.finalizeManagedProcess(record, handle, processId, process);
+    return {
+      workspaceId: record.workspace.id,
+      process: {
+        ...process,
+        mutatesFilesystem: record.processes[processId]?.mutatesFilesystem ?? process.mutatesFilesystem,
+        checkpointAfter: record.processes[processId]?.checkpointAfter,
+        ...(record.processes[processId]?.completedAt
+          ? { completedAt: record.processes[processId]!.completedAt, exitCode: record.processes[processId]!.exitCode }
+          : {})
+      },
+      dependencyState: record.dependencyState ?? null,
+      workspaceRevision: record.workspace.revision
+    };
   }
 
   async processCancel(
@@ -1950,7 +1967,10 @@ export class ForgeApplicationService {
 
   async reconcileGitState(record: WorkspaceRuntimeRecord): Promise<boolean> {
     const handle = await this.providerFor(record).get(record.providerId);
-    const inspection = await this.inspectWorkspace(handle, record);
+    let inspection = await this.inspectWorkspace(handle, record);
+    if (inspection.state === 'unavailable') {
+      inspection = await this.recoverUnavailableInspection(record, handle, inspection);
+    }
     if (inspection.state === 'mount_missing') {
       await this.recoverActiveCheckpoint(record);
       return true;
@@ -1968,12 +1988,163 @@ export class ForgeApplicationService {
       const diagnosticCode = inspection.diagnostic?.providerCode ?? inspection.diagnostic?.code ?? 'UNKNOWN';
       throw new ForgeError({
         code: 'FORGE_PROVIDER_UNAVAILABLE',
-        message: `Forge could not safely inspect the workspace Git state (${diagnosticCode}).`,
+        message: `Forge could not safely inspect the workspace Git state after process adoption/reap (${diagnosticCode}).`,
         retryable: true,
-        details: { workspaceId: record.workspace.id, inspection: inspection.diagnostic ?? null }
+        details: { workspaceId: record.workspace.id, inspection: inspection.diagnostic ?? null, recoveryAttempted: true }
       });
     }
     return false;
+  }
+
+  /**
+   * After a Durable Object or sandbox blip, tracked processes may be live,
+   * exited, or gone. Adopt terminal ones, leave live ones blocking, and retry
+   * filesystem inspection instead of returning opaque UNKNOWN.
+   */
+  private async recoverUnavailableInspection(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    previous: {
+      state: 'matches' | 'mount_missing' | 'diverged' | 'unavailable';
+      commit?: string;
+      branch?: string;
+      diagnostic?: { code: string; providerCode?: string; operation?: string };
+    }
+  ): Promise<{
+    state: 'matches' | 'mount_missing' | 'diverged' | 'unavailable';
+    commit?: string;
+    branch?: string;
+    diagnostic?: { code: string; providerCode?: string; operation?: string };
+  }> {
+    await this.adoptOrReapProcesses(record, handle);
+    // Give the provider a brief moment after DO/storage churn before re-probing.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const retry = await this.inspectWorkspace(handle, record);
+    if (retry.state !== 'unavailable') return retry;
+    return {
+      ...retry,
+      diagnostic: retry.diagnostic ?? previous.diagnostic ?? { code: 'UNKNOWN', operation: 'recover_unavailable_inspection' }
+    };
+  }
+
+  private async adoptOrReapProcesses(record: WorkspaceRuntimeRecord, handle: SandboxHandle): Promise<void> {
+    for (const [id, entry] of Object.entries(record.processes)) {
+      const live = await handle.getProcess(id as ProcessId).catch(() => null);
+      if (!live) {
+        if (!entry.completedAt) {
+          entry.completedAt = new Date().toISOString();
+          entry.exitCode = entry.exitCode ?? 1;
+        }
+        continue;
+      }
+      if (live.status === 'running' || live.status === 'starting') continue;
+      entry.completedAt = live.completedAt ?? entry.completedAt ?? new Date().toISOString();
+      entry.exitCode = live.exitCode ?? entry.exitCode;
+      if (record.checks[id]) {
+        record.checks[id] = {
+          ...record.checks[id]!,
+          completedAt: entry.completedAt,
+          exitCode: entry.exitCode
+        };
+      }
+    }
+    record.workspace.updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * After a managed process exits, make its filesystem effects durable and
+   * visible to subsequent shell commands on the shared agent session.
+   */
+  private async finalizeManagedProcess(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    processId: ProcessId,
+    process: ProcessRecord
+  ): Promise<void> {
+    const entry = record.processes[processId];
+    if (!entry) return;
+    const terminal = process.status !== 'running' && process.status !== 'starting';
+    if (!terminal) return;
+    if (!entry.completedAt) {
+      entry.completedAt = process.completedAt ?? new Date().toISOString();
+      entry.exitCode = process.exitCode ?? entry.exitCode;
+    }
+    if (record.checks[processId]) {
+      record.checks[processId] = {
+        ...record.checks[processId]!,
+        completedAt: entry.completedAt,
+        exitCode: entry.exitCode
+      };
+    }
+    if (!entry.mutatesFilesystem || (entry.exitCode ?? process.exitCode ?? 1) !== 0) {
+      record.workspace.updatedAt = new Date().toISOString();
+      return;
+    }
+
+    // Flush and prove the install/mutation is visible through the same session
+    // foreground shells use (`agent-default`), before we publish success.
+    const visibility = await handle.exec({
+      command: [
+        'sync',
+        'if [ -d node_modules ]; then',
+        '  echo "FORGE_NODE_MODULES=present"',
+        '  if [ -d node_modules/.bin ] || [ -d node_modules/.pnpm ]; then echo "FORGE_DEPS_LAYOUT=ok"; else echo "FORGE_DEPS_LAYOUT=missing"; fi',
+        'else',
+        '  echo "FORGE_NODE_MODULES=absent"',
+        'fi',
+        'if [ -f pnpm-lock.yaml ] || [ -f package-lock.json ] || [ -f yarn.lock ] || [ -f bun.lock ]; then echo "FORGE_LOCKFILE=present"; fi'
+      ].join('; '),
+      cwd: '/workspace/repo',
+      timeoutMs: 30_000,
+      outputLimitBytes: 4_000,
+      sessionId: 'agent-default',
+      networkPolicy: 'deny_all'
+    }).catch(() => null);
+
+    const decision = classifyCommand(entry.command, 'package_install');
+    if (decision.classification === 'dependency_install') {
+      const usable = Boolean(
+        visibility &&
+        visibility.exitCode === 0 &&
+        visibility.stdout.includes('FORGE_NODE_MODULES=present') &&
+        visibility.stdout.includes('FORGE_DEPS_LAYOUT=ok')
+      );
+      const lockfileHash = await handle.exec({
+        command: 'sha256sum pnpm-lock.yaml package-lock.json yarn.lock bun.lock 2>/dev/null | head -1 | cut -d" " -f1 || echo none',
+        cwd: '/workspace/repo',
+        timeoutMs: 10_000,
+        outputLimitBytes: 1_000,
+        sessionId: 'agent-default',
+        networkPolicy: 'deny_all'
+      }).then((result) => result.stdout.trim() || 'none').catch(() => 'none');
+      record.dependencyState = {
+        lockfileHash,
+        installedAt: entry.completedAt,
+        usable
+      };
+      if (!usable) {
+        record.workspace.updatedAt = new Date().toISOString();
+        throw new ForgeError({
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: 'Managed dependency install exited successfully but the installed package tree is not visible to the workspace shell.',
+          retryable: true,
+          details: {
+            processId,
+            visibility: visibility
+              ? { exitCode: visibility.exitCode, stdout: visibility.stdout.slice(0, 1_000), stderr: visibility.stderr.slice(0, 1_000) }
+              : null
+          }
+        });
+      }
+    }
+
+    try {
+      const checkpoint = await this.checkpoint(record, `process-${processId}`, handle);
+      entry.checkpointAfter = checkpoint.snapshotId as SnapshotId;
+    } catch {
+      // Non-fatal: the process succeeded; recovery may need a later checkpoint.
+    }
+    record.workspace.updatedAt = new Date().toISOString();
   }
 
   /**

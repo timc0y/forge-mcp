@@ -127,6 +127,18 @@ describe('Forge MCP public contracts', () => {
     expect(schema.workspace_id.safeParse(undefined).success).toBe(true);
   });
 
+  it('allows dependencyState null on forge_workspace_get output', () => {
+    const schema = tool('forge_workspace_get').outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(schema.dependencyState.safeParse(null).success).toBe(true);
+    expect(schema.dependencyState.safeParse(undefined).success).toBe(true);
+    expect(schema.dependencyState.safeParse({
+      lockfileHash: 'a'.repeat(64),
+      installedAt: '2026-07-26T00:00:00.000Z',
+      usable: true
+    }).success).toBe(true);
+    expect(schema.dependencyState.safeParse({ usable: true }).success).toBe(false);
+  });
+
   it('exposes a full-file write tool and multi-file read for headless agents', () => {
     const write = tool('forge_files_write');
     expect(write.sideEffect).toBe('workspace');

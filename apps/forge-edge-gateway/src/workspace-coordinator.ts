@@ -4,7 +4,7 @@ import {
   type CreateWorkspaceInput,
   type WorkspaceRuntimeRecord
 } from '@forge/application';
-import { ForgeError, ids, type ProcessId } from '@forge/core';
+import { ForgeError, type ProcessId } from '@forge/core';
 import { D1AuditStore } from '@forge/audit';
 import { D1MetadataStore } from '@forge/metadata-d1';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
@@ -184,7 +184,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   private assertCheckpointQuiescent(record: WorkspaceRuntimeRecord): void {
-    const processIds = Object.keys(record.processes);
+    // Only live processes block checkpoints. Terminal/adopted entries must not
+    // freeze the workspace after a managed install completes.
+    const processIds = Object.entries(record.processes)
+      .filter(([, entry]) => !entry.completedAt)
+      .map(([id]) => id);
     if (processIds.length > 0) {
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_CONFLICT',
@@ -692,6 +696,69 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const divergenceAt = record.lastGitDivergence?.observedAt;
       try {
         if (input.idempotencyKey) this.assertCheckpointQuiescent(record);
+        const decision = classifyCommand(input.command, input.networkPolicy);
+        // Dependency installs always start as managed processes once approved.
+        // Sync exec + timeout conversion restarted the install after the transport
+        // deadline and left later shells unable to see node_modules.
+        if (
+          decision.classification === 'dependency_install' &&
+          input.approved &&
+          input.idempotencyKey &&
+          input.cwd === '/workspace/repo'
+        ) {
+          const started = await this.app.startProcess(record, {
+            command: input.command,
+            cwd: input.cwd,
+            environment: input.environment,
+            networkPolicy: input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>,
+            expectedRevision: input.expectedRevision,
+            idempotencyKey: input.idempotencyKey,
+            approved: true
+          });
+          if ('replay' in started) {
+            return {
+              exitCode: 0,
+              stdout: '',
+              stderr: '',
+              truncated: false,
+              durationMs: 0,
+              artifactRefs: [],
+              replay: true,
+              workspaceId: record.workspace.id,
+              branch: record.workspace.currentBranch,
+              head: record.workspace.currentCommit,
+              baseCommit: record.workspace.baseCommit,
+              classification: decision.classification,
+              operationId: started.operationId,
+              workspaceRevision: record.workspace.revision
+            };
+          }
+          const processId = started.value.id;
+          const startedAt = record.processes[processId]?.startedAt ?? new Date().toISOString();
+          return {
+            exitCode: null,
+            stdout: '',
+            stderr: 'Dependency install started as a managed background process so it can outlive the transport deadline without being restarted.',
+            truncated: false,
+            durationMs: 0,
+            artifactRefs: [],
+            workspaceId: record.workspace.id,
+            branch: record.workspace.currentBranch,
+            head: record.workspace.currentCommit,
+            baseCommit: record.workspace.baseCommit,
+            classification: decision.classification,
+            operationId: started.operationId,
+            workspaceRevision: record.workspace.revision,
+            managedProcess: {
+              processId,
+              status: 'running',
+              startedAt,
+              command: input.command,
+              workspaceRevision: record.workspace.revision
+            },
+            next_step: `Call forge_process_wait with process_id ${processId} (use a timeout_ms of at least 600000 for large installs), then continue with shell commands.`
+          };
+        }
         const value = await this.app.exec(record, {
           command: input.command,
           cwd: input.cwd,
@@ -710,31 +777,45 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         // timed out (FORGE_COMMAND_TIMEOUT), convert it to a managed background
         // process so it continues under Forge supervision. The caller can then
         // use forge_process_wait / forge_process_get / forge_process_cancel.
+        // Skip dependency_install: those are started as managed processes above,
+        // and restarting them here would race two package managers on one tree.
         if (
           error instanceof ForgeError &&
           error.code === 'FORGE_COMMAND_TIMEOUT' &&
           input.idempotencyKey &&
           input.cwd === '/workspace/repo'
         ) {
-          const processId = ids.process();
-          const startedAt = new Date().toISOString();
-          const handle = await this.app.handle(record);
           const decision = classifyCommand(input.command, input.networkPolicy);
-          const process = await handle.startProcess({
-            processId,
+          if (decision.classification === 'dependency_install') throw error;
+          const started = await this.app.startProcess(record, {
             command: input.command,
             cwd: input.cwd,
             environment: input.environment,
-            sessionId: 'agent-default',
             networkPolicy: input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>,
-            autoCleanup: false
+            expectedRevision: input.expectedRevision,
+            idempotencyKey: `${input.idempotencyKey}:bg`,
+            approved: input.approved
           });
-          record.processes[processId] = {
-            command: input.command,
-            startedAt,
-            mutatesFilesystem: decision.classification !== 'read_only'
-          };
-          record.workspace.updatedAt = startedAt;
+          if ('replay' in started) {
+            return {
+              exitCode: 0,
+              stdout: '',
+              stderr: '',
+              truncated: false,
+              durationMs: 0,
+              artifactRefs: [],
+              replay: true,
+              workspaceId: record.workspace.id,
+              branch: record.workspace.currentBranch,
+              head: record.workspace.currentCommit,
+              baseCommit: record.workspace.baseCommit,
+              classification: decision.classification,
+              operationId: started.operationId,
+              workspaceRevision: record.workspace.revision
+            };
+          }
+          const processId = started.value.id;
+          const startedAt = record.processes[processId]?.startedAt ?? new Date().toISOString();
           return {
             exitCode: null,
             stdout: '',
@@ -747,7 +828,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
             head: record.workspace.currentCommit,
             baseCommit: record.workspace.baseCommit,
             classification: decision.classification,
-            operationId: undefined,
+            operationId: started.operationId,
             workspaceRevision: record.workspace.revision,
             managedProcess: {
               processId,
@@ -776,6 +857,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     networkPolicy: Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>;
     expectedRevision?: number;
     idempotencyKey: string;
+    approved?: boolean;
   }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();

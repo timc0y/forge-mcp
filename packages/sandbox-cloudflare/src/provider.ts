@@ -1,5 +1,5 @@
 import { getSandbox, type ExecutionSession, type Sandbox } from '@cloudflare/sandbox';
-import { ids, type ProcessId } from '@forge/core';
+import { ForgeError, ids, type ProcessId } from '@forge/core';
 import type {
   CreateSandboxInput,
   ExecInput,
@@ -86,7 +86,9 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
     case 'killed': return 'stopped';
     default: return 'exited';
   }
-}class CloudflareSandboxHandle implements SandboxHandle {
+}
+
+class CloudflareSandboxHandle implements SandboxHandle {
   constructor(readonly providerId: string, private readonly sandbox: Sandbox) {}
 
   private async session(id: string, cwd = ROOT): Promise<ExecutionSession> {
@@ -244,23 +246,25 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
 
   async processWait(input: { processId: ProcessId; timeoutMs?: number }): Promise<ProcessRecord> {
     try {
-      const process = await this.sandbox.getProcess(input.processId);
-      if (!process) {
-        return {
-          id: input.processId,
-          providerProcessId: input.processId,
-          command: '',
-          cwd: REPO,
-          status: 'failed',
-          startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-          exitCode: 1,
-          mutatesFilesystem: false
-        };
-      }
       const timeoutMs = input.timeoutMs ?? 120_000;
       const deadline = Date.now() + timeoutMs;
       for (;;) {
+        // Re-fetch each poll. A stale Process object can keep reporting
+        // `running` forever, which previously made wait SIGKILL healthy work.
+        const process = await this.sandbox.getProcess(input.processId);
+        if (!process) {
+          return {
+            id: input.processId,
+            providerProcessId: input.processId,
+            command: '',
+            cwd: REPO,
+            status: 'failed',
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            exitCode: 1,
+            mutatesFilesystem: false
+          };
+        }
         const status = mapProcessStatus(process.status);
         if (status !== 'running' && status !== 'starting') {
           return {
@@ -277,23 +281,26 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
           };
         }
         if (Date.now() >= deadline) {
-          await process.kill('SIGKILL');
-          return {
-            id: input.processId,
-            providerProcessId: process.id,
-            command: process.command,
-            cwd: REPO,
-            status: 'cancelled',
-            pid: process.pid,
-            startedAt: new Date().toISOString(),
-            completedAt: new Date().toISOString(),
-            exitCode: 124,
-            mutatesFilesystem: false
-          };
+          // Observational timeout only — never kill. Cancellation is explicit
+          // via processCancel. Killing here tore down long installs whose wait
+          // budget was shorter than the install itself.
+          throw new ForgeError({
+            code: 'FORGE_COMMAND_TIMEOUT',
+            message: `Timed out waiting for process ${input.processId} after ${timeoutMs}ms; the process is still running.`,
+            retryable: true,
+            details: {
+              processId: input.processId,
+              providerProcessId: process.id,
+              status: 'running',
+              pid: process.pid ?? null,
+              timeoutMs
+            }
+          });
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
     } catch (error) {
+      if (error instanceof ForgeError) throw error;
       throw mapCloudflareSandboxError(error, 'processWait');
     }
   }

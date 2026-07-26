@@ -3,6 +3,7 @@ import { ForgeApplicationService, type WorkspaceRuntimeRecord } from '@forge/app
 import { ForgeError, ids } from '@forge/core';
 import type {
   CreateSandboxInput,
+  ProcessRecord,
   SandboxHandle,
   SandboxProvider
 } from '@forge/sandbox-core';
@@ -12,6 +13,8 @@ class FakeProvider implements SandboxProvider {
   readonly version = 'test';
   readonly calls: string[] = [];
   readonly files = new Map<string, string>();
+  readonly startedSessions: string[] = [];
+  readonly processStates = new Map<string, ProcessRecord>();
   head = 'abcdef';
   branch = 'main';
   workspacePresent = true;
@@ -20,11 +23,27 @@ class FakeProvider implements SandboxProvider {
   workspaceProbeFails = false;
   worktreeDiff = '';
   workspaceHash = 'a'.repeat(64);
+  nodeModulesVisible = true;
   private commitSequence = 0;
   readonly handle: SandboxHandle = {
     providerId: 'fake',
     exec: async (input) => {
       this.calls.push(input.command);
+      if (input.command.includes('FORGE_NODE_MODULES=')) {
+        return {
+          exitCode: 0,
+          stdout: this.nodeModulesVisible
+            ? 'FORGE_NODE_MODULES=present\nFORGE_DEPS_LAYOUT=ok\nFORGE_LOCKFILE=present\n'
+            : 'FORGE_NODE_MODULES=absent\n',
+          stderr: '',
+          truncated: false,
+          durationMs: 1,
+          artifactRefs: []
+        };
+      }
+      if (input.command.startsWith('sha256sum pnpm-lock.yaml')) {
+        return { exitCode: 0, stdout: `${'b'.repeat(64)}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+      }
       if (input.command === 'node --version && corepack --version') {
         return { exitCode: 0, stdout: 'v24.12.0\n0.34.1\n', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
@@ -99,10 +118,55 @@ class FakeProvider implements SandboxProvider {
       }
       return { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
     },
-    startProcess: async (input) => ({ id: input.processId, providerProcessId: 'provider-process', command: input.command, cwd: input.cwd, status: 'running' as const, pid: 123 }),
-    getProcess: async (processId) => ({ id: processId, providerProcessId: 'provider-process', command: 'pnpm test', cwd: '/workspace/repo', status: 'running' as const, pid: 123 }),
+    startProcess: async (input) => {
+      this.startedSessions.push(input.sessionId);
+      this.processStates.set(input.processId, {
+        id: input.processId,
+        providerProcessId: input.processId,
+        command: input.command,
+        cwd: input.cwd,
+        status: 'running',
+        pid: 123,
+        startedAt: new Date().toISOString(),
+        mutatesFilesystem: true
+      });
+      return this.processStates.get(input.processId)!;
+    },
+    getProcess: async (processId) => this.processStates.get(processId) ?? null,
+    processWait: async ({ processId, timeoutMs = 120_000 }) => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const current = this.processStates.get(processId);
+        if (!current) {
+          return {
+            id: processId,
+            providerProcessId: processId,
+            command: '',
+            cwd: '/workspace/repo',
+            status: 'failed' as const,
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            exitCode: 1,
+            mutatesFilesystem: false
+          };
+        }
+        if (current.status !== 'running' && current.status !== 'starting') return current;
+        if (Date.now() >= deadline) {
+          throw new ForgeError({
+            code: 'FORGE_COMMAND_TIMEOUT',
+            message: `Timed out waiting for process ${processId}`,
+            retryable: true,
+            details: { processId, status: 'running', timeoutMs }
+          });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    },
     readProcessLogs: async () => ({ data: '', truncated: false }),
-    stopProcess: async () => undefined,
+    stopProcess: async (processId) => {
+      const current = this.processStates.get(processId);
+      if (current) this.processStates.set(processId, { ...current, status: 'stopped', completedAt: new Date().toISOString(), exitCode: 0 });
+    },
     readFile: async ({ path, maxBytes }) => {
       if (path === '/workspace/forge/workspace-id') {
         if (this.workspaceProbeFails) {
@@ -530,6 +594,133 @@ describe('Forge application service', () => {
     if ('replay' in started) throw new Error('Unexpected process replay.');
     await expect(service.stopProcess(record, started.value.id, undefined, 'stop-123456')).resolves.toMatchObject({ stopped: true, processId: started.value.id });
     await expect(service.stopProcess(record, started.value.id, undefined, 'stop-123457')).rejects.toMatchObject({ code: 'FORGE_PROCESS_NOT_FOUND' });
+  });
+
+  it('starts approved dependency installs on the shared agent-default session', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    const started = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-123456',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in started) throw new Error('Unexpected process replay.');
+    expect(provider.startedSessions).toContain('agent-default');
+    expect(record.processes[started.value.id]).toMatchObject({
+      command: 'pnpm install',
+      mutatesFilesystem: true
+    });
+  });
+
+  it('rejects unapproved dependency installs as managed processes', async () => {
+    const service = new ForgeApplicationService(new FakeProvider());
+    const record = initialized(service);
+    ready(record);
+    await expect(service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-123457',
+      expectedRevision: 1
+    })).rejects.toMatchObject({ code: 'FORGE_APPROVAL_REQUIRED' });
+  });
+
+  it('finalizes a successful managed install so later shells can see dependencies', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.workspace.activeSnapshotId = undefined;
+    const started = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-final-1',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in started) throw new Error('Unexpected process replay.');
+    const processId = started.value.id;
+    provider.processStates.set(processId, {
+      ...provider.processStates.get(processId)!,
+      status: 'exited',
+      completedAt: new Date().toISOString(),
+      exitCode: 0
+    });
+    const waited = await service.processWait(record, processId, 1_000);
+    expect(waited.process).toMatchObject({ status: 'exited', exitCode: 0 });
+    expect(record.dependencyState).toMatchObject({ usable: true, lockfileHash: 'b'.repeat(64) });
+    expect(record.processes[processId]?.completedAt).toBeTruthy();
+    expect(record.processes[processId]?.checkpointAfter).toBeTruthy();
+    expect(provider.calls.some((command) => command.includes('FORGE_NODE_MODULES='))).toBe(true);
+  });
+
+  it('fails closed when a managed install exits but node_modules is not shell-visible', async () => {
+    const provider = new FakeProvider();
+    provider.nodeModulesVisible = false;
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.workspace.activeSnapshotId = undefined;
+    const started = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-final-2',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in started) throw new Error('Unexpected process replay.');
+    const processId = started.value.id;
+    provider.processStates.set(processId, {
+      ...provider.processStates.get(processId)!,
+      status: 'exited',
+      completedAt: new Date().toISOString(),
+      exitCode: 0
+    });
+    await expect(service.processWait(record, processId, 1_000)).rejects.toMatchObject({
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      message: expect.stringContaining('not visible to the workspace shell')
+    });
+    expect(record.dependencyState).toMatchObject({ usable: false });
+  });
+
+  it('adopts tracked processes and retries before failing closed on unavailable inspection', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    await service.provisionWorkspace(record, false);
+    const processId = 'proc_adopt_me';
+    record.processes[processId] = {
+      command: 'pnpm install',
+      startedAt: new Date().toISOString(),
+      mutatesFilesystem: true
+    };
+    provider.processStates.set(processId, {
+      id: processId,
+      providerProcessId: processId,
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      status: 'exited',
+      pid: 9,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      exitCode: 0,
+      mutatesFilesystem: true
+    });
+    provider.workspaceProbeFails = true;
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .rejects.toMatchObject({
+        code: 'FORGE_PROVIDER_UNAVAILABLE',
+        details: expect.objectContaining({ recoveryAttempted: true })
+      });
+    expect(record.processes[processId]?.completedAt).toBeTruthy();
+    expect(provider.calls).not.toContain('restore');
   });
 
   it('separates destroy request from durable completion', async () => {

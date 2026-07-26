@@ -856,7 +856,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               networkPolicy: 'development', outputLimitBytes: 200_000,
               expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: text(input.idempotency_key), approved: true
             });
-            return { ...value, stdout: value.stdout.replaceAll(secret, '[REDACTED]'), stderr: value.stderr.replaceAll(secret, '[REDACTED]') };
+            const stdout = 'stdout' in value ? String(value.stdout ?? '') : '';
+            const stderr = 'stderr' in value ? String(value.stderr ?? '') : '';
+            return { ...value, stdout: stdout.replaceAll(secret, '[REDACTED]'), stderr: stderr.replaceAll(secret, '[REDACTED]') };
           });
           await completeApproval(env, approvalId, true);
           return asRecord(result);
@@ -1680,18 +1682,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               environment,
               networkPolicy,
               expectedRevision: optionalNumber(input.expected_revision),
-              idempotencyKey: idempotency(input.idempotency_key)
+              idempotencyKey: idempotency(input.idempotency_key),
+              approved: claimedApproval
             });
             if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
             const procRecord = proc as unknown as Record<string, unknown>;
-            const processId = String(procRecord.processId ?? procRecord.id ?? 'proc_started');
-            const status = String(procRecord.status ?? 'running');
+            const value = (procRecord.value && typeof procRecord.value === 'object'
+              ? procRecord.value
+              : procRecord) as Record<string, unknown>;
+            const processId = String(value.id ?? procRecord.processId ?? procRecord.id ?? 'proc_started');
+            const status = String(value.status ?? procRecord.status ?? 'running');
             return {
               processId,
               status,
               command,
               async: true,
-              next_step: `Command started in background as process ${processId}. Call forge_process_wait to await completion or forge_process_logs to inspect output.`
+              next_step: `Command started in background as process ${processId}. Call forge_process_wait to await completion or forge_process_logs to inspect output. For dependency installs use timeout_ms >= 600000.`
             };
           }
           const result = await workspace.shellExec({
@@ -1706,10 +1712,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             approved: claimedApproval
           });
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
+          const stdout = 'stdout' in result ? String(result.stdout ?? '') : '';
+          const stderr = 'stderr' in result ? String(result.stderr ?? '') : '';
           return {
             ...asRecord(result),
-            stdout: attached.redact.size > 0 ? await vaultService(env).redactOutput(String(result.stdout ?? ''), identity.tenantId as TenantId, workspaceId) : result.stdout,
-            stderr: attached.redact.size > 0 ? await vaultService(env).redactOutput(String(result.stderr ?? ''), identity.tenantId as TenantId, workspaceId) : result.stderr
+            stdout: attached.redact.size > 0 ? await vaultService(env).redactOutput(stdout, identity.tenantId as TenantId, workspaceId) : stdout,
+            stderr: attached.redact.size > 0 ? await vaultService(env).redactOutput(stderr, identity.tenantId as TenantId, workspaceId) : stderr
           };
         } catch (error) {
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
