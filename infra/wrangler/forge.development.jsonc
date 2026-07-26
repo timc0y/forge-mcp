@@ -29,7 +29,7 @@
     {
       "binding": "METADATA",
       "database_name": "forge-development",
-      "database_id": "73c05873-11b4-4f3a-a121-42d7517a69c2",
+      "database_id": "c11e4161-662e-44d3-938b-10857477b480",
       "migrations_dir": "../../migrations/d1"
     }
   ],
