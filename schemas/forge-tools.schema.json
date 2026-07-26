@@ -2297,7 +2297,7 @@
     },
     "forge_process_wait": {
       "title": "Wait for managed process",
-      "description": "Wait server-side for a managed process to reach a terminal state (exit, failure, or cancellation), or time out. Returns the final process record, dependencyState, and whether filesystem changes were committed. Prefer this over polling forge_process_logs. Wait timeouts are observational: the process is not killed; retry with a larger timeout_ms (use >=600000 for large installs).",
+      "description": "Wait server-side for a managed process to reach a terminal state (exit, failure, or cancellation), or time out. Returns the final process record, dependencyState, and whether filesystem changes were committed. Prefer this over polling forge_process_logs. Wait timeouts are observational (process is NOT killed) and return timedOut:true with suggestedTimeoutMs — retry with a larger timeout_ms (use >=600000 for large installs). Do not restart the command.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -2560,7 +2560,7 @@
     },
     "forge_dependencies_install": {
       "title": "Install workspace dependencies",
-      "description": "Install dependencies as a managed background process using the detected package manager with the exact pinned version. Waits for completion, proves the package tree is shell-visible, records the lockfile hash, creates a completion checkpoint, and reports whether dependencies are usable. Prefer this or forge_process_start+wait over a long foreground shell install.",
+      "description": "Start dependency install as a managed background process and return quickly with processId when the install outlives the chat transport. If still running, call forge_process_wait with timeout_ms >= 600000 — do not start a second install. Fast installs may complete inside this call.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -2588,7 +2588,7 @@
           },
           "timeout_ms": {
             "default": 600000,
-            "description": "Maximum time to wait for the managed install to finish.",
+            "description": "Suggested overall wait budget for a follow-up forge_process_wait.",
             "$ref": "#/$defs/__schema4"
           },
           "expected_revision": {

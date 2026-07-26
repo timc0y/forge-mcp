@@ -190,24 +190,42 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     // Reap finished processes first. Otherwise a completed install/probe keeps
     // blocking reads and writes forever with "stop workspace-owned processes".
     await this.app.syncProcessLifecycle(record);
-    const processIds = Object.entries(record.processes)
+    const active = Object.entries(record.processes)
       .filter(([, entry]) => !entry.completedAt)
-      .map(([id]) => id);
-    if (processIds.length > 0) {
+      .map(([id, entry]) => ({
+        id,
+        command: entry.command.slice(0, 200),
+        status: 'running',
+        mutatesFilesystem: entry.mutatesFilesystem,
+        startedAt: entry.startedAt
+      }));
+    if (active.length > 0) {
+      const recommendedWait = active.find((process) =>
+        /\b(pnpm|npm|yarn|bun|pip|uv)\b/i.test(process.command) &&
+        /\b(install|ci|sync)\b/i.test(process.command)
+      );
+      const recommendedStop = active.find((process) => process.id !== recommendedWait?.id);
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_CONFLICT',
-        message: 'Stop workspace-owned processes before a filesystem mutation or checkpoint so Forge can capture an immutable recovery snapshot.',
+        message: 'Stop or wait for workspace-owned processes before a filesystem mutation or checkpoint so Forge can capture an immutable recovery snapshot.',
         retryable: true,
         details: {
           status: 'blocked',
           reason: 'active_process',
-          processIds,
+          processIds: active.map((process) => process.id),
+          processes: active,
+          ...(recommendedWait
+            ? { recommendedWaitProcessId: recommendedWait.id, recommendedAction: 'forge_process_wait' }
+            : {}),
+          ...(recommendedStop && !recommendedWait
+            ? { recommendedStopProcessId: recommendedStop.id, recommendedAction: 'forge_process_stop' }
+            : {}),
           allowedNextActions: [
             'forge_process_wait',
-            'forge_process_stop',
-            'forge_process_cancel',
+            'forge_process_list',
             'forge_process_get',
-            'forge_process_list'
+            'forge_process_stop',
+            'forge_process_cancel'
           ]
         }
       });
@@ -544,9 +562,14 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         next_step: allowedNextActions[0]
           ? `Next safe tool: ${allowedNextActions[0]}`
           : 'Inspect forge_workspace_get for details.',
-        recovery: record.lastRecoveryVerifiedAt
-          ? { verifiedAt: record.lastRecoveryVerifiedAt, snapshotId: record.workspace.activeSnapshotId ?? null }
-          : { verifiedAt: null }
+        ...(record.lastRecoveryVerifiedAt
+          ? {
+              recovery: {
+                verifiedAt: record.lastRecoveryVerifiedAt,
+                snapshotId: record.workspace.activeSnapshotId ?? null
+              }
+            }
+          : {})
       };
     });
   }
@@ -942,6 +965,14 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
             idempotencyKey: `${input.idempotencyKey}:bg`,
             approved: input.approved
           });
+          // Link the original key to the managed process so a ChatGPT retry with
+          // the same idempotency_key does not fake exitCode 0.
+          if (record.idempotency[input.idempotencyKey]) {
+            record.idempotency[input.idempotencyKey] = {
+              ...record.idempotency[input.idempotencyKey]!,
+              processId: started.value.id
+            };
+          }
           return managedProcessResult(
             {
               value: started.value,
@@ -1005,7 +1036,30 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async processWait(input: { processId: ProcessId; timeoutMs?: number }) {
-    return this.readWithRecovery((record) => this.app.processWait(record, input.processId, input.timeoutMs));
+    // Poll in short DO-lock slices so workspace_get / process_list / shell probes
+    // can still run while ChatGPT waits on a long install. Holding the mutation
+    // lock for the full timeout made recovery tools appear dead and caused
+    // retry storms.
+    const timeoutMs = input.timeoutMs ?? 120_000;
+    const sliceMs = 5_000;
+    const deadline = Date.now() + timeoutMs;
+    let lastTimedOut: Awaited<ReturnType<ForgeApplicationService['processWait']>> | null = null;
+    while (Date.now() < deadline) {
+      const waitSlice = Math.max(250, Math.min(sliceMs, deadline - Date.now()));
+      const result = await this.readWithRecovery((record) =>
+        this.app.processWait(record, input.processId, waitSlice)
+      );
+      if (!result.timedOut) return result;
+      lastTimedOut = result;
+    }
+    if (lastTimedOut) {
+      return {
+        ...lastTimedOut,
+        suggestedTimeoutMs: Math.min(600_000, Math.max(timeoutMs * 2, 300_000)),
+        next_step: `Process ${input.processId} is still running after ${timeoutMs}ms. Retry forge_process_wait with timeout_ms >= ${Math.min(600_000, Math.max(timeoutMs * 2, 300_000))} (use 600000 for large installs). Do not restart the install.`
+      };
+    }
+    return this.readWithRecovery((record) => this.app.processWait(record, input.processId, 250));
   }
 
   async processCancel(input: { processId: ProcessId; expectedRevision?: number; idempotencyKey: string }) {

@@ -1884,10 +1884,52 @@ export class ForgeApplicationService {
       );
       operationId = operation.operationId;
       if (operation.replay) {
+        const processId = record.idempotency[input.idempotencyKey!]?.processId;
+        if (processId && record.processes[processId]) {
+          const entry = record.processes[processId]!;
+          const status = managedProcessStatus(entry);
+          return {
+            // Never claim exitCode 0 for an unknown/replayed shell outcome — that
+            // is how ChatGPT gets stuck treating a timed-out install as success.
+            status: entry.completedAt ? 'completed' : 'started',
+            ...(entry.completedAt ? { exitCode: entry.exitCode ?? 1 } : {}),
+            stdout: '',
+            stderr: entry.completedAt
+              ? `Replayed idempotency key; managed process ${processId} finished with exit ${entry.exitCode ?? 1}.`
+              : `Replayed idempotency key; managed process ${processId} is still running. Call forge_process_wait.`,
+            truncated: false,
+            durationMs: 0,
+            artifactRefs: [],
+            replay: true,
+            replayed: true,
+            idempotencyKey: input.idempotencyKey,
+            originalOperationId: operation.operationId,
+            workspaceId: record.workspace.id,
+            branch: record.workspace.currentBranch,
+            head: record.workspace.currentCommit,
+            classification: decision.classification,
+            operationId,
+            workspaceRevision: record.workspace.revision,
+            managedProcess: {
+              processId,
+              status,
+              startedAt: entry.startedAt,
+              command: entry.command,
+              ...(entry.completedAt ? { completedAt: entry.completedAt, exitCode: entry.exitCode } : {})
+            },
+            next_step: entry.completedAt
+              ? `Managed process ${processId} already finished with exit ${entry.exitCode ?? 1}.`
+              : `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for large installs).`,
+            allowedNextActions: entry.completedAt
+              ? ['forge_process_get', 'forge_shell_exec', 'forge_workspace_get']
+              : ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
+          };
+        }
         return {
-          exitCode: 0,
+          status: 'replayed_unknown',
+          exitCode: 125,
           stdout: '',
-          stderr: '',
+          stderr: 'Replayed idempotency key, but Forge did not persist a verified command outcome. Inspect forge_operation_get / forge_process_list before retrying with a new key.',
           truncated: false,
           durationMs: 0,
           artifactRefs: [],
@@ -1900,7 +1942,8 @@ export class ForgeApplicationService {
           head: record.workspace.currentCommit,
           classification: decision.classification,
           operationId,
-          workspaceRevision: record.workspace.revision
+          workspaceRevision: record.workspace.revision,
+          allowedNextActions: ['forge_operation_get', 'forge_process_list', 'forge_workspace_get']
         };
       }
     }
@@ -2194,13 +2237,29 @@ export class ForgeApplicationService {
     // Never restore a checkpoint while waiting — that would discard the process
     // filesystem writes that this wait is supposed to publish.
     const handle = await this.handle(record, { allowRestore: false });
+    const requestedTimeoutMs = timeoutMs ?? 120_000;
     let process: ProcessRecord;
-    if (handle.processWait) {
-      process = await handle.processWait({ processId, timeoutMs });
-    } else {
-      const current = await handle.getProcess(processId);
-      if (!current) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
-      process = current;
+    try {
+      if (handle.processWait) {
+        process = await handle.processWait({ processId, timeoutMs: requestedTimeoutMs });
+      } else {
+        const current = await handle.getProcess(processId);
+        if (!current) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
+        process = current;
+      }
+    } catch (error) {
+      if (
+        error instanceof ForgeError &&
+        error.code === 'FORGE_COMMAND_TIMEOUT'
+      ) {
+        return this.processWaitTimedOut(record, handle, processId, requestedTimeoutMs);
+      }
+      throw error;
+    }
+    if (process.status === 'running' || process.status === 'starting') {
+      // Provider returned a non-terminal snapshot without throwing — treat as
+      // observational timeout so ChatGPT gets a steered next action.
+      return this.processWaitTimedOut(record, handle, processId, requestedTimeoutMs, process);
     }
     await this.finalizeManagedProcess(record, handle, processId, process);
     if (!this.hasUncheckpointedMutators(record)) {
@@ -2208,6 +2267,7 @@ export class ForgeApplicationService {
     }
     const entry = record.processes[processId];
     return {
+      timedOut: false as const,
       workspaceId: record.workspace.id,
       process: {
         ...process,
@@ -2221,9 +2281,44 @@ export class ForgeApplicationService {
       filesystemCommitted: Boolean(entry?.checkpointAfter),
       finalLogCursor: null,
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: entry && !entry.completedAt
-        ? ['forge_process_wait', 'forge_process_logs', 'forge_process_get']
-        : ['forge_shell_exec', 'forge_workspace_get', 'forge_process_logs']
+      allowedNextActions: ['forge_shell_exec', 'forge_workspace_get', 'forge_process_logs'],
+      next_step: 'Process finished. Continue with shell commands or forge_workspace_get.'
+    };
+  }
+
+  private async processWaitTimedOut(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    processId: ProcessId,
+    timeoutMs: number,
+    known?: ProcessRecord | null
+  ) {
+    const process = known ?? await handle.getProcess(processId).catch(() => null);
+    const entry = record.processes[processId];
+    const suggestedTimeoutMs = Math.min(600_000, Math.max(timeoutMs * 2, 300_000));
+    return {
+      timedOut: true as const,
+      workspaceId: record.workspace.id,
+      process: {
+        id: processId,
+        providerProcessId: process?.providerProcessId ?? processId,
+        command: entry?.command ?? process?.command ?? '',
+        cwd: process?.cwd ?? '/workspace/repo',
+        status: (process?.status ?? (entry && !entry.completedAt ? 'running' : 'orphaned')) as ProcessRecord['status'],
+        pid: process?.pid,
+        startedAt: entry?.startedAt ?? process?.startedAt ?? new Date().toISOString(),
+        mutatesFilesystem: entry?.mutatesFilesystem ?? process?.mutatesFilesystem ?? false,
+        ...(entry?.completedAt
+          ? { completedAt: entry.completedAt, exitCode: entry.exitCode }
+          : {})
+      },
+      dependencyState: dependencyStateView(record.dependencyState),
+      filesystemCommitted: Boolean(entry?.checkpointAfter),
+      finalLogCursor: null,
+      suggestedTimeoutMs,
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_get', 'forge_process_list'],
+      next_step: `Process ${processId} is still running after ${timeoutMs}ms. Retry forge_process_wait with timeout_ms >= ${suggestedTimeoutMs} (use 600000 for large installs). Do not restart the install.`
     };
   }
 
@@ -2856,9 +2951,14 @@ export class ForgeApplicationService {
       timeoutMs?: number;
       idempotencyKey: string;
       expectedRevision?: number;
+      /** Cap for an in-tool observational wait before returning processId. ChatGPT hosts time out long tool calls. */
+      hostSafeWaitMs?: number;
     }
   ) {
     const timeoutMs = input.timeoutMs ?? 600_000;
+    // Keep the tool response under typical ChatGPT transport budgets. The
+    // install continues as a managed process; the agent finishes with process_wait.
+    const hostSafeWaitMs = Math.min(input.hostSafeWaitMs ?? 25_000, timeoutMs, 45_000);
     const prior = record.idempotency[input.idempotencyKey];
     // Legacy sync-install idempotency entries have no processId; return the
     // recorded dependency state instead of starting a second install.
@@ -2872,7 +2972,33 @@ export class ForgeApplicationService {
         operationId: prior.operationId,
         dependencyState: dependencyStateView(record.dependencyState),
         workspaceRevision: record.workspace.revision,
-        allowedNextActions: workspaceAllowedNextActions(record)
+        allowedNextActions: workspaceAllowedNextActions(record),
+        next_step: 'Dependencies install already recorded. Inspect forge_workspace_get before starting another install.'
+      };
+    }
+
+    await this.syncProcessLifecycle(record).catch(() => undefined);
+    const activeInstall = Object.entries(record.processes).find(([, entry]) =>
+      !entry.completedAt &&
+      /\b(pnpm|npm|yarn|bun|pip|uv)\b/i.test(entry.command) &&
+      /\b(install|ci|sync)\b/i.test(entry.command)
+    );
+    if (activeInstall && (!prior?.processId || prior.processId !== activeInstall[0])) {
+      const [activeProcessId, entry] = activeInstall;
+      return {
+        started: true,
+        success: false,
+        status: 'running' as const,
+        workspaceId: record.workspace.id,
+        processId: activeProcessId,
+        managedProcess: true,
+        command: entry.command,
+        dependencyState: dependencyStateView(record.dependencyState),
+        reusedActiveProcess: true,
+        operationId: prior?.operationId ?? record.idempotency[input.idempotencyKey]?.operationId ?? ids.operation(),
+        workspaceRevision: record.workspace.revision,
+        allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_get'],
+        next_step: `An install is already running as ${activeProcessId}. Call forge_process_wait with timeout_ms >= 600000 — do not start another install.`
       };
     }
 
@@ -2923,7 +3049,8 @@ export class ForgeApplicationService {
     }
 
     // Managed background process so ChatGPT transport deadlines cannot restart
-    // or orphan a long install. processWait finalizes visibility + checkpoint.
+    // or orphan a long install. A short observational wait may finish fast
+    // installs; otherwise return processId for forge_process_wait.
     const networkPolicy = input.networkPolicy === 'unrestricted_with_approval'
       ? 'package_install'
       : input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>;
@@ -2937,7 +3064,30 @@ export class ForgeApplicationService {
       approved: true
     });
     const processId = started.value.id;
-    const waited = await this.processWait(record, processId, timeoutMs);
+    const waited = await this.processWait(record, processId, hostSafeWaitMs);
+    if (waited.timedOut) {
+      return {
+        started: true,
+        success: false,
+        status: 'running' as const,
+        workspaceId: record.workspace.id,
+        processId,
+        managedProcess: true,
+        packageManager: detection.packageManager,
+        installCommand,
+        lockfileHashBefore,
+        dependencyState: waited.dependencyState,
+        suggestedTimeoutMs: waited.suggestedTimeoutMs,
+        replayed: 'replay' in started && started.replay === true,
+        idempotencyKey: input.idempotencyKey,
+        originalOperationId: started.operationId,
+        operationId: started.operationId,
+        workspaceRevision: record.workspace.revision,
+        allowedNextActions: waited.allowedNextActions,
+        next_step: waited.next_step
+      };
+    }
+
     const logs = await this.processLogs(record, processId).catch(() => ({ data: '', truncated: false }));
     const exitCode = waited.process.exitCode ?? 1;
     const dependencyState = waited.dependencyState;
@@ -2959,14 +3109,21 @@ export class ForgeApplicationService {
         code: 'FORGE_PROVIDER_UNAVAILABLE',
         message: 'Dependency install exited successfully but the installed package tree is not visible to the workspace shell.',
         retryable: true,
-        details: { installCommand, lockfileHashAfter, processId }
+        details: {
+          installCommand,
+          lockfileHashAfter,
+          processId,
+          allowedNextActions: ['forge_workspace_reconcile', 'forge_dependencies_install', 'forge_workspace_get']
+        }
       });
     }
 
     const entry = record.processes[processId];
     return {
       workspaceId: record.workspace.id,
+      started: true,
       success,
+      status: success ? 'completed' as const : 'failed' as const,
       exitCode,
       packageManager: detection.packageManager,
       installCommand,
@@ -2989,7 +3146,10 @@ export class ForgeApplicationService {
       stdout: logs.data.slice(0, 1_000),
       allowedNextActions: success
         ? ['forge_shell_exec', 'forge_git_status', 'forge_workspace_get']
-        : ['forge_dependencies_install', 'forge_workspace_reconcile', 'forge_workspace_get']
+        : ['forge_dependencies_install', 'forge_workspace_reconcile', 'forge_workspace_get'],
+      next_step: success
+        ? 'Dependencies are usable. Continue with forge_shell_exec / validation.'
+        : 'Dependency install failed. Inspect logs with forge_process_logs, then retry with a new idempotency key only if needed.'
     };
   }
   private async adoptOwnedGitTransition(

@@ -1032,7 +1032,8 @@ describe('Forge application service', () => {
       networkPolicy: 'package_install',
       idempotencyKey: 'deps-managed-1',
       expectedRevision: 1,
-      timeoutMs: 5_000
+      timeoutMs: 5_000,
+      hostSafeWaitMs: 5_000
     });
     expect(result).toMatchObject({
       success: true,
@@ -1041,5 +1042,128 @@ describe('Forge application service', () => {
       dependencyState: { status: 'ready', usable: true }
     });
     expect(result.processId).toMatch(/^proc_/);
+  });
+
+  it('returns timedOut process waits with suggestedTimeoutMs instead of killing or throwing', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    const started = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'install-wait-timeout-1',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in started) throw new Error('Unexpected replay.');
+    const waited = await service.processWait(record, started.value.id, 20);
+    expect(waited.timedOut).toBe(true);
+    expect(waited.suggestedTimeoutMs).toBeGreaterThanOrEqual(300_000);
+    expect(waited.allowedNextActions).toContain('forge_process_wait');
+    expect(waited.next_step).toMatch(/Do not restart the install/i);
+    expect(record.processes[started.value.id]?.completedAt).toBeUndefined();
+  });
+
+  it('does not fake exitCode 0 when replaying a shell key linked to a managed process', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    const started = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'shell-key-1:bg',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in started) throw new Error('Unexpected replay.');
+    // Simulate timeout-conversion linking the original shell key to the process.
+    record.idempotency['shell-key-1'] = {
+      operationId: started.operationId,
+      revision: record.workspace.revision,
+      processId: started.value.id
+    };
+    const replayed = await service.exec(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      timeoutMs: 1_000,
+      outputLimitBytes: 1_000,
+      networkPolicy: 'package_install',
+      idempotencyKey: 'shell-key-1',
+      approved: true
+    });
+    expect(replayed).toMatchObject({
+      replayed: true,
+      status: 'started',
+      managedProcess: { processId: started.value.id, status: 'running' }
+    });
+    expect(replayed).not.toMatchObject({ exitCode: 0 });
+  });
+
+  it('returns a running install instead of starting a second one (ChatGPT retry storm)', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.detection = {
+      packageManager: 'pnpm',
+      installCommand: 'pnpm install',
+      installFallbackCommand: 'pnpm install',
+      framework: 'vite',
+      scripts: { dev: 'vite' }
+    } as never;
+    const first = await service.startProcess(record, {
+      command: 'pnpm install',
+      cwd: '/workspace/repo',
+      networkPolicy: 'package_install',
+      idempotencyKey: 'deps-active-1',
+      expectedRevision: 1,
+      approved: true
+    });
+    if ('replay' in first) throw new Error('Unexpected replay.');
+    const second = await service.dependenciesInstall(record, {
+      networkPolicy: 'package_install',
+      idempotencyKey: 'deps-active-2',
+      expectedRevision: 1,
+      hostSafeWaitMs: 100
+    });
+    expect(second).toMatchObject({
+      started: true,
+      status: 'running',
+      reusedActiveProcess: true,
+      processId: first.value.id
+    });
+    expect(second.next_step).toMatch(/do not start another install/i);
+  });
+
+  it('returns host-safe running status when deps install outlives the short wait', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.detection = {
+      packageManager: 'pnpm',
+      installCommand: 'pnpm install',
+      installFallbackCommand: 'pnpm install',
+      framework: 'vite',
+      scripts: { dev: 'vite' }
+    } as never;
+    const result = await service.dependenciesInstall(record, {
+      networkPolicy: 'package_install',
+      idempotencyKey: 'deps-host-safe-1',
+      expectedRevision: 1,
+      hostSafeWaitMs: 20
+    });
+    expect(result).toMatchObject({
+      started: true,
+      success: false,
+      status: 'running',
+      managedProcess: true
+    });
+    expect(result.processId).toMatch(/^proc_/);
+    expect(result.allowedNextActions).toContain('forge_process_wait');
   });
 });

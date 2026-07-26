@@ -800,28 +800,28 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_workspace_reconcile: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, text(input.workspace_id));
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
         return asRecord(await workspace.reconcile());
       },
       forge_workspace_prove: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).proveWorkspaceState());
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).proveWorkspaceState());
       },
       forge_workspace_checkpoint: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).checkpoint({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).checkpoint({
           ...(input.name === undefined ? {} : { name: text(input.name) })
         }));
       },
       forge_workspace_restore: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).restoreCheckpoint({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).restoreCheckpoint({
           snapshotId: text(input.snapshot_id), expectedRevision: optionalNumber(input.expected_revision)
         }));
       },
       forge_work_export: async (input) => {
         const identity = this.identity();
-        const workspaceId = text(input.workspace_id) as WorkspaceId;
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id) as WorkspaceId;
         const exported = await (await authorizedCoordinator(env, identity, workspaceId)).exportRecoveryPatch({ maxBytes: number(input.max_bytes) });
         const artifactId = ids.artifact();
         const bytes = new TextEncoder().encode(exported.content).buffer;
@@ -834,7 +834,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_cloudflare_deploy: async (input) => {
         const identity = this.identity();
-        const workspaceId = text(input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const profileId = (input.credential_profile_id ? text(input.credential_profile_id) : await this.selectedCredentialProfileId(identity)) as CredentialProfileId | undefined;
         if (!profileId) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Select a Cloudflare credential profile before deploying.', retryable: false });
         const environment = input.environment === undefined ? undefined : text(input.environment);
@@ -1699,6 +1699,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
         try {
           if (input.async === true) {
+            if (input.mode === 'read_only') {
+              throw new ForgeError({
+                code: 'FORGE_VALIDATION_FAILED',
+                message: 'async:true cannot be combined with mode:read_only. Use a foreground read-only command, or omit mode for a managed process.',
+                retryable: false,
+                details: { allowedNextActions: ['forge_shell_exec', 'forge_process_start'] }
+              });
+            }
             const proc = await workspace.processStart({
               command,
               cwd: cwd.replace(/\/+$/u, '') || cwd,
@@ -1719,7 +1727,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 code: 'FORGE_WORKSPACE_CONFLICT',
                 message: 'Managed process start did not return a process id; inspect forge_workspace_get before retrying with a new idempotency key.',
                 retryable: false,
-                details: { replay: Boolean(procRecord.replay) }
+                details: { replay: Boolean(procRecord.replay), allowedNextActions: ['forge_workspace_get', 'forge_process_list'] }
               });
             }
             const status = String(value.status ?? procRecord.status ?? 'running');
@@ -1729,6 +1737,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               command,
               async: true,
               replay: Boolean(procRecord.replay),
+              replayed: Boolean(procRecord.replayed ?? procRecord.replay),
+              operationId: procRecord.operationId,
+              workspaceRevision: procRecord.workspaceRevision,
+              mutatesFilesystem: value.mutatesFilesystem ?? procRecord.mutatesFilesystem,
+              allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_get'],
               next_step: `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for dependency installs), or forge_process_logs to inspect output.`
             };
           }
@@ -1805,7 +1818,34 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             approved: claimedApproval
           });
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
-          return asRecord(started);
+          const startedRecord = started as unknown as Record<string, unknown>;
+          const value = (startedRecord.value && typeof startedRecord.value === 'object'
+            ? startedRecord.value
+            : startedRecord) as Record<string, unknown>;
+          const processId = value.id ?? startedRecord.processId ?? startedRecord.id;
+          if (typeof processId !== 'string' || !processId.startsWith('proc_')) {
+            throw new ForgeError({
+              code: 'FORGE_WORKSPACE_CONFLICT',
+              message: 'Managed process start did not return a process id; inspect forge_workspace_get before retrying with a new idempotency key.',
+              retryable: false,
+              details: { allowedNextActions: ['forge_workspace_get', 'forge_process_list'] }
+            });
+          }
+          return {
+            processId,
+            status: String(value.status ?? 'running'),
+            command,
+            mutatesFilesystem: value.mutatesFilesystem ?? true,
+            replay: Boolean(startedRecord.replay),
+            replayed: Boolean(startedRecord.replayed ?? startedRecord.replay),
+            operationId: startedRecord.operationId,
+            originalOperationId: startedRecord.originalOperationId ?? startedRecord.operationId,
+            idempotencyKey: startedRecord.idempotencyKey,
+            workspaceId,
+            workspaceRevision: startedRecord.workspaceRevision,
+            allowedNextActions: startedRecord.allowedNextActions ?? ['forge_process_wait', 'forge_process_logs', 'forge_process_get'],
+            next_step: `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for dependency installs).`
+          };
         } catch (error) {
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
           throw error;
@@ -1830,7 +1870,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_stop: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processStop({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processStop({
           processId: text(input.process_id) as ProcessId,
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: text(input.idempotency_key)
@@ -1838,14 +1878,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_wait: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processWait({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processWait({
           processId: text(input.process_id) as ProcessId,
           timeoutMs: optionalNumber(input.timeout_ms) ?? 120_000
         }));
       },
       forge_process_cancel: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processCancel({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processCancel({
           processId: text(input.process_id) as ProcessId,
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: text(input.idempotency_key)
@@ -1853,7 +1893,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_check_start: async (input) => {
         const identity = this.identity();
-        const workspaceId = text(input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
         const environment = { ...attached.vars, ...(input.environment as Record<string, string>) };
         return asRecord(await (await authorizedCoordinator(env, identity, workspaceId)).checkStart({
@@ -1864,13 +1904,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_check_get: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).checkGet({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).checkGet({
           processId: text(input.process_id) as ProcessId
         }));
       },
       forge_check_cancel: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, text(input.workspace_id))).processStop({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processStop({
           processId: text(input.process_id) as ProcessId,
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: text(input.idempotency_key)
@@ -1878,9 +1918,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_dependencies_install: async (input) => {
         const identity = this.identity();
-        const workspaceId = text(input.workspace_id);
-        const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
-        const environment = { ...attached.vars };
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const coordinator = await authorizedCoordinator(env, identity, workspaceId);
         const result = await coordinator.dependenciesInstall({
           frozenLockfile: Boolean(input.frozen_lockfile),
