@@ -563,8 +563,26 @@ export class ForgeApplicationService {
   private async inspectWorkspace(
     handle: SandboxHandle,
     record: WorkspaceRuntimeRecord
-  ): Promise<{ state: 'matches' | 'mount_missing' | 'diverged' | 'unavailable'; commit?: string; branch?: string }> {
-    const mount = await handle.exec({
+  ): Promise<{
+    state: 'matches' | 'mount_missing' | 'diverged' | 'unavailable';
+    commit?: string;
+    branch?: string;
+    diagnostic?: { code: string; providerCode?: string; operation?: string };
+  }> {
+    const diagnostic = (error: unknown): { code: string; providerCode?: string; operation?: string } => {
+      if (error instanceof ForgeError) {
+        const details = error.details as Record<string, unknown> | undefined;
+        return {
+          code: error.code,
+          ...(typeof details?.providerCode === 'string' ? { providerCode: details.providerCode } : {}),
+          ...(typeof details?.operation === 'string' ? { operation: details.operation } : {})
+        };
+      }
+      return { code: 'UNKNOWN' };
+    };
+    let mount: Awaited<ReturnType<SandboxHandle['exec']>>;
+    try {
+      mount = await handle.exec({
       // Cloudflare restarts the image after an idle sleep. Our image deliberately
       // seeds five empty directories under /workspace, so a true FUSE-mount loss
       // is not literally an empty directory. Treat *only* that exact known
@@ -577,8 +595,11 @@ export class ForgeApplicationService {
       outputLimitBytes: 10_000,
       sessionId: 'system',
       networkPolicy: 'deny_all'
-    }).catch(() => undefined);
-    if (!mount || mount.truncated) return { state: 'unavailable' };
+      });
+    } catch (error) {
+      return { state: 'unavailable', diagnostic: diagnostic(error) };
+    }
+    if (mount.truncated) return { state: 'unavailable', diagnostic: { code: 'FORGE_OUTPUT_TRUNCATED', operation: 'workspace_mount_probe' } };
     if (mount.exitCode === 0) return { state: 'mount_missing' };
     const marker = await handle.exec({
       command: `test "$(cat /workspace/forge/workspace-id 2>/dev/null)" = ${quoted(record.workspace.id)} && test -d /workspace/repo/.git`,
@@ -587,10 +608,12 @@ export class ForgeApplicationService {
       outputLimitBytes: 10_000,
       sessionId: 'system',
       networkPolicy: 'deny_all'
-    }).catch(() => undefined);
-    if (!marker || marker.exitCode !== 0 || marker.truncated) return { state: 'unavailable' };
-    const identity = await this.gitIdentity(handle).catch(() => undefined);
-    if (!identity || !record.workspace.currentCommit) return { state: 'unavailable' };
+    }).catch((error) => ({ error }));
+    if ('error' in marker) return { state: 'unavailable', diagnostic: diagnostic(marker.error) };
+    if (marker.exitCode !== 0 || marker.truncated) return { state: 'unavailable', diagnostic: { code: marker.truncated ? 'FORGE_OUTPUT_TRUNCATED' : 'FORGE_WORKSPACE_MARKER_MISSING', operation: 'workspace_marker_probe' } };
+    const identity = await this.gitIdentity(handle).catch((error) => ({ error }));
+    if ('error' in identity) return { state: 'unavailable', diagnostic: diagnostic(identity.error) };
+    if (!record.workspace.currentCommit) return { state: 'unavailable', diagnostic: { code: 'FORGE_GIT_DIRTY', operation: 'workspace_git_identity' } };
     if (
       identity.commit === record.workspace.currentCommit &&
       identity.branch === record.workspace.currentBranch
@@ -1283,7 +1306,7 @@ export class ForgeApplicationService {
       code: 'FORGE_PROVIDER_UNAVAILABLE',
       message: 'Forge could not safely inspect the workspace filesystem; recovery was not attempted.',
       retryable: true,
-      details: { workspaceId: record.workspace.id }
+      details: { workspaceId: record.workspace.id, inspection: inspection.diagnostic ?? null }
     });
   }
 
@@ -1803,7 +1826,7 @@ export class ForgeApplicationService {
         code: 'FORGE_PROVIDER_UNAVAILABLE',
         message: 'Forge could not safely inspect the workspace Git state.',
         retryable: true,
-        details: { workspaceId: record.workspace.id }
+        details: { workspaceId: record.workspace.id, inspection: inspection.diagnostic ?? null }
       });
     }
     return false;
