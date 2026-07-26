@@ -63,7 +63,7 @@ class FakeProvider implements SandboxProvider {
           ? { exitCode: 0, stdout: `${this.head}\n${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] }
           : { exitCode: 1, stdout: '', stderr: 'workspace mount is unavailable', truncated: false, durationMs: 1, artifactRefs: [] };
       }
-      if (input.command.includes('tar --sort=name --format=posix')) {
+      if (input.command.includes('find /workspace -xdev -mindepth 1')) {
         return { exitCode: 0, stdout: `${this.workspaceHash}  -\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.startsWith('git switch -c ')) {

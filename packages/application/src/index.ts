@@ -64,8 +64,10 @@ interface WorkspaceCheckpoint extends SnapshotRef {
   manifest?: {
     commit: string;
     branch?: string;
-    /** Hash of every file, directory, mode and symlink captured under /workspace. */
+    /** Hash of the durable filesystem contents captured under /workspace. */
     workspaceHash: string;
+    /** Legacy tar-v1 hashes include FUSE mount metadata; content-v2 does not. */
+    workspaceHashAlgorithm?: 'tar-v1' | 'content-v2';
   };
 }
 
@@ -736,6 +738,7 @@ export class ForgeApplicationService {
     if (
       restoredManifest.commit !== expectedManifest.commit ||
       restoredManifest.branch !== expectedManifest.branch ||
+      restoredManifest.workspaceHashAlgorithm !== expectedManifest.workspaceHashAlgorithm ||
       restoredManifest.workspaceHash !== expectedManifest.workspaceHash
     ) {
       return this.quarantineRecovery(
@@ -1519,6 +1522,7 @@ export class ForgeApplicationService {
     if (
       observedAfterSnapshot.commit !== manifest.commit ||
       observedAfterSnapshot.branch !== manifest.branch ||
+      observedAfterSnapshot.workspaceHashAlgorithm !== manifest.workspaceHashAlgorithm ||
       observedAfterSnapshot.workspaceHash !== manifest.workspaceHash
     ) {
       throw new ForgeError({
@@ -2034,12 +2038,14 @@ export class ForgeApplicationService {
 
   private async workspaceManifest(handle: SandboxHandle): Promise<NonNullable<WorkspaceCheckpoint['manifest']>> {
     const identity = await this.gitIdentity(handle);
-    // Snapshot captures /workspace with gitignored files included. A
-    // normalized tar stream covers every captured path, file mode and
-    // symlink target rather than only Git-visible changes. pipefail makes a
-    // partial archive (for example, a concurrent write) fail closed.
+    // Snapshot captures /workspace with gitignored files included. Do not hash
+    // tar metadata here: a restored FUSE overlay can legitimately alter mount
+    // and directory metadata even when every durable byte is identical. Hash a
+    // sorted semantic manifest instead — path, entry kind, regular-file bytes,
+    // and symlink target. Empty directories are included; volatile modes and
+    // timestamps are deliberately excluded.
     const archive = await handle.exec({
-      command: "bash -o pipefail -c \"tar --sort=name --format=posix --numeric-owner --mtime='UTC 1970-01-01' --pax-option=delete=atime,delete=ctime -C /workspace -cf - . | sha256sum\"",
+      command: "bash -o pipefail -c \"find /workspace -xdev -mindepth 1 \\( -type d -o -type f -o -type l \\) -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' path; do rel=\\${path#/workspace/}; if test -d \\\"\\$path\\\"; then printf 'd\\0%s\\0' \\\"\\$rel\\\"; elif test -L \\\"\\$path\\\"; then printf 'l\\0%s\\0%s\\0' \\\"\\$rel\\\" \\\"\\$(readlink \\\"\\$path\\\")\\\"; else printf 'f\\0%s\\0' \\\"\\$rel\\\"; sha256sum \\\"\\$path\\\"; fi; done | sha256sum\"",
       cwd: '/workspace', timeoutMs: 120_000, outputLimitBytes: 1_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
@@ -2052,7 +2058,7 @@ export class ForgeApplicationService {
         details: { truncated: archive.truncated }
       });
     }
-    return { ...identity, workspaceHash };
+    return { ...identity, workspaceHash, workspaceHashAlgorithm: 'content-v2' };
   }
 
   async proveWorkspaceState(record: WorkspaceRuntimeRecord) {
