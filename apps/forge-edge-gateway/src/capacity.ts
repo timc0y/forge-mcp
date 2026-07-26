@@ -4,15 +4,16 @@ import { ForgeError } from '@forge/core';
 // concurrent workspaces (its own 1..N slot range), while a global cap bounds the
 // total across all tenants — and thus container cost — so one busy account
 // cannot starve the rest. A slot is a D1 row, claimed on workspace_create and
-// deleted on destroy or a create failure. The container's 90s idle sleep only
+// deleted on destroy or a create failure. The container's idle sleep only
 // stops compute, never frees the slot, so the lazy + scheduled reaper reclaims
 // slots whose workspace is gone, terminal, or idle past a TTL.
 
 // Idle workspaces are reclaimed after this long. Generous by default so an
 // in-progress harness (installed deps, built artifacts, a running dev server)
 // is not torn down between bursts of activity. Cost-neutral: the container
-// already sleeps at 90s idle, so a held-but-idle slot bills ~nothing — this only
-// governs when the workspace is destroyed and its slot freed.
+// already sleeps on idle (and keepAlive covers active mutations), so a
+// held-but-idle slot bills ~nothing — this only governs when the workspace is
+// destroyed and its slot freed.
 const DEFAULT_SLOT_TTL_MINUTES = 240;
 const DEFAULT_GLOBAL_CAP = 8;
 // Keep the per-tenant default strictly below the global cap so the fairness
