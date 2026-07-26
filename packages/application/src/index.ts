@@ -423,7 +423,7 @@ export interface DiffPageResult {
   totalDeletions: number;
   pageFiles: string[];
   cursor?: string;
-  nextCursor?: string;
+  nextCursor: string | null;
   hasMore: boolean;
   truncated: boolean;
   fileListTruncated?: boolean;
@@ -2137,6 +2137,9 @@ export class ForgeApplicationService {
   }
 
   async operationGet(record: WorkspaceRuntimeRecord, operationId: OperationId) {
+    // Sync provider process status before reporting, so a completed install is
+    // not still described as active after a client disconnect.
+    await this.syncProcessLifecycle(record).catch(() => undefined);
     const match = Object.entries(record.idempotency).find(([, value]) => value.operationId === operationId);
     if (!match) {
       throw new ForgeError({
@@ -2242,10 +2245,14 @@ export class ForgeApplicationService {
     if (operation.replay) {
       return {
         replay: true,
+        replayed: true,
+        idempotencyKey,
+        originalOperationId: operation.operationId,
         workspaceId: record.workspace.id,
         processId,
         operationId: operation.operationId,
-        workspaceRevision: record.workspace.revision
+        workspaceRevision: record.workspace.revision,
+        allowedNextActions: ['forge_process_list', 'forge_workspace_get']
       };
     }
     const handle = await this.handle(record);
@@ -2268,8 +2275,12 @@ export class ForgeApplicationService {
       workspaceId: record.workspace.id,
       processId,
       cancelled: true,
+      replayed: false,
+      idempotencyKey,
+      originalOperationId: operation.operationId,
       operationId: operation.operationId,
-      workspaceRevision: record.workspace.revision
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell_exec']
     };
   }
 
@@ -2291,10 +2302,14 @@ export class ForgeApplicationService {
     if (operation.replay) {
       return {
         replay: true,
+        replayed: true,
+        idempotencyKey,
+        originalOperationId: operation.operationId,
         workspaceId: record.workspace.id,
         processId,
         operationId: operation.operationId,
-        workspaceRevision: record.workspace.revision
+        workspaceRevision: record.workspace.revision,
+        allowedNextActions: ['forge_process_list', 'forge_workspace_get']
       };
     }
     await (await this.handle(record)).stopProcess(processId);
@@ -2311,8 +2326,12 @@ export class ForgeApplicationService {
       processId,
       stopped: true,
       check,
+      replayed: false,
+      idempotencyKey,
+      originalOperationId: operation.operationId,
       operationId: operation.operationId,
-      workspaceRevision: record.workspace.revision
+      workspaceRevision: record.workspace.revision,
+      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell_exec']
     };
   }
 
@@ -2839,22 +2858,25 @@ export class ForgeApplicationService {
       expectedRevision?: number;
     }
   ) {
-    const operation = this.beginMutation(record, input.expectedRevision, input.idempotencyKey);
-    if (operation.replay) {
+    const timeoutMs = input.timeoutMs ?? 600_000;
+    const prior = record.idempotency[input.idempotencyKey];
+    // Legacy sync-install idempotency entries have no processId; return the
+    // recorded dependency state instead of starting a second install.
+    if (prior && !prior.processId) {
       return {
         replay: true,
         replayed: true,
         idempotencyKey: input.idempotencyKey,
-        originalOperationId: operation.operationId,
+        originalOperationId: prior.operationId,
         workspaceId: record.workspace.id,
-        operationId: operation.operationId,
+        operationId: prior.operationId,
         dependencyState: dependencyStateView(record.dependencyState),
         workspaceRevision: record.workspace.revision,
         allowedNextActions: workspaceAllowedNextActions(record)
       };
     }
 
-    const handle = await this.handle(record);
+    const handle = await this.handle(record, { allowRestore: false });
 
     // Ensure the package manager is available.
     await this.preparePackageManager(handle);
@@ -2900,110 +2922,72 @@ export class ForgeApplicationService {
       installCommand = detection.installCommand;
     }
 
-    // Run the install with retry on the same session shells use so installed
-    // binaries are immediately visible afterwards.
-    const timeoutMs = input.timeoutMs ?? 600_000;
-    let attempt = 0;
-    const maxAttempts = 3;
-    let installResult: { exitCode: number; stdout: string; stderr: string; truncated: boolean } | null = null;
+    // Managed background process so ChatGPT transport deadlines cannot restart
+    // or orphan a long install. processWait finalizes visibility + checkpoint.
+    const networkPolicy = input.networkPolicy === 'unrestricted_with_approval'
+      ? 'package_install'
+      : input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>;
+    const started = await this.startProcess(record, {
+      command: installCommand,
+      cwd: '/workspace/repo',
+      environment: nonInteractiveShellEnv(),
+      networkPolicy,
+      idempotencyKey: input.idempotencyKey,
+      expectedRevision: input.expectedRevision,
+      approved: true
+    });
+    const processId = started.value.id;
+    const waited = await this.processWait(record, processId, timeoutMs);
+    const logs = await this.processLogs(record, processId).catch(() => ({ data: '', truncated: false }));
+    const exitCode = waited.process.exitCode ?? 1;
+    const dependencyState = waited.dependencyState;
+    const success = exitCode === 0 && dependencyState.usable;
+    const lockfileHashAfter = dependencyState.lockfileHash
+      ?? (lockfile
+        ? await handle.exec({
+            command: `sha256sum ${lockfile} 2>/dev/null | cut -d' ' -f1 || echo "none"`,
+            cwd: '/workspace/repo',
+            timeoutMs: 10_000,
+            outputLimitBytes: 1_000,
+            sessionId: 'agent-default',
+            networkPolicy: 'deny_all'
+          }).then((r) => r.stdout.trim()).catch(() => 'none')
+        : 'none');
 
-    while (attempt < maxAttempts) {
-      attempt += 1;
-      installResult = await handle.exec({
-        command: installCommand,
-        cwd: '/workspace/repo',
-        timeoutMs,
-        outputLimitBytes: 500_000,
-        sessionId: 'agent-default',
-        networkPolicy: input.networkPolicy,
-        environment: nonInteractiveShellEnv()
-      });
-
-      if (installResult.exitCode === 0) break;
-
-      // Retry on network failures (non-zero exit with network-related stderr).
-      const isNetworkError = /ETIMEDOUT|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/i.test(installResult.stderr);
-      if (!isNetworkError || attempt >= maxAttempts) break;
-
-      // Exponential backoff before retry.
-      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 10_000)));
-    }
-
-    // Compute the lockfile hash after install.
-    const lockfileHashAfter = lockfile
-      ? await handle.exec({
-          command: `sha256sum ${lockfile} 2>/dev/null | cut -d' ' -f1 || echo "none"`,
-          cwd: '/workspace/repo',
-          timeoutMs: 10_000,
-          outputLimitBytes: 1_000,
-          sessionId: 'agent-default',
-          networkPolicy: 'deny_all'
-        }).then((r) => r.stdout.trim()).catch(() => 'none')
-      : 'none';
-
-    const success = installResult?.exitCode === 0;
-    let usable = success;
-    if (success) {
-      const visibility = await handle.exec({
-        command: 'sync; if [ -d node_modules ] || [ -f .pnp.cjs ] || [ -f .pnp.js ] || [ -d .venv ] || [ -d venv ]; then echo FORGE_DEPS_VISIBLE; else echo FORGE_DEPS_MISSING; fi',
-        cwd: '/workspace/repo',
-        timeoutMs: 30_000,
-        outputLimitBytes: 1_000,
-        sessionId: 'agent-default',
-        networkPolicy: 'deny_all'
-      }).catch(() => null);
-      usable = Boolean(visibility && visibility.exitCode === 0 && visibility.stdout.includes('FORGE_DEPS_VISIBLE'));
-    }
-
-    // Record dependency state.
-    record.dependencyState = {
-      lockfileHash: lockfileHashAfter,
-      installedAt: new Date().toISOString(),
-      usable
-    };
-
-    if (success && !usable) {
+    if (exitCode === 0 && !dependencyState.usable) {
       throw new ForgeError({
         code: 'FORGE_PROVIDER_UNAVAILABLE',
         message: 'Dependency install exited successfully but the installed package tree is not visible to the workspace shell.',
         retryable: true,
-        details: { installCommand, lockfileHashAfter }
+        details: { installCommand, lockfileHashAfter, processId }
       });
     }
 
-    // Create a completion checkpoint.
-    let checkpoint: { snapshotId: string; createdAt: string; providerVersion: string; workspaceRevision: number } | undefined;
-    if (success && usable) {
-      try {
-        checkpoint = await this.checkpoint(record, `deps-install-${record.workspace.revision}`);
-      } catch {
-        // Checkpoint failure is non-fatal — the install succeeded.
-      }
-    }
-
-    record.workspace.updatedAt = new Date().toISOString();
-
+    const entry = record.processes[processId];
     return {
       workspaceId: record.workspace.id,
-      success: success && usable,
-      exitCode: installResult?.exitCode ?? 1,
+      success,
+      exitCode,
       packageManager: detection.packageManager,
       installCommand,
       lockfileHashBefore,
       lockfileHashAfter,
       lockfileChanged: lockfileHashBefore !== lockfileHashAfter,
-      dependencyState: dependencyStateView(record.dependencyState),
-      checkpoint: checkpoint
-        ? { snapshotId: checkpoint.snapshotId, createdAt: checkpoint.createdAt, providerVersion: checkpoint.providerVersion }
+      dependencyState,
+      processId,
+      managedProcess: true,
+      filesystemCommitted: Boolean(waited.filesystemCommitted),
+      checkpoint: entry?.checkpointAfter
+        ? { snapshotId: entry.checkpointAfter, createdAt: entry.completedAt ?? new Date().toISOString(), providerVersion: 'process' }
         : undefined,
-      replayed: false,
+      replayed: 'replay' in started && started.replay === true,
       idempotencyKey: input.idempotencyKey,
-      originalOperationId: operation.operationId,
-      operationId: operation.operationId,
+      originalOperationId: started.operationId,
+      operationId: started.operationId,
       workspaceRevision: record.workspace.revision,
-      stderr: installResult?.stderr?.slice(0, 2_000) ?? '',
-      stdout: installResult?.stdout?.slice(0, 1_000) ?? '',
-      allowedNextActions: success && usable
+      stderr: logs.data.slice(-2_000),
+      stdout: logs.data.slice(0, 1_000),
+      allowedNextActions: success
         ? ['forge_shell_exec', 'forge_git_status', 'forge_workspace_get']
         : ['forge_dependencies_install', 'forge_workspace_reconcile', 'forge_workspace_get']
     };
@@ -3369,7 +3353,9 @@ export class ForgeApplicationService {
       totalDeletions,
       pageFiles: plan.paths,
       ...(plan.fromIndex > 0 ? { cursor: String(plan.fromIndex) } : {}),
-      ...(hasMore ? { nextCursor: String(plan.nextIndex) } : {}),
+      // Always emit nextCursor so strict hosts do not have to treat absence as
+      // "maybe more" — null means the page is complete.
+      nextCursor: hasMore ? String(plan.nextIndex) : null,
       hasMore,
       truncated,
       ...(fileListTruncated ? { fileListTruncated } : {}),

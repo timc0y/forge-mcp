@@ -157,14 +157,22 @@ describe('Forge MCP public contracts', () => {
     }).success).toBe(true);
   });
 
-  it('exposes process list, operation get, and incremental log outputs', () => {
+  it('exposes process list, operation get/reconcile, read_only mode, and incremental log outputs', () => {
     expect(tool('forge_process_list').sideEffect).toBe('none');
     expect(tool('forge_operation_get').sideEffect).toBe('none');
+    expect(tool('forge_operation_reconcile').sideEffect).toBe('none');
     const logs = tool('forge_process_logs').outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
     expect(logs.nextCursor.safeParse(null).success).toBe(true);
     expect(logs.hasMore.safeParse(true).success).toBe(true);
     expect(logs.status.safeParse('running').success).toBe(true);
     expect(tool('forge_process_start').description).toMatch(/dependency installs/i);
+    const shell = tool('forge_shell_exec').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(shell.mode.safeParse('read_only').success).toBe(true);
+    expect(shell.mode.safeParse('mutating').success).toBe(true);
+    const processStart = tool('forge_process_start').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(processStart.approval_id.safeParse('apr_123').success).toBe(true);
+    const diff = tool('forge_git_diff').outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(diff.nextCursor.safeParse(null).success).toBe(true);
   });
 
   it('exposes a full-file write tool and multi-file read for headless agents', () => {

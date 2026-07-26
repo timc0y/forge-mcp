@@ -493,6 +493,15 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
             command: process.command.slice(0, 120)
           })),
           previewCount: Object.keys(record.previews).length,
+          lastChecks: Object.entries(record.checks)
+            .slice(-5)
+            .map(([id, check]) => ({
+              processId: id,
+              name: check.name,
+              exitCode: check.exitCode,
+              completedAt: check.completedAt,
+              startedAt: check.startedAt
+            })),
           allowedNextActions,
           next_step: allowedNextActions[0]
             ? `Next safe tool: ${allowedNextActions[0]}`
@@ -503,6 +512,15 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         ...record.workspace,
         processes,
         checks: record.checks,
+        lastChecks: Object.entries(record.checks)
+          .slice(-5)
+          .map(([id, check]) => ({
+            processId: id,
+            name: check.name,
+            exitCode: check.exitCode,
+            completedAt: check.completedAt,
+            startedAt: check.startedAt
+          })),
         previews: Object.fromEntries(
           Object.entries(record.previews).map(([id, value]) => [
             id,
@@ -755,8 +773,40 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     expectedRevision?: number;
     idempotencyKey?: string;
     approved: boolean;
+    mode?: 'read_only' | 'mutating';
   }) {
-    // Even read-only commands serialize: a repo probe may recover a sleeping
+    const shellDecision = classifyCommand(input.command, input.networkPolicy);
+    if (input.mode === 'read_only' && shellDecision.classification !== 'read_only') {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: 'mode:read_only was requested but the command is classified as mutating; refuse to run it without a mutation path.',
+        retryable: false,
+        details: { classification: shellDecision.classification, allowedNextActions: ['forge_shell_exec'] }
+      });
+    }
+    const forcedReadOnly = input.mode === 'read_only' || shellDecision.classification === 'read_only';
+    // Pure read-only probes skip the mutation lock so they are not blocked by
+    // another process's snapshot/serialize queue, and never create checkpoints.
+    if (forcedReadOnly) {
+      return this.readWithRecovery(async (record) => {
+        const normalizedCwd = input.cwd.replace(/\/+$/u, '') || '/';
+        const value = await this.app.exec(record, {
+          command: input.command,
+          cwd: normalizedCwd,
+          timeoutMs: input.timeoutMs,
+          environment: nonInteractiveShellEnv(input.environment),
+          networkPolicy: input.networkPolicy,
+          outputLimitBytes: input.outputLimitBytes,
+          approved: input.approved
+        });
+        return {
+          ...value,
+          mode: 'read_only' as const,
+          allowedNextActions: workspaceAllowedNextActions(record)
+        };
+      });
+    }
+    // Mutating commands serialize: a repo probe may recover a sleeping
     // checkout, and that state transition must not overwrite a newer mutation.
     return this.serializeMutation(async () => {
       const normalizedCwd = input.cwd.replace(/\/+$/u, '') || '/';
@@ -820,18 +870,16 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         };
       };
       try {
-        const decision = classifyCommand(input.command, input.networkPolicy);
         const environment = nonInteractiveShellEnv(input.environment);
-        // Read-only commands must never be blocked by leftover process records.
         // Mutating commands sync/reap finished processes before the quiescent check.
-        if (input.idempotencyKey && decision.classification !== 'read_only') {
+        if (input.idempotencyKey) {
           await this.assertCheckpointQuiescent(record);
         }
         // Dependency installs always start as managed processes once approved.
         // Sync exec + timeout conversion restarted the install after the transport
         // deadline and left later shells unable to see node_modules.
         if (
-          decision.classification === 'dependency_install' &&
+          shellDecision.classification === 'dependency_install' &&
           input.approved &&
           input.idempotencyKey &&
           touchesRepo
@@ -851,7 +899,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
               operationId: started.operationId,
               replay: 'replay' in started && started.replay === true
             },
-            decision,
+            shellDecision,
             'replay' in started && started.replay
               ? 'Replayed dependency install managed process.'
               : 'Dependency install started as a managed background process so it can outlive the transport deadline without being restarted.',
@@ -869,8 +917,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           idempotencyKey: input.idempotencyKey,
           approved: input.approved
         });
-        const checkpoint = value.classification === 'read_only' ? undefined : await this.app.checkpoint(record, `shell-${record.workspace.revision}`);
-        return checkpoint ? { ...value, checkpoint } : value;
+        const checkpoint = await this.app.checkpoint(record, `shell-${record.workspace.revision}`);
+        return { ...value, checkpoint, mode: 'mutating' as const };
       } catch (error) {
         // If the command was a mutating command with an idempotency key and it
         // timed out (FORGE_COMMAND_TIMEOUT), convert it to a managed background
@@ -884,8 +932,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.idempotencyKey &&
           touchesRepo
         ) {
-          const decision = classifyCommand(input.command, input.networkPolicy);
-          if (decision.classification === 'dependency_install') throw error;
+          if (shellDecision.classification === 'dependency_install') throw error;
           const started = await this.app.startProcess(record, {
             command: input.command,
             cwd: normalizedCwd,
@@ -901,7 +948,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
               operationId: started.operationId,
               replay: 'replay' in started && started.replay === true
             },
-            decision,
+            shellDecision,
             'replay' in started && started.replay
               ? 'Replayed managed background process for a timed-out command.'
               : 'Command timed out and was converted to a managed background process.',

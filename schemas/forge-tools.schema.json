@@ -424,7 +424,39 @@
     },
     "forge_operation_get": {
       "title": "Get operation status",
-      "description": "Reconcile an uncertain prior mutation by operation id. Returns whether the operation was accepted, is still active (e.g. managed process running), or completed/failed — without inferring from side effects alone.",
+      "description": "Reconcile an uncertain prior mutation by operation id. Syncs process lifecycle first, then returns whether the operation was accepted, is still active (e.g. managed process running), or completed/failed — without inferring from side effects alone.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "operation_id": {
+            "type": "string",
+            "pattern": "^op_.*",
+            "description": "Operation id from a prior mutating tool response."
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          }
+        }
+      }
+    },
+    "forge_operation_reconcile": {
+      "title": "Reconcile operation outcome",
+      "description": "Same as forge_operation_get: after a client disconnect or unknown tool outcome, ask whether operation op_... finished, failed, or remains active. Syncs managed-process lifecycle before answering.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1873,7 +1905,7 @@
     },
     "forge_shell_exec": {
       "title": "Run a command",
-      "description": "Run a command in the workspace with timeout, output and network-policy bounds. Set async: true to run as a non-blocking process immediately and return proc_ id to avoid HTTP timeouts on long commands. Risky commands return a real user approval URL; idempotency_key must be unique per distinct command.",
+      "description": "Run a command in the workspace with timeout, output and network-policy bounds. Set mode:read_only for probes that must never checkpoint or take the mutation lock. Set async: true to run as a non-blocking process immediately and return proc_ id to avoid HTTP timeouts on long commands. Risky commands return a real user approval URL; idempotency_key must be unique per distinct command.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -1915,25 +1947,29 @@
             "description": "Truncate captured output past this many bytes.",
             "$ref": "#/$defs/__schema5"
           },
+          "mode": {
+            "description": "Force read-only inspection (no checkpoint, no revision bump, not blocked by active-process snapshot lock) or mutating execution. When omitted, Forge classifies the command.",
+            "$ref": "#/$defs/__schema6"
+          },
           "async": {
             "description": "Set true to start as a background process immediately and return proc_ id in <300ms to avoid chat transport timeout.",
-            "$ref": "#/$defs/__schema6"
+            "$ref": "#/$defs/__schema7"
           },
           "compact": {
             "description": "Return compact output for tight context.",
-            "$ref": "#/$defs/__schema7"
+            "$ref": "#/$defs/__schema8"
           },
           "expected_revision": {
             "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema8"
+            "$ref": "#/$defs/__schema9"
           },
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema9"
+            "$ref": "#/$defs/__schema10"
           },
           "approval_id": {
             "description": "Approval id returned by a prior blocked call.",
-            "$ref": "#/$defs/__schema10"
+            "$ref": "#/$defs/__schema11"
           }
         },
         "required": [
@@ -1985,23 +2021,30 @@
             "maximum": 1000000
           },
           "__schema6": {
-            "type": "boolean"
+            "type": "string",
+            "enum": [
+              "read_only",
+              "mutating"
+            ]
           },
           "__schema7": {
             "type": "boolean"
           },
           "__schema8": {
+            "type": "boolean"
+          },
+          "__schema9": {
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
-          "__schema9": {
+          "__schema10": {
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
             "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
           },
-          "__schema10": {
+          "__schema11": {
             "type": "string",
             "pattern": "^apr_.*"
           }
@@ -2010,7 +2053,7 @@
     },
     "forge_process_start": {
       "title": "Start a background process",
-      "description": "Start a managed background process and return its Forge process id immediately. Use for long-running work that must outlive the chat transport — dependency installs (pnpm/npm/yarn), builds, tests, and development servers. Returns mutatesFilesystem when the command writes the workspace. Prefer forge_process_wait afterwards. idempotency_key must be unique per distinct process.",
+      "description": "Start a managed background process and return its Forge process id immediately. Use for long-running work that must outlive the chat transport — dependency installs (pnpm/npm/yarn), builds, tests, and development servers. Returns mutatesFilesystem when the command writes the workspace. Prefer forge_process_wait afterwards. Dependency installs may auto-approve or return an approval URL like forge_shell_exec. idempotency_key must be unique per distinct process.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -2049,6 +2092,10 @@
           "idempotency_key": {
             "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
             "$ref": "#/$defs/__schema5"
+          },
+          "approval_id": {
+            "description": "Approval id returned by a prior blocked call.",
+            "$ref": "#/$defs/__schema6"
           }
         },
         "required": [
@@ -2096,6 +2143,10 @@
             "minLength": 8,
             "maxLength": 200,
             "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+          },
+          "__schema6": {
+            "type": "string",
+            "pattern": "^apr_.*"
           }
         }
       }
@@ -2509,7 +2560,7 @@
     },
     "forge_dependencies_install": {
       "title": "Install workspace dependencies",
-      "description": "Install dependencies using the detected package manager with the exact pinned version. Detects packageManager from package.json, decides frozen vs non-frozen lockfile, retries safely after network failures, records the resulting lockfile hash, creates a completion checkpoint, and reports whether dependencies are usable. For this repository, Forge automatically selects pnpm with the pinned version from package.json.",
+      "description": "Install dependencies as a managed background process using the detected package manager with the exact pinned version. Waits for completion, proves the package tree is shell-visible, records the lockfile hash, creates a completion checkpoint, and reports whether dependencies are usable. Prefer this or forge_process_start+wait over a long foreground shell install.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -2537,7 +2588,7 @@
           },
           "timeout_ms": {
             "default": 600000,
-            "description": "Kill the install after this many milliseconds.",
+            "description": "Maximum time to wait for the managed install to finish.",
             "$ref": "#/$defs/__schema4"
           },
           "expected_revision": {

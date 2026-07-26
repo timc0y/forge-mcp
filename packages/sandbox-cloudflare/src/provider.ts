@@ -89,6 +89,8 @@ function mapProcessStatus(status: string): ProcessRecord['status'] {
 }
 
 class CloudflareSandboxHandle implements SandboxHandle {
+  private readonly processMutatesFilesystem = new Map<string, boolean>();
+
   constructor(readonly providerId: string, private readonly sandbox: Sandbox) {}
 
   private async session(id: string, cwd = ROOT): Promise<ExecutionSession> {
@@ -178,6 +180,8 @@ class CloudflareSandboxHandle implements SandboxHandle {
         processId: input.processId,
         autoCleanup: input.autoCleanup
       });
+      const mutatesFilesystem = input.mutatesFilesystem ?? false;
+      this.processMutatesFilesystem.set(input.processId, mutatesFilesystem);
       return {
         id: input.processId,
         providerProcessId: process.id,
@@ -186,7 +190,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
         status: mapProcessStatus(process.status),
         pid: process.pid,
         startedAt: new Date().toISOString(),
-        mutatesFilesystem: input.mutatesFilesystem ?? false
+        mutatesFilesystem
       };
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'startProcess');
@@ -207,7 +211,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
         status,
         pid: process.pid,
         startedAt: new Date().toISOString(),
-        mutatesFilesystem: false,
+        mutatesFilesystem: this.processMutatesFilesystem.get(processId) ?? false,
         ...(isTerminal ? { completedAt: new Date().toISOString(), exitCode: process.exitCode ?? 0 } : {})
       };
     } catch (error) {
@@ -273,7 +277,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
               startedAt: new Date().toISOString(),
               completedAt: new Date().toISOString(),
               exitCode: 1,
-              mutatesFilesystem: false
+              mutatesFilesystem: this.processMutatesFilesystem.get(input.processId) ?? false
             };
           }
           if (Date.now() >= deadline) {
@@ -301,7 +305,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
             startedAt: new Date().toISOString(),
             completedAt: new Date().toISOString(),
             exitCode: process.exitCode ?? 0,
-            mutatesFilesystem: false
+            mutatesFilesystem: this.processMutatesFilesystem.get(input.processId) ?? false
           };
         }
         if (Date.now() >= deadline) {
@@ -347,7 +351,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
         exitCode: 124,
-        mutatesFilesystem: false
+        mutatesFilesystem: this.processMutatesFilesystem.get(processId) ?? false
       };
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'processCancel');

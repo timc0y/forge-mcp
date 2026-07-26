@@ -1002,4 +1002,44 @@ describe('Forge application service', () => {
       CUSTOM: '1'
     });
   });
+
+  it('runs forge_dependencies_install via managed process wait + visibility finalize', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.workspace.activeSnapshotId = undefined;
+    record.detection = {
+      packageManager: 'pnpm',
+      installCommand: 'pnpm install',
+      installFallbackCommand: 'pnpm install',
+      framework: 'vite',
+      scripts: { dev: 'vite' }
+    } as never;
+    // Complete the install as soon as it is started.
+    const originalStart = provider.handle.startProcess!;
+    provider.handle.startProcess = async (input) => {
+      const started = await originalStart.call(provider.handle, input);
+      provider.processStates.set(input.processId, {
+        ...started,
+        status: 'exited',
+        completedAt: new Date().toISOString(),
+        exitCode: 0
+      });
+      return started;
+    };
+    const result = await service.dependenciesInstall(record, {
+      networkPolicy: 'package_install',
+      idempotencyKey: 'deps-managed-1',
+      expectedRevision: 1,
+      timeoutMs: 5_000
+    });
+    expect(result).toMatchObject({
+      success: true,
+      managedProcess: true,
+      filesystemCommitted: true,
+      dependencyState: { status: 'ready', usable: true }
+    });
+    expect(result.processId).toMatch(/^proc_/);
+  });
 });
