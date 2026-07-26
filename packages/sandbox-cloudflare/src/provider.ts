@@ -31,6 +31,7 @@ export interface CloudflareSandboxEnv {
 }
 
 const ROOT = '/workspace';
+const REPO_ROOT = '/workspace/repo';
 const REPO = '/workspace/repo';
 const TRANSPORT = 'rpc' as const;
 
@@ -46,6 +47,23 @@ function assertWorkspacePath(path: string): string {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+// git apply emits `error: patch failed: path/to/file:12` and
+// `error: path/to/file: patch does not apply` on rejection. Surface the
+// offending paths so the caller learns which file blocked the patch.
+function parseRejectedPatchFiles(output: string): string[] {
+  const files = new Set<string>();
+  for (const line of output.split('\n')) {
+    const failed = line.match(/patch failed:\s*(.+?):\d+/);
+    if (failed?.[1]) {
+      files.add(failed[1].trim());
+      continue;
+    }
+    const doesNotApply = line.match(/error:\s*(.+?):\s*patch does not apply/);
+    if (doesNotApply?.[1]) files.add(doesNotApply[1].trim());
+  }
+  return [...files];
 }
 
 async function sha256(content: string): Promise<string> {
@@ -83,6 +101,12 @@ class CloudflareSandboxHandle implements SandboxHandle {
 
   private async canonicalWorkspacePath(path: string): Promise<string> {
     const lexical = assertWorkspacePath(path);
+    // The workspace root and the repo checkout are both created by Forge itself
+    // (mkdir + git clone), so neither can be a hostile symlink escaping /workspace.
+    // Skip the realpath exec — a container round trip that can also wake a sleeping
+    // sandbox — for these two constants, which cover nearly every tool call and
+    // provisioning step. Arbitrary caller paths still get the check below.
+    if (lexical === ROOT || lexical === REPO_ROOT) return lexical;
     const session = await this.session('system', ROOT);
     const result = await session.exec(`realpath -m -- ${shellQuote(lexical)}`, {
       cwd: ROOT,
@@ -98,10 +122,12 @@ class CloudflareSandboxHandle implements SandboxHandle {
     return lexical;
   }
 
-  private async commandWithStdin(input: ExecInput, session: ExecutionSession) {
+  // `cwd` is already canonicalized by the caller; do not resolve it again (that
+  // was a second container round trip per stdin exec).
+  private async commandWithStdin(input: ExecInput, session: ExecutionSession, cwd: string) {
     if (input.stdin === undefined) {
       return session.exec(input.command, {
-        cwd: await this.canonicalWorkspacePath(input.cwd),
+        cwd,
         timeout: input.timeoutMs,
         env: input.environment
       });
@@ -110,7 +136,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
     await this.sandbox.writeFile(path, input.stdin, { sessionId: input.sessionId });
     try {
       return await session.exec(`${input.command} < ${shellQuote(path)}`, {
-        cwd: await this.canonicalWorkspacePath(input.cwd),
+        cwd,
         timeout: input.timeoutMs,
         env: input.environment
       });
@@ -124,7 +150,7 @@ class CloudflareSandboxHandle implements SandboxHandle {
     try {
       const cwd = await this.canonicalWorkspacePath(input.cwd);
       const session = await this.session(input.sessionId, cwd);
-      const result = await this.commandWithStdin(input, session);
+      const result = await this.commandWithStdin(input, session, cwd);
       const stdout = truncate(result.stdout, input.outputLimitBytes);
       const stdoutBytes = new TextEncoder().encode(stdout.value).byteLength;
       const stderr = truncate(result.stderr, Math.max(0, input.outputLimitBytes - stdoutBytes));
@@ -239,6 +265,13 @@ class CloudflareSandboxHandle implements SandboxHandle {
         const current = await this.readFile({ path, maxBytes: Number.MAX_SAFE_INTEGER });
         if (current.sha256 !== input.expectedSha256) throw new Error('FILE_HASH_CONFLICT');
       }
+      // Create the parent directory so a headless agent can write a brand-new
+      // file (e.g. a new module) without a separate mkdir step.
+      const parent = path.slice(0, path.lastIndexOf('/'));
+      if (parent && parent !== ROOT) {
+        const session = await this.session('system', ROOT);
+        await session.exec(`mkdir -p ${shellQuote(parent)}`, { cwd: ROOT, timeout: 10_000 });
+      }
       await this.sandbox.writeFile(path, input.content, { sessionId: 'system' });
       return {
         path,
@@ -252,37 +285,69 @@ class CloudflareSandboxHandle implements SandboxHandle {
   }
 
   async applyPatch(input: PatchInput): Promise<PatchResult> {
+    const cwd = await this.canonicalWorkspacePath(input.cwd);
+    const patchPath = `/workspace/tmp/patch-${crypto.randomUUID()}.diff`;
     try {
-      const cwd = await this.canonicalWorkspacePath(input.cwd);
-      const patchPath = `/workspace/tmp/patch-${crypto.randomUUID()}.diff`;
       await this.sandbox.writeFile(patchPath, input.patch, { sessionId: 'system' });
-      try {
-        const result = await this.exec({
-          command: `git apply --whitespace=nowarn ${shellQuote(patchPath)}`,
-          cwd,
-          timeoutMs: 60_000,
-          outputLimitBytes: 100_000,
-          sessionId: 'system',
-          networkPolicy: 'deny_all'
-        });
-        const changed = await this.exec({
-          command: 'git diff --name-only',
-          cwd,
-          timeoutMs: 30_000,
-          outputLimitBytes: 100_000,
-          sessionId: 'system',
-          networkPolicy: 'deny_all'
-        });
+    } catch (error) {
+      throw mapCloudflareSandboxError(error, 'applyPatch:write');
+    }
+    try {
+      // --check first so a rejected patch never mutates the tree; git apply is
+      // atomic, so a failed check guarantees the working tree is unchanged.
+      const check = await this.exec({
+        command: `git apply --check --whitespace=nowarn ${shellQuote(patchPath)}`,
+        cwd,
+        timeoutMs: 60_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      if (check.exitCode !== 0) {
+        const output = `${check.stdout}${check.stderr}`;
         return {
-          applied: result.exitCode === 0,
-          output: `${result.stdout}${result.stderr}`,
-          changedFiles: changed.stdout.split('\n').filter(Boolean)
+          applied: false,
+          output,
+          changedFiles: [],
+          rejectedFiles: parseRejectedPatchFiles(output),
+          rolledBack: true
         };
-      } finally {
-        await this.sandbox.deleteFile(patchPath).catch(() => undefined);
       }
+      const result = await this.exec({
+        command: `git apply --whitespace=nowarn ${shellQuote(patchPath)}`,
+        cwd,
+        timeoutMs: 60_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      if (result.exitCode !== 0) {
+        const output = `${result.stdout}${result.stderr}`;
+        return {
+          applied: false,
+          output,
+          changedFiles: [],
+          rejectedFiles: parseRejectedPatchFiles(output),
+          rolledBack: true
+        };
+      }
+      const changed = await this.exec({
+        command: 'git diff --name-only',
+        cwd,
+        timeoutMs: 30_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      return {
+        applied: true,
+        output: `${result.stdout}${result.stderr}`,
+        changedFiles: changed.stdout.split('\n').filter(Boolean)
+      };
     } catch (error) {
       throw mapCloudflareSandboxError(error, 'applyPatch');
+    } finally {
+      await this.sandbox.deleteFile(patchPath).catch(() => undefined);
     }
   }
 

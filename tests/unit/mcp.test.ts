@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { forgeTools } from '@forge/mcp-core';
-import { toolAnnotations } from '../../packages/mcp-adapter-v1/src/index';
+import { toolAnnotations, registerForgeToolsV1 } from '../../packages/mcp-adapter-v1/src/index';
+import type { ForgeToolHandlers } from '@forge/mcp-core';
 
 function tool(name: string) {
   const result = forgeTools.find((candidate) => candidate.name === name);
@@ -19,6 +20,33 @@ describe('Forge MCP public contracts', () => {
     const shell = tool('forge_shell_exec').inputSchema as Record<string, unknown>;
     expect(shell).not.toHaveProperty('approved');
     expect(shell).toHaveProperty('approval_id');
+  });
+
+  it('advertises no ui:// widget on any tool, so hosts render plain results', () => {
+    // Forge serves no MCP Apps resource. If a `ui` or `openai/outputTemplate`
+    // key ever reappears in a tool's _meta, ChatGPT starts rendering a custom
+    // component again — which is exactly what was removed. The only
+    // Forge-authored UI is the hosted approval page at /approvals/:id.
+    const registered: Record<string, unknown>[] = [];
+    const server = {
+      registerTool(_name: string, config: Record<string, unknown>) {
+        registered.push(config);
+      }
+    } as never;
+    const handlers = new Proxy({}, { get: () => async () => ({}) }) as ForgeToolHandlers;
+
+    registerForgeToolsV1(server, handlers);
+
+    expect(registered.length).toBe(forgeTools.length);
+    for (const config of registered) {
+      const meta = (config._meta ?? {}) as Record<string, unknown>;
+      expect(meta).not.toHaveProperty('ui');
+      expect(meta).not.toHaveProperty('openai/outputTemplate');
+      // The short invoking/invoked status strings are plain text and stay.
+      for (const key of Object.keys(meta)) {
+        expect(key).toMatch(/^openai\/toolInvocation\//);
+      }
+    }
   });
 
   it('marks only retry-safe tools idempotent and true reads read-only', () => {
@@ -46,5 +74,39 @@ describe('Forge MCP public contracts', () => {
     expect(forgeTools.some((candidate) => candidate.name === 'forge_process_stop')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_check_cancel')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(true);
+  });
+
+  it('exposes a full-file write tool and multi-file read for headless agents', () => {
+    const write = tool('forge_files_write');
+    expect(write.sideEffect).toBe('workspace');
+    const writeSchema = write.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    // expected_sha256 is optional (create vs conflict-safe overwrite).
+    expect(writeSchema.expected_sha256.safeParse(undefined).success).toBe(true);
+    expect(writeSchema.expected_sha256.safeParse('a'.repeat(64)).success).toBe(true);
+    expect(writeSchema.expected_sha256.safeParse('nothex').success).toBe(false);
+    expect(writeSchema.path.safeParse('/workspace/repo/src/new.ts').success).toBe(true);
+    // A write mutates, so it must be non-idempotent unless replayed with a key.
+    expect(toolAnnotations('forge_files_write', 'none')).toMatchObject({ readOnlyHint: false });
+
+    const readSchema = tool('forge_files_read').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(readSchema.paths.safeParse(['/workspace/a', '/workspace/b']).success).toBe(true);
+    expect(readSchema.paths.safeParse([]).success).toBe(false);
+  });
+
+  it('folds interactive steps into forge_review_capture (no separate browser tools)', () => {
+    // The standalone screenshot/accessibility/act tools were collapsed into one.
+    expect(forgeTools.find((t) => t.name === 'forge_browser_act')).toBeUndefined();
+    expect(forgeTools.find((t) => t.name === 'forge_browser_screenshot')).toBeUndefined();
+    expect(forgeTools.find((t) => t.name === 'forge_browser_accessibility_tree')).toBeUndefined();
+
+    const capture = tool('forge_review_capture');
+    expect(capture.sideEffect).toBe('workspace');
+    const captures = (capture.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>).captures;
+    // A plain capture works, and an optional steps array drives an interaction.
+    expect(captures.safeParse([{ route: '/' }]).success).toBe(true);
+    expect(captures.safeParse([{ route: '/', steps: [{ kind: 'click', selector: '#add-to-cart' }] }]).success).toBe(true);
+    expect(captures.safeParse([{ route: '/', steps: [{ kind: 'not_a_real_action' }] }]).success).toBe(false);
+    // Capture mutates the workspace and is not silently replayed.
+    expect(toolAnnotations('forge_review_capture', 'workspace')).toMatchObject({ readOnlyHint: false });
   });
 });

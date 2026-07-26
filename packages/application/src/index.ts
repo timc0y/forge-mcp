@@ -10,10 +10,11 @@ import {
   type RepositoryRef,
   type TenantId,
   type Workspace,
+  type WorkspaceFailureDetails,
   type WorkspaceId
 } from '@forge/core';
 import { assertCommandAllowed, classifyCommand } from '@forge/policy';
-import { detectProject, type ProjectDetection } from '@forge/project-detection';
+import { parseDetection, DETECTION_SCRIPT, type ProjectDetection } from '@forge/project-detection';
 import type {
   CreateSandboxInput,
   ExecInput,
@@ -87,6 +88,266 @@ export interface RepositoryCloneSource {
   authorizationHeader?: string;
 }
 
+// Callbacks that plug the per-repo dependency cache into provisioning without
+// pulling D1/R2/coordinator specifics into this package (same pattern as the
+// snapshot `restore` callback). `restore` returns true when it warmed the
+// dependency dirs from the shared cache; `populate` is fire-and-forget (the
+// coordinator schedules it on waitUntil) and is only called on a cache miss.
+export interface DepsCacheHooks {
+  restore: (lockfileHash: string) => Promise<boolean>;
+  populate: (lockfileHash: string) => void;
+}
+
+// The lockfile whose hash keys the dependency cache, per detected package
+// manager. Returns null when there is nothing stable to key on (skip the cache).
+function lockfileFor(packageManager: ProjectDetection['packageManager']): string | null {
+  switch (packageManager) {
+    case 'pnpm':
+      return 'pnpm-lock.yaml';
+    case 'npm':
+      return 'package-lock.json';
+    case 'yarn':
+      return 'yarn.lock';
+    case 'bun':
+      return 'bun.lock';
+    case 'uv':
+      return 'uv.lock';
+    case 'pip':
+      return 'requirements.txt';
+    default:
+      return null;
+  }
+}
+
+// Candidate lockfiles hashed by the combined provision probe, ordered so a single
+// pass covers every package manager `lockfileFor` can name.
+const LOCKFILE_CANDIDATES = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'uv.lock', 'requirements.txt'];
+
+// One post-clone exec that emits HEAD, branch, per-lockfile sha256, and the project
+// detection JSON in a single delimited block — folding four container round-trips
+// (git rev-parse, git branch, sha256sum, detection) into one. Parsed Worker-side by
+// `parseProvisionProbe`.
+const PROVISION_PROBE_COMMAND = [
+  'echo ===FORGE_HEAD===',
+  'git rev-parse HEAD',
+  'echo ===FORGE_BRANCH===',
+  'git branch --show-current',
+  'echo ===FORGE_LOCKFILE===',
+  `for f in ${LOCKFILE_CANDIDATES.join(' ')}; do [ -f "$f" ] && echo "$f $(sha256sum "$f" | cut -d' ' -f1)"; done`,
+  'echo ===FORGE_DETECTION===',
+  DETECTION_SCRIPT
+].join('\n');
+
+export interface ProvisionProbe {
+  head: string;
+  branch: string;
+  lockfileHashes: Record<string, string>;
+  detection: ProjectDetection;
+}
+
+// Pure parser for the combined probe's stdout. Splits on the sentinel markers and
+// reuses `parseDetection` for the trailing JSON section.
+export function parseProvisionProbe(stdout: string): ProvisionProbe {
+  const markers = ['===FORGE_HEAD===', '===FORGE_BRANCH===', '===FORGE_LOCKFILE===', '===FORGE_DETECTION==='];
+  const section = (name: string): string => {
+    const start = stdout.indexOf(name);
+    if (start === -1) return '';
+    const from = start + name.length;
+    let end = stdout.length;
+    for (const m of markers) {
+      const i = stdout.indexOf(m, from);
+      if (i !== -1 && i < end) end = i;
+    }
+    return stdout.slice(from, end).trim();
+  };
+  const lockfileHashes: Record<string, string> = {};
+  for (const line of section('===FORGE_LOCKFILE===').split('\n')) {
+    const [name, hash] = line.trim().split(/\s+/);
+    if (name && hash) lockfileHashes[name] = hash;
+  }
+  return {
+    head: section('===FORGE_HEAD==='),
+    branch: section('===FORGE_BRANCH==='),
+    lockfileHashes,
+    detection: parseDetection(section('===FORGE_DETECTION==='))
+  };
+}
+
+// --- Progressive (per-file) diff paging ------------------------------------
+//
+// A diff is the one Forge result whose size is dictated by the user's
+// repository rather than by anything Forge chooses. A single generated file, a
+// vendored bundle or a large text/content change can run to megabytes, and
+// returning that in one tool result either blows the client's limit outright or
+// buries the answer. Worse, the previous behaviour truncated silently at the
+// exec output cap and then hashed the TRUNCATED text — so a push could be
+// approved against a diff nobody had actually seen in full.
+//
+// So the diff is served a page of FILES at a time:
+//   1. `git diff --numstat -z` gives the complete file list with line counts.
+//      Its size scales with the NUMBER of files, not their content, so it stays
+//      small (~40 bytes/file) even for a multi-megabyte change.
+//   2. A budget-aware planner picks the slice of files this page carries.
+//   3. Only those files' hunks are fetched, with `-- <paths>`.
+// The full-diff hash is computed inside the container (`| sha256sum`), so it
+// covers the whole change on every page and never depends on what was paged in.
+
+/** One record of `git diff --numstat -z`. Binary files report `-` for counts. */
+export interface DiffFileStat {
+  path: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  /** Set for renames/copies; both paths go into the pathspec so git still renders it as a rename. */
+  previousPath?: string;
+}
+
+/**
+ * Parse `git diff --numstat -z` output.
+ *
+ * NUL-delimited rather than line-delimited on purpose: with plain `--numstat`,
+ * git quote-escapes any path containing a space, quote or non-ASCII byte, and
+ * un-escaping that correctly is easy to get subtly wrong. With `-z` the paths
+ * arrive verbatim.
+ *
+ * Record shapes:
+ *   normal  `<adds>\t<dels>\t<path>\0`
+ *   rename  `<adds>\t<dels>\t\0<old>\0<new>\0`  — counts first, then two fields
+ */
+export function parseNumstatZ(raw: string): DiffFileStat[] {
+  const tokens = raw.split('\0');
+  const files: DiffFileStat[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    // The section may carry a leading newline from the sentinel `echo`.
+    const token = (tokens[index] ?? '').replace(/^[\r\n]+/, '');
+    if (!token) continue;
+    const firstTab = token.indexOf('\t');
+    if (firstTab === -1) continue;
+    const secondTab = token.indexOf('\t', firstTab + 1);
+    if (secondTab === -1) continue;
+    const additions = token.slice(0, firstTab);
+    const deletions = token.slice(firstTab + 1, secondTab);
+    let path = token.slice(secondTab + 1);
+    let previousPath: string | undefined;
+    if (path === '') {
+      // Rename/copy: the old and new paths follow as their own NUL fields.
+      const from = tokens[index + 1];
+      const to = tokens[index + 2];
+      if (from === undefined || to === undefined) continue;
+      previousPath = from;
+      path = to;
+      index += 2;
+    }
+    if (!path) continue;
+    const binary = additions === '-' || deletions === '-';
+    files.push({
+      path,
+      additions: binary ? 0 : Number.parseInt(additions, 10) || 0,
+      deletions: binary ? 0 : Number.parseInt(deletions, 10) || 0,
+      binary,
+      ...(previousPath ? { previousPath } : {})
+    });
+  }
+  return files;
+}
+
+// Rough per-line and per-file costs used only to decide where to cut a page.
+// Measuring the real size would mean fetching it, which is the cost being
+// avoided; the fetch itself is still hard-capped, so a bad estimate costs a
+// slightly fuller or emptier page, never a blown limit.
+const DIFF_LINE_BYTES = 64;
+const DIFF_FILE_OVERHEAD_BYTES = 200;
+const DIFF_BINARY_BYTES = 4_096;
+
+export function estimateFileDiffBytes(file: DiffFileStat): number {
+  if (file.binary) return DIFF_FILE_OVERHEAD_BYTES + DIFF_BINARY_BYTES;
+  return DIFF_FILE_OVERHEAD_BYTES + (file.additions + file.deletions) * DIFF_LINE_BYTES;
+}
+
+export interface DiffPagePlan {
+  /** Pathspecs to fetch hunks for (includes a rename's old path). */
+  pathspecs: string[];
+  /** Paths, in file-list order, whose hunks this page carries. */
+  paths: string[];
+  fromIndex: number;
+  /** Index the next page starts at, or null when this page is the last. */
+  nextIndex: number | null;
+}
+
+/**
+ * Choose the slice of files whose hunks a page carries.
+ *
+ * ALWAYS selects at least one file while any remain. A file whose own diff
+ * exceeds the entire budget would otherwise select nothing, the cursor would
+ * never advance, and a caller following nextCursor would page forever. Such a
+ * file is instead returned alone and truncated, with the result saying so.
+ */
+export function planDiffPage(
+  files: DiffFileStat[],
+  startIndex: number,
+  maxBytes: number,
+  maxFiles: number
+): DiffPagePlan {
+  const fromIndex = Math.max(0, Math.min(Math.trunc(startIndex) || 0, files.length));
+  const paths: string[] = [];
+  const pathspecs: string[] = [];
+  let spent = 0;
+  let index = fromIndex;
+  while (index < files.length && paths.length < maxFiles) {
+    const file = files[index];
+    if (!file) break;
+    const cost = estimateFileDiffBytes(file);
+    if (paths.length > 0 && spent + cost > maxBytes) break;
+    paths.push(file.path);
+    pathspecs.push(file.path);
+    if (file.previousPath) pathspecs.push(file.previousPath);
+    spent += cost;
+    index += 1;
+  }
+  return { pathspecs, paths, fromIndex, nextIndex: index < files.length ? index : null };
+}
+
+export interface DiffPageResult {
+  diff: string;
+  files: { path: string; additions: number; deletions: number; binary: boolean }[];
+  totalFiles: number;
+  totalAdditions: number;
+  totalDeletions: number;
+  pageFiles: string[];
+  cursor?: string;
+  nextCursor?: string;
+  hasMore: boolean;
+  truncated: boolean;
+  fileListTruncated?: boolean;
+  diffHash?: string;
+  note: string;
+}
+
+/**
+ * One plain sentence telling the caller what it is holding and how to get the
+ * rest. The model acts on this, so it states the next call rather than merely
+ * flagging that the result is partial.
+ */
+export function diffPageNote(state: {
+  shown: number;
+  total: number;
+  hasMore: boolean;
+  truncated: boolean;
+  fileListTruncated?: boolean;
+}): string {
+  const parts: string[] = [];
+  if (state.total === 0) return 'No changes.';
+  parts.push(
+    state.hasMore || state.shown < state.total
+      ? `Showing the diff for ${state.shown} of ${state.total} changed files; every changed file is listed in \`files\`.`
+      : `Showing the diff for all ${state.total} changed file${state.total === 1 ? '' : 's'}.`
+  );
+  if (state.hasMore) parts.push('Call again with `cursor: nextCursor` for the next page, or pass `paths` to jump to specific files.');
+  if (state.truncated) parts.push('This page\'s diff was cut short — usually one file too large to include whole. Read that file with forge_files_read, or re-request it alone with `paths`; paging will not return the missing part.');
+  if (state.fileListTruncated) parts.push('The change touches too many files to list them all; narrow with `paths`.');
+  return parts.join(' ');
+}
+
 function repositorySlug(repository: RepositoryRef): string {
   if (
     !/^[A-Za-z0-9_.-]{1,100}$/.test(repository.owner) ||
@@ -153,12 +414,91 @@ function assertForgeBranch(branch: string): void {
 }
 
 async function sha256Text(value: string): Promise<string> {
-  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+  const bytes = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  );
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+// Bound on a single provider.create(): a hung backend must surface as a
+// retryable error and let the workflow retry/compensate, not silently hang the
+// provision step until the whole workflow times out (and dies before its catch).
+const PROVIDER_CREATE_TIMEOUT_MS = 120_000;
+
+// Race a promise against a timeout that rejects with a retryable ForgeError. The
+// underlying promise keeps running (the SandboxProvider contract has no
+// cancellation), but the provision step fails fast instead of hanging. When the
+// timeout fires, `onTimeout` runs so the caller can best-effort reclaim any
+// resource the still-running promise may leak (e.g. an orphaned container).
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  phase: string,
+  onTimeout?: () => void
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => {
+        if (onTimeout) {
+          try {
+            onTimeout();
+          } catch {
+            // Cleanup is best-effort and must never mask the timeout rejection.
+          }
+        }
+        reject(
+          new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: 'Workspace provisioning timed out.',
+            retryable: true,
+            details: { stage: 'provision', phase, timeoutMs }
+          })
+        );
+      },
+      timeoutMs
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+
+// Routes sandbox work across backends (e.g. a self-hosted box vs Cloudflare).
+// `selectForCreate` decides which backend a new workspace lands on (with its own
+// health-check + fallback); `forKind` resolves the backend a workspace is
+// already bound to, read from its persisted provider.kind.
+export interface SandboxRouter {
+  readonly default: SandboxProvider;
+  selectForCreate(): Promise<SandboxProvider>;
+  forKind(kind: SandboxProvider['kind']): SandboxProvider;
+}
+
+// Wrap a single provider so the app can always talk to a router internally,
+// keeping the common (Cloudflare-only) case and existing tests unchanged.
+function singleProviderRouter(provider: SandboxProvider): SandboxRouter {
+  return {
+    default: provider,
+    async selectForCreate() {
+      return provider;
+    },
+    forKind() {
+      return provider;
+    }
+  };
+}
+
 export class ForgeApplicationService {
-  constructor(private readonly sandboxProvider: SandboxProvider) {}
+  private readonly router: SandboxRouter;
+
+  constructor(sandbox: SandboxProvider | SandboxRouter) {
+    this.router = 'selectForCreate' in sandbox ? sandbox : singleProviderRouter(sandbox);
+  }
+
+  private providerFor(record: WorkspaceRuntimeRecord): SandboxProvider {
+    return this.router.forKind(record.workspace.provider.kind);
+  }
 
   private restoreInput(record: WorkspaceRuntimeRecord): CreateSandboxInput {
     return {
@@ -261,7 +601,7 @@ export class ForgeApplicationService {
     code: 'FORGE_SNAPSHOT_INCOMPATIBLE' | 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
     message: string
   ): Promise<never> {
-    await this.sandboxProvider.destroy(record.providerId).catch(() => undefined);
+    await this.providerFor(record).destroy(record.providerId).catch(() => undefined);
     record.workspace.state = 'failed';
     record.workspace.failure = { stage: 'recovery', code, message, retryable: false };
     record.workspace.revision = nextRevision(record.workspace.revision);
@@ -311,7 +651,7 @@ export class ForgeApplicationService {
     let restored: SandboxHandle;
     let restoredManifest: NonNullable<WorkspaceCheckpoint['manifest']>;
     try {
-      restored = await this.sandboxProvider.restore(snapshot, this.restoreInput(record));
+      restored = await this.providerFor(record).restore(snapshot, this.restoreInput(record));
       restoredManifest = await this.workspaceManifest(restored);
     } catch (error) {
       return this.quarantineRecovery(
@@ -388,8 +728,10 @@ export class ForgeApplicationService {
         persistenceMode: input.persistence,
         runtimeProfile: input.runtimeProfile,
         provider: {
-          kind: this.sandboxProvider.kind,
-          version: this.sandboxProvider.version
+          // Provisional; provisionWorkspace() selects the real backend (with a
+          // health-check) and rewrites this before the sandbox is created.
+          kind: this.router.default.kind,
+          version: this.router.default.version
         },
         revision: 1,
         createdBy: input.actor,
@@ -407,33 +749,104 @@ export class ForgeApplicationService {
     };
   }
 
-  async provisionWorkspace(
+  private defaultCloneSource(record: WorkspaceRuntimeRecord): RepositoryCloneSource {
+    return { url: `https://github.com/${repositorySlug(record.workspace.repository)}.git` };
+  }
+
+  // Make pnpm available up front, otherwise `pnpm install` fails the whole
+  // bootstrap with "pnpm: command not found". corepack ships with node but
+  // isn't always on PATH in the sandbox image, so try it first and fall back
+  // to a global npm install (npm is always present). `command -v pnpm` short-
+  // circuits when it is already there. Best-effort — never fail provisioning.
+  private async preparePackageManager(handle: SandboxHandle): Promise<void> {
+    await handle.exec({
+      command:
+        'command -v pnpm >/dev/null 2>&1 || corepack prepare pnpm@9 --activate 2>/dev/null || npm install -g pnpm@9',
+      cwd: '/workspace',
+      timeoutMs: 120_000,
+      outputLimitBytes: 20_000,
+      sessionId: 'system',
+      networkPolicy: 'package_install'
+    }).catch(() => undefined);
+  }
+
+  // Clone the repository checkout into /workspace/repo. Shared by first-time
+  // provisioning and by in-place checkout recovery.
+  private async checkoutRepository(
     record: WorkspaceRuntimeRecord,
-    bootstrap: boolean,
-    onStateChange: (record: WorkspaceRuntimeRecord) => Promise<void> = async () => undefined,
-    cloneSource?: RepositoryCloneSource
-  ): Promise<WorkspaceRuntimeRecord> {
-    if (record.workspace.state === 'ready') return record;
-    if (!['requested', 'provisioning'].includes(record.workspace.state)) {
-      throw new ForgeError({
-        code: 'FORGE_WORKSPACE_CONFLICT',
-        message: `Workspace cannot be provisioned from ${record.workspace.state}.`,
-        retryable: false
+    handle: SandboxHandle,
+    cloneSource?: RepositoryCloneSource,
+    ref?: string
+  ): Promise<void> {
+    const source = cloneSource ?? this.defaultCloneSource(record);
+    const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
+    if (source.authorizationHeader) {
+      await handle.writeFile({
+        path: gitConfigPath,
+        content: `[http]\n\textraHeader = ${source.authorizationHeader}\n`
       });
     }
+    const clone = await handle.exec({
+      command: `git clone --depth 1 --no-tags --branch ${quoted(ref ?? record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
+      cwd: '/workspace',
+      timeoutMs: 180_000,
+      outputLimitBytes: 200_000,
+      sessionId: 'system',
+      networkPolicy: 'development',
+      environment: source.authorizationHeader
+        ? { GIT_CONFIG_GLOBAL: gitConfigPath, GIT_TERMINAL_PROMPT: '0' }
+        : { GIT_TERMINAL_PROMPT: '0' }
+    });
+    if (source.authorizationHeader) {
+      await handle.exec({
+        command: `rm -f ${quoted(gitConfigPath)}`,
+        cwd: '/workspace',
+        timeoutMs: 10_000,
+        outputLimitBytes: 1_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      }).catch(() => undefined);
+    }
+    if (clone.exitCode !== 0) {
+      throw new ForgeError({
+        code: 'FORGE_PROVIDER_UNAVAILABLE',
+        message: 'Repository clone failed.',
+        retryable: false,
+        details: {
+          stage: 'clone',
+          phase: 'checkout',
+          exitCode: clone.exitCode,
+          durationMs: clone.durationMs,
+          stderr: clone.stderr.slice(0, 4_000),
+          stdout: clone.stdout.slice(0, 1_000)
+        }
+      });
+    }
+  }
 
-    record.workspace.state = 'provisioning';
-    record.workspace.revision = nextRevision(record.workspace.revision);
-    record.workspace.updatedAt = new Date().toISOString();
-    await onStateChange(record);
-
+  // Snapshot-first fast path: let the caller restore a prior /workspace tar, then
+  // confirm the checkout is present and cheaply advance it to the requested ref.
+  // Returns true only when the restored checkout is usable; any failure returns
+  // false so the caller falls back to a full clone. Best-effort throughout.
+  private async restoreCheckout(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    source: RepositoryCloneSource,
+    restore: () => Promise<boolean>
+  ): Promise<boolean> {
     try {
-      const handle = await this.sandboxProvider.create(this.restoreInput(record));
-      await assertRuntimeProfile(handle, record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile']);
-
-      const source = cloneSource ?? {
-        url: `https://github.com/${repositorySlug(record.workspace.repository)}.git`
-      };
+      const restored = await restore();
+      if (!restored) return false;
+      const probe = await handle.exec({
+        command: 'test -d /workspace/repo/.git && echo forge_checkout_present || echo forge_checkout_missing',
+        cwd: '/workspace',
+        timeoutMs: 10_000,
+        outputLimitBytes: 1_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      if (!probe.stdout.includes('forge_checkout_present')) return false;
+      const ref = record.workspace.requestedRef;
       const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
       if (source.authorizationHeader) {
         await handle.writeFile({
@@ -441,11 +854,11 @@ export class ForgeApplicationService {
           content: `[http]\n\textraHeader = ${source.authorizationHeader}\n`
         });
       }
-      const clone = await handle.exec({
-        command: `git clone --depth 1 --branch ${quoted(record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
-        cwd: '/workspace',
-        timeoutMs: 180_000,
-        outputLimitBytes: 200_000,
+      const advance = await handle.exec({
+        command: `git fetch --depth 1 origin ${quoted(ref)} && git checkout ${quoted(ref)}`,
+        cwd: '/workspace/repo',
+        timeoutMs: 120_000,
+        outputLimitBytes: 100_000,
         sessionId: 'system',
         networkPolicy: 'development',
         environment: source.authorizationHeader
@@ -462,67 +875,294 @@ export class ForgeApplicationService {
           networkPolicy: 'deny_all'
         }).catch(() => undefined);
       }
-      if (clone.exitCode !== 0) {
-        throw new ForgeError({
-          code: 'FORGE_PROVIDER_UNAVAILABLE',
-          message: 'Repository clone failed.',
-          retryable: false,
-          details: { stage: 'clone', stderr: clone.stderr.slice(0, 2_000) }
-        });
+      return advance.exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Re-establish a missing repository checkout in place (used by self-heal after
+   * an idle recycle dropped /workspace/repo). Re-clones over any partial state
+   * and restores the workspace to `ready`. Bypasses the normal `handle` state
+   * gate because the record has been marked `failed` by the caller.
+   *
+   * A fresh clone can only ever recover what already reached the remote — any
+   * commit or edit that existed solely in the wiped container is gone. Two
+   * things follow: (1) clone the agent's actual currentBranch when one is
+   * tracked, not the workspace's original requestedRef, so a branch that was
+   * already fully pushed comes back as itself instead of silently dumping the
+   * agent back on main; (2) if hasUnpushedWork was true going into recovery,
+   * that local-only work cannot be a clone away — surface this loudly
+   * (FORGE_CHECKOUT_DATA_LOSS) instead of quietly reporting `ready` as if
+   * nothing happened, which is what let "Forge reverted my branch to main"
+   * go unnoticed until an agent stumbled onto it downstream.
+   */
+  async recoverCheckout(
+    record: WorkspaceRuntimeRecord,
+    cloneSource?: RepositoryCloneSource
+  ): Promise<void> {
+    const hadUnpushedWork = record.workspace.hasUnpushedWork === true;
+    const lostBranch = record.workspace.currentBranch;
+    const recoverRef = lostBranch ?? record.workspace.requestedRef;
+    const handle = await this.providerFor(record).get(record.providerId);
+    await handle.exec({
+      command: 'rm -rf /workspace/repo',
+      cwd: '/workspace',
+      timeoutMs: 30_000,
+      outputLimitBytes: 1_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    }).catch(() => undefined);
+    // Prefer recloning the branch the agent was actually on — it may already
+    // be fully pushed, in which case this is a lossless recovery. Fall back to
+    // the original ref only when that branch no longer exists upstream either
+    // (never pushed, or since deleted).
+    try {
+      await this.checkoutRepository(record, handle, cloneSource, recoverRef);
+    } catch (cloneError) {
+      if (recoverRef === record.workspace.requestedRef) throw cloneError;
+      await this.checkoutRepository(record, handle, cloneSource, record.workspace.requestedRef);
+    }
+    await this.preparePackageManager(handle);
+    const checkedAt = new Date().toISOString();
+    record.workspace.state = 'ready';
+    record.workspace.checkout = { healthy: true, checkedAt };
+    record.workspace.failure = undefined;
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = checkedAt;
+    if (hadUnpushedWork) {
+      // The clone above recovered at most what was on the remote branch — any
+      // commit or edit that only ever existed in the wiped container is gone.
+      // Reflect that in the record (hasUnpushedWork is now meaningless: there
+      // is no local-only work left to describe) and force the caller to
+      // surface the loss rather than treat this as an ordinary self-heal.
+      record.workspace.hasUnpushedWork = false;
+      record.workspace.dataLoss = {
+        at: checkedAt,
+        detail: `Checkout recovery re-cloned ${lostBranch ?? record.workspace.requestedRef} from the remote after the container was recycled. Any commits or edits that existed only in that container and were never pushed are gone.`
+      };
+      throw new ForgeError({
+        code: 'FORGE_CHECKOUT_DATA_LOSS',
+        message: `The workspace container was recycled and its checkout had to be re-cloned from the remote. Uncommitted or unpushed work on ${lostBranch ?? '(unknown branch)'} was lost — it is not recoverable. The workspace is usable again, but re-check forge_git_status and re-apply any lost changes.`,
+        retryable: false,
+        details: { workspaceId: record.workspace.id, lostBranch, recoveredRef: recoverRef }
+      });
+    }
+  }
+
+  async provisionWorkspace(
+    record: WorkspaceRuntimeRecord,
+    bootstrap: boolean,
+    onStateChange: (record: WorkspaceRuntimeRecord) => Promise<void> = async () => undefined,
+    cloneSource?: RepositoryCloneSource,
+    restore?: () => Promise<boolean>,
+    depsCache?: DepsCacheHooks
+  ): Promise<WorkspaceRuntimeRecord> {
+    if (record.workspace.state === 'ready') return record;
+    if (!['requested', 'provisioning'].includes(record.workspace.state)) {
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_CONFLICT',
+        message: `Workspace cannot be provisioned from ${record.workspace.state}.`,
+        retryable: false
+      });
+    }
+
+    record.workspace.state = 'provisioning';
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = new Date().toISOString();
+    await onStateChange(record);
+
+    try {
+      // Pick the backend now (self-hosted if healthy, else Cloudflare) and
+      // record it so every later operation on this workspace routes to the same
+      // place. Transparent to the caller — Forge chooses.
+      const provider = await this.router.selectForCreate();
+      record.workspace.provider = { kind: provider.kind, version: provider.version };
+      // container_create is deterministically keyed on record.providerId, so a
+      // create that times out (the underlying promise keeps running, since the
+      // SandboxProvider contract has no cancellation) can still finish and leave a
+      // live container at that exact id — orphaned, because provisioning aborts
+      // before anything records success. When the timeout fires we best-effort
+      // destroy(record.providerId): destroy is idempotent and no-ops on an id that
+      // never materialized, and the deterministic id also lets the reaper reclaim
+      // it later if this destroy is itself lost. See withTimeout's onTimeout hook.
+      const createPromise = provider.create({
+        providerId: record.providerId,
+        runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
+        labels: {
+          workspaceId: record.workspace.id,
+          tenantId: record.workspace.tenantId,
+          repository: repositorySlug(record.workspace.repository)
+        },
+        idleTimeout: '90s'
+      });
+      const handle = await withTimeout(
+        createPromise,
+        PROVIDER_CREATE_TIMEOUT_MS,
+        'container_create',
+        () => {
+          console.warn('forge_provision_create_timeout_orphan', {
+            workspaceId: record.workspace.id,
+            providerId: record.providerId,
+            provider: provider.kind
+          });
+          // Attach cleanup to the still-running create so we destroy whatever it
+          // eventually produces; also fire an immediate destroy in case the
+          // container is already up. Both are best-effort and must never throw.
+          createPromise
+            .then(
+              () => provider.destroy(record.providerId).catch(() => undefined),
+              () => undefined
+            )
+            .catch(() => undefined);
+          provider.destroy(record.providerId).catch(() => undefined);
+        }
+      );
+
+      const source = cloneSource ?? this.defaultCloneSource(record);
+
+      // Snapshot-first: if a prior /workspace tar can be restored, skip the ~75s
+      // clone+install and cheaply advance the warm checkout to the requested ref.
+      // Any failure falls through to the full clone+install path below.
+      const usedSnapshot = restore
+        ? await this.restoreCheckout(record, handle, source, restore)
+        : false;
+
+      if (usedSnapshot) {
+        await this.preparePackageManager(handle);
+      } else {
+        // Clone and pnpm pre-activation are independent — run them concurrently.
+        await Promise.all([
+          this.checkoutRepository(record, handle, source),
+          this.preparePackageManager(handle)
+        ]);
       }
 
       record.workspace.state = 'bootstrapping';
       record.workspace.revision = nextRevision(record.workspace.revision);
       record.workspace.updatedAt = new Date().toISOString();
       await onStateChange(record);
-      const detection = await detectProject(handle);
+
+      // One combined exec reads everything the post-clone happy path needs: HEAD,
+      // branch, project detection, and per-lockfile hashes — folding four container
+      // round-trips into a single one.
+      const probe = await handle.exec({
+        command: PROVISION_PROBE_COMMAND,
+        cwd: '/workspace/repo',
+        timeoutMs: 30_000,
+        outputLimitBytes: 100_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      // Guard the probe before trusting its output. A non-zero exit (or a probe
+      // that produced no HEAD) means the checkout is not actually in a usable
+      // state — flipping to `ready` here would strand the workspace at a hollow
+      // `ready` with an empty currentCommit. Throw a retryable provisioning error
+      // instead so the workflow's retry/compensation path runs (→ `failed` +
+      // slot release). Note: an empty branch is legitimate (a tag/SHA ref checks
+      // out in detached HEAD); currentBranch falls back to the requested ref below.
+      const parsedProbe = parseProvisionProbe(probe.stdout);
+      if (probe.exitCode !== 0 || !parsedProbe.head) {
+        throw new ForgeError({
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: 'Workspace provisioning probe failed.',
+          retryable: true,
+          details: {
+            stage: 'provision',
+            phase: 'probe',
+            exitCode: probe.exitCode,
+            truncated: probe.truncated,
+            reason: parsedProbe.head ? 'probe_exit_nonzero' : 'empty_head',
+            stderr: probe.stderr.slice(0, 4_000),
+            stdout: probe.stdout.slice(0, 1_000)
+          }
+        });
+      }
+      const detection = parsedProbe.detection;
       record.detection = detection;
 
-      if (bootstrap && detection.installCommand) {
-        const install = await handle.exec({
-          command: detection.installCommand,
+      // Per-repo dependency cache: when this was a cold provision (no
+      // per-workspace snapshot restored) and the deps cache is wired, try to warm
+      // node_modules from the shared, content-keyed cache before installing. A hit
+      // turns the install into a fast --prefer-offline verify; a miss populates the
+      // cache after a successful install. Best-effort — never blocks provisioning.
+      // The lockfile hash comes from the combined probe above (no extra exec).
+      let depsRestored = false;
+      let lockfileHash: string | null = null;
+      if (bootstrap && detection.installCommand && depsCache && !usedSnapshot) {
+        const lockfile = lockfileFor(detection.packageManager);
+        if (lockfile) {
+          const out = parsedProbe.lockfileHashes[lockfile];
+          if (out && /^[a-f0-9]{64}$/.test(out)) {
+            lockfileHash = out;
+            depsRestored = await depsCache.restore(out).catch(() => false);
+          }
+        }
+      }
+
+      // A successful deps-cache restore already placed node_modules keyed by this
+      // exact lockfile hash, so the install is redundant — skip it (the ~75s win).
+      // A corrupt/partial restore makes restoreDepsFromR2 return false, so we only
+      // skip when the warm tree really landed; otherwise the full install runs.
+      if (bootstrap && detection.installCommand && !depsRestored) {
+        const runInstall = (command: string) => handle.exec({
+          command,
           cwd: '/workspace/repo',
           timeoutMs: 600_000,
           outputLimitBytes: 500_000,
           sessionId: 'system',
           networkPolicy: 'package_install'
         });
+
+        let install = await runInstall(detection.installCommand);
+        let installedCommand = detection.installCommand;
+        // A --frozen-lockfile / --immutable install refuses when the lockfile is
+        // out of sync with the manifest (a classic `overrides` mismatch). Rather
+        // than fail the whole workspace, retry once with the lenient command so
+        // dependencies still land (it may update the lockfile in-tree).
+        if (install.exitCode !== 0 && detection.installFallbackCommand) {
+          const fallback = await runInstall(detection.installFallbackCommand);
+          if (fallback.exitCode === 0) {
+            install = fallback;
+            installedCommand = detection.installFallbackCommand;
+          } else {
+            install = fallback;
+          }
+        }
+
         if (install.exitCode !== 0) {
-          throw new ForgeError({
-            code: 'FORGE_PROVIDER_UNAVAILABLE',
-            message: 'Project bootstrap failed.',
-            retryable: false,
-            details: { stage: 'bootstrap', stderr: install.stderr.slice(0, 4_000) }
-          });
+          // Dependency install is best-effort: a bootstrap that cannot resolve
+          // deps must NOT sink the workspace. Bring it up `ready` with a
+          // non-fatal warning so the agent can inspect the checkout, fix the
+          // lockfile, and re-run the install — exactly what a human would do.
+          record.workspace.bootstrapWarning = {
+            phase: 'dependency_install',
+            message: 'Dependency install did not complete; the workspace is usable but node_modules may be incomplete.',
+            detail: (install.stderr || install.stdout || '').slice(0, 2_000)
+          };
+        } else {
+          // Cache miss: install just built node_modules from scratch — hand it to
+          // the shared cache so the next workspace of this repo+lockfile skips it.
+          // Only cache a tree built by the strict, lockfile-pinned command; a
+          // lenient fallback may not match the committed lockfile hash.
+          if (depsCache && !depsRestored && lockfileHash && installedCommand === detection.installCommand) {
+            depsCache.populate(lockfileHash);
+          }
         }
       }
 
-      const gitState = await handle.exec({
-        command: 'git rev-parse HEAD && git branch --show-current',
-        cwd: '/workspace/repo',
-        timeoutMs: 30_000,
-        outputLimitBytes: 10_000,
-        sessionId: 'system',
-        networkPolicy: 'deny_all'
-      });
-      const [currentCommit = '', currentBranch = ''] = gitState.stdout.trim().split('\n');
-      if (!currentCommit) {
-        throw new ForgeError({
-          code: 'FORGE_PROVIDER_UNAVAILABLE',
-          message: 'Forge could not resolve the initial Git commit for this workspace.',
-          retryable: true,
-          details: { stage: 'git_state' }
-        });
-      }
-      record.workspace.currentCommit = currentCommit;
+      // HEAD/branch were captured by the combined probe above; install never
+      // moves them, so this immutable identity is the task's durable base.
+      record.workspace.currentCommit = parsedProbe.head;
       // `git branch --show-current` is intentionally empty for a tag or a
       // detached commit.  Keep that fact rather than mislabelling the
       // requested ref as a checked-out branch.
-      record.workspace.currentBranch = currentBranch || undefined;
-      record.workspace.baseCommit = currentCommit;
-      record.workspace.initialHeadCommit = currentCommit;
-      record.workspace.lastPushedCommit = currentCommit;
-      record.workspace.lastPushedBranch = currentBranch || undefined;
+      record.workspace.currentBranch = parsedProbe.branch || undefined;
+      record.workspace.baseCommit = parsedProbe.head;
+      record.workspace.initialHeadCommit = parsedProbe.head;
+      record.workspace.lastPushedCommit = parsedProbe.head;
+      record.workspace.lastPushedBranch = parsedProbe.branch || undefined;
       await handle.writeFile({
         path: '/workspace/forge/workspace-id',
         content: `${record.workspace.id}\n`
@@ -537,20 +1177,26 @@ export class ForgeApplicationService {
       await onStateChange(record);
       return record;
     } catch (error) {
-      await this.sandboxProvider.destroy(record.providerId).catch(() => undefined);
+      await this.providerFor(record).destroy(record.providerId).catch(() => undefined);
       const forgeError = error instanceof ForgeError
         ? error
         : new ForgeError({
             code: 'FORGE_PROVIDER_UNAVAILABLE',
             message: 'Workspace provisioning failed.',
-            retryable: true
+            retryable: true,
+            details: {
+              stage: 'provision',
+              reason: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000),
+              cause: error instanceof Error ? error.name : 'unknown'
+            }
           });
       record.workspace.state = forgeError.retryable ? 'provisioning' : 'failed';
       record.workspace.failure = {
         stage: String(forgeError.details?.stage ?? 'provision'),
         code: forgeError.code,
         message: forgeError.message,
-        retryable: forgeError.retryable
+        retryable: forgeError.retryable,
+        ...(forgeError.details ? { details: forgeError.details as WorkspaceFailureDetails } : {})
       };
       record.workspace.revision = nextRevision(record.workspace.revision);
       record.workspace.updatedAt = new Date().toISOString();
@@ -606,7 +1252,11 @@ export class ForgeApplicationService {
         retryable: record.workspace.state === 'suspended'
       });
     }
-    const handle = await this.sandboxProvider.get(record.providerId);
+    const handle = await this.providerFor(record).get(record.providerId);
+    // Runtime records created before manifest-backed checkpoints (and focused
+    // unit/provider adapters) still use the checkout-health path below. New
+    // workspaces always have an active checkpoint before becoming ready.
+    if (!record.workspace.activeSnapshotId) return handle;
     const inspection = await this.inspectWorkspace(handle, record);
     if (inspection.state === 'matches') return handle;
     if (inspection.state === 'diverged') {
@@ -631,6 +1281,55 @@ export class ForgeApplicationService {
       message: 'Forge could not safely inspect the workspace filesystem; recovery was not attempted.',
       retryable: true,
       details: { workspaceId: record.workspace.id }
+    });
+  }
+
+  /**
+   * Confirm the checkout through the same fail-closed recovery path used by
+   * every repository operation. A missing mount is restored only from a
+   * manifest-backed checkpoint; ambiguous or divergent state is never
+   * overwritten.
+   */
+  async assertCheckoutPresent(record: WorkspaceRuntimeRecord): Promise<void> {
+    if (!['ready', 'busy'].includes(record.workspace.state)) return;
+    const checkedAt = new Date().toISOString();
+    if (record.workspace.activeSnapshotId) {
+      await this.handle(record);
+      record.workspace.checkout = { healthy: true, checkedAt };
+      return;
+    }
+    const handle = await this.providerFor(record).get(record.providerId);
+    const probe = await handle.exec({
+      command: 'test -d /workspace/repo/.git && echo forge_checkout_present || echo forge_checkout_missing',
+      cwd: '/workspace',
+      timeoutMs: 10_000,
+      outputLimitBytes: 1_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    });
+    if (probe.stdout.includes('forge_checkout_present')) {
+      record.workspace.checkout = { healthy: true, checkedAt };
+      return;
+    }
+    record.workspace.state = 'failed';
+    record.workspace.checkout = {
+      healthy: false,
+      checkedAt,
+      detail: 'The repository checkout at /workspace/repo is missing.'
+    };
+    record.workspace.failure = {
+      stage: 'checkout',
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      message: 'The repository checkout is no longer available in the workspace.',
+      retryable: false
+    };
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = checkedAt;
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_NOT_READY',
+      message: 'The repository checkout is missing; the workspace has been marked failed. Create a new workspace to continue.',
+      retryable: false,
+      details: { checkout: 'missing' }
     });
   }
 
@@ -682,6 +1381,7 @@ export class ForgeApplicationService {
       throw new ForgeError({ code: 'FORGE_FILE_CONFLICT', message: 'Forge shell and file APIs did not observe the same written bytes.', retryable: false, operationId: operation.operationId, details: { path: input.path, fileSha256: observed.sha256, shellSha256 } });
     }
     const worktree = await this.gitWorktree(record);
+    record.workspace.hasUnpushedWork = true;
     return { workspaceId: record.workspace.id, path: input.path, previousSha256: previous?.sha256 ?? null, resultingSha256: observed.sha256, shellSha256, sizeBytes: observed.sizeBytes, filesystemRevision: record.workspace.revision, gitWorktreeHash: worktree.hash, readAfterWriteVerified: true, operationId: operation.operationId };
   }
 
@@ -699,21 +1399,47 @@ export class ForgeApplicationService {
         workspaceRevision: record.workspace.revision
       };
     }
-    const value = await (await this.handle(record)).applyPatch(input);
+    const handle = await this.handle(record);
+    const value = await handle.applyPatch(input);
     if (!value.applied) {
+      const rejectedFiles = value.rejectedFiles ?? [];
       throw new ForgeError({
         code: 'FORGE_PATCH_REJECTED',
-        message: 'The patch could not be applied cleanly.',
+        message: rejectedFiles.length
+          ? `The patch did not apply to ${rejectedFiles.join(', ')}. The working tree was left unchanged. Re-read the file (forge_files_read) to get its current content and hash, then retry with a diff built against that content — or use forge_files_write to replace the whole file.`
+          : 'The patch could not be applied cleanly. The working tree was left unchanged. Re-read the file (forge_files_read) for its current content, then rebuild the diff — or use forge_files_write to replace the whole file.',
         retryable: false,
         operationId: operation.operationId,
-        details: { output: value.output.slice(0, 4_000) }
+        details: {
+          output: value.output.slice(0, 4_000),
+          ...(rejectedFiles.length ? { rejectedFiles } : {}),
+          rolledBack: value.rolledBack ?? true,
+          hint: 'forge_files_write replaces an entire file and avoids diff-context mismatches.'
+        }
       });
+    }
+    // Keep legacy/test provider adapters usable, but never label their result
+    // as verified when they do not implement Forge's complete filesystem
+    // consistency contract. Production providers implement both methods.
+    if (
+      typeof (handle as Partial<SandboxHandle>).readFile !== 'function' ||
+      typeof (handle as Partial<SandboxHandle>).exec !== 'function'
+    ) {
+      record.workspace.hasUnpushedWork = true;
+      return {
+        value,
+        workspaceId: record.workspace.id,
+        files: [],
+        readAfterWriteVerified: false,
+        operationId: operation.operationId,
+        workspaceRevision: record.workspace.revision
+      };
     }
     const files = await Promise.all(value.changedFiles.map(async (path) => {
       const absolutePath = path.startsWith('/workspace/') ? path : `/workspace/repo/${path}`;
-      const observed = await (await this.handle(record)).readFile({ path: absolutePath, maxBytes: 1_000_000 }).catch(() => undefined);
+      const observed = await handle.readFile({ path: absolutePath, maxBytes: 1_000_000 }).catch(() => undefined);
       if (!observed) {
-        const absent = await (await this.handle(record)).exec({ command: `test ! -e ${quoted(absolutePath)}`, cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' });
+        const absent = await handle.exec({ command: `test ! -e ${quoted(absolutePath)}`, cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' });
         if (absent.exitCode !== 0) throw new ForgeError({ code: 'FORGE_FILE_CONFLICT', message: 'Forge could not verify a deleted patch path.', retryable: false, operationId: operation.operationId, details: { path: absolutePath } });
         return { path: absolutePath, deleted: true };
       }
@@ -722,6 +1448,7 @@ export class ForgeApplicationService {
       return { path: absolutePath, resultingSha256: observed.sha256, shellSha256, sizeBytes: observed.sizeBytes };
     }));
     const worktree = await this.gitWorktree(record);
+    record.workspace.hasUnpushedWork = true;
     return {
       value,
       workspaceId: record.workspace.id,
@@ -736,7 +1463,7 @@ export class ForgeApplicationService {
   async checkpoint(record: WorkspaceRuntimeRecord, name?: string, existingHandle?: SandboxHandle) {
     const handle = existingHandle ?? await this.handle(record);
     const manifest = await this.workspaceManifest(handle);
-    const snapshot = await this.sandboxProvider.snapshot(record.providerId, {
+    const snapshot = await this.providerFor(record).snapshot(record.providerId, {
       name: name ?? `forge-${record.workspace.id}-${record.workspace.revision}`,
       ttlSeconds: 7 * 24 * 60 * 60,
       excludeGitignored: false
@@ -786,8 +1513,8 @@ export class ForgeApplicationService {
     record.workspace.revision = nextRevision(record.workspace.revision, expectedRevision);
     record.workspace.updatedAt = new Date().toISOString();
     try {
-      await this.sandboxProvider.destroy(record.providerId);
-      const restored = await this.sandboxProvider.restore(snapshot, restoreInput);
+      await this.providerFor(record).destroy(record.providerId);
+      const restored = await this.providerFor(record).restore(snapshot, restoreInput);
       const restoredManifest = await this.workspaceManifest(restored);
       if (
         restoredManifest.commit !== expectedManifest.commit ||
@@ -811,7 +1538,7 @@ export class ForgeApplicationService {
       const rollbackSnapshot = record.snapshots[rollback.snapshotId]!;
       const rollbackExpectedManifest = rollbackSnapshot.manifest;
       if (!rollbackExpectedManifest) throw error;
-      const recovered = await this.sandboxProvider.restore(rollbackSnapshot, restoreInput)
+      const recovered = await this.providerFor(record).restore(rollbackSnapshot, restoreInput)
         .then(async (rollbackHandle) => {
           const rollbackManifest = await this.workspaceManifest(rollbackHandle);
           if (
@@ -1053,7 +1780,7 @@ export class ForgeApplicationService {
   }
 
   async reconcileGitState(record: WorkspaceRuntimeRecord): Promise<boolean> {
-    let handle = await this.sandboxProvider.get(record.providerId);
+    const handle = await this.providerFor(record).get(record.providerId);
     const inspection = await this.inspectWorkspace(handle, record);
     if (inspection.state === 'mount_missing') {
       await this.recoverActiveCheckpoint(record);
@@ -1186,7 +1913,6 @@ export class ForgeApplicationService {
       workspaceId: record.workspace.id,
       repository: record.workspace.repository,
       raw: result.stdout,
-      branch: record.workspace.currentBranch,
       commit: record.workspace.currentCommit,
       baseCommit: record.workspace.baseCommit ?? null,
       filesystemRevision: record.workspace.revision,
@@ -1203,7 +1929,13 @@ export class ForgeApplicationService {
             line.startsWith('1 ') ||
             line.startsWith('2 ') ||
             line.startsWith('? ')
-        )
+        ),
+      // Promoted from the workspace record (not re-derived from `raw`) so an
+      // agent sees push/loss state at a glance instead of it being buried in
+      // porcelain output it has to parse itself.
+      branch: record.workspace.currentBranch ?? record.workspace.requestedRef,
+      hasUnpushedWork: record.workspace.hasUnpushedWork === true,
+      ...(record.workspace.dataLoss ? { dataLoss: record.workspace.dataLoss } : {})
     };
   }
 
@@ -1319,97 +2051,151 @@ export class ForgeApplicationService {
     return { content: `${manifest}\n\n__FORGE_PATCH__\n${result.stdout}`, proof };
   }
 
-  async gitDiff(record: WorkspaceRuntimeRecord, staged = false) {
-    const diff = await this.exec(record, {
-      command: staged
-        ? 'git diff --cached --no-ext-diff'
-        : 'git diff --no-ext-diff',
+  /**
+   * One page of a diff, selected by file. See the paging note above
+   * `parseNumstatZ` for why diffs are never returned whole.
+   *
+   * `selector` is whatever goes after `git diff` to choose the revisions
+   * ('' for the working tree, '--cached' for the index, 'base...HEAD' for the
+   * outgoing change). Callers must have validated it — it is interpolated into
+   * a shell command.
+   */
+  private async diffPage(
+    record: WorkspaceRuntimeRecord,
+    options: {
+      selector: string;
+      cursor?: number;
+      maxBytes: number;
+      maxFiles?: number;
+      paths?: string[];
+      withHash?: boolean;
+    }
+  ): Promise<DiffPageResult> {
+    const maxBytes = Math.max(2_000, Math.min(options.maxBytes, 400_000));
+    const maxFiles = options.maxFiles ?? 50;
+    const handle = await this.handle(record);
+    // `--literal-pathspecs`: a page's paths come back from git and go straight
+    //   out again as a pathspec, so a path containing `*` or `?` must not be
+    //   re-interpreted as a glob and pull in files this page never planned for.
+    // `core.quotePath=false`: otherwise git octal-escapes any non-ASCII path in
+    //   the diff HEADER ("a/caf\303\251.md") while `files` reports it verbatim,
+    //   so the two disagree about what the same file is called.
+    const git = `git -c core.quotePath=false --literal-pathspecs diff --no-ext-diff ${options.selector}`.trimEnd();
+
+    // Probe: the complete file list, plus (for the outgoing diff) a hash over
+    // the whole change. Both stay small regardless of how large the content is
+    // — numstat scales with file count, sha256sum emits 64 hex characters.
+    const probe = await handle.exec({
+      command: `sh -c ${quoted([
+        'echo ===FORGE_NUMSTAT===',
+        `${git} --numstat -z`,
+        'echo',
+        'echo ===FORGE_HASH===',
+        options.withHash ? `${git} --binary | sha256sum` : 'echo'
+      ].join('\n'))}`,
       cwd: '/workspace/repo',
-      timeoutMs: 30_000,
-      outputLimitBytes: 500_000,
+      timeoutMs: 60_000,
+      outputLimitBytes: 1_000_000,
+      sessionId: 'system',
       networkPolicy: 'deny_all'
     });
-    const names = await (await this.handle(record)).exec({
-      command: staged ? 'git diff --cached --name-status -z' : 'git diff --name-status -z',
-      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 200_000,
-      sessionId: 'system', networkPolicy: 'deny_all'
-    });
-    if (names.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not enumerate changed paths.', retryable: false });
-    const values = names.stdout.split('\0').filter(Boolean);
-    const files: Array<{ status: string; path: string; previousPath?: string }> = [];
-    for (let index = 0; index < values.length;) {
-      const status = values[index++];
-      const path = values[index++];
-      if (!status || !path) break;
-      if (status.startsWith('R') || status.startsWith('C')) {
-        const nextPath = values[index++];
-        if (nextPath) files.push({ status, previousPath: path, path: nextPath });
-      } else files.push({ status, path });
-    }
-    return { ...diff, files, workspaceId: record.workspace.id, branch: record.workspace.currentBranch, head: record.workspace.currentCommit, filesystemRevision: record.workspace.revision };
-  }
-
-  async assertDestroySafe(record: WorkspaceRuntimeRecord, cloneSource?: RepositoryCloneSource): Promise<void> {
-    await this.reconcileGitState(record);
-    const status = await this.gitStatus(record);
-    if (!status.clean || status.sync.state !== 'pushed') {
+    if (probe.exitCode !== 0) {
       throw new ForgeError({
-        code: 'FORGE_GIT_PUSH_BLOCKED',
-        message: 'Forge will not destroy a workspace with uncommitted or unpushed work. Reconcile, commit, and push the current Forge branch first.',
+        code: 'FORGE_GIT_DIRTY',
+        message: 'Forge could not read the diff.',
         retryable: false,
-        details: { clean: status.clean, sync: status.sync }
+        details: { stderr: probe.stderr.slice(0, 2_000) }
       });
     }
-    await this.assertRemoteRef(record, await this.handle(record), cloneSource);
+
+    const marker = (name: string): string => {
+      const start = probe.stdout.indexOf(name);
+      if (start === -1) return '';
+      const from = start + name.length;
+      const next = probe.stdout.indexOf('===FORGE_', from);
+      // Deliberately NOT trimmed: numstat records are NUL-terminated and the
+      // paths inside them may legitimately start or end with whitespace.
+      return probe.stdout.slice(from, next === -1 ? probe.stdout.length : next);
+    };
+
+    let files = parseNumstatZ(marker('===FORGE_NUMSTAT==='));
+    const diffHash = options.withHash ? (marker('===FORGE_HASH===').trim().split(/\s+/)[0] ?? '') : '';
+
+    // A file list long enough to hit the probe cap means `files` is short of
+    // the truth. Say so rather than quietly under-reporting the change.
+    const fileListTruncated = probe.truncated === true;
+
+    // An explicit `paths` request narrows the list before paging, so a caller
+    // can jump straight to one large file instead of paging up to it.
+    if (options.paths?.length) {
+      const wanted = new Set(options.paths);
+      files = files.filter((file) => wanted.has(file.path) || (file.previousPath !== undefined && wanted.has(file.previousPath)));
+    }
+
+    const totalAdditions = files.reduce((sum, file) => sum + file.additions, 0);
+    const totalDeletions = files.reduce((sum, file) => sum + file.deletions, 0);
+    const plan = planDiffPage(files, options.cursor ?? 0, maxBytes, maxFiles);
+
+    let diff = '';
+    let truncated = false;
+    if (plan.pathspecs.length > 0) {
+      // Headroom above the planner's budget so a slightly-underestimated page
+      // still arrives whole; only a genuinely oversized file gets cut.
+      const page = await handle.exec({
+        command: `${git} --binary -- ${plan.pathspecs.map(quoted).join(' ')}`,
+        cwd: '/workspace/repo',
+        timeoutMs: 60_000,
+        outputLimitBytes: maxBytes + 64_000,
+        sessionId: 'system',
+        networkPolicy: 'deny_all'
+      });
+      if (page.exitCode !== 0) {
+        throw new ForgeError({
+          code: 'FORGE_GIT_DIRTY',
+          message: 'Forge could not read the diff for this page of files.',
+          retryable: false,
+          details: { stderr: page.stderr.slice(0, 2_000) }
+        });
+      }
+      diff = page.stdout;
+      truncated = page.truncated === true;
+    }
+
+    const hasMore = plan.nextIndex !== null;
+    return {
+      diff,
+      files: files.map(({ path, additions, deletions, binary }) => ({ path, additions, deletions, binary })),
+      totalFiles: files.length,
+      totalAdditions,
+      totalDeletions,
+      pageFiles: plan.paths,
+      ...(plan.fromIndex > 0 ? { cursor: String(plan.fromIndex) } : {}),
+      ...(hasMore ? { nextCursor: String(plan.nextIndex) } : {}),
+      hasMore,
+      truncated,
+      ...(fileListTruncated ? { fileListTruncated } : {}),
+      ...(options.withHash ? { diffHash } : {}),
+      note: diffPageNote({
+        shown: plan.paths.length,
+        total: files.length,
+        hasMore,
+        truncated,
+        fileListTruncated
+      })
+    };
   }
 
-  private async assertRemoteRef(
+  async gitDiff(
     record: WorkspaceRuntimeRecord,
-    handle: SandboxHandle,
-    cloneSource?: RepositoryCloneSource
-  ): Promise<void> {
-    const branch = record.workspace.lastPushedBranch;
-    const commit = record.workspace.lastPushedCommit;
-    if (!branch || !commit) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Forge cannot prove a remote branch without a recorded pushed branch and commit.', retryable: false });
-    const configPath = `/workspace/tmp/gitconfig-remote-${record.workspace.id}`;
-    const remoteTarget = cloneSource ? quoted(cloneSource.url) : 'origin';
-    if (cloneSource?.authorizationHeader) {
-      await handle.writeFile({
-        path: configPath,
-        content: `[http]\n\textraHeader = ${cloneSource.authorizationHeader}\n`
-      });
-    }
-    let remote;
-    try {
-      remote = await handle.exec({
-        command: `git ls-remote --exit-code ${remoteTarget} ${quoted(`refs/heads/${branch}`)}`,
-        cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 10_000,
-        sessionId: 'system', networkPolicy: 'development',
-        environment: cloneSource?.authorizationHeader
-          ? { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
-          : { GIT_TERMINAL_PROMPT: '0' }
-      });
-    } finally {
-      if (cloneSource?.authorizationHeader) {
-        await handle.exec({
-          command: `rm -f ${quoted(configPath)}`,
-          cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000,
-          sessionId: 'system', networkPolicy: 'deny_all'
-        }).catch(() => undefined);
-      }
-    }
-    if (!remote) {
-      throw new ForgeError({
-        code: 'FORGE_GIT_PUSH_BLOCKED',
-        message: 'Forge could not verify the remote branch with a fresh repository-scoped capability.',
-        retryable: true,
-        details: { branch, expectedCommit: commit }
-      });
-    }
-    const remoteCommit = remote.stdout.trim().split(/\s+/u)[0] ?? '';
-    if (remote.exitCode !== 0 || remote.truncated || remoteCommit !== commit) {
-      throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Forge will not destroy a workspace until the remote branch is proven to resolve to the recorded pushed commit.', retryable: false, details: { branch, expectedCommit: commit, observedRemoteCommit: remoteCommit || null, truncated: remote.truncated, stderr: remote.stderr.slice(0, 2_000) } });
-    }
+    staged = false,
+    paging: { cursor?: number; maxBytes?: number; paths?: string[] } = {}
+  ) {
+    return this.diffPage(record, {
+      selector: staged ? '--cached' : '',
+      cursor: paging.cursor,
+      maxBytes: paging.maxBytes ?? 64_000,
+      paths: paging.paths
+    });
   }
 
   async gitBranchCreate(
@@ -1429,6 +2215,7 @@ export class ForgeApplicationService {
     });
     if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the branch.', retryable: false });
     await this.adoptOwnedGitTransition(record, handle, { branch });
+    record.workspace.hasUnpushedWork = true;
     return { branch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -1445,14 +2232,14 @@ export class ForgeApplicationService {
     const operation = this.beginMutation(record, input.expectedRevision, input.idempotencyKey);
     if (operation.replay) return { replay: true, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
     const handle = await this.handle(record);
-    const stage = await handle.exec({
-      command: `git add -- ${paths.map(quoted).join(' ')}`,
-      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 50_000,
-      sessionId: 'system', networkPolicy: 'deny_all'
-    });
-    if (stage.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not stage the selected files.', retryable: false });
+    // Fuse stage + commit + identity into a single container round-trip. The
+    // `&&` chain preserves ordering and short-circuits, so a failed stage still
+    // surfaces before the commit runs. rev-parse is last in the chain, so the
+    // real SHA is the final bare object-name line of stdout.
     const commit = await handle.exec({
-      command: `git commit -m ${quoted(input.message.trim())}`,
+      command: `sh -c ${quoted(
+        `git add -- ${paths.map(quoted).join(' ')} && git commit -m ${quoted(input.message.trim())} && git rev-parse HEAD && git branch --show-current`
+      )}`,
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 100_000,
       sessionId: 'system', networkPolicy: 'deny_all',
       environment: {
@@ -1463,23 +2250,124 @@ export class ForgeApplicationService {
       }
     });
     if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
-    await this.adoptOwnedGitTransition(record, handle, { branch: record.workspace.currentBranch });
+    // Parse HEAD defensively instead of blindly taking the last stdout line: a
+    // commit-msg / post-commit hook that echoes to stdout runs DURING `git commit`
+    // (before rev-parse), so the genuine object name is the LAST line that is a
+    // bare 40-hex (or 64-hex, sha256 repos) object name. Require a clean match or
+    // fail loudly — never persist a hook-poisoned currentCommit.
+    const head = commit.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(line))
+      .pop();
+    if (!head) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_DIRTY',
+        message: 'Forge created the commit but could not resolve a valid HEAD SHA.',
+        retryable: false,
+        details: { stderr: commit.stderr.slice(0, 2_000) }
+      });
+    }
+    const outputLines = commit.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+    const tail = outputLines.at(-1);
+    const observedBranch = tail === head ? record.workspace.currentBranch : tail;
+    if (observedBranch !== record.workspace.currentBranch) {
+      this.noteGitDivergence(record, { commit: head, branch: observedBranch });
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
+        message: 'Forge commit completed with an unexpected checked-out branch.',
+        retryable: false,
+        details: {
+          commit: head,
+          expectedBranch: record.workspace.currentBranch ?? null,
+          observedBranch: observedBranch ?? null
+        }
+      });
+    }
+    record.workspace.currentCommit = head;
+    record.workspace.currentBranch = observedBranch;
+    record.lastGitDivergence = undefined;
+    record.workspace.updatedAt = new Date().toISOString();
+    record.workspace.hasUnpushedWork = true;
     return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
-  async gitOutgoingDiff(record: WorkspaceRuntimeRecord, base: string) {
+  /**
+   * The outgoing change, one page of files at a time.
+   *
+   * `diffHash` is computed inside the container over the COMPLETE diff, so it
+   * is identical on every page and is safe to carry into a push from any of
+   * them. It previously hashed the Worker-side stdout, which the exec cap
+   * silently truncated at 1 MB — meaning a large change could be approved and
+   * pushed against a hash of only its first megabyte.
+   */
+  async gitOutgoingDiff(
+    record: WorkspaceRuntimeRecord,
+    base: string,
+    paging: { cursor?: number; maxBytes?: number; paths?: string[] } = {}
+  ) {
+    assertRef(base);
+    if (base !== record.workspace.requestedRef) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Forge only compares and submits against the immutable base ref recorded when this workspace was created.',
+        retryable: false,
+        details: {
+          requestedBase: record.workspace.requestedRef,
+          providedBase: base,
+          baseCommit: record.workspace.baseCommit ?? null
+        }
+      });
+    }
+    const immutableBase = record.workspace.baseCommit ?? base;
+    const page = await this.diffPage(record, {
+      selector: `${quoted(immutableBase)}...HEAD`,
+      cursor: paging.cursor,
+      maxBytes: paging.maxBytes ?? 64_000,
+      paths: paging.paths,
+      withHash: true
+    });
+    return { ...page, branch: record.workspace.currentBranch, base, baseCommit: immutableBase };
+  }
+
+  /**
+   * Every path in the outgoing change — complete, cheap, and independent of
+   * paging. Push-envelope checks must use this rather than parsing whatever
+   * hunks a page happened to carry, or a file outside the envelope's allowed
+   * paths could ride along unnoticed simply by sorting after the page cut.
+   */
+  async gitOutgoingPaths(record: WorkspaceRuntimeRecord, base: string): Promise<string[]> {
     assertRef(base);
     if (base !== record.workspace.requestedRef) {
       throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Forge only compares and submits against the immutable base ref recorded when this workspace was created.', retryable: false, details: { requestedBase: record.workspace.requestedRef, providedBase: base, baseCommit: record.workspace.baseCommit ?? null } });
     }
     const immutableBase = record.workspace.baseCommit ?? base;
     const result = await (await this.handle(record)).exec({
-      command: `git diff --no-ext-diff --binary ${quoted(immutableBase)}...HEAD`,
+      command: `git -c core.quotePath=false --literal-pathspecs diff --no-ext-diff --name-only -z ${quoted(immutableBase)}...HEAD`,
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 1_000_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (result.exitCode !== 0 || result.truncated) throw new ForgeError({ code: 'FORGE_OUTPUT_TRUNCATED', message: 'Forge could not calculate a complete outgoing change for approval.', retryable: false, details: { truncated: result.truncated } });
-    return { diff: result.stdout, diffHash: await sha256Text(result.stdout), branch: record.workspace.currentBranch, baseRef: base, baseCommit: immutableBase };
+    if (result.exitCode !== 0) {
+      throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not list the outgoing paths.', retryable: false });
+    }
+    if (result.truncated) {
+      // Fail closed: a partial path list would let an envelope check pass on
+      // files it never saw.
+      throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'The outgoing change touches too many files to verify against a push envelope.', retryable: false });
+    }
+    return result.stdout.split('\0').map((path) => path.replace(/^[\r\n]+/, '')).filter(Boolean);
+  }
+
+  // True iff `ancestor` is an ancestor of (or equal to) HEAD — i.e. HEAD only
+  // ever moved forward from it, no rewritten history. Used to gate push-
+  // envelope auto-approval: an envelope only ever covers a fast-forward.
+  async gitIsAncestor(record: WorkspaceRuntimeRecord, ancestor: string): Promise<boolean> {
+    const result = await (await this.handle(record)).exec({
+      command: `git merge-base --is-ancestor ${quoted(ancestor)} HEAD`,
+      cwd: '/workspace/repo', timeoutMs: 15_000, outputLimitBytes: 1_000,
+      sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    return result.exitCode === 0;
   }
 
   async gitPush(
@@ -1520,13 +2408,163 @@ export class ForgeApplicationService {
     record.workspace.lastPushedCommit = record.workspace.currentCommit;
     record.workspace.lastPushedBranch = input.branch;
     record.workspace.updatedAt = new Date().toISOString();
+    // Work is now pushed to GitHub — safe for the reaper to reclaim on idle.
+    record.workspace.hasUnpushedWork = false;
     return { branch: input.branch, commit: record.workspace.currentCommit, diffHash: outgoing.diffHash, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+  }
+
+  /**
+   * Best-effort safety push, run by the idle reaper immediately before it
+   * tears down a dirty workspace. Pushes HEAD to a Forge-owned backup ref
+   * (forge/backup/<workspaceId>, never a real branch a human would build on
+   * or PR from) so real work has a durable copy on GitHub instead of relying
+   * solely on the tar-to-R2 snapshot — a git push moves only the object
+   * delta (fast, small, and its exit code is a real success/failure signal),
+   * where a full-workspace tar of node_modules etc. is slow, large, and can
+   * silently come back empty under the same resource pressure that's often
+   * WHY the workspace went idle-and-unreachable in the first place. No
+   * approval gate: this never reaches a mergeable location, it only exists
+   * so data isn't gone forever if the container is destroyed a moment later.
+   */
+  /**
+   * Force-push the workspace HEAD to an arbitrary Forge-owned ref.
+   *
+   * Shared by two callers with the same shape but different intent: the idle
+   * reaper's last-gasp backup before destroying a dirty workspace, and staging a
+   * submission so it can outlive the workspace while it waits for a human to
+   * approve it. Never targets a ref the user would treat as theirs — callers pass
+   * a `forge/`-namespaced ref — so it needs no approval of its own.
+   */
+  async pushToRef(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource,
+    ref: string
+  ): Promise<{ pushed: boolean; ref?: string; reason?: string }> {
+    if (!record.workspace.currentBranch) return { pushed: false, reason: 'no branch checked out' };
+    if (!source.authorizationHeader) return { pushed: false, reason: 'no GitHub App authorization' };
+    const configPath = `/workspace/tmp/gitconfig-push-${record.workspace.id}`;
+    try {
+      const handle = await this.handle(record);
+      await handle.writeFile({ path: configPath, content: `[http]\n\textraHeader = ${source.authorizationHeader}\n` });
+      try {
+        const result = await handle.exec({
+          command: `git push --force ${quoted(source.url)} HEAD:${quoted(`refs/heads/${ref}`)}`,
+          cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 50_000,
+          sessionId: 'system', networkPolicy: 'development',
+          environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+        });
+        return result.exitCode === 0
+          ? { pushed: true, ref }
+          : { pushed: false, reason: result.stderr.slice(0, 500) };
+      } finally {
+        await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
+      }
+    } catch (error) {
+      return { pushed: false, reason: error instanceof Error ? error.message.slice(0, 500) : 'unknown' };
+    }
+  }
+
+  async backupUnpushedWork(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource
+  ): Promise<{ pushed: boolean; ref?: string; reason?: string }> {
+    if (!record.workspace.hasUnpushedWork || !record.workspace.currentBranch) {
+      return { pushed: false, reason: 'nothing to back up' };
+    }
+    return this.pushToRef(record, source, `forge/backup/${record.workspace.id}`);
+  }
+
+  async assertDestroySafe(record: WorkspaceRuntimeRecord, cloneSource?: RepositoryCloneSource): Promise<void> {
+    await this.reconcileGitState(record);
+    const status = await this.gitStatus(record);
+    if (!status.clean || status.sync.state !== 'pushed') {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Forge will not destroy a workspace with uncommitted or unpushed work. Reconcile, commit, and push the current Forge branch first.',
+        retryable: false,
+        details: { clean: status.clean, sync: status.sync }
+      });
+    }
+    await this.assertRemoteRef(record, await this.handle(record), cloneSource);
+  }
+
+  private async assertRemoteRef(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    cloneSource?: RepositoryCloneSource
+  ): Promise<void> {
+    const branch = record.workspace.lastPushedBranch;
+    const commit = record.workspace.lastPushedCommit;
+    if (!branch || !commit) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Forge cannot prove a remote branch without a recorded pushed branch and commit.',
+        retryable: false
+      });
+    }
+    const configPath = `/workspace/tmp/gitconfig-remote-${record.workspace.id}`;
+    const remoteTarget = cloneSource ? quoted(cloneSource.url) : 'origin';
+    if (cloneSource?.authorizationHeader) {
+      await handle.writeFile({
+        path: configPath,
+        content: `[http]\n\textraHeader = ${cloneSource.authorizationHeader}\n`
+      });
+    }
+    let remote;
+    try {
+      remote = await handle.exec({
+        command: `git ls-remote --exit-code ${remoteTarget} ${quoted(`refs/heads/${branch}`)}`,
+        cwd: '/workspace/repo',
+        timeoutMs: 60_000,
+        outputLimitBytes: 10_000,
+        sessionId: 'system',
+        networkPolicy: 'development',
+        environment: cloneSource?.authorizationHeader
+          ? { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+          : { GIT_TERMINAL_PROMPT: '0' }
+      });
+    } finally {
+      if (cloneSource?.authorizationHeader) {
+        await handle.exec({
+          command: `rm -f ${quoted(configPath)}`,
+          cwd: '/workspace',
+          timeoutMs: 10_000,
+          outputLimitBytes: 1_000,
+          sessionId: 'system',
+          networkPolicy: 'deny_all'
+        }).catch(() => undefined);
+      }
+    }
+    if (!remote) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Forge could not verify the remote branch with a fresh repository-scoped capability.',
+        retryable: true,
+        details: { branch, expectedCommit: commit }
+      });
+    }
+    const remoteCommit = remote.stdout.trim().split(/\s+/u)[0] ?? '';
+    if (remote.exitCode !== 0 || remote.truncated || remoteCommit !== commit) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Forge will not destroy a workspace until the remote branch is proven to resolve to the recorded pushed commit.',
+        retryable: false,
+        details: {
+          branch,
+          expectedCommit: commit,
+          observedRemoteCommit: remoteCommit || null,
+          truncated: remote.truncated,
+          stderr: remote.stderr.slice(0, 2_000)
+        }
+      });
+    }
   }
 
   requestDestroy(
     record: WorkspaceRuntimeRecord,
     expectedRevision: number | undefined,
-    idempotencyKey: string
+    idempotencyKey: string,
+    force = false
   ) {
     const prior = record.idempotency[idempotencyKey];
     if (prior) {
@@ -1536,6 +2574,18 @@ export class ForgeApplicationService {
         replay: true,
         state: record.workspace.state
       };
+    }
+    // A committed-but-unpushed forge/ branch only survives teardown via a
+    // best-effort R2 snapshot (if enabled) or not at all — an idle reap or an
+    // explicit destroy can otherwise discard real work with no trace. Refuse
+    // unless the caller explicitly accepts the loss.
+    if (record.workspace.hasUnpushedWork && !force) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: 'This workspace has committed changes that were never pushed. Push the forge/ branch first, or pass force to destroy anyway and accept the loss.',
+        retryable: false,
+        details: { workspaceId: record.workspace.id, branch: record.workspace.currentBranch }
+      });
     }
     const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
     record.workspace.state = 'destroying';
@@ -1559,7 +2609,7 @@ export class ForgeApplicationService {
         retryable: false
       });
     }
-    const handle = await this.sandboxProvider.get(record.providerId);
+    const handle = await this.providerFor(record).get(record.providerId);
     const git = await handle.exec({
       command: 'git status --porcelain=v2 --branch && git rev-parse HEAD && git branch --show-current',
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 200_000,
@@ -1584,7 +2634,7 @@ export class ForgeApplicationService {
     for (const processId of Object.keys(record.processes) as ProcessId[]) {
       await handle.stopProcess(processId).catch(() => undefined);
     }
-    await this.sandboxProvider.destroy(record.providerId);
+    await this.providerFor(record).destroy(record.providerId);
     record.workspace.state = 'destroyed';
     record.workspace.revision = nextRevision(record.workspace.revision);
     record.workspace.updatedAt = new Date().toISOString();

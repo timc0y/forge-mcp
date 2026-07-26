@@ -49,6 +49,20 @@ function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function parseRejectedPatchFiles(output: string): string[] {
+  const files = new Set<string>();
+  for (const line of output.split('\n')) {
+    const failed = line.match(/patch failed:\s*(.+?):\d+/);
+    if (failed?.[1]) {
+      files.add(failed[1].trim());
+      continue;
+    }
+    const doesNotApply = line.match(/error:\s*(.+?):\s*patch does not apply/);
+    if (doesNotApply?.[1]) files.add(doesNotApply[1].trim());
+  }
+  return [...files];
+}
+
 function safeName(value: string): string {
   if (!/^[a-z0-9][a-z0-9-]{2,62}$/.test(value)) {
     throw new Error('Invalid local Docker sandbox identifier.');
@@ -315,6 +329,25 @@ class LocalDockerHandle implements SandboxHandle {
   }
 
   async applyPatch(input: PatchInput): Promise<PatchResult> {
+    const check = await this.exec({
+      command: 'git apply --check --whitespace=nowarn -',
+      cwd: input.cwd,
+      timeoutMs: 60_000,
+      stdin: input.patch,
+      outputLimitBytes: 100_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    });
+    if (check.exitCode !== 0) {
+      const output = check.stderr || check.stdout;
+      return {
+        applied: false,
+        output,
+        changedFiles: [],
+        rejectedFiles: parseRejectedPatchFiles(output),
+        rolledBack: true
+      };
+    }
     const result = await this.exec({
       command: 'git apply --whitespace=nowarn -',
       cwd: input.cwd,
@@ -324,6 +357,16 @@ class LocalDockerHandle implements SandboxHandle {
       sessionId: 'system',
       networkPolicy: 'deny_all'
     });
+    if (result.exitCode !== 0) {
+      const output = result.stderr || result.stdout;
+      return {
+        applied: false,
+        output,
+        changedFiles: [],
+        rejectedFiles: parseRejectedPatchFiles(output),
+        rolledBack: true
+      };
+    }
     const changed = await this.exec({
       command: 'git diff --name-only',
       cwd: input.cwd,
@@ -333,7 +376,7 @@ class LocalDockerHandle implements SandboxHandle {
       networkPolicy: 'deny_all'
     });
     return {
-      applied: result.exitCode === 0,
+      applied: true,
       output: result.stderr || result.stdout,
       changedFiles: changed.stdout.split('\n').filter(Boolean)
     };

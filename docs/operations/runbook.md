@@ -8,23 +8,35 @@ pnpm install --frozen-lockfile
 pnpm check
 pnpm cf:typegen
 pnpm --filter @forge/edge-gateway exec wrangler deploy --dry-run \
-  --config ../../infra/wrangler/forge.development.jsonc
+  --config ../../infra/wrangler/forge.jsonc
 ```
 
 A dry run proves bundling and configuration shape only. It does not prove Sandbox allocation, Browser Run, OAuth, D1, R2, Workflows or preview routing.
 
-## Shared development deployment
+## Deployment
 
-1. Create isolated development D1 and R2 resources and replace placeholder IDs.
+Forge has a single deployable environment defined by `infra/wrangler/forge.jsonc`.
+Production is the top-level environment; development uses the same file with
+`--env development`.
+
+```bash
+pnpm deploy
+```
+
+Local iteration runs the same config with an auth-relaxed identity:
+
+```bash
+pnpm dev
+```
+
+1. Ensure the isolated development and production D1, artifact R2 and backup R2 resources exist and match the IDs and names in `forge.jsonc`.
 2. configure `FORGE_DEV_AUTH_TOKEN`, `FORGE_CAPABILITY_SIGNING_KEY`, `FORGE_CREDENTIAL_ENCRYPTION_KEY`, `FORGE_INTERNAL_PREVIEW_KEY`, `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` as Worker secrets. The R2 pair must have **Object Read & Write** S3 permission scoped to that environment's backup bucket;
-3. deploy the development Worker and apply D1 migrations;
-4. invoke `/health` and the RFC 9728 metadata endpoint;
+3. deploy the Worker and apply D1 migrations;
+4. invoke `/health` and `/ready`, plus the RFC 9728 metadata endpoint;
 5. run `pnpm acceptance:cloud` through a real MCP client. It waits past the 90-second Sandbox idle limit, verifies a manifest-backed restore, and requires `/ready` to report the resulting recovery evidence. Before a production release, also run it against an installed private repository: `FORGE_ACCEPTANCE_REPOSITORY=owner/private-repo FORGE_ACCEPTANCE_REQUIRE_GITHUB_APP=true pnpm acceptance:cloud`;
 6. capture workflow IDs, workspace state transitions, screenshot artifact hash and teardown evidence;
 7. verify the preview and capability fail after destruction;
-8. record the deployment date, Worker version, Sandbox SDK version and Cloudflare account/environment in the PR evidence.
-
-Production deployment is blocked until the egress-policy spike demonstrates private-range and metadata blocking in the real Sandbox environment.
+8. record the deployment date, Worker version, Sandbox SDK version and Cloudflare account in the PR evidence.
 
 ## GitHub App access
 

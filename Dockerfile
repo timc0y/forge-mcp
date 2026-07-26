@@ -10,6 +10,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
   && apt-get install -y --no-install-recommends nodejs \
   && npm install --global corepack@0.34.1 \
   && corepack enable \
+  && corepack prepare pnpm@10.13.1 --activate \
+  && corepack prepare yarn@stable --activate \
   && node --version \
   && corepack --version \
   && rm -rf /var/lib/apt/lists/*

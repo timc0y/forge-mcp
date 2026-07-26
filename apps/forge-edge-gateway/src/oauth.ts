@@ -1,6 +1,8 @@
 import { SignJWT, jwtVerify } from 'jose';
 import type { Env } from './env';
-import { getWebSession, type UserRow } from './github';
+import { getWebSession, hasForgeAccess, type UserRow } from './github';
+import { acceptedIssuers } from './auth';
+import { page } from './ui';
 
 const ACCESS_TOKEN_SECONDS = 60 * 60;
 const REFRESH_TOKEN_SECONDS = 60 * 60 * 24 * 30;
@@ -80,7 +82,10 @@ function constantTimeEqual(leftValue: string, rightValue: string): boolean {
 }
 
 function signingKey(env: Env): Uint8Array {
-  return new TextEncoder().encode(env.FORGE_CAPABILITY_SIGNING_KEY);
+  // OAuth session (access/refresh) JWTs are signed with a secret distinct from
+  // the capability signing key, so a leak of one cannot forge the other. Falls
+  // back to the capability key until the operator sets FORGE_SESSION_SIGNING_KEY.
+  return new TextEncoder().encode(env.FORGE_SESSION_SIGNING_KEY ?? env.FORGE_CAPABILITY_SIGNING_KEY);
 }
 
 function redirectUris(row: OAuthClientRow): string[] {
@@ -94,15 +99,29 @@ function redirectUris(row: OAuthClientRow): string[] {
   }
 }
 
-function redirectUriAllowed(value: string, env: Env): boolean {
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
+
+export function redirectUriAllowed(value: string, env: Env): boolean {
   try {
     const url = new URL(value);
-    const allowed = (env.FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS ?? 'chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1')
+    // Loopback / localhost redirect URIs are a DCR abuse vector, so they are
+    // permitted only outside production. In production they are rejected
+    // outright and stripped from the allowlist even if explicitly configured.
+    const isProduction = env.FORGE_ENVIRONMENT === 'production';
+    const defaultHosts = isProduction
+      ? 'chatgpt.com,openai.com,claude.ai,anthropic.com'
+      : 'chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1';
+    const allowed = (env.FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS ?? defaultHosts)
       .split(',')
       .map((item) => item.trim().toLowerCase())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((host) => !isProduction || !LOOPBACK_HOSTS.includes(host));
     const hostname = url.hostname.toLowerCase();
-    if (url.protocol !== 'https:' && hostname !== 'localhost' && hostname !== '127.0.0.1') return false;
+    const isLoopback = LOOPBACK_HOSTS.includes(hostname);
+    if (isProduction && isLoopback) return false;
+    // http is tolerated only for non-production loopback callbacks; everything
+    // else must be https.
+    if (url.protocol !== 'https:' && !(isLoopback && !isProduction)) return false;
     return allowed.some((host) => hostname === host || hostname.endsWith(`.${host}`));
   } catch {
     return false;
@@ -192,6 +211,7 @@ function tokenResponse(accessToken: string, refreshToken: string): Response {
   });
 }
 
+
 export function authorizationServerMetadata(env: Env): Record<string, unknown> {
   const origin = env.FORGE_PUBLIC_ORIGIN;
   return {
@@ -248,14 +268,20 @@ function authorizeForm(url: URL, user?: UserRow, error?: string): Response {
   const fields = ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'code_challenge', 'code_challenge_method']
     .map((key) => `<input type="hidden" name="${key}" value="${escapeHtml(url.searchParams.get(key) ?? '')}">`)
     .join('');
-  return html(`<!doctype html>
-<meta charset="utf-8">
-<title>Authorize Forge MCP</title>
-<style>:root{--bg:#f2f4f1;--surface:#fff;--ink:#151a16;--muted:#5c665f;--line:#cfd5d0;--accent:#23784b}*{box-sizing:border-box}body{width:min(100% - 2.5rem,32rem);margin:0 auto;padding:clamp(3rem,10vw,6rem) 0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}h1{margin:0 0 .75rem;font-size:clamp(2.2rem,8vw,3.25rem);line-height:1;letter-spacing:-.035em}p{color:var(--muted);text-wrap:pretty}form{margin-top:2rem;padding:clamp(1.25rem,4vw,2rem);background:var(--surface);border:1px solid var(--line);border-radius:12px}label{display:block;margin:0 0 1rem;font-weight:700}input{width:100%;min-height:46px;margin-top:.45rem;padding:.7rem;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);font:inherit}button{min-height:46px;padding:.7rem 1rem;background:var(--ink);color:#fff;border:0;border-radius:6px;font:inherit;font-weight:700;cursor:pointer}button:hover{background:var(--accent)}input:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}[role=alert]{padding:.75rem 1rem;background:#fce3df;color:#731f12;border-radius:6px}</style>
-<h1>Authorize Forge MCP</h1>
-<p>This connects the MCP client to ${user ? `<strong>${escapeHtml(user.github_login)}</strong>&#39;s` : 'your'} Forge workspace.</p>
+  return page({
+    title: 'Authorize Forge',
+    // The connect screen is the first authenticated surface most people see, so
+    // it has to look like the same product as the site they arrived from.
+    css: `.centre{max-width:32rem;margin:clamp(2.5rem,8vw,5rem) auto}
+label{display:block;margin:0 0 1rem;font-weight:600;color:var(--ink)}
+input{width:100%;min-height:46px;margin-top:.45rem;padding:.7rem;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font:inherit}
+input:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+[role=alert]{padding:.75rem 1rem;background:var(--bad-bg);color:var(--bad);border-radius:10px;margin-bottom:1rem}`,
+    body: `<div class="centre"><h1>Authorize Forge</h1>
+<p>This connects your AI client to ${user ? `<strong>${escapeHtml(user.github_login)}</strong>&#39;s` : 'your'} Forge workspace, so it can screenshot sites and work on repositories you have connected.</p>
 ${error ? `<p role="alert">${escapeHtml(error)}</p>` : ''}
-<form method="post">${fields}${user ? '' : '<label>Forge development token<input name="token" type="password" autocomplete="current-password" required></label>'}<button>Authorize</button></form>`);
+<section class="section"><form method="post">${fields}${user ? '' : '<label>Forge development token<input name="token" type="password" autocomplete="current-password" required></label>'}<button class="primary" type="submit">Authorize</button></form></section></div>`
+  });
 }
 
 export async function authorize(request: Request, env: Env): Promise<Response> {
@@ -282,6 +308,12 @@ export async function authorize(request: Request, env: Env): Promise<Response> {
   const ownerAuthorized = Boolean(ownerToken && body && constantTimeEqual(body.get('token') ?? '', ownerToken));
   if (githubEnabled && !user && !ownerAuthorized) {
     return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
+  }
+  // The gate that actually matters: without this an account awaiting approval
+  // could still authorize an MCP client and use Forge in full, making the
+  // approval decorative. The owner token path is unaffected.
+  if (user && !ownerAuthorized && !hasForgeAccess(user)) {
+    return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/app`, 302);
   }
   if (!githubEnabled && !ownerToken) return json({ error: 'server_auth_not_configured' }, 503);
   if (request.method === 'GET') return authorizeForm(url, user ?? undefined);
@@ -322,8 +354,11 @@ export async function token(request: Request, env: Env): Promise<Response> {
   const grantType = body.get('grant_type') ?? '';
   if (grantType === 'refresh_token') {
     try {
+      // Accepts a refresh token issued under a previous origin too, so a
+      // domain move does not force every client to re-authorize; the token it
+      // is exchanged for is minted under the current canonical origin.
       const { payload } = await jwtVerify(body.get('refresh_token') ?? '', signingKey(env), {
-        issuer: env.FORGE_PUBLIC_ORIGIN,
+        issuer: acceptedIssuers(env),
         audience: 'forge-mcp'
       });
       if (

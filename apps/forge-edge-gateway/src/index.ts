@@ -1,6 +1,12 @@
 import { getSandbox, Sandbox, ContainerProxy } from '@cloudflare/sandbox';
-import { ForgeError } from '@forge/core';
+import { ForgeError, type WorkspaceId, type TenantId } from '@forge/core';
+import { workflowInstanceId } from '@forge/workflows-cloudflare';
+import { listSlotOccupants, reclaimStaleSlots, releaseWorkspaceSlot, slotTtlMs } from './capacity';
+import { snapshotsEnabled, snapshotKey, recordSnapshot } from './snapshots';
+import { handleMultipartUpload } from './multipart-upload';
+import { parseDepsCacheKey, recordDepsCache } from './deps-cache';
 import { verifyCapability } from '@forge/capabilities';
+import { D1AuditStore } from '@forge/audit';
 import openapi from '../../../openapi/forge.openapi.json';
 import { ForgeMcpSession } from './mcp-session';
 import { WorkspaceCoordinator } from './workspace-coordinator';
@@ -13,14 +19,20 @@ import {
   token
 } from './oauth';
 import type { Env } from './env';
+import { galleryPage } from './review-gallery';
+import { forgeGlyph } from './ui';
 import {
   appDashboard,
   approvalPage,
+  resolveAccessRequest,
+  approvalPreviewEndpoint,
+  cookie,
   finishGitHubInstall,
   finishGitHubLogin,
   githubWebhook,
   gitCredentialProxy,
   installGitHubApp,
+  reconnectGitHub,
   logout,
   startGitHubLogin
 } from './github';
@@ -53,8 +65,10 @@ function html(body: string, status = 200): Response {
 }
 
 function favicon(): Response {
+  // The same anvil as the wordmark and the app icon, so a pinned tab, the portal
+  // and a shared link all read as one product.
   return new Response(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#0b0d0c"/><path d="M18 14h31v9H28v8h18v9H28v14H18z" fill="#8ee9ac"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="#0d0d0d"/><path d="M4 7.6H18l3.8 2a.5.5 0 0 1 0 .9L18 12.4h-3.7v3.2h3.2a1.15 1.15 0 0 1 1.15 1.15V18.6H5.35v-1.85A1.15 1.15 0 0 1 6.5 15.6h3.2v-3.2H6.3A2.3 2.3 0 0 1 4 10.1V7.6Z" fill="#fff" transform="translate(0 .2) scale(.94) translate(.75 .5)"/></svg>',
     {
       headers: {
         'cache-control': 'public, max-age=86400',
@@ -65,31 +79,87 @@ function favicon(): Response {
   );
 }
 
+
+// Small monoline marks for the landing cards. Distinct shapes rather than the
+// Forge glyph repeated three times, which says nothing about what each card is.
+const cardIcon = (paths: string): string =>
+  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+const ICON_PAGE = cardIcon('<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/><path d="M7 6.5h.01"/>');
+const ICON_CODE = cardIcon('<path d="m9 8-5 4 5 4"/><path d="m15 8 5 4-5 4"/>');
+const ICON_APPROVE = cardIcon('<path d="M20 6 9.5 17 4 11.5"/>');
+
 function landing(env: Env): Response {
   return html(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forge Cloud — remote workspaces for Parallax Review</title>
-<meta name="description" content="Give ChatGPT, Codex and Claude an isolated repository, terminal and browser for Parallax Review.">
+<title>Forge — a real computer for your AI chat</title>
+<meta name="description" content="Screenshot any site, build and fix real repositories, and get a pull request to approve — from an ordinary ChatGPT or Claude conversation.">
 <style>
-:root{--bg:#0b0d0c;--surface:#151916;--ink:#f4f6f3;--muted:#b8c1ba;--line:#343b35;--signal:#8ee9ac;--max:1120px}
-*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}
-a{color:inherit}.skip{position:absolute;left:1rem;top:-5rem;background:var(--ink);color:var(--bg);padding:.75rem 1rem;z-index:2}.skip:focus{top:1rem}
-header,main,footer{width:min(100% - 3rem,var(--max));margin-inline:auto}header{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-block:1.35rem;border-bottom:1px solid var(--line)}
-.brand{font-weight:760;letter-spacing:-.02em}.pilot{color:var(--signal);font-size:.78rem;font-weight:700}
-main{padding-block:clamp(4.5rem,10vw,8rem)}.hero{max-width:940px}.eyebrow{color:var(--signal);font-size:.78rem;font-weight:750;letter-spacing:.08em;text-transform:uppercase}
-h1{max-width:13ch;margin:.28em 0 .32em;font-size:clamp(3rem,7.5vw,6rem);line-height:.94;letter-spacing:-.04em;text-wrap:balance;overflow-wrap:break-word}
-.lede{max-width:65ch;margin:0;color:var(--muted);font-size:clamp(1.08rem,1.6vw,1.3rem);text-wrap:pretty}
-.actions{display:flex;gap:.75rem;flex-wrap:wrap;margin:2rem 0 0}.actions a{display:inline-flex;min-height:46px;align-items:center;padding:.7rem 1rem;background:var(--ink);color:var(--bg);border:1px solid var(--ink);border-radius:6px;text-decoration:none;font-weight:700;transition:background-color 180ms ease-out,color 180ms ease-out,border-color 180ms ease-out}.actions a:hover{background:var(--signal);border-color:var(--signal)}.actions a.secondary{background:transparent;color:var(--ink);border-color:var(--line)}.actions a.secondary:hover{color:var(--bg)}a:focus-visible{outline:3px solid var(--signal);outline-offset:4px}
-.capabilities{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:clamp(4rem,8vw,7rem);border-top:1px solid var(--line)}.capability{min-width:0;padding:1.4rem 2rem 0 0}.capability+.capability{padding-left:2rem;border-left:1px solid var(--line)}.capability h2{margin:0 0 .45rem;font-size:1.05rem}.capability p{max-width:34ch;margin:0;color:var(--muted);font-size:.92rem}
-footer{display:flex;justify-content:space-between;gap:1.5rem;padding-block:1.4rem;border-top:1px solid var(--line);color:var(--muted);font-size:.82rem}code{color:var(--signal)}
-@media(max-width:700px){header,main,footer{width:min(100% - 2.5rem,var(--max))}main{padding-block:4rem}h1{font-size:clamp(2.85rem,14vw,4.5rem);line-height:.93}.actions{align-items:stretch;flex-direction:column}.actions a{justify-content:center;width:100%}.capabilities{grid-template-columns:1fr;margin-top:4rem}.capability,.capability+.capability{padding:1.25rem 0;border-left:0;border-bottom:1px solid var(--line)}footer{align-items:flex-start;flex-direction:column}}
-@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+:root{color-scheme:light dark;--bg:#fff;--panel:#f7f7f8;--ink:#0d0d0d;--muted:#6e6e80;--line:#e5e5e5;--ring:#0d0d0d}
+@media(prefers-color-scheme:dark){:root{--bg:#0d0d0d;--panel:#161616;--ink:#ececf1;--muted:#9a9aa6;--line:#2a2a2a;--ring:#ececf1}}
+*{box-sizing:border-box}html,body{max-width:100%;overflow-x:clip}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.skip{position:absolute;left:1rem;top:-4rem;background:var(--ink);color:var(--bg);padding:.7rem 1rem;border-radius:8px;z-index:9}.skip:focus{top:1rem}
+.wrap{width:min(100% - 2.5rem,64rem);margin-inline:auto}
+header{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1.1rem 0}
+.mark{display:inline-flex;align-items:center;gap:.6rem;font-weight:600;letter-spacing:-.01em}
+.mark .box{width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:var(--panel);display:grid;place-items:center}
+.nav{display:flex;align-items:center;gap:.4rem}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:.55rem 1.05rem;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;font-weight:500;text-decoration:none;transition:background 140ms ease,border-color 140ms ease}
+.btn:hover{background:var(--panel)}
+.btn.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}.btn.primary:hover{opacity:.88}
+.btn:focus-visible,a:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+main{padding:clamp(3.5rem,10vw,7rem) 0 clamp(3rem,8vw,5rem)}
+h1{margin:0 0 1rem;font-size:clamp(2.4rem,6vw,4rem);line-height:1.05;letter-spacing:-.035em;max-width:16ch;text-wrap:balance}
+.lede{margin:0;max-width:52ch;color:var(--muted);font-size:clamp(1.05rem,1.6vw,1.2rem);text-wrap:pretty}
+.cta{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:2rem}
+.tag{display:inline-flex;align-items:center;gap:.5rem;margin-bottom:1.4rem;padding:.3rem .7rem;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:.82rem}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.55}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr));gap:1rem;margin-top:clamp(3.5rem,8vw,5.5rem)}
+.card{padding:1.4rem;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+.card h2{margin:.9rem 0 .4rem;font-size:1.02rem;letter-spacing:-.01em}
+.card p{margin:0;color:var(--muted);font-size:.94rem}
+.card .box{width:34px;height:34px;border-radius:10px;border:1px solid var(--line);background:var(--bg);display:grid;place-items:center;color:var(--muted)}
+.steps{margin-top:clamp(3.5rem,8vw,5.5rem);border-top:1px solid var(--line);padding-top:2.2rem}
+.steps h2{margin:0 0 1.4rem;font-size:1.15rem;letter-spacing:-.015em}
+ol{margin:0;padding:0;list-style:none;display:grid;gap:1rem;counter-reset:step}
+ol li{counter-increment:step;display:grid;grid-template-columns:1.9rem minmax(0,1fr);grid-auto-flow:column;gap:.9rem;color:var(--muted);align-items:start}
+ol li>span{grid-column:2}
+ol li::before{content:counter(step);display:grid;place-items:center;width:1.9rem;height:1.9rem;border:1px solid var(--line);border-radius:50%;color:var(--ink);font-size:.82rem;font-variant-numeric:tabular-nums}
+ol li b{color:var(--ink);font-weight:600}
+footer{border-top:1px solid var(--line);padding:1.6rem 0 2.4rem;color:var(--muted);font-size:.85rem;display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+@media(max-width:640px){.cta{flex-direction:column;align-items:stretch}.cta .btn{width:100%}.nav .btn{padding:.5rem .8rem}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head>
-<body><a class="skip" href="#main">Skip to content</a><header><span class="brand">Forge</span><span class="pilot">Cloud private pilot</span></header><main id="main"><section class="hero"><div class="eyebrow">Remote workspace for AI clients</div><h1>Run Parallax Review from any AI coding client.</h1>
-<p class="lede">Forge gives ChatGPT, Codex and Claude an isolated repository, Linux runtime and browser. Parallax defines what to review and what counts as evidence.</p>
-<div class="actions"><a href="${env.FORGE_PUBLIC_ORIGIN}/login/github">Continue with GitHub</a><a class="secondary" href="${env.FORGE_PUBLIC_ORIGIN}/.well-known/oauth-protected-resource">Connection metadata</a></div></section>
-<section class="capabilities" aria-label="Forge capabilities"><div class="capability"><h2>Repository + terminal</h2><p>Clone, inspect, patch, build and test inside an on-demand workspace.</p></div><div class="capability"><h2>Browser evidence</h2><p>Capture phone and desktop screenshots plus accessibility evidence.</p></div><div class="capability"><h2>Parallax contract</h2><p>Preserve audiences, missions, readiness and honest limitations.</p></div></section></main>
-<footer><span><code>${env.FORGE_ENVIRONMENT}</code> environment</span><span>Forge supplies the computer. Parallax supplies the review discipline.</span></footer></body></html>`);
+<body><a class="skip" href="#main">Skip to content</a>
+<div class="wrap"><header>
+<span class="mark"><span class="box">${forgeGlyph(19)}</span>Forge</span>
+<nav class="nav"><a class="btn" href="${env.FORGE_PUBLIC_ORIGIN}/login/github">Sign in</a><a class="btn primary" href="${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=%2Fapp">Request access</a></nav>
+</header></div>
+<main id="main"><div class="wrap">
+<span class="tag"><span class="dot"></span>Private pilot — access by approval</span>
+<h1>A real computer for your AI chat.</h1>
+<p class="lede">Forge gives ChatGPT and Claude a browser and a Linux workspace. Screenshot any site, build and fix real repositories, and get a pull request waiting for you to approve — from an ordinary conversation, with nothing to install.</p>
+<div class="cta">
+<a class="btn primary" href="${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=%2Fapp">Request access</a>
+<a class="btn" href="${env.FORGE_PUBLIC_ORIGIN}/login/github">I already have access</a>
+</div>
+
+<div class="cards">
+<div class="card"><span class="box">${ICON_PAGE}</span><h2>See any page</h2><p>Ask for a screenshot of a URL and get the images back in the same reply, at phone and desktop, without starting anything.</p></div>
+<div class="card"><span class="box">${ICON_CODE}</span><h2>Change real code</h2><p>Forge opens your repository in a disposable Linux workspace, runs the tests, and shows you what it did.</p></div>
+<div class="card"><span class="box">${ICON_APPROVE}</span><h2>You approve, later</h2><p>Finished work waits in your queue. Approve whenever suits you and Forge opens the pull request itself — nothing sits blocked on you.</p></div>
+</div>
+
+<section class="steps"><h2>How it works</h2><ol>
+<li><span><b>Request access.</b> Sign in with GitHub and your request comes to the owner for approval.</span></li>
+<li><span><b>Connect once.</b> Paste one URL into ChatGPT or Claude. There is nothing to install and nothing to run locally.</span></li>
+<li><span><b>Just ask.</b> Screenshot a page, fix a bug, try a design. Forge picks the cheapest way to do it.</span></li>
+<li><span><b>Approve in your own time.</b> Anything that touches your repository waits for you, on the web or your phone.</span></li>
+</ol></section>
+</div></main>
+<div class="wrap"><footer><span>Forge — ${env.FORGE_ENVIRONMENT}</span><span>Screenshots, workspaces and pull requests for AI chat.</span></footer></div>
+</body></html>`);
 }
 
 function safeError(error: unknown, env: Env): Response {
@@ -129,14 +199,28 @@ function mcpExecutionContext(ctx: ExecutionContext, props: Record<string, unknow
   } as ExecutionContext;
 }
 
+// The preview upstream is UNTRUSTED user code, so forwarding is allowlist-only:
+// we copy just the minimal set of request headers a normal HTTP client needs and
+// drop everything else. An allowlist (vs. deleting a handful of known-sensitive
+// names) guarantees no inbound header — auth, cookies, forge-* control headers,
+// cf-* edge headers, or anything future — can ever leak into preview content.
+const PREVIEW_FORWARD_HEADERS = new Set([
+  'accept',
+  'accept-encoding',
+  'accept-language',
+  'content-type',
+  'content-length',
+  'user-agent',
+  'range',
+  'if-none-match',
+  'if-modified-since'
+]);
+
 function cleanPreviewHeaders(request: Request): Headers {
-  const headers = new Headers(request.headers);
-  headers.delete('authorization');
-  headers.delete('cookie');
-  headers.delete('x-forge-preview-capability');
-  headers.delete('x-forge-internal-preview');
-  headers.delete('x-forge-browser-workspace');
-  headers.delete('x-forge-browser-preview');
+  const headers = new Headers();
+  request.headers.forEach((value, name) => {
+    if (PREVIEW_FORWARD_HEADERS.has(name.toLowerCase())) headers.set(name, value);
+  });
   return headers;
 }
 
@@ -147,6 +231,33 @@ async function sandboxPreviewFetch(
   path: string,
   search: string
 ): Promise<{ response: Response; target: URL }> {
+  // Self-hosted workspaces serve their preview from the user's own machine, so
+  // proxy through the agent's preview route (over the tunnel) instead of the
+  // Cloudflare sandbox binding. Gated on the persisted provider kind, so the
+  // Cloudflare path below is untouched for cloud workspaces.
+  if (detail.workspace.provider.kind === 'self-hosted') {
+    if (!env.FORGE_SELFHOST_URL || !env.FORGE_SELFHOST_TOKEN) {
+      throw new ForgeError({
+        code: 'FORGE_PREVIEW_UNAVAILABLE',
+        message: 'Self-hosted preview backend is not configured.',
+        retryable: false
+      });
+    }
+    const base = env.FORGE_SELFHOST_URL.replace(/\/+$/, '');
+    const target = new URL(
+      `${base}/preview/${encodeURIComponent(detail.providerId)}/${detail.preview.port}${path}`
+    );
+    target.search = search;
+    const headers = cleanPreviewHeaders(request);
+    headers.set('authorization', `Bearer ${env.FORGE_SELFHOST_TOKEN}`);
+    const response = await fetch(target, {
+      method: request.method,
+      headers,
+      body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
+      redirect: 'manual'
+    });
+    return { response, target };
+  }
   const target = new URL(path, 'http://forge-container.internal');
   target.search = search;
   const upstreamRequest = new Request(target, {
@@ -236,7 +347,15 @@ async function preview(request: Request, env: Env, url: URL): Promise<Response> 
     env.FORGE_INTERNAL_PREVIEW_KEY
   );
   if (!internal) {
-    const capability = request.headers.get('x-forge-preview-capability') ?? '';
+    // Agents send the capability as a header. A human opening a review preview
+    // from the approval page cannot — a browser navigation carries no custom
+    // headers — so fall back to a path-scoped HttpOnly cookie holding the same
+    // signed capability. Same token, same verification; only the transport
+    // differs. It is deliberately not accepted from the query string, which
+    // would leak it into history, logs and any shared link.
+    const capability = request.headers.get('x-forge-preview-capability')
+      || cookie(request, `forge_preview_${previewId}`)
+      || '';
     await verifyCapability(capability, env.FORGE_CAPABILITY_SIGNING_KEY, {
       workspaceId,
       action: `preview:${previewId}`
@@ -282,11 +401,220 @@ async function preview(request: Request, env: Env, url: URL): Promise<Response> 
   });
 }
 
+// Authenticated R2 gateway for workspace snapshots. Untrusted container code
+// streams `tar czf -` here on PUT and reads it back on GET, scoped by a
+// short-lived capability so it can only touch its own workspace's snapshot.
+async function snapshotEndpoint(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!snapshotsEnabled(env)) return new Response('Snapshots disabled', { status: 404 });
+  const match = url.pathname.match(/^\/__forge_snapshot\/(ws_[0-9a-hjkmnp-tv-z]{20,32})$/);
+  const workspaceId = match?.[1];
+  if (!workspaceId) return new Response('Not found', { status: 404 });
+  const token = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
+  let claims;
+  try {
+    claims = await verifyCapability(token, env.FORGE_CAPABILITY_SIGNING_KEY, { workspaceId, action: `snapshot:${workspaceId}` });
+  } catch {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  const key = snapshotKey(claims.tenantId, workspaceId);
+  const mpAction = url.searchParams.get('mp');
+  if (mpAction && (request.method === 'PUT' || request.method === 'POST')) {
+    return await handleMultipartUpload(mpAction, env.ARTIFACTS, key, url, request, async (sizeBytes) => {
+      await recordSnapshot(env.METADATA, { workspaceId, tenantId: claims.tenantId, r2Key: key, sizeBytes, createdAt: new Date().toISOString() });
+    });
+  }
+  if (request.method === 'PUT' && request.body) {
+    const object = await env.ARTIFACTS.put(key, request.body);
+    await recordSnapshot(env.METADATA, { workspaceId, tenantId: claims.tenantId, r2Key: key, sizeBytes: object?.size ?? 0, createdAt: new Date().toISOString() });
+    return Response.json({ ok: true, size: object?.size ?? 0 });
+  }
+  if (request.method === 'GET') {
+    const object = await env.ARTIFACTS.get(key);
+    if (!object) return new Response('No snapshot', { status: 404 });
+    return new Response(object.body, { headers: { 'content-type': 'application/gzip', 'cache-control': 'no-store' } });
+  }
+  return new Response('Method not allowed', { status: 405 });
+}
+
+// Authenticated R2 gateway for the per-repo dependency cache. Mirrors
+// snapshotEndpoint, but the object is scoped by CONTENT (cache_key) instead of by
+// workspace, so any workspace of the same repo at the same lockfile shares it.
+// The cache_key travels in the x-forge-deps-key header; the capability is scoped
+// to `deps:<cache_key>` so a container can only touch the exact key it was handed.
+async function depsEndpoint(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!snapshotsEnabled(env)) return new Response('Deps cache disabled', { status: 404 });
+  const match = url.pathname.match(/^\/__forge_deps\/(ws_[0-9a-hjkmnp-tv-z]{20,32})$/);
+  const workspaceId = match?.[1];
+  if (!workspaceId) return new Response('Not found', { status: 404 });
+  const cacheKey = request.headers.get('x-forge-deps-key') ?? '';
+  const parsed = parseDepsCacheKey(cacheKey);
+  if (!parsed) return new Response('Bad deps key', { status: 400 });
+  const token = (request.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
+  try {
+    await verifyCapability(token, env.FORGE_CAPABILITY_SIGNING_KEY, { workspaceId, action: `deps:${cacheKey}` });
+  } catch {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  const mpAction = url.searchParams.get('mp');
+  if (mpAction && (request.method === 'PUT' || request.method === 'POST')) {
+    return await handleMultipartUpload(mpAction, env.ARTIFACTS, parsed.r2Key, url, request, async (sizeBytes) => {
+      await recordDepsCache(env.METADATA, {
+        cacheKey,
+        repoSlug: parsed.repoSlug,
+        lockfileHash: parsed.lockfileHash,
+        runtime: parsed.runtime,
+        r2Key: parsed.r2Key,
+        sizeBytes,
+        createdAt: new Date().toISOString()
+      });
+    });
+  }
+  if (request.method === 'PUT' && request.body) {
+    const object = await env.ARTIFACTS.put(parsed.r2Key, request.body);
+    await recordDepsCache(env.METADATA, {
+      cacheKey,
+      repoSlug: parsed.repoSlug,
+      lockfileHash: parsed.lockfileHash,
+      runtime: parsed.runtime,
+      r2Key: parsed.r2Key,
+      sizeBytes: object?.size ?? 0,
+      createdAt: new Date().toISOString()
+    });
+    return Response.json({ ok: true, size: object?.size ?? 0 });
+  }
+  if (request.method === 'GET') {
+    const object = await env.ARTIFACTS.get(parsed.r2Key);
+    if (!object) return new Response('No deps cache', { status: 404 });
+    return new Response(object.body, { headers: { 'content-type': 'application/gzip', 'cache-control': 'no-store' } });
+  }
+  return new Response('Method not allowed', { status: 405 });
+}
+
+// Scheduled global reaper: recovers capacity even when nobody is calling
+// forge_workspace_create (the lazy reaper only fires on that path). Frees stale
+// slots and tears their workspaces down. Best-effort per workspace.
+async function reapAbandonedSlots(env: Env): Promise<void> {
+  let reclaimed;
+  try {
+    // With snapshots on, dirty workspaces are eligible for reaping (we snapshot
+    // them first); otherwise they stay protected.
+    reclaimed = await reclaimStaleSlots(env.METADATA, slotTtlMs(env), Date.now(), !snapshotsEnabled(env));
+  } catch (error) {
+    console.warn('forge_slot_scheduled_reclaim_failed', {
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+    });
+    return;
+  }
+  for (const slot of reclaimed) {
+    const workspaceId = slot.workspaceId as WorkspaceId;
+    try {
+      const destroyId = workflowInstanceId('destroy', workspaceId);
+      const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
+      // Two independent backup attempts before teardown, in priority order:
+      // (1) push HEAD straight to a Forge-owned backup ref on GitHub — small,
+      // fast, and its exit code is a real success/failure signal; (2) tar the
+      // whole /workspace to R2 as a second line of defense. Neither is
+      // trusted blindly: an incident showed the R2 snapshot can silently come
+      // back near-empty (171 bytes for a real repo) while still reporting
+      // "success", so both outcomes are recorded to the audit trail — a
+      // destroy that goes ahead with NEITHER backup having actually worked
+      // must be loud, not silently indistinguishable from a clean one.
+      const backup: { pushed: boolean; ref?: string; reason?: string } = await stub.backupUnpushedWork().catch((error) => ({
+        pushed: false,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+      }));
+      const snapshot = await stub.snapshotToR2().catch(() => null);
+      if (backup.pushed || snapshot) {
+        console.log('forge_slot_reap_backup', { workspaceId, backupPushed: backup.pushed, backupRef: backup.ref, snapshotted: Boolean(snapshot) });
+      } else if (backup.reason !== 'nothing to back up') {
+        console.error('forge_slot_reap_destroy_without_backup', { workspaceId, tenantId: slot.tenantId, backupReason: backup.reason });
+        await new D1AuditStore(env.METADATA).append({
+          schemaVersion: 1,
+          id: crypto.randomUUID(),
+          traceId: crypto.randomUUID(),
+          tenantId: slot.tenantId as TenantId,
+          workspaceId,
+          actor: { type: 'service', id: 'idle-reaper' },
+          type: 'workspace.reap_destroy_without_backup',
+          occurredAt: new Date().toISOString(),
+          payload: { reason: backup.reason }
+        }).catch(() => undefined);
+      }
+      // force: true — reclaimStaleSlots already gated dirty-workspace
+      // eligibility on snapshotsEnabled above, so this reap has already
+      // decided the unpushed-work loss is acceptable; forgeWorkspaceDestroy's
+      // guard would otherwise reject every dirty reap unconditionally. Still
+      // destroying on a failed backup rather than blocking indefinitely: a
+      // container that will never successfully back up (already dead) would
+      // otherwise leak its slot forever.
+      await stub.requestDestroy({ idempotencyKey: `reap-${destroyId}`, force: true });
+      await env.DESTROY_WORKFLOW.create({
+        id: destroyId,
+        params: { workspaceId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true }
+      });
+    } catch (error) {
+      console.warn('forge_slot_scheduled_teardown_failed', {
+        workspaceId: slot.workspaceId,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+      });
+    }
+  }
+}
+
+// Stuck-provisioning watchdog: a provision workflow can die/time out mid-run
+// (evicted before its JS catch), leaving the workspace frozen in a non-terminal
+// provisioning state — never `failed`, never past the idle TTL — so its D1 slot
+// leaks and the tenant cap eventually wedges. This sweep force-fails any slot
+// occupant wedged past STUCK_PROVISION_MS via the coordinator's
+// markProvisioningExhausted path, then releases its slot. Best-effort per
+// workspace: one failure must not abort the rest.
+async function reapStuckProvisioning(env: Env): Promise<void> {
+  let occupants;
+  try {
+    occupants = await listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now());
+  } catch (error) {
+    console.warn('forge_provision_watchdog_scan_failed', {
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+    });
+    return;
+  }
+  for (const occupant of occupants) {
+    if (!occupant.stuckProvisioning) continue;
+    const workspaceId = occupant.workspaceId as WorkspaceId;
+    try {
+      // Force the DO terminal (`failed`) so it stops reporting a non-terminal
+      // state, then free the leaked slot.
+      const result = await coordinator(env, workspaceId).provisionExhausted();
+      await releaseWorkspaceSlot(env.METADATA, workspaceId);
+      console.log('forge_provision_watchdog_reaped', {
+        slot: occupant.slot,
+        tenantId: occupant.tenantId,
+        workspaceId: occupant.workspaceId,
+        priorState: occupant.state,
+        state: result.state,
+        idleMinutes: occupant.idleMinutes
+      });
+    } catch (error) {
+      console.warn('forge_provision_watchdog_failed', {
+        workspaceId: occupant.workspaceId,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+      });
+    }
+  }
+}
+
 export default {
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Force-fail wedged provisioning slots first so they surface as `failed` and
+    // release their slots, then run the general stale-slot reaper for the rest.
+    ctx.waitUntil(reapStuckProvisioning(env).then(() => reapAbandonedSlots(env)));
+  },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
       if (url.pathname === '/favicon.ico' && request.method === 'GET') return favicon();
+      if (url.pathname.startsWith('/__forge_snapshot/')) return await snapshotEndpoint(request, env, url);
+      if (url.pathname.startsWith('/__forge_deps/')) return await depsEndpoint(request, env, url);
       if (url.pathname.startsWith('/git/')) return await gitCredentialProxy(request, env);
       if (
         url.pathname.startsWith('/__forge_browser/') ||
@@ -389,8 +717,14 @@ export default {
       if (url.pathname === '/login/github/callback') return await finishGitHubLogin(request, env);
       if (url.pathname === '/logout') return await logout(request, env);
       if (url.pathname === '/app') return await appDashboard(request, env);
+      if (url.pathname === '/app/access' && request.method === 'POST') return await resolveAccessRequest(request, env);
       if (url.pathname === '/github/install') return await installGitHubApp(request, env);
+      if (url.pathname === '/github/reconnect' && request.method === 'POST') return await reconnectGitHub(request, env);
       if (url.pathname === '/github/setup') return await finishGitHubInstall(request, env);
+      const galleryMatch = url.pathname.match(/^\/gallery\/(ws_[0-9a-hjkmnp-tv-z]{20,32})\/(art_[0-9a-hjkmnp-tv-z]{20,32})$/u);
+      if (galleryMatch?.[1] && galleryMatch[2]) return await galleryPage(request, env, galleryMatch[1], galleryMatch[2]);
+      const previewMatch = url.pathname.match(/^\/approvals\/(apr_[0-9a-hjkmnp-tv-z]{20,32})\/preview$/u);
+      if (previewMatch?.[1]) return await approvalPreviewEndpoint(request, env, previewMatch[1]);
       const approvalMatch = url.pathname.match(/^\/approvals\/(apr_[0-9a-hjkmnp-tv-z]{20,32})$/u);
       if (approvalMatch?.[1]) return await approvalPage(request, env, approvalMatch[1]);
       if (url.pathname === '/oauth/register' && request.method === 'POST') {

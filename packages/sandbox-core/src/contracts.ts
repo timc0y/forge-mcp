@@ -6,9 +6,24 @@ import type {
   SnapshotRef, StartProcessInput
 } from './types';
 
+export interface SandboxHealth {
+  healthy: boolean;
+  kind: SandboxProvider['kind'];
+  // Human-readable checks that ran (tools present, disk free, self-test passed…).
+  checks: Array<{ name: string; ok: boolean; detail?: string }>;
+  // Optional concurrency signal. When present and inUse >= max the backend is at
+  // capacity, so Forge routes the new workspace elsewhere rather than overload it.
+  capacity?: { max: number; inUse: number };
+  detail?: string;
+}
+
 export interface SandboxProvider {
-  readonly kind: 'cloudflare' | 'local-docker';
+  readonly kind: 'cloudflare' | 'local-docker' | 'self-hosted';
   readonly version: string;
+  // Optional readiness probe. A provider that can be unavailable or flaky
+  // (e.g. a self-hosted box) implements this so Forge can health-check it before
+  // routing work to it and fall back otherwise. Cloudflare omits it (always on).
+  healthCheck?(): Promise<SandboxHealth>;
   create(input: CreateSandboxInput): Promise<SandboxHandle>;
   get(providerId: string): Promise<SandboxHandle>;
   suspend(providerId: string): Promise<void>;

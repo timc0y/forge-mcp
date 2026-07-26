@@ -3,16 +3,21 @@ import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 const domainPackages = [
+  'app-actions',
   'application',
   'artifacts-core',
   'browser-core',
   'core',
+  'cost',
   'events',
+  'evidence',
   'git-core',
+  'insight',
   'policy',
   'project-detection',
   'repo-index',
-  'sandbox-core'
+  'sandbox-core',
+  'task-core'
 ];
 const forbidden = [
   '@cloudflare/',

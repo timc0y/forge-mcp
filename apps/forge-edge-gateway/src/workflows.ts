@@ -48,6 +48,9 @@ export class ProvisionWorkspaceWorkflow extends WorkflowEntrypoint<
           return { state: String(remote.state), revision: Number(remote.revision) };
         }
       );
+      // Snapshot restore now happens *inside* provisioning (before clone+install)
+      // so a reaped harness comes back without paying the full bootstrap. See
+      // WorkspaceCoordinator.provisionInitialized.
       return {
         workspaceId: event.payload.workspaceId,
         state: result.state,

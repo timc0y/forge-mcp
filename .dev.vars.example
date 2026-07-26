@@ -4,3 +4,5 @@ FORGE_CAPABILITY_SIGNING_KEY=replace-with-at-least-32-random-bytes
 GITHUB_APP_ID=123456
 GITHUB_APP_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
 GITHUB_WEBHOOK_SECRET=replace-me
+POSTHOG_API_KEY=replace-with-your-posthog-project-api-key
+POSTHOG_HOST=https://us.i.posthog.com

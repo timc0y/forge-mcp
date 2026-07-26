@@ -22,15 +22,16 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: D1 migrations are sequentially numbered
+        run: pnpm migrations:check
+      - name: Adapter sets and D1 tables are wired
+        run: pnpm wiring:check
       - run: pnpm check
       - run: pnpm cf:typegen
-      - run: pnpm cf:typegen:prod
       - name: Generated files are committed
         run: git diff --exit-code -- schemas feature-flags.json apps/forge-edge-gateway/src/worker-configuration.d.ts
       - name: Wrangler build validation
-        run: pnpm --filter @forge/edge-gateway exec wrangler deploy --dry-run --config ../../infra/wrangler/forge.development.jsonc --outdir ../../dist/worker
-      - name: Production Wrangler build validation
-        run: pnpm --filter @forge/edge-gateway exec wrangler deploy --dry-run --config ../../infra/wrangler/forge.production.jsonc --outdir ../../dist/worker-production
+        run: pnpm --filter @forge/edge-gateway exec wrangler deploy --dry-run --config ../../infra/wrangler/forge.jsonc --outdir ../../dist/worker
 
   local-docker-provider:
     runs-on: ubuntu-latest

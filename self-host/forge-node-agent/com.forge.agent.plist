@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd service for the Forge Node Agent.
+  Install to ~/Library/LaunchAgents/com.forge.agent.plist and load with:
+    launchctl load -w ~/Library/LaunchAgents/com.forge.agent.plist
+  KeepAlive restarts it if it crashes; RunAtLoad starts it at login/boot.
+  Edit the paths, the token, and the port to match your machine.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.forge.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/YOU/forge-node-agent/server.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FORGE_AGENT_TOKEN</key>
+    <string>REPLACE_WITH_A_LONG_RANDOM_SECRET</string>
+    <key>FORGE_AGENT_PORT</key>
+    <string>8787</string>
+    <key>FORGE_AGENT_IMAGE</key>
+    <string>forge-workspace:latest</string>
+    <key>FORGE_AGENT_MAX_WORKSPACES</key>
+    <string>4</string>
+    <key>PLAYWRIGHT_BROWSERS_PATH</key>
+    <string>/Users/YOU/.cache/ms-playwright</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/forge-node-agent/agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/forge-node-agent/agent.err.log</string>
+</dict>
+</plist>

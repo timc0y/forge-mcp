@@ -4,11 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --config ../../infra/wrangler/forge.development.jsonc",
-    "deploy:dev": "wrangler deploy --config ../../infra/wrangler/forge.development.jsonc",
-    "deploy:prod": "wrangler deploy --config ../../infra/wrangler/forge.production.jsonc",
-    "cf:typegen": "wrangler types --config ../../infra/wrangler/forge.development.jsonc src/worker-configuration.d.ts",
-    "cf:typegen:prod": "wrangler types --config ../../infra/wrangler/forge.production.jsonc /tmp/forge-worker-production.d.ts",
+    "dev": "wrangler dev --config ../../infra/wrangler/forge.jsonc --env development",
+    "deploy": "wrangler deploy --config ../../infra/wrangler/forge.jsonc --env=\"\"",
+    "cf:typegen": "wrangler types --config ../../infra/wrangler/forge.jsonc src/worker-configuration.d.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -16,6 +14,7 @@
     "@forge/application": "workspace:*",
     "@forge/artifacts-r2": "workspace:*",
     "@forge/browser-cloudflare": "workspace:*",
+    "@forge/browser-core": "workspace:*",
     "@forge/capabilities": "workspace:*",
     "@forge/core": "workspace:*",
     "@forge/credentials": "workspace:*",
@@ -25,13 +24,19 @@
     "@forge/metadata-d1": "workspace:*",
     "@forge/policy": "workspace:*",
     "@forge/sandbox-cloudflare": "workspace:*",
+    "@forge/sandbox-selfhosted": "workspace:*",
+    "@forge/browser-selfhosted": "workspace:*",
+    "@forge/artifacts-core": "workspace:*",
     "@forge/sandbox-core": "workspace:*",
     "@forge/workflows-cloudflare": "workspace:*",
-    "@modelcontextprotocol/ext-apps": "1.7.2",
     "@modelcontextprotocol/sdk": "1.29.0",
     "agents": "0.17.3",
     "jose": "6.2.2",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@forge/task-core": "workspace:*",
+    "@forge/insight": "workspace:*",
+    "@forge/audit": "workspace:*",
+    "@forge/events": "workspace:*"
   },
   "devDependencies": {
     "wrangler": "4.110.0"

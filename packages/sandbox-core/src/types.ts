@@ -51,7 +51,7 @@ export interface FileReadResult { path: string; content: string; sha256: string;
 export interface FileWriteInput { path: string; content: string; expectedSha256?: string; }
 export interface FileWriteResult { path: string; sha256: string; sizeBytes: number; }
 export interface PatchInput { patch: string; cwd: string; }
-export interface PatchResult { applied: boolean; output: string; changedFiles: string[]; }
+export interface PatchResult { applied: boolean; output: string; changedFiles: string[]; rejectedFiles?: string[]; rolledBack?: boolean; }
 export interface ListFilesInput { path: string; depth: number; include?: string[]; exclude?: string[]; limit: number; }
 export interface FileTreeEntry { path: string; type: 'file' | 'directory' | 'symlink'; sizeBytes?: number; }
 export interface FileTree { entries: FileTreeEntry[]; truncated: boolean; }

@@ -19,16 +19,19 @@
     "check": "pnpm boundaries:check && pnpm typecheck && pnpm test && pnpm schemas:check",
     "schemas:generate": "tsx scripts/generate-schemas.ts",
     "schemas:check": "tsx scripts/generate-schemas.ts --check",
-    "deploy:dev": "pnpm --filter @forge/edge-gateway deploy:dev",
-    "deploy:prod": "pnpm --filter @forge/edge-gateway deploy:prod",
+    "migrations:check": "tsx scripts/check-migrations.ts",
+    "wiring:check": "tsx scripts/check-wiring.ts",
+    "db:migrate:prod": "pnpm --filter @forge/edge-gateway exec wrangler d1 migrations apply forge-production --remote --config ../../infra/wrangler/forge.jsonc",
+    "predeploy": "pnpm db:migrate:prod",
+    "deploy": "pnpm --filter @forge/edge-gateway deploy",
     "cf:typegen": "pnpm --filter @forge/edge-gateway cf:typegen",
-    "cf:typegen:prod": "pnpm --filter @forge/edge-gateway cf:typegen:prod",
     "boundaries:check": "tsx scripts/check-boundaries.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260712.1",
     "@forge/application": "workspace:*",
     "@forge/audit": "workspace:*",
+    "@forge/browser-core": "workspace:*",
     "@forge/capabilities": "workspace:*",
     "@forge/core": "workspace:*",
     "@forge/credentials": "workspace:*",
@@ -42,6 +45,12 @@
     "tsx": "4.21.0",
     "typescript": "5.9.3",
     "vitest": "4.1.9",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@forge/task-core": "workspace:*",
+    "@forge/insight": "workspace:*",
+    "@forge/evidence": "workspace:*",
+    "@forge/app-actions": "workspace:*",
+    "@forge/cost": "workspace:*",
+    "@forge/fixture-catalog": "workspace:*"
   }
 }

@@ -1,37 +1,79 @@
-# Forge MCP
+# Forge
 
-**A Cloudflare-native remote development runtime for AI coding agents.**
+**A remote development computer for AI coding agents — over MCP.**
 
-Forge gives any compatible AI agent a secure remote development computer connected to a real repository. The agent supplies reasoning; Forge supplies the workspace, Linux runtime, files, commands, browser evidence, Git state, policy and audit trail.
+Forge gives ChatGPT, Claude, and any MCP-compatible client a real, isolated
+Linux computer: a cloned repository, a terminal, a browser, Git, and
+approval-gated draft PRs. The model brings the reasoning; Forge brings the
+machine. It runs on Cloudflare's edge, so the compute is cheap and always on.
 
-Forge is not an agent framework, IDE, CI product, or unrestricted shell service. It exposes bounded capabilities through MCP and a direct API while keeping provider credentials and Cloudflare implementation details behind adapters.
+## Why it exists
 
-## Current product
+- **Rent the model's quota, not the compute.** Drive Forge from whichever chat
+  app has generous limits (ChatGPT's are famously roomy) and get a full dev
+  environment for near-free — no local setup, no tight sandbox.
+- **Code from your phone.** The whole loop — read, edit, run, test, review,
+  open a PR — happens on the server. Your device is just the remote control.
+- **Cheapest capable runtime, automatically.** Reviewing a deployed URL never
+  starts a container; durable tasks and repo/diff inspection stay
+  container-free; a full workspace spins up only when execution is needed.
 
-Forge is built for Parallax first. The complete product shape—Forge Local, self-hosted Forge and hosted Forge Cloud—is defined in [the product plan](docs/PRODUCT-PLAN.md).
+Forge is not an agent framework, an IDE, or an unrestricted shell. It exposes
+**bounded** capabilities through MCP, keeping provider credentials and approval
+gates in front of anything that reaches the outside world.
 
-The current deployable vertical path is:
+## Quickstart
 
-```text
-authenticated MCP request
-  -> GitHub-backed Forge account and repository authorization
-  -> Workspace Coordinator Durable Object
-  -> CloudflareSandboxProvider
-  -> public or private Git clone through a scoped credential proxy
-  -> project detection and bootstrap
-  -> file read/tree/patch
-  -> bounded command and process execution
-  -> private preview capability
-  -> Browser Run screenshot
-  -> Git status/diff, Forge branch, bot commit and approval-gated draft PR
-  -> workspace destruction
-```
+Forge is a hosted MCP connector. Add it to your client and sign in with GitHub:
 
-For an already deployed site, `forge_review` skips the workspace entirely and uses Browser Run Quick Actions to return phone and desktop screenshots directly to the model. Forge Cloud permits two active workspaces globally, uses 90-second idle sleep, and keeps the URL-review path container-free.
+- **ChatGPT** (Apps SDK / connectors) or **Claude** (Connectors) → add the
+  Forge MCP server URL, complete the GitHub OAuth flow, and grant the Forge
+  GitHub App access to the repositories you want.
+- Then just ask: *"Review https://example.com with Parallax"*, or *"Start a
+  task on owner/repo to fix X, then open a draft PR."*
 
-Supporting ChatGPT and other MCP Apps hosts receive the optional `ui://forge/workspace-console` interface for repository, workspace, evidence and approval results. Clients without MCP Apps continue to receive the same structured and textual tool output.
+Self-hosting and local development are covered in
+[`docs/self-host.md`](docs/self-host.md) and
+[`docs/operations.md`](docs/operations.md).
 
-The Cloudflare Sandbox SDK is isolated in `packages/sandbox-cloudflare`. Domain packages do not import Cloudflare, GitHub, MCP SDK or UI framework types.
+## The tools at a glance
+
+Cheap, container-free tools first — Forge answers as much as possible before
+ever starting a workspace. Full reference: [`docs/tools.md`](docs/tools.md).
+
+| Group | Tools | Container? |
+| --- | --- | --- |
+| Repositories & review | `forge_repository_list`, `forge_review` | no |
+| Durable tasks | `forge_task_start` / `_get` / `_summary` / `_list` / `_finish` | no |
+| Context & diff insight | `forge_context_get`, `forge_diff_metadata` | no |
+| Workspace lifecycle | `forge_workspace_create` / `_get` / `_destroy` | yes (create) |
+| Files | `forge_files_tree` / `_read` / `_write` / `_patch` | yes |
+| Shell & processes | `forge_shell_exec`, `forge_process_start` / `_logs` | yes |
+| Git | `forge_git_status` / `_diff` / `_outgoing_diff` / `_branch_create` / `_commit` / `_push` | yes |
+| Review evidence | `forge_review_capture`, `forge_artifact_get` | mixed |
+| Previews & PRs | `forge_preview_expose`, `forge_pull_request_create` | yes |
+
+External changes — Git push and pull-request creation — are **approval-gated**:
+Forge returns a signed approval page and only proceeds once a human approves.
+
+## Parallax
+
+Parallax is Forge's review discipline: define the **audiences**, **missions**,
+and **readiness** a change must satisfy, capture real **evidence** (screenshots,
+accessibility structure), and report honest **limitations** — never claim a
+journey passed unless its steps were actually executed. See
+[`docs/architecture/parallax.md`](docs/architecture/parallax.md).
+
+## Documentation
+
+Start at [`docs/README.md`](docs/README.md). The essentials:
+
+- [Architecture](docs/architecture.md) — how a request becomes a workspace
+- [Tool reference](docs/tools.md) — every tool, verbatim from the source
+- [Connectors & setup](docs/connectors.md) — ChatGPT and Claude
+- [Operations](docs/operations.md) — deploy, migrations, runbook
+- [Security](docs/security/README.md) — approvals, capabilities, tenancy
+- [Self-hosting](docs/self-host.md)
 
 Credential profiles are tenant-scoped, encrypted at rest, and provider-backed. See [credential profiles](docs/architecture/credentials.md) before configuring `FORGE_CREDENTIAL_ENCRYPTION_KEY` or migrating an installation.
 
@@ -39,48 +81,34 @@ For the filesystem, Git, checkpoint, export, and runtime guarantees required for
 
 ## Repository layout
 
-- `apps/forge-edge-gateway` — HTTP, MCP session and preview gateway
-- `packages/core` — identifiers, state machine, errors and domain records
+- `apps/forge-edge-gateway` — HTTP, MCP session, and preview gateway
+- `packages/core` — identifiers, state machine, errors, domain records
 - `packages/application` — provider-independent use cases
-- `packages/sandbox-core` — stable sandbox contracts
-- `packages/sandbox-cloudflare` — `@cloudflare/sandbox` adapter
-- `packages/sandbox-local-docker` — local contract-test provider
-- `packages/mcp-core` — canonical Forge tool definitions
-- `packages/mcp-adapter-v1` — production MCP SDK v1 adapter
-- `packages/mcp-adapter-v2-beta` — isolated migration seam, not production
-- `packages/policy` — shell, branch, network and approval policy
-- `packages/browser-*`, `packages/git-*`, `packages/artifacts-*` — provider boundaries
-- `workflows` — durable lifecycle workflow definitions
-- `infra/wrangler` — canonical Cloudflare configuration
-- `docs/research` — verified dependency and product research
+- `packages/mcp-core` — the tool catalog (source of truth for tool names)
+- `packages/mcp-adapter-v1` — production MCP SDK wiring
+- `packages/{sandbox,browser,git,artifacts}-*` — Cloudflare / self-hosted providers
+- `packages/{task-core,insight,evidence,cost,policy,capabilities}` — domain logic
+- `migrations/d1` — database schema; `infra/wrangler` — deploy config
 
-## Commands
+Domain packages never import Cloudflare, GitHub, MCP, or UI types — those live
+behind adapters.
+
+## Develop
 
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
-pnpm check
-pnpm cf:typegen
-pnpm dev
+pnpm check          # boundaries + typecheck + tests + schemas
+pnpm dev            # local worker (requires Docker for the local sandbox)
 ```
-
-`pnpm dev` uses the Cloudflare worker configuration and requires Docker for Sandbox local development. `LocalDockerSandboxProvider` is used by deterministic provider contract tests and must never point at production.
-
-## Security defaults
-
-- no ambient GitHub or production credentials in sandboxes
-- separate workspace per security principal unless collaboration is explicit
-- explicit sessions with the Sandbox default session disabled
-- private previews by default
-- no default-branch push
-- stable Forge errors rather than raw provider errors
-- idempotency keys and expected revisions on mutations
-- bounded command output and timeouts
-- provider IDs remain internal
-- beta and experimental features remain behind adapters and flags
-
-See [system architecture](docs/architecture/system.md), [threat model](docs/security/threat-model.md), and [adoption register](docs/research/adoption-register.md).
 
 ## Status
 
-The Forge Cloud private pilot is deployed at `https://forge.timcoy.uk` with D1, R2, Durable Objects, Workflows, Browser Run, the smallest `basic` Sandbox profile, GitHub-backed OAuth and remote MCP. The `forge-mcp-cloud` GitHub App authorizes selected repositories. Private clone uses a short-lived Forge credential-proxy capability; branch pushes and draft PR creation require a separate browser approval.
+The Forge Cloud private pilot is deployed at `https://forge.timcoy.uk` with D1,
+R2, Durable Objects, Workflows, Browser Run, the smallest `basic` Sandbox
+profile, GitHub-backed OAuth and remote MCP. The workers.dev hostname remains
+available for existing tokens and preview capabilities. The `forge-mcp-cloud`
+GitHub App authorizes selected repositories. Private clone uses a short-lived
+Forge credential-proxy capability; branch pushes and draft PR creation require
+a separate browser approval. `pnpm run deploy` applies pending D1 migrations,
+then deploys the production Worker from `infra/wrangler/forge.jsonc`.

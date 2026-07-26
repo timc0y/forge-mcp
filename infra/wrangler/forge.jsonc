@@ -1,0 +1,242 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "forge-edge-gateway",
+  "account_id": "04d3e478b1ddf0f5147120cacbf430de",
+  "main": "../../apps/forge-edge-gateway/src/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  // Global slot reaper: recovers capacity even when no one is creating a
+  // workspace (the lazy reaper only fires on forge_workspace_create).
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  // Canonical hostname.
+  "routes": [
+    { "pattern": "forge.timcoy.uk", "custom_domain": true }
+  ],
+  // MUST stay explicitly true. Wrangler disables workers.dev by default as soon
+  // as a route is declared, which took forge-edge-gateway.timcoy72.workers.dev
+  // to a 404 — retiring every approval and OAuth link already issued against
+  // it, and FORGE_PREVIEW_HOSTNAME with them, since preview capabilities are
+  // minted on that hostname.
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  },
+  "upload_source_maps": true,
+  "vars": {
+    "FORGE_ENVIRONMENT": "production",
+    "BACKUP_BUCKET_NAME": "forge-production-backups",
+    "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
+    "FORGE_PUBLIC_ORIGIN": "https://forge.timcoy.uk",
+    // Origins Forge used to answer on. Access and refresh tokens carry
+    // FORGE_PUBLIC_ORIGIN as their JWT issuer, so without this every token
+    // issued before the move to forge.timcoy.uk would stop verifying the
+    // moment it changed and every connected client would need re-authorizing.
+    // See acceptedIssuers() in auth.ts. Safe to drop once the longest refresh
+    // token lifetime (30 days) has elapsed since the cutover.
+    "FORGE_LEGACY_ORIGINS": "https://forge-edge-gateway.timcoy72.workers.dev",
+    // Deliberately still the workers.dev host: preview capabilities are minted
+    // against this hostname and it keeps serving, so moving it is a separate
+    // change with its own blast radius.
+    "FORGE_PREVIEW_HOSTNAME": "forge-edge-gateway.timcoy72.workers.dev",
+    "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
+    "FORGE_DEFAULT_TENANT_ID": "ten_00000000000000000000000001",
+    "FORGE_DEFAULT_PROJECT_ID": "prj_00000000000000000000000001",
+    "GITHUB_APP_ID": "4281819",
+    "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
+    "GITHUB_APP_SLUG": "forge-mcp-cloud",
+    // Shell auto-approval policy (see mcp-session.ts forge_shell_exec +
+    // @forge/policy classifyCommand). With this flag on, only the classes listed
+    // in FORGE_AUTO_APPROVE_SHELL_CLASSES are auto-approved — by default
+    // dependency_install (so routine installs don't block on a human) and
+    // requires_approval (which now means only "this line could not be parsed",
+    // not "this line contains a pipe"). Destructive commands are deliberately
+    // excluded and still need a real human, unrestricted-network egress can never
+    // be auto-approved regardless of this flag, and prohibited commands are
+    // blocked outright by policy. This flag never touches git-push /
+    // pull-request gating, which is enforced on its own path.
+    "FORGE_AUTO_APPROVE_SHELL": "true",
+    "FORGE_SNAPSHOT_ENABLED": "true"
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  // Used only to shrink the copies of screenshots that travel back inside a tool
+  // result; the full-resolution capture is always what gets stored. Billed per
+  // transformation, so images already small enough are never sent through it and
+  // only the handful that could actually be attached are considered — see
+  // prepareInlineImages. If this binding is removed, reviews keep working and
+  // simply attach the original bytes.
+  "images": {
+    "binding": "IMAGES"
+  },
+  "d1_databases": [
+    {
+      "binding": "METADATA",
+      "database_name": "forge-production",
+      "database_id": "b20e5bbf-15fe-4317-b01d-42511db76db5",
+      "migrations_dir": "../../migrations/d1"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "forge-production-artifacts"
+    },
+    {
+      "binding": "BACKUP_BUCKET",
+      "bucket_name": "forge-production-backups"
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "../../Dockerfile",
+      "instance_type": "basic",
+      // Keep in step with FORGE_MAX_WORKSPACES. Idle instances sleep at 90s and
+      // bill per active-second, so headroom is cheap; this is the hard cost
+      // bound on concurrent workspaces.
+      "max_instances": 8
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Sandbox",
+        "name": "Sandbox"
+      },
+      {
+        "class_name": "ForgeMcpSession",
+        "name": "MCP_SESSIONS"
+      },
+      {
+        "class_name": "WorkspaceCoordinator",
+        "name": "WORKSPACE_COORDINATORS"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Sandbox",
+        "ForgeMcpSession",
+        "WorkspaceCoordinator"
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "name": "forge-production-provision",
+      "binding": "PROVISION_WORKFLOW",
+      "class_name": "ProvisionWorkspaceWorkflow"
+    },
+    {
+      "name": "forge-production-destroy",
+      "binding": "DESTROY_WORKFLOW",
+      "class_name": "DestroyWorkspaceWorkflow"
+    }
+  ],
+  "env": {
+    "development": {
+      "name": "forge-edge-gateway-development",
+      "workers_dev": true,
+      "routes": [],
+      "vars": {
+        "FORGE_ENVIRONMENT": "development",
+        "BACKUP_BUCKET_NAME": "forge-development-backups",
+        "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
+        "FORGE_PUBLIC_ORIGIN": "https://forge-edge-gateway-development.timcoy72.workers.dev",
+        "FORGE_LEGACY_ORIGINS": "",
+        "FORGE_PREVIEW_HOSTNAME": "forge-edge-gateway-development.timcoy72.workers.dev",
+        "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
+        "FORGE_DEFAULT_TENANT_ID": "ten_00000000000000000000000000",
+        "FORGE_DEFAULT_PROJECT_ID": "prj_00000000000000000000000000",
+        "GITHUB_APP_ID": "4281819",
+        "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
+        "GITHUB_APP_SLUG": "forge-mcp-cloud",
+        "FORGE_AUTO_APPROVE_SHELL": "true",
+        "FORGE_SNAPSHOT_ENABLED": "true"
+      },
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
+      "browser": {
+        "binding": "BROWSER"
+      },
+      "ai": {
+        "binding": "AI"
+      },
+      "images": {
+        "binding": "IMAGES"
+      },
+      "d1_databases": [
+        {
+          "binding": "METADATA",
+          "database_name": "forge-development",
+          "database_id": "c11e4161-662e-44d3-938b-10857477b480",
+          "migrations_dir": "../../migrations/d1"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "ARTIFACTS",
+          "bucket_name": "forge-development-artifacts"
+        },
+        {
+          "binding": "BACKUP_BUCKET",
+          "bucket_name": "forge-development-backups"
+        }
+      ],
+      "containers": [
+        {
+          "class_name": "Sandbox",
+          "image": "../../Dockerfile",
+          "instance_type": "basic",
+          "max_instances": 5
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "class_name": "Sandbox",
+            "name": "Sandbox"
+          },
+          {
+            "class_name": "ForgeMcpSession",
+            "name": "MCP_SESSIONS"
+          },
+          {
+            "class_name": "WorkspaceCoordinator",
+            "name": "WORKSPACE_COORDINATORS"
+          }
+        ]
+      },
+      "workflows": [
+        {
+          "name": "forge-development-provision",
+          "binding": "PROVISION_WORKFLOW",
+          "class_name": "ProvisionWorkspaceWorkflow"
+        },
+        {
+          "name": "forge-development-destroy",
+          "binding": "DESTROY_WORKFLOW",
+          "class_name": "DestroyWorkspaceWorkflow"
+        }
+      ]
+    }
+  }
+}

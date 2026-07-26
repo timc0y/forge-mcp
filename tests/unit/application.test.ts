@@ -31,15 +31,23 @@ class FakeProvider implements SandboxProvider {
       if (input.command.startsWith('git clone')) {
         return { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
-      if (input.command.includes("console.log(JSON.stringify")) {
+      if (input.command.includes('===FORGE_HEAD===')) {
         return {
           exitCode: 0,
-          stdout: JSON.stringify({ pm: 'npm', framework: 'vite', scripts: { dev: 'vite', build: 'vite build' } }),
+          stdout: [
+            '===FORGE_HEAD===',
+            this.head,
+            '===FORGE_BRANCH===',
+            this.branch,
+            '===FORGE_LOCKFILE===',
+            '===FORGE_DETECTION===',
+            JSON.stringify({ pm: 'npm', framework: 'vite', scripts: { dev: 'vite', build: 'vite build' } })
+          ].join('\n'),
           stderr: '', truncated: false, durationMs: 1, artifactRefs: []
         };
       }
       if (input.command === 'npm ci') {
-        return { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+        return { exitCode: this.install.strict ?? 0, stdout: '', stderr: 'frozen lockfile mismatch', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.startsWith('git rev-parse')) {
         return { exitCode: 0, stdout: `${this.head}\n${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
@@ -62,16 +70,19 @@ class FakeProvider implements SandboxProvider {
         this.branch = input.command.match(/'([^']+)'/u)?.[1] ?? '';
         return { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
-      if (input.command.startsWith('git commit -m ')) {
+      if (input.command.includes('git commit -m ')) {
         this.commitSequence += 1;
-        this.head = `forge-commit-${this.commitSequence}`;
-        return { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+        this.head = this.commitSequence.toString(16).repeat(40);
+        return { exitCode: 0, stdout: `${this.head}\n${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.startsWith('git status --porcelain=v2 --branch &&')) {
         return { exitCode: 0, stdout: `# branch.head main\n${this.head}\nmain\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command === 'git diff --no-ext-diff --binary && git diff --cached --no-ext-diff --binary') {
         return { exitCode: 0, stdout: this.worktreeDiff, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+      }
+      if (input.command === 'npm install') {
+        return { exitCode: this.install.lenient ?? 0, stdout: '', stderr: 'install failed', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command === 'git status --porcelain=v2 --branch') {
         return { exitCode: 0, stdout: '# branch.head main\n', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
@@ -110,7 +121,10 @@ class FakeProvider implements SandboxProvider {
     revokePort: async () => undefined
   };
 
-  constructor(private readonly createError?: Error) {}
+  constructor(
+    private readonly createError?: Error,
+    private readonly install: { strict?: number; lenient?: number } = {}
+  ) {}
 
   async create(_input: CreateSandboxInput) {
     if (this.createError) throw this.createError;
@@ -302,6 +316,29 @@ describe('Forge application service', () => {
     expect(provider.calls).not.toContain('restore');
   });
 
+  it('falls back to a lenient install when the frozen install rejects the lockfile', async () => {
+    const provider = new FakeProvider(undefined, { strict: 1, lenient: 0 });
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    await service.provisionWorkspace(record, true);
+    expect(record.workspace.state).toBe('ready');
+    expect(record.workspace.bootstrapWarning).toBeUndefined();
+    // Strict install ran and failed, so the lenient fallback was attempted.
+    expect(provider.calls).toContain('npm ci');
+    expect(provider.calls).toContain('npm install');
+  });
+
+  it('comes up ready with a non-fatal warning when dependency install cannot complete', async () => {
+    const provider = new FakeProvider(undefined, { strict: 1, lenient: 1 });
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    // A failing install must NOT sink the workspace.
+    await service.provisionWorkspace(record, true);
+    expect(record.workspace.state).toBe('ready');
+    expect(record.workspace.bootstrapWarning).toMatchObject({ phase: 'dependency_install' });
+    expect(provider.calls).not.toContain('destroy');
+  });
+
   it('keeps retryable provisioning failures non-terminal until retries are exhausted', async () => {
     const service = new ForgeApplicationService(new FakeProvider(new Error('temporary outage')));
     const record = initialized(service);
@@ -384,7 +421,7 @@ describe('Forge application service', () => {
     expect(record.workspace.currentBranch).toBe('forge/recovery-receipt');
 
     await expect(service.gitCommit(record, { message: 'Record a durable transition', paths: ['.'], expectedRevision: 2, idempotencyKey: 'commit-123456' }))
-      .resolves.toMatchObject({ commit: 'forge-commit-1', branch: 'forge/recovery-receipt' });
+      .resolves.toMatchObject({ commit: '1'.repeat(40), branch: 'forge/recovery-receipt' });
     expect(record.lastGitDivergence).toBeUndefined();
   });
 
