@@ -53,10 +53,43 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   private async save(record: WorkspaceRuntimeRecord): Promise<void> {
-    await Promise.all([
+    const writes: Array<Promise<unknown>> = [
       this.ctx.storage.put(RECORD_KEY, record),
       this.metadata.putWorkspace(record.workspace)
-    ]);
+    ];
+    if (record.lastRecoveryVerifiedAt) {
+      writes.push(
+        this.env.METADATA.prepare(
+          `INSERT INTO service_verifications (name, verified_at, evidence)
+           VALUES (?1, ?2, ?3)
+           ON CONFLICT(name) DO UPDATE SET verified_at=excluded.verified_at, evidence=excluded.evidence
+           WHERE excluded.verified_at >= service_verifications.verified_at`
+        ).bind(
+          'workspace_recovery',
+          record.lastRecoveryVerifiedAt,
+          JSON.stringify({
+            workspaceId: record.workspace.id,
+            snapshotId: record.workspace.activeSnapshotId ?? null,
+            commit: record.workspace.currentCommit ?? null,
+            branch: record.workspace.currentBranch ?? null,
+            recoveryVersion: this.env.CF_VERSION_METADATA.id
+          })
+        ).run()
+      );
+    }
+    await Promise.all(writes);
+  }
+
+  private assertCheckpointQuiescent(record: WorkspaceRuntimeRecord): void {
+    const processIds = Object.keys(record.processes);
+    if (processIds.length > 0) {
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_CONFLICT',
+        message: 'Stop workspace-owned processes before a filesystem mutation or checkpoint so Forge can capture an immutable recovery snapshot.',
+        retryable: true,
+        details: { processIds }
+      });
+    }
   }
 
   private async readWithRecovery<T>(action: (record: WorkspaceRuntimeRecord) => Promise<T>): Promise<T> {
@@ -276,6 +309,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         gitIntegrity: record.lastGitDivergence
           ? { state: 'diverged', ...record.lastGitDivergence }
           : { state: 'consistent' },
+        recovery: record.lastRecoveryVerifiedAt
+          ? { verifiedAt: record.lastRecoveryVerifiedAt, snapshotId: record.workspace.activeSnapshotId ?? null }
+          : { verifiedAt: null },
         lease:
           lease && Date.parse(lease.expiresAt) > Date.now()
             ? { holder: lease.holder, expiresAt: lease.expiresAt }
@@ -307,6 +343,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
+        this.assertCheckpointQuiescent(record);
         const value = await this.app.write(record, input, input.expectedRevision, input.idempotencyKey);
         const checkpoint = await this.app.checkpoint(record, `write-${record.workspace.revision}`);
         return { ...value, checkpoint };
@@ -324,6 +361,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
+        this.assertCheckpointQuiescent(record);
         const value = await this.app.patch(
           record,
           { patch: input.patch, cwd: '/workspace/repo' },
@@ -349,11 +387,13 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     idempotencyKey?: string;
     approved: boolean;
   }) {
-    const decisionRequiresSerialization = input.idempotencyKey !== undefined;
     const action = async () => {
       const record = await this.getRecord();
       const before = record.workspace.revision;
+      const updatedAt = record.workspace.updatedAt;
+      const divergenceAt = record.lastGitDivergence?.observedAt;
       try {
+        if (input.idempotencyKey) this.assertCheckpointQuiescent(record);
         const value = await this.app.exec(record, {
           command: input.command,
           cwd: input.cwd,
@@ -368,10 +408,17 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         const checkpoint = value.classification === 'read_only' ? undefined : await this.app.checkpoint(record, `shell-${record.workspace.revision}`);
         return checkpoint ? { ...value, checkpoint } : value;
       } finally {
-        if (record.workspace.revision !== before) await this.save(record);
+        if (
+          record.workspace.revision !== before ||
+          record.workspace.updatedAt !== updatedAt ||
+          record.lastGitDivergence?.observedAt !== divergenceAt
+        ) await this.save(record);
       }
     };
-    return decisionRequiresSerialization ? this.serializeMutation(action) : action();
+    // Even a read-only command can discover a sleeping mount and trigger a
+    // recovery. Keep that state transition in the same durable ordering as
+    // writes so a stale read record can never overwrite a newer mutation.
+    return this.serializeMutation(action);
   }
 
   async processStart(input: {
@@ -384,9 +431,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const value = await this.app.startProcess(record, input);
-      await this.save(record);
-      return value;
+      try {
+        return await this.app.startProcess(record, input);
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
@@ -401,9 +450,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async processStop(input: { processId: ProcessId; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const value = await this.app.stopProcess(record, input.processId, input.expectedRevision, input.idempotencyKey);
-      await this.save(record);
-      return value;
+      try {
+        return await this.app.stopProcess(record, input.processId, input.expectedRevision, input.idempotencyKey);
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
@@ -418,9 +469,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const value = await this.app.startCheck(record, input);
-      await this.save(record);
-      return value;
+      try {
+        return await this.app.startCheck(record, input);
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
@@ -436,37 +489,37 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }
 
   async proveWorkspaceState() {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      const value = await this.app.proveWorkspaceState(record);
-      await this.save(record);
-      return value;
-    });
+    return this.readWithRecovery((record) => this.app.proveWorkspaceState(record));
   }
 
   async checkpoint(input: { name?: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const value = await this.app.checkpoint(record, input.name);
-      await this.save(record);
-      return value;
+      try {
+        this.assertCheckpointQuiescent(record);
+        return await this.app.checkpoint(record, input.name);
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
   async exportRecoveryPatch(input: { maxBytes: number }) {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      const value = await this.app.exportRecoveryPatch(record, input.maxBytes);
-      await this.save(record);
-      return value;
-    });
+    return this.readWithRecovery((record) => this.app.exportRecoveryPatch(record, input.maxBytes));
   }
 
   async restoreCheckpoint(input: { snapshotId: string; expectedRevision?: number }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
-        return await this.app.restoreCheckpoint(record, input.snapshotId as Parameters<ForgeApplicationService['restoreCheckpoint']>[1], input.expectedRevision);
+        this.assertCheckpointQuiescent(record);
+        const source = await repositoryCloneSource(this.env, record.workspace);
+        return await this.app.restoreCheckpoint(
+          record,
+          input.snapshotId as Parameters<ForgeApplicationService['restoreCheckpoint']>[1],
+          input.expectedRevision,
+          source
+        );
       } finally {
         await this.save(record);
       }
@@ -484,6 +537,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
+        this.assertCheckpointQuiescent(record);
         await this.app.reconcileGitState(record);
         const value = await this.app.gitBranchCreate(record, input.branch, input.expectedRevision, input.idempotencyKey);
         const checkpoint = await this.app.checkpoint(record, `branch-${record.workspace.currentBranch ?? record.workspace.revision}`);
@@ -498,6 +552,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
+        this.assertCheckpointQuiescent(record);
         await this.app.reconcileGitState(record);
         const value = await this.app.gitCommit(record, input);
         const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
@@ -518,11 +573,13 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async gitPush(input: { branch: string; base: string; expectedDiffHash: string; expectedRevision?: number; idempotencyKey: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      await this.app.reconcileGitState(record);
-      const source = await repositoryPushSource(this.env, record.workspace, input.branch, record.workspace.currentCommit ?? '');
-      const value = await this.app.gitPush(record, { ...input, source });
-      await this.save(record);
-      return value;
+      try {
+        await this.app.reconcileGitState(record);
+        const source = await repositoryPushSource(this.env, record.workspace, input.branch, record.workspace.currentCommit ?? '');
+        return await this.app.gitPush(record, { ...input, source });
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
@@ -537,9 +594,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const value = await this.app.exposePreview(record, input);
-      await this.save(record);
-      return value;
+      try {
+        return await this.app.exposePreview(record, input);
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
@@ -562,25 +621,32 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      await this.app.reconcileGitState(record);
-      await this.app.assertDestroySafe(record);
-      const value = this.app.requestDestroy(
-        record,
-        input.expectedRevision,
-        input.idempotencyKey
-      );
-      await this.save(record);
-      return value;
+      try {
+        await this.app.reconcileGitState(record);
+        const source = await repositoryCloneSource(this.env, record.workspace);
+        await this.app.assertDestroySafe(record, source);
+        return this.app.requestDestroy(
+          record,
+          input.expectedRevision,
+          input.idempotencyKey
+        );
+      } finally {
+        await this.save(record);
+      }
     });
   }
 
   async completeDestroy() {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
-      const value = await this.app.completeDestroy(record);
-      await this.save(record);
-      await this.ctx.storage.delete(LEASE_KEY);
-      return value;
+      try {
+        const source = await repositoryCloneSource(this.env, record.workspace);
+        const value = await this.app.completeDestroy(record, source);
+        await this.ctx.storage.delete(LEASE_KEY);
+        return value;
+      } finally {
+        await this.save(record);
+      }
     });
   }
 }

@@ -3,10 +3,22 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
-const origin = (process.env.FORGE_ORIGIN ?? 'https://forge-edge-gateway.timcoy72.workers.dev').replace(/\/$/, '');
+const origin = (process.env.FORGE_ORIGIN ?? 'https://forge.timcoy.uk').replace(/\/$/, '');
 const ownerTokenFile = process.env.FORGE_OWNER_TOKEN_FILE ?? resolve(homedir(), '.config/forge-mcp/cloud-owner-token');
 const redirectUri = 'http://127.0.0.1:47123/callback';
 const protocolVersion = '2025-11-25';
+const recoveryWaitMs = Number.parseInt(process.env.FORGE_RECOVERY_WAIT_MS ?? '100000', 10);
+const acceptanceStartedAt = new Date().toISOString();
+const configuredRepository = process.env.FORGE_ACCEPTANCE_REPOSITORY ?? 'mdn/beginner-html-site-styled';
+const [repositoryOwner, repositoryName, extraRepositorySegment] = configuredRepository.split('/');
+const requireGitHubApp = process.env.FORGE_ACCEPTANCE_REQUIRE_GITHUB_APP === 'true';
+
+if (!repositoryOwner || !repositoryName || extraRepositorySegment) {
+  throw new Error('FORGE_ACCEPTANCE_REPOSITORY must be an owner/name GitHub repository slug.');
+}
+if (requireGitHubApp && configuredRepository === 'mdn/beginner-html-site-styled') {
+  throw new Error('FORGE_ACCEPTANCE_REQUIRE_GITHUB_APP=true requires FORGE_ACCEPTANCE_REPOSITORY to name an installed private repository.');
+}
 
 function base64url(value) {
   return Buffer.from(value).toString('base64url');
@@ -149,7 +161,7 @@ let previewAccess;
 
 try {
   const created = await mcp.call('forge_workspace_create', {
-    repository: { provider: 'github', owner: 'mdn', name: 'beginner-html-site-styled' },
+    repository: { provider: 'github', owner: repositoryOwner, name: repositoryName },
     ref: 'main',
     runtime: 'node-24',
     persistence: 'ephemeral',
@@ -165,9 +177,34 @@ try {
   );
   if (ready.state !== 'ready') throw new Error(`Workspace provisioning failed: ${JSON.stringify(ready)}`);
 
+  if (!Number.isFinite(recoveryWaitMs) || recoveryWaitMs < 95_000) {
+    throw new Error('FORGE_RECOVERY_WAIT_MS must be at least 95000 to verify the 90-second Sandbox sleep/restore path.');
+  }
+  console.log(`waiting ${recoveryWaitMs}ms to verify durable Sandbox sleep recovery`);
+  await new Promise((resolveWait) => setTimeout(resolveWait, recoveryWaitMs));
+  const recovered = await mcp.call('forge_workspace_get', { workspace_id: workspaceId });
+  if (
+    recovered.value.state !== 'ready' ||
+    !recovered.value.activeSnapshotId ||
+    !recovered.value.recovery?.verifiedAt ||
+    Date.parse(recovered.value.recovery.verifiedAt) < Date.parse(acceptanceStartedAt)
+  ) {
+    throw new Error(`Workspace did not recover from idle sleep: ${JSON.stringify(recovered.value)}`);
+  }
+  const recoveryReady = await fetch(`${origin}/ready`);
+  const recoveryStatus = await recoveryReady.json();
+  if (
+    !recoveryReady.ok ||
+    recoveryStatus.recovery?.verified !== true ||
+    recoveryStatus.recovery?.workspaceId !== workspaceId ||
+    Date.parse(recoveryStatus.recovery?.verifiedAt ?? '') < Date.parse(acceptanceStartedAt)
+  ) {
+    throw new Error(`Gateway did not record a manifest-verified recovery: ${JSON.stringify(recoveryStatus)}`);
+  }
+
   const command = await mcp.call('forge_shell_exec', {
     workspace_id: workspaceId,
-    command: "node --version && git rev-parse --short HEAD && test -f index.html",
+    command: "node --version && git rev-parse --short HEAD && git remote get-url origin && test -f index.html",
     cwd: '/workspace/repo',
     timeout_ms: 30_000,
     environment: {},
@@ -177,6 +214,9 @@ try {
     approved: false
   });
   if (command.value.exitCode !== 0) throw new Error(`Workspace command failed: ${JSON.stringify(command.value)}`);
+  if (requireGitHubApp && !String(command.value.stdout ?? '').includes(`${origin}/git/${workspaceId}/`)) {
+    throw new Error(`Workspace did not clone through the Forge GitHub App proxy: ${JSON.stringify(command.value)}`);
+  }
 
   const process = await mcp.call('forge_process_start', {
     workspace_id: workspaceId,

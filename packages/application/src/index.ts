@@ -45,6 +45,8 @@ export interface WorkspaceRuntimeRecord {
   >;
   idempotency: Record<string, { operationId: OperationId; revision: number }>;
   snapshots: Record<string, WorkspaceCheckpoint>;
+  /** Set only after a manifest-verified provider restore. */
+  lastRecoveryVerifiedAt?: string;
   lastGitDivergence?: {
     recordedCommit?: string;
     recordedBranch?: string;
@@ -55,10 +57,14 @@ export interface WorkspaceRuntimeRecord {
 }
 
 interface WorkspaceCheckpoint extends SnapshotRef {
-  manifest: {
+  // Optional only for checkpoints persisted before manifest-backed recovery.
+  // They are upgraded after a confirmed mount-loss restore, never trusted
+  // for a destructive restore while a live workspace exists.
+  manifest?: {
     commit: string;
     branch?: string;
-    worktreeHash: string;
+    /** Hash of every file, directory, mode and symlink captured under /workspace. */
+    workspaceHash: string;
   };
 }
 
@@ -167,6 +173,48 @@ export class ForgeApplicationService {
     };
   }
 
+  private async gitIdentity(handle: SandboxHandle): Promise<{ commit: string; branch?: string }> {
+    const result = await handle.exec({
+      command: 'git rev-parse HEAD && git branch --show-current',
+      cwd: '/workspace/repo',
+      timeoutMs: 30_000,
+      outputLimitBytes: 10_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    });
+    if (result.exitCode !== 0 || result.truncated) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_DIRTY',
+        message: 'Forge could not read the checked-out Git identity.',
+        retryable: false,
+        details: { truncated: result.truncated }
+      });
+    }
+    const [commit = '', branch = ''] = result.stdout.trim().split('\n');
+    if (!commit) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_DIRTY',
+        message: 'Workspace Git state has no checked-out commit.',
+        retryable: false
+      });
+    }
+    return { commit, ...(branch ? { branch } : {}) };
+  }
+
+  private noteGitDivergence(
+    record: WorkspaceRuntimeRecord,
+    observed: { commit?: string; branch?: string }
+  ): void {
+    record.lastGitDivergence = {
+      recordedCommit: record.workspace.currentCommit,
+      recordedBranch: record.workspace.currentBranch,
+      observedCommit: observed.commit ?? '',
+      observedBranch: observed.branch ?? '',
+      observedAt: new Date().toISOString()
+    };
+    record.workspace.updatedAt = new Date().toISOString();
+  }
+
   /**
    * A sandbox sleep removes its workspace mount.  Do not let a caller observe
    * an empty replacement workspace: verify the stable workspace marker and
@@ -177,9 +225,10 @@ export class ForgeApplicationService {
     record: WorkspaceRuntimeRecord
   ): Promise<{ state: 'matches' | 'mount_missing' | 'diverged' | 'unavailable'; commit?: string; branch?: string }> {
     const mount = await handle.exec({
-      // A sleeping Sandbox removes both mount roots. Do not turn a failed Git
-      // probe, missing marker, or provider timeout into a destructive restore.
-      command: 'test ! -e /workspace/repo && test ! -e /workspace/forge/workspace-id',
+      // Only a completely empty restore target proves a sleeping Sandbox
+      // removed the mount. A missing marker/repository or a partial mount is
+      // ambiguous and must never trigger an automatic overwrite.
+      command: 'test -d /workspace && test ! -e /workspace/repo && test ! -e /workspace/forge/workspace-id && test -z "$(find /workspace -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)"',
       cwd: '/workspace',
       timeoutMs: 30_000,
       outputLimitBytes: 10_000,
@@ -188,27 +237,46 @@ export class ForgeApplicationService {
     }).catch(() => undefined);
     if (!mount || mount.truncated) return { state: 'unavailable' };
     if (mount.exitCode === 0) return { state: 'mount_missing' };
-    const result = await handle.exec({
-      command: `test "$(cat /workspace/forge/workspace-id 2>/dev/null)" = ${quoted(record.workspace.id)} && test -d /workspace/repo/.git && git -C /workspace/repo rev-parse HEAD && git -C /workspace/repo branch --show-current`,
+    const marker = await handle.exec({
+      command: `test "$(cat /workspace/forge/workspace-id 2>/dev/null)" = ${quoted(record.workspace.id)} && test -d /workspace/repo/.git`,
       cwd: '/workspace',
       timeoutMs: 30_000,
       outputLimitBytes: 10_000,
       sessionId: 'system',
       networkPolicy: 'deny_all'
     }).catch(() => undefined);
-    if (!result || result.exitCode !== 0 || result.truncated) return { state: 'unavailable' };
-    const [commit = '', branch = ''] = result.stdout.trim().split('\n');
+    if (!marker || marker.exitCode !== 0 || marker.truncated) return { state: 'unavailable' };
+    const identity = await this.gitIdentity(handle).catch(() => undefined);
+    if (!identity || !record.workspace.currentCommit) return { state: 'unavailable' };
     if (
-      (!record.workspace.currentCommit || commit === record.workspace.currentCommit) &&
-      (!record.workspace.currentBranch || branch === record.workspace.currentBranch)
-    ) return { state: 'matches', commit, branch };
-    return { state: 'diverged', commit, branch };
+      identity.commit === record.workspace.currentCommit &&
+      identity.branch === record.workspace.currentBranch
+    ) return { state: 'matches', ...identity };
+    return { state: 'diverged', ...identity };
+  }
+
+  private async quarantineRecovery(
+    record: WorkspaceRuntimeRecord,
+    snapshotId: string,
+    code: 'FORGE_SNAPSHOT_INCOMPATIBLE' | 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
+    message: string
+  ): Promise<never> {
+    await this.sandboxProvider.destroy(record.providerId).catch(() => undefined);
+    record.workspace.state = 'failed';
+    record.workspace.failure = { stage: 'recovery', code, message, retryable: false };
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = new Date().toISOString();
+    throw new ForgeError({
+      code,
+      message,
+      retryable: false,
+      details: { workspaceId: record.workspace.id, snapshotId }
+    });
   }
 
   private async recoverActiveCheckpoint(record: WorkspaceRuntimeRecord): Promise<SandboxHandle> {
     const snapshotId = record.workspace.activeSnapshotId;
-    const snapshot = snapshotId ? record.snapshots[snapshotId] : undefined;
-    if (!snapshot) {
+    if (!snapshotId) {
       throw new ForgeError({
         code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
         message: 'Forge cannot recover this workspace because it has no durable active checkpoint.',
@@ -216,58 +284,88 @@ export class ForgeApplicationService {
         details: { workspaceId: record.workspace.id, activeSnapshotId: snapshotId ?? null }
       });
     }
-    if (!snapshot.manifest) {
+    const snapshot = record.snapshots[snapshotId];
+    if (!snapshot) {
       throw new ForgeError({
         code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
-        message: 'Forge cannot verify this legacy checkpoint against its filesystem manifest.',
+        message: 'Forge cannot recover this workspace because its active checkpoint is unavailable.',
         retryable: false,
-        details: { workspaceId: record.workspace.id, snapshotId }
+        details: { workspaceId: record.workspace.id, activeSnapshotId: snapshotId }
       });
+    }
+    const legacySnapshot = !snapshot.manifest;
+    if (
+      snapshot.manifest &&
+      (
+        snapshot.manifest.commit !== record.workspace.currentCommit ||
+        snapshot.manifest.branch !== record.workspace.currentBranch
+      )
+    ) {
+      return this.quarantineRecovery(
+        record,
+        snapshotId,
+        'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
+        'The active checkpoint Git identity differs from the durable workspace record.'
+      );
     }
     let restored: SandboxHandle;
+    let restoredManifest: NonNullable<WorkspaceCheckpoint['manifest']>;
     try {
       restored = await this.sandboxProvider.restore(snapshot, this.restoreInput(record));
+      restoredManifest = await this.workspaceManifest(restored);
     } catch (error) {
-      throw new ForgeError({
-        code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
-        message: 'Forge could not restore the durable workspace checkpoint after a sandbox restart.',
-        retryable: true,
-        details: {
-          workspaceId: record.workspace.id,
-          snapshotId,
-          cause: error instanceof Error ? error.message : String(error)
-        }
-      });
+      return this.quarantineRecovery(
+        record,
+        snapshotId,
+        'FORGE_SNAPSHOT_INCOMPATIBLE',
+        'Forge could not restore and verify the durable workspace checkpoint after a sandbox restart.'
+      );
     }
-    if ((await this.inspectWorkspace(restored, record)).state !== 'matches') {
-      throw new ForgeError({
-        code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
-        message: 'The restored checkpoint does not match the recorded workspace Git state.',
-        retryable: false,
-        details: {
-          workspaceId: record.workspace.id,
+    if (legacySnapshot) {
+      // Existing workspaces predate filesystem manifests. A confirmed missing
+      // mount is safe to restore; immediately promote the restored checkpoint
+      // to a manifest-backed record, but never adopt a different Git identity.
+      if (
+        restoredManifest.commit !== record.workspace.currentCommit ||
+        restoredManifest.branch !== record.workspace.currentBranch
+      ) {
+        return this.quarantineRecovery(
+          record,
           snapshotId,
-          expectedCommit: record.workspace.currentCommit ?? null,
-          expectedBranch: record.workspace.currentBranch ?? null
-        }
-      });
+          'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
+          'The legacy checkpoint restores a different Git identity than the recorded workspace.'
+        );
+      }
+      record.snapshots[snapshotId] = { ...snapshot, manifest: restoredManifest };
     }
-    const restoredManifest = await this.workspaceManifest(restored);
+    const expectedManifest = record.snapshots[snapshotId]!.manifest;
+    if (!expectedManifest) {
+      return this.quarantineRecovery(
+        record,
+        snapshotId,
+        'FORGE_SNAPSHOT_INCOMPATIBLE',
+        'Forge could not establish a durable filesystem manifest for the restored checkpoint.'
+      );
+    }
     if (
-      restoredManifest.commit !== snapshot.manifest.commit ||
-      restoredManifest.branch !== snapshot.manifest.branch ||
-      restoredManifest.worktreeHash !== snapshot.manifest.worktreeHash
+      restoredManifest.commit !== expectedManifest.commit ||
+      restoredManifest.branch !== expectedManifest.branch ||
+      restoredManifest.workspaceHash !== expectedManifest.workspaceHash
     ) {
-      throw new ForgeError({
-        code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
-        message: 'The restored checkpoint filesystem does not match its durable manifest.',
-        retryable: false,
-        details: { workspaceId: record.workspace.id, snapshotId }
-      });
+      return this.quarantineRecovery(
+        record,
+        snapshotId,
+        'FORGE_SNAPSHOT_INCOMPATIBLE',
+        'The restored checkpoint filesystem does not match its durable manifest.'
+      );
     }
     // A restored mount cannot retain running processes or their exposed ports.
     record.processes = {};
     record.previews = {};
+    // Promotion establishes a manifest for an old checkpoint, but only a
+    // subsequent restore of that pre-capture manifest qualifies the service
+    // for a verified recovery readiness receipt.
+    if (!legacySnapshot) record.lastRecoveryVerifiedAt = new Date().toISOString();
     record.workspace.revision = nextRevision(record.workspace.revision);
     record.workspace.updatedAt = new Date().toISOString();
     return restored;
@@ -512,6 +610,7 @@ export class ForgeApplicationService {
     const inspection = await this.inspectWorkspace(handle, record);
     if (inspection.state === 'matches') return handle;
     if (inspection.state === 'diverged') {
+      this.noteGitDivergence(record, inspection);
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
         message: 'The workspace filesystem Git state differs from Forge metadata; recovery will not overwrite it.',
@@ -642,17 +741,45 @@ export class ForgeApplicationService {
       ttlSeconds: 7 * 24 * 60 * 60,
       excludeGitignored: false
     });
+    const observedAfterSnapshot = await this.workspaceManifest(handle);
+    if (
+      observedAfterSnapshot.commit !== manifest.commit ||
+      observedAfterSnapshot.branch !== manifest.branch ||
+      observedAfterSnapshot.workspaceHash !== manifest.workspaceHash
+    ) {
+      throw new ForgeError({
+        code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
+        message: 'Workspace content changed while Forge was creating a checkpoint; the incomplete checkpoint was not accepted.',
+        retryable: true,
+        details: { workspaceId: record.workspace.id, snapshotId: snapshot.id }
+      });
+    }
     record.snapshots[snapshot.id] = { ...snapshot, manifest };
     record.workspace.activeSnapshotId = snapshot.id;
     record.workspace.updatedAt = new Date().toISOString();
     return { snapshotId: snapshot.id, createdAt: snapshot.createdAt, providerVersion: snapshot.providerVersion, workspaceRevision: record.workspace.revision };
   }
 
-  async restoreCheckpoint(record: WorkspaceRuntimeRecord, snapshotId: SnapshotRef['id'], expectedRevision?: number) {
+  async restoreCheckpoint(
+    record: WorkspaceRuntimeRecord,
+    snapshotId: SnapshotRef['id'],
+    expectedRevision?: number,
+    cloneSource?: RepositoryCloneSource
+  ) {
     const snapshot = record.snapshots[snapshotId];
     if (!snapshot) throw new ForgeError({ code: 'FORGE_SNAPSHOT_INCOMPATIBLE', message: 'The requested workspace checkpoint is unavailable.', retryable: false, details: { snapshotId } });
-    if (!snapshot.manifest) throw new ForgeError({ code: 'FORGE_SNAPSHOT_INCOMPATIBLE', message: 'Forge cannot verify this legacy checkpoint against its filesystem manifest.', retryable: false, details: { snapshotId } });
-    if (record.workspace.state === 'ready' || record.workspace.state === 'busy') await this.assertDestroySafe(record);
+    const expectedManifest = snapshot.manifest;
+    if (!expectedManifest) {
+      throw new ForgeError({
+        code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
+        message: 'Forge refuses an explicit restore from a legacy checkpoint without a pre-capture filesystem manifest.',
+        retryable: false,
+        details: { snapshotId }
+      });
+    }
+    if (record.workspace.state === 'ready' || record.workspace.state === 'busy') {
+      await this.assertDestroySafe(record, cloneSource);
+    }
     const rollback = await this.checkpoint(record, `rollback-before-${snapshotId}`);
     const restoreInput = this.restoreInput(record);
     record.workspace.state = 'restoring';
@@ -660,9 +787,47 @@ export class ForgeApplicationService {
     record.workspace.updatedAt = new Date().toISOString();
     try {
       await this.sandboxProvider.destroy(record.providerId);
-      await this.sandboxProvider.restore(snapshot, restoreInput);
+      const restored = await this.sandboxProvider.restore(snapshot, restoreInput);
+      const restoredManifest = await this.workspaceManifest(restored);
+      if (
+        restoredManifest.commit !== expectedManifest.commit ||
+        restoredManifest.branch !== expectedManifest.branch ||
+        restoredManifest.workspaceHash !== expectedManifest.workspaceHash
+      ) {
+        throw new ForgeError({
+          code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
+          message: 'The requested checkpoint filesystem does not match its durable manifest.',
+          retryable: false,
+          details: { snapshotId }
+        });
+      }
+      // An explicit restore intentionally changes the checkout.  Record that
+      // selected checkpoint identity here, rather than treating it as an
+      // incidental divergence that a later read might normalize.
+      record.workspace.currentCommit = restoredManifest.commit;
+      record.workspace.currentBranch = restoredManifest.branch;
+      record.lastGitDivergence = undefined;
     } catch (error) {
-      const recovered = await this.sandboxProvider.restore(record.snapshots[rollback.snapshotId]!, restoreInput).then(() => true).catch(() => false);
+      const rollbackSnapshot = record.snapshots[rollback.snapshotId]!;
+      const rollbackExpectedManifest = rollbackSnapshot.manifest;
+      if (!rollbackExpectedManifest) throw error;
+      const recovered = await this.sandboxProvider.restore(rollbackSnapshot, restoreInput)
+        .then(async (rollbackHandle) => {
+          const rollbackManifest = await this.workspaceManifest(rollbackHandle);
+          if (
+            rollbackManifest.commit !== rollbackExpectedManifest.commit ||
+            rollbackManifest.branch !== rollbackExpectedManifest.branch ||
+            rollbackManifest.workspaceHash !== rollbackExpectedManifest.workspaceHash
+          ) return false;
+          // A fallback restore is equally explicit: only advertise it as
+          // recovered after its exact checkpoint contents have been proven.
+          record.workspace.currentCommit = rollbackExpectedManifest.commit;
+          record.workspace.currentBranch = rollbackExpectedManifest.branch;
+          record.workspace.activeSnapshotId = rollbackSnapshot.id;
+          record.lastGitDivergence = undefined;
+          return true;
+        })
+        .catch(() => false);
       record.workspace.state = recovered ? 'ready' : 'failed';
       record.workspace.updatedAt = new Date().toISOString();
       throw new ForgeError({ code: 'FORGE_SNAPSHOT_INCOMPATIBLE', message: recovered ? 'Forge could not restore the requested checkpoint; the previous workspace snapshot was recovered.' : 'Forge could not restore the requested checkpoint or recover the previous workspace snapshot.', retryable: recovered, details: { snapshotId, rollbackSnapshotId: rollback.snapshotId, recovered, cause: error instanceof Error ? error.message : String(error) } });
@@ -723,7 +888,8 @@ export class ForgeApplicationService {
         };
       }
     }
-    const result = await (await this.handle(record)).exec({
+    const handle = await this.handle(record);
+    const result = await handle.exec({
       command: input.command,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
@@ -889,16 +1055,12 @@ export class ForgeApplicationService {
   async reconcileGitState(record: WorkspaceRuntimeRecord): Promise<boolean> {
     let handle = await this.sandboxProvider.get(record.providerId);
     const inspection = await this.inspectWorkspace(handle, record);
-    if (inspection.state === 'mount_missing') handle = await this.recoverActiveCheckpoint(record);
+    if (inspection.state === 'mount_missing') {
+      await this.recoverActiveCheckpoint(record);
+      return true;
+    }
     if (inspection.state === 'diverged') {
-      record.lastGitDivergence = {
-        recordedCommit: record.workspace.currentCommit,
-        recordedBranch: record.workspace.currentBranch,
-        observedCommit: inspection.commit ?? '',
-        observedBranch: inspection.branch ?? '',
-        observedAt: new Date().toISOString()
-      };
-      record.workspace.updatedAt = new Date().toISOString();
+      this.noteGitDivergence(record, inspection);
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
         message: 'The workspace filesystem Git state differs from Forge metadata; Forge will not normalize it automatically.',
@@ -914,35 +1076,34 @@ export class ForgeApplicationService {
         details: { workspaceId: record.workspace.id }
       });
     }
-    const result = await handle.exec({
-      command: 'git rev-parse HEAD && git branch --show-current',
-      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 10_000,
-      sessionId: 'system', networkPolicy: 'deny_all'
-    });
-    if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not reconcile the workspace Git state.', retryable: false });
-    const [currentCommit = '', currentBranch = ''] = result.stdout.trim().split('\n');
-    if (!currentCommit) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Workspace Git state has no checked-out commit.', retryable: false });
-    const changed = record.workspace.currentCommit !== currentCommit || record.workspace.currentBranch !== currentBranch;
-    const isInitialCheckedOutRef = !record.workspace.lastPushedCommit && currentBranch === record.workspace.requestedRef;
-    if (changed || isInitialCheckedOutRef) {
-      if (changed) {
-        record.lastGitDivergence = {
-          recordedCommit: record.workspace.currentCommit,
-          recordedBranch: record.workspace.currentBranch,
-          observedCommit: currentCommit,
-          observedBranch: currentBranch,
-          observedAt: new Date().toISOString()
-        };
-      }
-      record.workspace.currentCommit = currentCommit;
-      record.workspace.currentBranch = currentBranch;
-      if (isInitialCheckedOutRef) {
-        record.workspace.lastPushedCommit = currentCommit;
-        record.workspace.lastPushedBranch = currentBranch;
-      }
-      record.workspace.updatedAt = new Date().toISOString();
+    return false;
+  }
+
+  /**
+   * Adopt an identity only immediately after Forge itself performed the Git
+   * mutation on this serialized handle. Public reconciliation never calls
+   * this method, so an external branch/HEAD change remains a hard error.
+   */
+  private async adoptOwnedGitTransition(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    expected?: { branch?: string }
+  ): Promise<{ commit: string; branch?: string }> {
+    const identity = await this.gitIdentity(handle);
+    if (expected?.branch !== undefined && identity.branch !== expected.branch) {
+      this.noteGitDivergence(record, identity);
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
+        message: 'Forge Git mutation completed with an unexpected checked-out branch.',
+        retryable: false,
+        details: { workspaceId: record.workspace.id, expectedBranch: expected.branch, observedBranch: identity.branch ?? null }
+      });
     }
-    return changed || isInitialCheckedOutRef;
+    record.workspace.currentCommit = identity.commit;
+    record.workspace.currentBranch = identity.branch;
+    record.lastGitDivergence = undefined;
+    record.workspace.updatedAt = new Date().toISOString();
+    return identity;
   }
 
   async exposePreview(
@@ -1057,7 +1218,7 @@ export class ForgeApplicationService {
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 200_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (listed.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not enumerate untracked files.', retryable: false });
+    if (listed.exitCode !== 0 || listed.truncated) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not completely enumerate untracked files.', retryable: false, details: { truncated: listed.truncated } });
     return Promise.all(listed.stdout.split('\0').filter(Boolean).map(async (path) => {
       const file = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 1 });
       return { path, sha256: file.sha256, sizeBytes: file.sizeBytes };
@@ -1065,7 +1226,8 @@ export class ForgeApplicationService {
   }
 
   private async shellFileSha256(record: WorkspaceRuntimeRecord, path: string) {
-    const result = await (await this.handle(record)).exec({
+    const handle = await this.handle(record);
+    const result = await handle.exec({
       command: `sha256sum -- ${quoted(path)}`,
       cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000,
       sessionId: 'system', networkPolicy: 'deny_all'
@@ -1090,19 +1252,27 @@ export class ForgeApplicationService {
     return { diff: result.stdout, untrackedFiles, hash: await sha256Text(JSON.stringify({ diff: result.stdout, untrackedFiles })) };
   }
 
-  private async workspaceManifest(handle: SandboxHandle): Promise<WorkspaceCheckpoint['manifest']> {
-    const identity = await handle.exec({
-      command: 'git rev-parse HEAD && git branch --show-current',
-      cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 10_000,
+  private async workspaceManifest(handle: SandboxHandle): Promise<NonNullable<WorkspaceCheckpoint['manifest']>> {
+    const identity = await this.gitIdentity(handle);
+    // Snapshot captures /workspace with gitignored files included. A
+    // normalized tar stream covers every captured path, file mode and
+    // symlink target rather than only Git-visible changes. pipefail makes a
+    // partial archive (for example, a concurrent write) fail closed.
+    const archive = await handle.exec({
+      command: "bash -o pipefail -c \"tar --sort=name --format=posix --numeric-owner --mtime='UTC 1970-01-01' --pax-option=delete=atime,delete=ctime -C /workspace -cf - . | sha256sum\"",
+      cwd: '/workspace', timeoutMs: 120_000, outputLimitBytes: 1_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (identity.exitCode !== 0 || identity.truncated) {
-      throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not capture the checkpoint Git identity.', retryable: false });
+    const workspaceHash = archive.stdout.trim().split(/\s+/u)[0] ?? '';
+    if (archive.exitCode !== 0 || archive.truncated || !/^[a-f0-9]{64}$/u.test(workspaceHash)) {
+      throw new ForgeError({
+        code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
+        message: 'Forge could not calculate a complete filesystem manifest for the checkpoint.',
+        retryable: true,
+        details: { truncated: archive.truncated }
+      });
     }
-    const [commit = '', branch = ''] = identity.stdout.trim().split('\n');
-    if (!commit) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not capture the checkpoint commit.', retryable: false });
-    const worktree = await this.worktreeFromHandle(handle);
-    return { commit, ...(branch ? { branch } : {}), worktreeHash: worktree.hash };
+    return { ...identity, workspaceHash };
   }
 
   async proveWorkspaceState(record: WorkspaceRuntimeRecord) {
@@ -1179,7 +1349,7 @@ export class ForgeApplicationService {
     return { ...diff, files, workspaceId: record.workspace.id, branch: record.workspace.currentBranch, head: record.workspace.currentCommit, filesystemRevision: record.workspace.revision };
   }
 
-  async assertDestroySafe(record: WorkspaceRuntimeRecord): Promise<void> {
+  async assertDestroySafe(record: WorkspaceRuntimeRecord, cloneSource?: RepositoryCloneSource): Promise<void> {
     await this.reconcileGitState(record);
     const status = await this.gitStatus(record);
     if (!status.clean || status.sync.state !== 'pushed') {
@@ -1190,18 +1360,52 @@ export class ForgeApplicationService {
         details: { clean: status.clean, sync: status.sync }
       });
     }
-    await this.assertRemoteRef(record, await this.handle(record));
+    await this.assertRemoteRef(record, await this.handle(record), cloneSource);
   }
 
-  private async assertRemoteRef(record: WorkspaceRuntimeRecord, handle: SandboxHandle): Promise<void> {
+  private async assertRemoteRef(
+    record: WorkspaceRuntimeRecord,
+    handle: SandboxHandle,
+    cloneSource?: RepositoryCloneSource
+  ): Promise<void> {
     const branch = record.workspace.lastPushedBranch;
     const commit = record.workspace.lastPushedCommit;
     if (!branch || !commit) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Forge cannot prove a remote branch without a recorded pushed branch and commit.', retryable: false });
-    const remote = await handle.exec({
-      command: `git ls-remote --exit-code origin ${quoted(`refs/heads/${branch}`)}`,
-      cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 10_000,
-      sessionId: 'system', networkPolicy: 'development'
-    });
+    const configPath = `/workspace/tmp/gitconfig-remote-${record.workspace.id}`;
+    const remoteTarget = cloneSource ? quoted(cloneSource.url) : 'origin';
+    if (cloneSource?.authorizationHeader) {
+      await handle.writeFile({
+        path: configPath,
+        content: `[http]\n\textraHeader = ${cloneSource.authorizationHeader}\n`
+      });
+    }
+    let remote;
+    try {
+      remote = await handle.exec({
+        command: `git ls-remote --exit-code ${remoteTarget} ${quoted(`refs/heads/${branch}`)}`,
+        cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 10_000,
+        sessionId: 'system', networkPolicy: 'development',
+        environment: cloneSource?.authorizationHeader
+          ? { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+          : { GIT_TERMINAL_PROMPT: '0' }
+      });
+    } finally {
+      if (cloneSource?.authorizationHeader) {
+        await handle.exec({
+          command: `rm -f ${quoted(configPath)}`,
+          cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000,
+          sessionId: 'system', networkPolicy: 'deny_all'
+        }).catch(() => undefined);
+      }
+    }
+    if (!remote) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Forge could not verify the remote branch with a fresh repository-scoped capability.',
+        retryable: true,
+        details: { branch, expectedCommit: commit }
+      });
+    }
     const remoteCommit = remote.stdout.trim().split(/\s+/u)[0] ?? '';
     if (remote.exitCode !== 0 || remote.truncated || remoteCommit !== commit) {
       throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Forge will not destroy a workspace until the remote branch is proven to resolve to the recorded pushed commit.', retryable: false, details: { branch, expectedCommit: commit, observedRemoteCommit: remoteCommit || null, truncated: remote.truncated, stderr: remote.stderr.slice(0, 2_000) } });
@@ -1217,14 +1421,14 @@ export class ForgeApplicationService {
     assertForgeBranch(branch);
     const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
     if (operation.replay) return { replay: true, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
-    const result = await (await this.handle(record)).exec({
+    const handle = await this.handle(record);
+    const result = await handle.exec({
       command: `git switch -c ${quoted(branch)}`,
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 50_000,
       sessionId: 'system', networkPolicy: 'deny_all'
     });
     if (result.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the branch.', retryable: false });
-    await this.reconcileGitState(record);
-    record.lastGitDivergence = undefined;
+    await this.adoptOwnedGitTransition(record, handle, { branch });
     return { branch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -1259,8 +1463,7 @@ export class ForgeApplicationService {
       }
     });
     if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
-    await this.reconcileGitState(record);
-    record.lastGitDivergence = undefined;
+    await this.adoptOwnedGitTransition(record, handle, { branch: record.workspace.currentBranch });
     return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
@@ -1345,7 +1548,7 @@ export class ForgeApplicationService {
     };
   }
 
-  async completeDestroy(record: WorkspaceRuntimeRecord) {
+  async completeDestroy(record: WorkspaceRuntimeRecord, cloneSource?: RepositoryCloneSource) {
     if (record.workspace.state === 'destroyed') {
       return { workspaceRevision: record.workspace.revision, replay: true };
     }
@@ -1374,7 +1577,7 @@ export class ForgeApplicationService {
         details: { currentCommit: currentCommit ?? null, currentBranch: currentBranch ?? null, dirty, lastPushedCommit: record.workspace.lastPushedCommit ?? null, lastPushedBranch: record.workspace.lastPushedBranch ?? null }
       });
     }
-    await this.assertRemoteRef(record, handle);
+    await this.assertRemoteRef(record, handle, cloneSource);
     for (const preview of Object.values(record.previews)) {
       await handle.revokePort(preview.port).catch(() => undefined);
     }

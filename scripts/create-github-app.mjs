@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const port = Number(process.env.FORGE_GITHUB_APP_SETUP_PORT ?? 43119);
-const origin = process.env.FORGE_ORIGIN ?? 'https://forge-edge-gateway.timcoy72.workers.dev';
+const origin = process.env.FORGE_ORIGIN ?? 'https://forge.timcoy.uk';
 const state = randomBytes(24).toString('hex');
 const configDirectory = join(homedir(), '.config', 'forge-mcp');
 
@@ -18,7 +18,9 @@ const manifest = {
   callback_urls: [`${origin}/login/github/callback`],
   setup_url: `${origin}/github/setup`,
   setup_on_update: true,
-  public: false,
+  // Forge is an installation service: a private App returns GitHub's
+  // intentional 404 to every non-owner and makes access requests impossible.
+  public: true,
   default_permissions: { contents: 'write', pull_requests: 'write' },
   // Installation lifecycle events are implicit and GitHub rejects them when
   // explicitly listed in an App manifest.

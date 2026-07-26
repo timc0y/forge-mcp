@@ -29,6 +29,7 @@ export interface Env {
   FORGE_DEFAULT_PROJECT_ID: string;
   FORGE_PUBLIC_ORIGIN: string;
   FORGE_PREVIEW_HOSTNAME: string;
+  CF_VERSION_METADATA: WorkerVersionMetadata;
   FORGE_ENVIRONMENT:
     | 'local'
     | 'development'

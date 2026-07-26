@@ -318,20 +318,49 @@ export default {
         const backupConfiguration = Boolean(
           env.BACKUP_BUCKET_NAME?.trim() && env.CLOUDFLARE_ACCOUNT_ID?.trim()
         );
-        const [database] = await Promise.all([
+        const [database, , , recoveryVerification] = await Promise.all([
           env.METADATA.prepare('SELECT 1 AS ok').first<{ ok: number }>(),
           env.ARTIFACTS.list({ limit: 1 }),
-          env.BACKUP_BUCKET.list({ limit: 1 })
+          env.BACKUP_BUCKET.list({ limit: 1 }),
+          env.METADATA.prepare("SELECT verified_at, evidence FROM service_verifications WHERE name='workspace_recovery'")
+            .first<{ verified_at: string; evidence: string }>()
         ]);
-        const ready = database?.ok === 1 && missingSecrets.length === 0 && backupConfiguration;
+        const recoveryEvidence = (() => {
+          try {
+            return recoveryVerification ? JSON.parse(recoveryVerification.evidence) as {
+              workspaceId?: string;
+              snapshotId?: string;
+              recoveryVersion?: string;
+            } : undefined;
+          } catch {
+            return undefined;
+          }
+        })();
+        const configured = database?.ok === 1 && missingSecrets.length === 0 && backupConfiguration;
+        const recoveryVerified = Boolean(
+          recoveryVerification?.verified_at &&
+          recoveryEvidence?.workspaceId &&
+          recoveryEvidence.snapshotId &&
+          recoveryEvidence.recoveryVersion === env.CF_VERSION_METADATA.id
+        );
+        const ready = configured && recoveryVerified;
         return json({
           ok: ready,
           service: 'forge-edge-gateway',
           environment: env.FORGE_ENVIRONMENT,
           bindings: { metadata: 'ready', artifacts: 'ready', backups: 'ready', browser: 'configured', sandbox: 'configured' },
           recovery: ready
-            ? { state: 'configured', verified: false }
-            : {
+            ? {
+                state: 'verified',
+                verified: true,
+                verifiedAt: recoveryVerification?.verified_at,
+                workspaceId: recoveryEvidence?.workspaceId,
+                snapshotId: recoveryEvidence?.snapshotId,
+                verificationVersion: recoveryEvidence?.recoveryVersion
+              }
+            : configured
+              ? { state: 'awaiting_live_round_trip', verified: false }
+              : {
                 state: 'blocked',
                 missing: [
                   ...missingSecrets,

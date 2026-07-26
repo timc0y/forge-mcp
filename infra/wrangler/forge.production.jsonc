@@ -19,8 +19,8 @@
     "FORGE_ENVIRONMENT": "production",
     "BACKUP_BUCKET_NAME": "forge-production-backups",
     "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
-    "FORGE_PUBLIC_ORIGIN": "https://forge-edge-gateway.timcoy72.workers.dev",
-    "FORGE_PREVIEW_HOSTNAME": "forge-edge-gateway.timcoy72.workers.dev",
+    "FORGE_PUBLIC_ORIGIN": "https://forge.timcoy.uk",
+    "FORGE_PREVIEW_HOSTNAME": "forge.timcoy.uk",
     "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
     "FORGE_DEFAULT_TENANT_ID": "ten_00000000000000000000000001",
     "FORGE_DEFAULT_PROJECT_ID": "prj_00000000000000000000000001",
@@ -28,6 +28,7 @@
     "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
     "GITHUB_APP_SLUG": "forge-mcp-cloud"
   },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "browser": {
     "binding": "BROWSER"
   },

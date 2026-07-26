@@ -83,4 +83,4 @@ See [system architecture](docs/architecture/system.md), [threat model](docs/secu
 
 ## Status
 
-The Forge Cloud private pilot is deployed at `https://forge-edge-gateway.timcoy72.workers.dev` with D1, R2, Durable Objects, Workflows, Browser Run, the smallest `basic` Sandbox profile, GitHub-backed OAuth and remote MCP. The `forge-mcp-cloud` GitHub App authorizes selected repositories. Private clone uses a short-lived Forge credential-proxy capability; branch pushes and draft PR creation require a separate browser approval.
+The Forge Cloud private pilot is deployed at `https://forge.timcoy.uk` with D1, R2, Durable Objects, Workflows, Browser Run, the smallest `basic` Sandbox profile, GitHub-backed OAuth and remote MCP. The `forge-mcp-cloud` GitHub App authorizes selected repositories. Private clone uses a short-lived Forge credential-proxy capability; branch pushes and draft PR creation require a separate browser approval.
