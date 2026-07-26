@@ -1304,9 +1304,10 @@ export class ForgeApplicationService {
       });
     }
     if (inspection.state === 'mount_missing') return this.recoverActiveCheckpoint(record);
+    const diagnosticCode = inspection.diagnostic?.providerCode ?? inspection.diagnostic?.code ?? 'UNKNOWN';
     throw new ForgeError({
       code: 'FORGE_PROVIDER_UNAVAILABLE',
-      message: 'Forge could not safely inspect the workspace filesystem; recovery was not attempted.',
+      message: `Forge could not safely inspect the workspace filesystem; recovery was not attempted (${diagnosticCode}).`,
       retryable: true,
       details: { workspaceId: record.workspace.id, inspection: inspection.diagnostic ?? null }
     });
@@ -1824,9 +1825,10 @@ export class ForgeApplicationService {
       });
     }
     if (inspection.state === 'unavailable') {
+      const diagnosticCode = inspection.diagnostic?.providerCode ?? inspection.diagnostic?.code ?? 'UNKNOWN';
       throw new ForgeError({
         code: 'FORGE_PROVIDER_UNAVAILABLE',
-        message: 'Forge could not safely inspect the workspace Git state.',
+        message: `Forge could not safely inspect the workspace Git state (${diagnosticCode}).`,
         retryable: true,
         details: { workspaceId: record.workspace.id, inspection: inspection.diagnostic ?? null }
       });
