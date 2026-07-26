@@ -565,10 +565,13 @@ export class ForgeApplicationService {
     record: WorkspaceRuntimeRecord
   ): Promise<{ state: 'matches' | 'mount_missing' | 'diverged' | 'unavailable'; commit?: string; branch?: string }> {
     const mount = await handle.exec({
-      // Only a completely empty restore target proves a sleeping Sandbox
-      // removed the mount. A missing marker/repository or a partial mount is
-      // ambiguous and must never trigger an automatic overwrite.
-      command: 'test -d /workspace && test ! -e /workspace/repo && test ! -e /workspace/forge/workspace-id && test -z "$(find /workspace -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)"',
+      // Cloudflare restarts the image after an idle sleep. Our image deliberately
+      // seeds five empty directories under /workspace, so a true FUSE-mount loss
+      // is not literally an empty directory. Treat *only* that exact known
+      // scaffold as restoreable. Any marker, repository content, unexpected
+      // path, or file in a seeded directory remains ambiguous and must never be
+      // overwritten automatically.
+      command: 'test -d /workspace && test -d /workspace/repo && test -d /workspace/cache && test -d /workspace/artifacts && test -d /workspace/tmp && test -d /workspace/forge && test ! -e /workspace/forge/workspace-id && test -z "$(find /workspace -mindepth 1 -maxdepth 1 ! -name repo ! -name cache ! -name artifacts ! -name tmp ! -name forge -print -quit 2>/dev/null)" && test -z "$(find /workspace/repo /workspace/cache /workspace/artifacts /workspace/tmp /workspace/forge -mindepth 1 -print -quit 2>/dev/null)"',
       cwd: '/workspace',
       timeoutMs: 30_000,
       outputLimitBytes: 10_000,

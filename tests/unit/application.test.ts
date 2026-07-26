@@ -52,7 +52,7 @@ class FakeProvider implements SandboxProvider {
       if (input.command.startsWith('git rev-parse')) {
         return { exitCode: 0, stdout: `${this.head}\n${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
-      if (input.command.includes('test ! -e /workspace/repo && test ! -e /workspace/forge/workspace-id')) {
+      if (input.command.includes('test -d /workspace && test -d /workspace/repo && test -d /workspace/cache')) {
         if (this.workspaceProbeFails) throw new Error('sandbox probe timed out');
         return !this.workspacePresent && !this.workspaceOtherContentPresent
           ? { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] }
@@ -206,6 +206,10 @@ describe('Forge application service', () => {
     await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
       .resolves.toMatchObject({ entries: [] });
     expect(provider.calls).toContain('restore');
+    // The production image creates these empty directories at build time. A
+    // Sandbox sleep therefore returns a known scaffold, not a literally empty
+    // /workspace; restoring it is safe only after this exact-shape check.
+    expect(provider.calls.some((command) => command.includes('! -name repo ! -name cache ! -name artifacts ! -name tmp ! -name forge'))).toBe(true);
     expect(record.processes).toEqual({});
     expect(record.previews).toEqual({});
   });
