@@ -584,12 +584,14 @@ export class ForgeApplicationService {
     try {
       mount = await handle.exec({
       // Cloudflare restarts the image after an idle sleep. Our image deliberately
-      // seeds five empty directories under /workspace, so a true FUSE-mount loss
-      // is not literally an empty directory. Treat *only* that exact known
-      // scaffold as restoreable. Any marker, repository content, unexpected
-      // path, or file in a seeded directory remains ambiguous and must never be
-      // overwritten automatically.
-      command: 'test -d /workspace && test -d /workspace/repo && test -d /workspace/cache && test -d /workspace/artifacts && test -d /workspace/tmp && test -d /workspace/forge && test ! -e /workspace/forge/workspace-id && test -z "$(find /workspace -mindepth 1 -maxdepth 1 ! -name repo ! -name cache ! -name artifacts ! -name tmp ! -name forge -print -quit 2>/dev/null)" && test -z "$(find /workspace/repo /workspace/cache /workspace/artifacts /workspace/tmp /workspace/forge -mindepth 1 -print -quit 2>/dev/null)"',
+      // seeds empty directories under /workspace, and the SDK/session layer may
+      // add further empty directories before this probe runs. A true FUSE-mount
+      // loss is therefore not literally an empty directory. The safe invariant
+      // is stricter where it matters: no Forge marker, no Git checkout, and no
+      // file-like object (regular file, symlink, socket or pipe) anywhere under
+      // /workspace. Any possible user bytes make the state ambiguous and stop
+      // automatic recovery.
+      command: 'test -d /workspace && test ! -e /workspace/forge/workspace-id && test ! -d /workspace/repo/.git && test -z "$(find /workspace -mindepth 1 \( -type f -o -type l -o -type s -o -type p \) -print -quit 2>/dev/null)"',
       cwd: '/workspace',
       timeoutMs: 30_000,
       outputLimitBytes: 10_000,
