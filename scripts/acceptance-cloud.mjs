@@ -151,7 +151,7 @@ try {
   const created = await mcp.call('forge_workspace_create', {
     repository: { provider: 'github', owner: 'mdn', name: 'beginner-html-site-styled' },
     ref: 'main',
-    runtime: 'node-22',
+    runtime: 'node-24',
     persistence: 'ephemeral',
     bootstrap: false,
     idempotency_key: key('create')

@@ -146,6 +146,91 @@ async function sha256Text(value: string): Promise<string> {
 export class ForgeApplicationService {
   constructor(private readonly sandboxProvider: SandboxProvider) {}
 
+  private restoreInput(record: WorkspaceRuntimeRecord): CreateSandboxInput {
+    return {
+      providerId: record.providerId,
+      runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
+      labels: {
+        workspaceId: record.workspace.id,
+        tenantId: record.workspace.tenantId,
+        repository: repositorySlug(record.workspace.repository)
+      },
+      idleTimeout: '90s'
+    };
+  }
+
+  /**
+   * A sandbox sleep removes its workspace mount.  Do not let a caller observe
+   * an empty replacement workspace: verify the stable workspace marker and
+   * the recorded Git identity, then restore the durable active checkpoint.
+   */
+  private async inspectWorkspace(
+    handle: SandboxHandle,
+    record: WorkspaceRuntimeRecord
+  ): Promise<{ state: 'matches' | 'missing' | 'diverged'; commit?: string; branch?: string }> {
+    const result = await handle.exec({
+      command: `test "$(cat /workspace/forge/workspace-id 2>/dev/null)" = ${quoted(record.workspace.id)} && test -d /workspace/repo/.git && git -C /workspace/repo rev-parse HEAD && git -C /workspace/repo branch --show-current`,
+      cwd: '/workspace',
+      timeoutMs: 30_000,
+      outputLimitBytes: 10_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    }).catch(() => undefined);
+    if (!result || result.exitCode !== 0 || result.truncated) return { state: 'missing' };
+    const [commit = '', branch = ''] = result.stdout.trim().split('\n');
+    if (
+      (!record.workspace.currentCommit || commit === record.workspace.currentCommit) &&
+      (!record.workspace.currentBranch || branch === record.workspace.currentBranch)
+    ) return { state: 'matches', commit, branch };
+    return { state: 'diverged', commit, branch };
+  }
+
+  private async recoverActiveCheckpoint(record: WorkspaceRuntimeRecord): Promise<SandboxHandle> {
+    const snapshotId = record.workspace.activeSnapshotId;
+    const snapshot = snapshotId ? record.snapshots[snapshotId] : undefined;
+    if (!snapshot) {
+      throw new ForgeError({
+        code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
+        message: 'Forge cannot recover this workspace because it has no durable active checkpoint.',
+        retryable: false,
+        details: { workspaceId: record.workspace.id, activeSnapshotId: snapshotId ?? null }
+      });
+    }
+    let restored: SandboxHandle;
+    try {
+      restored = await this.sandboxProvider.restore(snapshot, this.restoreInput(record));
+    } catch (error) {
+      throw new ForgeError({
+        code: 'FORGE_SNAPSHOT_INCOMPATIBLE',
+        message: 'Forge could not restore the durable workspace checkpoint after a sandbox restart.',
+        retryable: true,
+        details: {
+          workspaceId: record.workspace.id,
+          snapshotId,
+          cause: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
+    if ((await this.inspectWorkspace(restored, record)).state !== 'matches') {
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
+        message: 'The restored checkpoint does not match the recorded workspace Git state.',
+        retryable: false,
+        details: {
+          workspaceId: record.workspace.id,
+          snapshotId,
+          expectedCommit: record.workspace.currentCommit ?? null,
+          expectedBranch: record.workspace.currentBranch ?? null
+        }
+      });
+    }
+    // A restored mount cannot retain running processes or their exposed ports.
+    record.processes = {};
+    record.previews = {};
+    record.workspace.updatedAt = new Date().toISOString();
+    return restored;
+  }
+
   initializeWorkspace(input: CreateWorkspaceInput): WorkspaceRuntimeRecord {
     assertRef(input.ref);
     const now = new Date().toISOString();
@@ -203,16 +288,7 @@ export class ForgeApplicationService {
     await onStateChange(record);
 
     try {
-      const handle = await this.sandboxProvider.create({
-        providerId: record.providerId,
-        runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
-        labels: {
-          workspaceId: record.workspace.id,
-          tenantId: record.workspace.tenantId,
-          repository: repositorySlug(record.workspace.repository)
-        },
-        idleTimeout: '90s'
-      });
+      const handle = await this.sandboxProvider.create(this.restoreInput(record));
       await assertRuntimeProfile(handle, record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile']);
 
       const source = cloneSource ?? {
@@ -290,12 +366,27 @@ export class ForgeApplicationService {
         networkPolicy: 'deny_all'
       });
       const [currentCommit = '', currentBranch = ''] = gitState.stdout.trim().split('\n');
+      if (!currentCommit) {
+        throw new ForgeError({
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: 'Forge could not resolve the initial Git commit for this workspace.',
+          retryable: true,
+          details: { stage: 'git_state' }
+        });
+      }
       record.workspace.currentCommit = currentCommit;
       record.workspace.currentBranch = currentBranch || record.workspace.requestedRef;
       record.workspace.baseCommit = currentCommit;
       record.workspace.initialHeadCommit = currentCommit;
       record.workspace.lastPushedCommit = currentCommit;
       record.workspace.lastPushedBranch = record.workspace.currentBranch;
+      await handle.writeFile({
+        path: '/workspace/forge/workspace-id',
+        content: `${record.workspace.id}\n`
+      });
+      // A workspace is not ready until its clone/bootstrap state is outside the
+      // disposable container.  This checkpoint is also the sleep/restart base.
+      await this.checkpoint(record, `initial-${record.workspace.id}`);
       record.workspace.state = 'ready';
       record.workspace.failure = undefined;
       record.workspace.revision = nextRevision(record.workspace.revision);
@@ -372,7 +463,25 @@ export class ForgeApplicationService {
         retryable: record.workspace.state === 'suspended'
       });
     }
-    return this.sandboxProvider.get(record.providerId);
+    const handle = await this.sandboxProvider.get(record.providerId);
+    const inspection = await this.inspectWorkspace(handle, record);
+    if (inspection.state === 'matches') return handle;
+    if (inspection.state === 'diverged') {
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
+        message: 'The workspace filesystem Git state differs from Forge metadata; recovery will not overwrite it.',
+        retryable: false,
+        details: {
+          workspaceId: record.workspace.id,
+          expectedCommit: record.workspace.currentCommit ?? null,
+          expectedBranch: record.workspace.currentBranch ?? null,
+          observedCommit: inspection.commit ?? null,
+          observedBranch: inspection.branch ?? null,
+          activeSnapshotId: record.workspace.activeSnapshotId ?? null
+        }
+      });
+    }
+    return this.recoverActiveCheckpoint(record);
   }
 
   beginMutation(
@@ -496,12 +605,7 @@ export class ForgeApplicationService {
       excludeGitignored: false
     });
     record.snapshots[rollback.id] = rollback;
-    const restoreInput: CreateSandboxInput = {
-      providerId: record.providerId,
-      runtimeProfile: record.workspace.runtimeProfile as CreateWorkspaceInput['runtimeProfile'],
-      labels: { workspaceId: record.workspace.id, tenantId: record.workspace.tenantId, repository: repositorySlug(record.workspace.repository) },
-      idleTimeout: '90s'
-    };
+    const restoreInput = this.restoreInput(record);
     record.workspace.state = 'restoring';
     record.workspace.revision = nextRevision(record.workspace.revision, expectedRevision);
     record.workspace.updatedAt = new Date().toISOString();
@@ -734,7 +838,10 @@ export class ForgeApplicationService {
   }
 
   async reconcileGitState(record: WorkspaceRuntimeRecord): Promise<boolean> {
-    const result = await (await this.handle(record)).exec({
+    let handle = await this.sandboxProvider.get(record.providerId);
+    const inspection = await this.inspectWorkspace(handle, record);
+    if (inspection.state === 'missing') handle = await this.recoverActiveCheckpoint(record);
+    const result = await handle.exec({
       command: 'git rev-parse HEAD && git branch --show-current',
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 10_000,
       sessionId: 'system', networkPolicy: 'deny_all'

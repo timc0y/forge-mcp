@@ -17,6 +17,8 @@
   "upload_source_maps": true,
   "vars": {
     "FORGE_ENVIRONMENT": "production",
+    "BACKUP_BUCKET_NAME": "forge-production-backups",
+    "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
     "FORGE_PUBLIC_ORIGIN": "https://forge-edge-gateway.timcoy72.workers.dev",
     "FORGE_PREVIEW_HOSTNAME": "forge-edge-gateway.timcoy72.workers.dev",
     "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
@@ -41,6 +43,10 @@
     {
       "binding": "ARTIFACTS",
       "bucket_name": "forge-production-artifacts"
+    },
+    {
+      "binding": "BACKUP_BUCKET",
+      "bucket_name": "forge-production-backups"
     }
   ],
   "containers": [

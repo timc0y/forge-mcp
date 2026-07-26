@@ -305,16 +305,31 @@ export default {
         });
       }
       if (url.pathname === '/ready') {
+        const requiredSecrets = {
+          capabilitySigning: Boolean(env.FORGE_CAPABILITY_SIGNING_KEY),
+          credentialEncryption: Boolean(env.FORGE_CREDENTIAL_ENCRYPTION_KEY),
+          internalPreview: Boolean(env.FORGE_INTERNAL_PREVIEW_KEY),
+          r2AccessKey: Boolean(env.R2_ACCESS_KEY_ID),
+          r2SecretKey: Boolean(env.R2_SECRET_ACCESS_KEY)
+        };
+        const missingSecrets = Object.entries(requiredSecrets)
+          .filter(([, present]) => !present)
+          .map(([name]) => name);
         const [database] = await Promise.all([
           env.METADATA.prepare('SELECT 1 AS ok').first<{ ok: number }>(),
-          env.ARTIFACTS.list({ limit: 1 })
+          env.ARTIFACTS.list({ limit: 1 }),
+          env.BACKUP_BUCKET.list({ limit: 1 })
         ]);
+        const ready = database?.ok === 1 && missingSecrets.length === 0;
         return json({
-          ok: database?.ok === 1,
+          ok: ready,
           service: 'forge-edge-gateway',
           environment: env.FORGE_ENVIRONMENT,
-          bindings: { metadata: 'ready', artifacts: 'ready', browser: 'configured', sandbox: 'configured' }
-        }, database?.ok === 1 ? 200 : 503);
+          bindings: { metadata: 'ready', artifacts: 'ready', backups: 'ready', browser: 'configured', sandbox: 'configured' },
+          recovery: missingSecrets.length === 0
+            ? { state: 'configured' }
+            : { state: 'blocked', missing: missingSecrets }
+        }, ready ? 200 : 503);
       }
       if (
         url.pathname === '/.well-known/oauth-protected-resource' ||

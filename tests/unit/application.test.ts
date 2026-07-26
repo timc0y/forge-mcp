@@ -13,6 +13,7 @@ class FakeProvider implements SandboxProvider {
   readonly calls: string[] = [];
   readonly files = new Map<string, string>();
   head = 'abcdef';
+  workspacePresent = true;
   readonly handle: SandboxHandle = {
     providerId: 'fake',
     exec: async (input) => {
@@ -35,6 +36,11 @@ class FakeProvider implements SandboxProvider {
       }
       if (input.command.startsWith('git rev-parse')) {
         return { exitCode: 0, stdout: `${this.head}\nmain\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+      }
+      if (input.command.includes('/workspace/forge/workspace-id')) {
+        return this.workspacePresent
+          ? { exitCode: 0, stdout: `${this.head}\nmain\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] }
+          : { exitCode: 1, stdout: '', stderr: 'workspace mount is unavailable', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.startsWith('git status --porcelain=v2 --branch &&')) {
         return { exitCode: 0, stdout: `# branch.head main\n${this.head}\nmain\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
@@ -87,7 +93,7 @@ class FakeProvider implements SandboxProvider {
   async resume() { return this.handle; }
   async destroy() { this.calls.push('destroy'); }
   async snapshot() { return { id: ids.snapshot(), providerSnapshotId: 'snapshot', providerVersion: this.version, createdAt: new Date().toISOString() }; }
-  async restore() { return this.handle; }
+  async restore() { this.calls.push('restore'); this.workspacePresent = true; return this.handle; }
 }
 
 function initialized(service: ForgeApplicationService): WorkspaceRuntimeRecord {
@@ -129,7 +135,23 @@ describe('Forge application service', () => {
     });
     expect(states).toEqual(['provisioning', 'bootstrapping', 'ready']);
     expect(record.workspace).toMatchObject({ currentCommit: 'abcdef', currentBranch: 'main', state: 'ready' });
+    expect(record.workspace.activeSnapshotId).toBeDefined();
+    expect(Object.keys(record.snapshots)).toHaveLength(1);
     expect(provider.calls).toContain('npm ci');
+  });
+
+  it('restores its active checkpoint before exposing a workspace after a sandbox restart', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    await service.provisionWorkspace(record, false);
+    provider.workspacePresent = false;
+
+    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+      .resolves.toMatchObject({ entries: [] });
+    expect(provider.calls).toContain('restore');
+    expect(record.processes).toEqual({});
+    expect(record.previews).toEqual({});
   });
 
   it('keeps retryable provisioning failures non-terminal until retries are exhausted', async () => {

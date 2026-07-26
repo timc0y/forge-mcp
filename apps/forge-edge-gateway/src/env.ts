@@ -14,12 +14,17 @@ export interface Env {
   DESTROY_WORKFLOW: Workflow<DestroyWorkspaceParams>;
   METADATA: D1Database;
   ARTIFACTS: R2Bucket;
+  BACKUP_BUCKET: R2Bucket;
   BROWSER: BrowserRun;
   FORGE_DEV_AUTH_TOKEN?: string;
   FORGE_OWNER_AUTH_TOKEN?: string;
   FORGE_CAPABILITY_SIGNING_KEY: string;
   FORGE_CREDENTIAL_ENCRYPTION_KEY: string;
   FORGE_INTERNAL_PREVIEW_KEY: string;
+  BACKUP_BUCKET_NAME: string;
+  CLOUDFLARE_ACCOUNT_ID: string;
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
   FORGE_DEFAULT_TENANT_ID: string;
   FORGE_DEFAULT_PROJECT_ID: string;
   FORGE_PUBLIC_ORIGIN: string;
