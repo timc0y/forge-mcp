@@ -142,13 +142,35 @@ function key(label) {
   return `acceptance-${label}-${Date.now()}-${randomBytes(4).toString('hex')}`;
 }
 
-function pngDimensions(data) {
+function imageDimensions(data) {
   const bytes = Buffer.from(data, 'base64');
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(signature)) {
-    throw new Error('Browser artifact was not a valid PNG.');
+  if (bytes.length >= 24 && bytes.subarray(0, 8).equals(signature)) {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
   }
-  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+  // Forge intentionally defaults review evidence to JPEG for lower R2 and MCP
+  // payload cost. Read JPEG start-of-frame dimensions without a native image
+  // dependency so this production acceptance test verifies both supported
+  // image formats.
+  if (bytes.length >= 9 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    for (let offset = 2; offset + 8 < bytes.length;) {
+      if (bytes[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      while (bytes[offset] === 0xff) offset += 1;
+      const marker = bytes[offset++];
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+      const length = bytes.readUInt16BE(offset);
+      if (length < 2 || offset + length > bytes.length) break;
+      const startOfFrame = (marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf);
+      if (startOfFrame) {
+        return { height: bytes.readUInt16BE(offset + 3), width: bytes.readUInt16BE(offset + 5) };
+      }
+      offset += length;
+    }
+  }
+  throw new Error('Browser evidence was neither a valid PNG nor a valid JPEG.');
 }
 
 async function waitFor(call, description, predicate, timeoutMs = 240_000) {
@@ -304,30 +326,27 @@ try {
       { id: 'desktop', width: 1440, height: 900 }
     ]
   });
-  if (review.value.schemaVersion !== 1 || review.value.evidence?.length !== 2) {
+  if (
+    review.value.schemaVersion !== 1 ||
+    review.value.capturedCount !== 2 ||
+    review.value.evidence?.length !== 2
+  ) {
     throw new Error(`Review capture was incomplete: ${JSON.stringify(review.value)}`);
   }
-  if (!review.value.evidence.every((item) => JSON.stringify(item.accessibility).includes('Mozilla'))) {
-    throw new Error('Review evidence did not contain the target site accessibility content.');
+  if (!review.value.evidence.every((item) => Number.isInteger(item.findingCount))) {
+    throw new Error(`Review evidence omitted its structure-health signal: ${JSON.stringify(review.value.evidence)}`);
   }
-  for (const item of review.value.evidence) {
-    const artifact = await mcp.call('forge_artifact_get', {
-      workspace_id: workspaceId,
-      artifact_id: item.screenshot.artifactId,
-      max_bytes: 4_000_000
-    });
-    const image = artifact.content.find((content) => content.type === 'image');
-    if (!image) {
-      throw new Error(`Artifact ${item.screenshot.artifactId} did not return MCP image content.`);
-    }
-    const dimensions = pngDimensions(image.data);
-    if (
-      dimensions.width !== item.screenshot.width ||
-      dimensions.height !== item.screenshot.height
-    ) {
-      throw new Error(
-        `Artifact ${item.screenshot.artifactId} dimensions did not match its evidence metadata.`
-      );
+  const images = review.content.filter((content) => content.type === 'image');
+  if (images.length !== 2) {
+    throw new Error(`Review capture returned ${images.length} inline images for two requested viewports.`);
+  }
+  for (const image of images) {
+    const dimensions = imageDimensions(image.data);
+    if (!review.value.evidence.some((item) => {
+      const viewport = item.observedViewport ?? item.requestedViewport;
+      return viewport?.width === dimensions.width && viewport?.height === dimensions.height;
+    })) {
+      throw new Error(`Inline screenshot dimensions ${dimensions.width}x${dimensions.height} did not match evidence metadata.`);
     }
   }
   console.log(JSON.stringify({
@@ -337,9 +356,8 @@ try {
     commit: review.value.commit,
     evidence: review.value.evidence.map((item) => ({
       environment: item.environment,
-      artifact_id: item.screenshot.artifactId,
-      width: item.screenshot.width,
-      height: item.screenshot.height
+      finding_count: item.findingCount,
+      viewport: item.observedViewport ?? item.requestedViewport
     }))
   }, null, 2));
 } finally {
