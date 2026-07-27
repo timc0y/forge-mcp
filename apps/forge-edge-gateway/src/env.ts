@@ -101,4 +101,8 @@ export interface Env {
   // Defaults to PostHog Cloud US (https://us.i.posthog.com). Override for
   // EU cloud or a self-hosted instance.
   POSTHOG_HOST?: string;
+  // Optional embedded PostHog insight/dashboard URL for /app/live (full URL).
+  FORGE_POSTHOG_LIVE_EMBED_URL?: string;
+  // Optional PostHog project id; with POSTHOG_HOST builds …/embedded/{id}.
+  FORGE_POSTHOG_PROJECT_ID?: string;
 }

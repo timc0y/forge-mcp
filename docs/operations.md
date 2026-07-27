@@ -27,6 +27,13 @@ pnpm run deploy              # Worker + Sandbox container image (needs Docker)
 pnpm run deploy:worker       # Worker only; skips container image build/push
 ```
 
+**Live operator view:** signed-in owners open [`/app/live`](https://forge.timcoy.uk/app/live)
+for a read-only window: workspace list, D1 + in-DO MCP tool trail, process log tails,
+SSE updates (~4s), and an optional PostHog embed (`FORGE_POSTHOG_LIVE_EMBED_URL` or
+`FORGE_POSTHOG_PROJECT_ID` + `POSTHOG_API_KEY`). Observer MCP tools:
+`forge_observer_workspaces`, `forge_observer_workspace`, `forge_observer_activity`.
+Deploy with `pnpm run deploy:worker` to avoid disturbing running sandboxes.
+
 **Docker is required for `pnpm run deploy`.** Wrangler builds `infra/wrangler`
 `containers[].image` (`../../Dockerfile`) locally before upload. Start Docker
 Desktop (`open -a Docker`) or use `deploy:worker` when you changed only Worker

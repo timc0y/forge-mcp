@@ -20,6 +20,9 @@ const RETRY_SAFE_MUTATIONS = new Set([
 
 const TRUE_READS = new Set([
   'forge_capabilities',
+  'forge_observer_workspaces',
+  'forge_observer_workspace',
+  'forge_observer_activity',
   'forge_doctor',
   'forge_workspace_prove',
   'forge_repository_list',
@@ -70,6 +73,9 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_process_stop: { invoking: 'Stopping process…', invoked: 'Process stopped' },
   forge_operation_get: { invoking: 'Checking operation…', invoked: 'Operation status ready' },
   forge_doctor: { invoking: 'Running doctor…', invoked: 'Doctor report ready' },
+  forge_observer_workspaces: { invoking: 'Listing workspaces…', invoked: 'Workspace list ready' },
+  forge_observer_workspace: { invoking: 'Observing workspace…', invoked: 'Workspace observer ready' },
+  forge_observer_activity: { invoking: 'Loading activity…', invoked: 'Activity ready' },
   forge_workspace_prove: { invoking: 'Proving workspace…', invoked: 'Workspace proof ready' },
   forge_git_sync: { invoking: 'Syncing remote…', invoked: 'Remote sync ready' },
   forge_git_status: { invoking: 'Reading Git status…', invoked: 'Git status ready' },

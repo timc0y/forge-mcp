@@ -64,6 +64,7 @@ describe('Forge MCP public contracts', () => {
     expect(forgeTools.some((candidate) => candidate.name === 'forge_process_stop')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_credential_list')).toBe(false);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_workspace_prove')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_observer_workspaces')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_git_sync')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_check_cancel')).toBe(false);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(false);

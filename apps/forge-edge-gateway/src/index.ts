@@ -22,6 +22,7 @@ import type { Env } from './env';
 import { galleryPage } from './review-gallery';
 import { secretsDashboard } from './secrets-ui';
 import { forgeGlyph } from './ui';
+import { liveApiSnapshot, liveApiWorkspaceDetail, liveDashboardPage, liveApiStream } from './live-dashboard';
 import {
   appDashboard,
   approvalPage,
@@ -718,6 +719,38 @@ export default {
       if (url.pathname === '/login/github/callback') return await finishGitHubLogin(request, env);
       if (url.pathname === '/logout') return await logout(request, env);
       if (url.pathname === '/app') return await appDashboard(request, env);
+      if (url.pathname === '/app/live') return await liveDashboardPage(request, env);
+      if (url.pathname === '/app/api/live' && request.method === 'GET') {
+        try {
+          return await liveApiSnapshot(request, env);
+        } catch (error) {
+          if (error instanceof ForgeError && error.code === 'FORGE_PERMISSION_DENIED') {
+            return json({ error: error.message }, 401);
+          }
+          throw error;
+        }
+      }
+      const liveDetailMatch = url.pathname.match(/^\/app\/api\/live\/(ws_[0-9a-hjkmnp-tv-z]{20,32})$/u);
+      if (liveDetailMatch?.[1] && request.method === 'GET') {
+        try {
+          return await liveApiWorkspaceDetail(request, env, liveDetailMatch[1]);
+        } catch (error) {
+          if (error instanceof ForgeError && error.code === 'FORGE_PERMISSION_DENIED') {
+            return json({ error: error.message }, 401);
+          }
+          throw error;
+        }
+      }
+      if (url.pathname === '/app/api/live/stream' && request.method === 'GET') {
+        try {
+          return await liveApiStream(request, env);
+        } catch (error) {
+          if (error instanceof ForgeError && error.code === 'FORGE_PERMISSION_DENIED') {
+            return json({ error: error.message }, 401);
+          }
+          throw error;
+        }
+      }
       if (url.pathname === '/app/secrets' && (request.method === 'GET' || request.method === 'POST')) {
         return await secretsDashboard(request, env);
       }

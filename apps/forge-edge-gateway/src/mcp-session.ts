@@ -67,6 +67,8 @@ import {
 } from './github';
 import { createDeferredAction, listDeferredActionsForWorkspace } from './deferred-actions';
 import { autoPushForgeBranchesEnabled } from './auto-push-policy';
+import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
+import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
 
 interface SessionProps extends Record<string, unknown> {
   subject: string;
@@ -387,7 +389,7 @@ type CompactWorkspaceState = {
   currentBranch?: string;
 };
 
-async function outgoingComparisonRef(workspace: WorkspaceCoordinator, providedBase?: string): Promise<string> {
+async function outgoingComparisonRef(workspace: DurableObjectStub<WorkspaceCoordinator>, providedBase?: string): Promise<string> {
   const state = (await workspace.getState({ compact: true })) as CompactWorkspaceState;
   if (providedBase && providedBase !== state.requestedRef && providedBase !== 'main') {
     throw new ForgeError({
@@ -502,6 +504,31 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       Date.now()
     );
+    const workspaceId = typeof event.input.workspace_id === 'string' && event.input.workspace_id.trim()
+      ? event.input.workspace_id.trim()
+      : undefined;
+    const waitUntil = (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil;
+    waitUntil?.(
+      appendWorkspaceActivity(this.env, {
+        tenantId: identity.tenantId,
+        projectId: identity.projectId,
+        workspaceId: workspaceId ?? null,
+        tool: event.tool,
+        status: event.status,
+        durationMs: event.durationMs,
+        errorCode: event.errorCode
+      }).catch(() => undefined)
+    );
+    if (workspaceId) {
+      waitUntil?.(
+        coordinator(this.env, workspaceId).appendLiveActivity({
+          tool: event.tool,
+          status: event.status,
+          durationMs: event.durationMs,
+          errorCode: event.errorCode
+        }).catch(() => undefined)
+      );
+    }
   }
 
   // Slash-command style entry points that mirror the server workflow in the
@@ -723,8 +750,32 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         git: { immutable_base_commit: true, workspace_proof: true, branch_push: 'approval_required', draft_pull_request: 'approval_required', direct_merge: 'disabled' },
         processes: { managed_status: true, persistent_logs: true, preview_requires_exact_process_id: true },
         deployment: { cloudflare_wrangler: 'approval_required_with_validated_profile' },
-        recovery: { checkpoint: true, destruction_with_uncommitted_or_unpushed_work: 'blocked' }
+        recovery: { checkpoint: true, destruction_with_uncommitted_or_unpushed_work: 'blocked' },
+        observer: { read_only_tools: ['forge_observer_workspaces', 'forge_observer_workspace', 'forge_observer_activity'], live_portal: '/app/live' }
       }),
+      forge_observer_workspaces: async () => {
+        const identity = this.identity();
+        return asRecord(await buildLiveWorkspaceList(env, identity.tenantId));
+      },
+      forge_observer_workspace: async (input) => {
+        const identity = this.identity();
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        return asRecord(await buildWorkspaceObserverDetail(env, identity.tenantId, workspaceId));
+      },
+      forge_observer_activity: async (input) => {
+        const identity = this.identity();
+        const workspaceId = input.workspace_id === undefined
+          ? undefined
+          : await resolveWorkspaceId(env, identity, input.workspace_id);
+        const limit = input.limit === undefined ? 40 : Number(input.limit);
+        const since = input.since === undefined ? undefined : text(input.since);
+        const activity = await listWorkspaceActivity(env, identity.tenantId, {
+          workspaceId,
+          limit: Number.isFinite(limit) ? limit : 40,
+          since
+        });
+        return { activity, returned: activity.length };
+      },
       forge_secret_list: async () => {
         const identity = this.identity();
         const [secrets, attachments] = await Promise.all([

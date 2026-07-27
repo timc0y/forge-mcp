@@ -360,6 +360,9 @@ const repositoryListOutput = {
 export const forgeTools = [
   // Discover
   { name: 'forge_capabilities', title: 'Capabilities', description: 'Return what this Forge session can do (workspace, Git, secrets, previews, approvals).', inputSchema: {}, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_observer_workspaces', title: 'Observer: list workspaces', description: 'Read-only snapshot of live workspace slots, tasks, and branch state for operator visibility. Does not mutate sandboxes.', inputSchema: {}, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_observer_workspace', title: 'Observer: workspace detail', description: 'Read-only observer bundle: processes, merged MCP tool trail, log tail. Same data as /app/live for one workspace.', inputSchema: { workspace_id: workspaceIdOptional }, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_observer_activity', title: 'Observer: tool activity', description: 'Read-only D1 trail of MCP tool calls for this account (optional workspace filter).', inputSchema: { workspace_id: workspaceIdOptional, limit: z.number().int().min(1).max(200).default(40), since: z.string().datetime().optional() }, sideEffect: 'none', approval: 'none' },
   { name: 'forge_repository_list', title: 'List repositories', description: 'List GitHub repositories authorized for this account. No container.', inputSchema: {}, outputSchema: repositoryListOutput, sideEffect: 'none', approval: 'none' },
 
   // Tasks (durable, container-free)

@@ -835,6 +835,7 @@ ${accessSection}${reviewSection}
 <div class="prompt">Fix the most important issue you found, verify it with screenshots, then submit it for my review.</div></section>
 </div><aside>
 <section class="section"><h2>Workspace capacity</h2>
+<p class="note"><a href="/app/live">Open live activity</a> — read-only view of running workspaces, MCP tools, and log tails.</p>
 <div class="slots">${Array.from({ length: caps.perTenant }, (_, index) => `<i class="slot ${usedSlots > index ? 'used' : ''}"></i>`).join('')}</div>
 <p class="note">${usedSlots} of ${caps.perTenant} active. Idle workspaces are reclaimed after ${ttlMinutes} minutes.</p>
 ${occupantRows}</section>

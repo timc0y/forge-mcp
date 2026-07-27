@@ -1078,6 +1078,112 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.readWithRecovery((record) => this.app.processList(record));
   }
 
+  private static readonly LIVE_ACTIVITY_KEY = 'forge_live_activity_v1';
+  private static readonly LIVE_ACTIVITY_MAX = 80;
+
+  async appendLiveActivity(input: {
+    tool: string;
+    status: 'success' | 'error';
+    durationMs: number;
+    errorCode?: string;
+    at?: string;
+  }): Promise<void> {
+    const list = (await this.ctx.storage.get<Array<{
+      at: string;
+      tool: string;
+      status: 'success' | 'error';
+      durationMs: number;
+      errorCode?: string;
+    }>>(WorkspaceCoordinator.LIVE_ACTIVITY_KEY)) ?? [];
+    list.push({
+      at: input.at ?? new Date().toISOString(),
+      tool: input.tool,
+      status: input.status,
+      durationMs: input.durationMs,
+      errorCode: input.errorCode
+    });
+    while (list.length > WorkspaceCoordinator.LIVE_ACTIVITY_MAX) list.shift();
+    await this.ctx.storage.put(WorkspaceCoordinator.LIVE_ACTIVITY_KEY, list);
+  }
+
+  /**
+   * Read-only bundle for the portal live view: workspace metadata, recent MCP
+   * tools (recorded asynchronously), processes, and a log tail. Does not run
+   * full doctor reconcile or Git repair.
+   */
+  async getObserverSnapshot(): Promise<{
+    workspace: {
+      state: string;
+      branch: string | null | undefined;
+      head: string | null | undefined;
+      requestedRef: string;
+      hasUnpushedWork: boolean;
+      revision: number;
+      updatedAt: string;
+    };
+    processes: Array<{
+      id: string;
+      command: string;
+      status: string;
+      startedAt?: string;
+      completedAt?: string;
+      exitCode?: number;
+    }>;
+    activity: Array<{
+      at: string;
+      tool: string;
+      status: 'success' | 'error';
+      durationMs: number;
+      errorCode?: string;
+    }>;
+    logTail: { processId: string; command: string; data: string; truncated: boolean } | null;
+  } | null> {
+    const stored = await this.ctx.storage.get<WorkspaceRuntimeRecord>(RECORD_KEY);
+    if (!stored) return null;
+    const activity = (await this.ctx.storage.get<Array<{
+      at: string;
+      tool: string;
+      status: 'success' | 'error';
+      durationMs: number;
+      errorCode?: string;
+    }>>(WorkspaceCoordinator.LIVE_ACTIVITY_KEY)) ?? [];
+    return this.readWithRecovery(async (record) => {
+      await this.app.syncProcessLifecycle(record).catch(() => ({ running: 0, completed: 0 }));
+      const processes = Object.entries(record.processes).map(([id, value]) => ({
+        id,
+        command: value.command,
+        status: managedProcessStatus(value),
+        startedAt: value.startedAt,
+        completedAt: value.completedAt,
+        exitCode: value.exitCode
+      }));
+      const focus = processes.find((process) => !process.completedAt) ?? processes[processes.length - 1];
+      let logTail: { processId: string; command: string; data: string; truncated: boolean } | null = null;
+      if (focus) {
+        const logs = await this.app.processLogs(record, focus.id as ProcessId).catch(() => null);
+        if (logs?.data) {
+          const truncated = logs.truncated || logs.data.length > 12_000;
+          const data = logs.data.length > 12_000 ? logs.data.slice(-12_000) : logs.data;
+          logTail = { processId: focus.id, command: focus.command, data, truncated };
+        }
+      }
+      return {
+        workspace: {
+          state: record.workspace.state,
+          branch: record.workspace.currentBranch,
+          head: record.workspace.currentCommit,
+          requestedRef: record.workspace.requestedRef,
+          hasUnpushedWork: Boolean(record.workspace.hasUnpushedWork),
+          revision: record.workspace.revision,
+          updatedAt: record.workspace.updatedAt
+        },
+        processes,
+        activity,
+        logTail
+      };
+    });
+  }
+
   async operationGet(input: { operationId: OperationId }) {
     return this.readWithRecovery((record) => this.app.operationGet(record, input.operationId));
   }
