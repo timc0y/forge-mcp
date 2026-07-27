@@ -47,7 +47,7 @@ export function parseDetection(stdout: string): ProjectDetection {
   const installFallback: Record<ProjectDetection['packageManager'], string | null> = {
     pnpm: 'pnpm install --no-frozen-lockfile --prefer-offline', npm: 'npm install', yarn: 'yarn install', bun: 'bun install', pip: null, uv: 'uv sync', unknown: null
   };
-  const expected = parsed.framework === 'astro' ? [4321] : parsed.framework === 'vite' ? [5173] : parsed.framework === 'nextjs' ? [3000] : [];
+  const expected = parsed.framework === 'astro' ? [4321] : (parsed.framework === 'vite' || parsed.framework === 'sveltekit') ? [5173] : (parsed.framework === 'nextjs' || parsed.framework === 'nuxt' || parsed.framework === 'redwoodjs') ? [3000] : [];
   return { packageManager: parsed.pm, framework: parsed.framework, installCommand: install[parsed.pm], installFallbackCommand: installFallback[parsed.pm], devCommand: parsed.scripts.dev ? `${parsed.pm === 'unknown' ? 'npm' : parsed.pm} run dev` : null, buildCommand: parsed.scripts.build ? `${parsed.pm === 'unknown' ? 'npm' : parsed.pm} run build` : null, expectedPorts: expected };
 }
 

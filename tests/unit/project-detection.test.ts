@@ -52,6 +52,11 @@ describe('parseDetection', () => {
     });
   });
 
+  it('maps sveltekit and nuxt projects to their expected ports', () => {
+    expect(parseDetection(JSON.stringify({ pm: 'pnpm', framework: 'sveltekit', scripts: { dev: 'vite dev' } })).expectedPorts).toEqual([5173]);
+    expect(parseDetection(JSON.stringify({ pm: 'pnpm', framework: 'nuxt', scripts: { dev: 'nuxt dev' } })).expectedPorts).toEqual([3000]);
+  });
+
   it('falls back to npm run for an unknown package manager with scripts', () => {
     const detection = parseDetection(JSON.stringify({ pm: 'unknown', framework: null, scripts: { dev: 'x' } }));
     expect(detection.installCommand).toBeNull();
