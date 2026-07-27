@@ -41,7 +41,7 @@ import {
 import type { BrowserActionStep } from '@forge/browser-core';
 import { selectBrowserProvider } from './browser-router';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
-import { classifyCommand, assertPublicHost } from '@forge/policy';
+import { classifyCommand, assertPublicHost, assertForgeBranch } from '@forge/policy';
 import { normalizeViewports, prepareInlineImages } from './review-images';
 import { resolveWorkspaceId } from './workspace-resolve';
 import { storeGallery } from './review-gallery';
@@ -1609,8 +1609,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_git_branch: async (input) => {
         const identity = this.identity();
+        const branch = text(input.branch);
+        assertForgeBranch(branch);
         return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitBranchCreate({
-          branch: text(input.branch), expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
+          branch, expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
         }));
       },
       forge_git_commit: async (input) => {
@@ -1633,6 +1635,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const branch = text(input.branch);
+        assertForgeBranch(branch);
         const base = text(input.base);
         const taskIdInput = input.task_id ? text(input.task_id) : null;
         let title = input.title === undefined ? '' : text(input.title);

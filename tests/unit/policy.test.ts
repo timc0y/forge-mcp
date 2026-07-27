@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertAllowedForgeBranch,
+  assertForgeBranch,
   assertCommandAllowed,
   assertPublicHost,
   classifyCommand,
@@ -11,6 +12,21 @@ describe('Forge policy', () => {
   it('blocks default branch pushes and accepts namespaced branches', () => {
     expect(() => assertAllowedForgeBranch('main', 'main')).toThrow();
     expect(() => assertAllowedForgeBranch('forge/tim/fix-map', 'main')).not.toThrow();
+  });
+
+  it('assertForgeBranch rejects .., trailing /, and .lock suffix', () => {
+    expect(() => assertForgeBranch('forge/task/ok')).not.toThrow();
+    expect(() => assertForgeBranch('forge/task/../evil')).toThrow();
+    expect(() => assertForgeBranch('forge/task/dir/')).toThrow();
+    expect(() => assertForgeBranch('forge/task/package.lock')).toThrow();
+    expect(() => assertForgeBranch('main')).toThrow();
+  });
+
+  it('assertAllowedForgeBranch inherits the .., trailing /, and .lock checks', () => {
+    expect(() => assertAllowedForgeBranch('forge/a/b', 'main')).not.toThrow();
+    expect(() => assertAllowedForgeBranch('forge/a/../b', 'main')).toThrow();
+    expect(() => assertAllowedForgeBranch('forge/a/b/', 'main')).toThrow();
+    expect(() => assertAllowedForgeBranch('forge/a/b.lock', 'main')).toThrow();
   });
 
   it('blocks private network targets', () => {

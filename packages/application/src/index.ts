@@ -468,7 +468,7 @@ function repositorySlug(repository: RepositoryRef): string {
 }
 
 function assertRef(ref: string): void {
-  if (!ref || ref.length > 255 || /[\s~^:?*[\\]/.test(ref) || ref.includes('..')) {
+  if (!ref || ref.length > 255 || /[\s~^:?*[\\]/.test(ref) || ref.includes('..') || ref.endsWith('/') || ref.endsWith('.lock')) {
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',
       message: 'Invalid Git ref.',
