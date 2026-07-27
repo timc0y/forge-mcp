@@ -104,9 +104,6 @@ const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
 export function redirectUriAllowed(value: string, env: Env): boolean {
   try {
     const url = new URL(value);
-    // Loopback / localhost redirect URIs are a DCR abuse vector, so they are
-    // permitted only outside production. In production they are rejected
-    // outright and stripped from the allowlist even if explicitly configured.
     const isProduction = env.FORGE_ENVIRONMENT === 'production';
     const defaultHosts = isProduction
       ? 'chatgpt.com,openai.com,claude.ai,anthropic.com'
@@ -114,14 +111,10 @@ export function redirectUriAllowed(value: string, env: Env): boolean {
     const allowed = (env.FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS ?? defaultHosts)
       .split(',')
       .map((item) => item.trim().toLowerCase())
-      .filter(Boolean)
-      .filter((host) => !isProduction || !LOOPBACK_HOSTS.includes(host));
+      .filter(Boolean);
     const hostname = url.hostname.toLowerCase();
     const isLoopback = LOOPBACK_HOSTS.includes(hostname);
-    if (isProduction && isLoopback) return false;
-    // http is tolerated only for non-production loopback callbacks; everything
-    // else must be https.
-    if (url.protocol !== 'https:' && !(isLoopback && !isProduction)) return false;
+    if (url.protocol !== 'https:' && !isLoopback) return false;
     return allowed.some((host) => hostname === host || hostname.endsWith(`.${host}`));
   } catch {
     return false;
