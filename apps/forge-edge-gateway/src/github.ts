@@ -1,9 +1,10 @@
 import { SignJWT, importPKCS8 } from 'jose';
-import { ForgeError, ids, type RepositoryRef, type Workspace, type WorkspaceId } from '@forge/core';
+import { ForgeError, ids, type ArtifactId, type RepositoryRef, type TenantId, type Workspace, type WorkspaceId } from '@forge/core';
 import { issueCapability, verifyCapability } from '@forge/capabilities';
 import { assertReceivePackScope, parseReceivePackCommands } from '@forge/git-core';
 import { assertAllowedForgeBranch } from '@forge/policy';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
+import { R2ArtifactStore } from '@forge/artifacts-r2';
 import type { AuthenticatedContext } from './auth';
 import type { Env } from './env';
 import { listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
@@ -1406,8 +1407,8 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   // reviewer never bounces to login mid-decision.
   const selfUrl = `${self}/approvals/${approvalId}${token ? `?t=${encodeURIComponent(token)}` : ''}`;
   const row = await env.METADATA.prepare(
-    'SELECT requested_action, reason, request_payload, state, expires_at FROM approvals WHERE id=?1 AND tenant_id=?2'
-  ).bind(approvalId, tenantId).first<{ requested_action: string; reason: string; request_payload: string; state: string; expires_at: string }>();
+    'SELECT requested_action, reason, request_payload, state, expires_at, workspace_id FROM approvals WHERE id=?1 AND tenant_id=?2'
+  ).bind(approvalId, tenantId).first<{ requested_action: string; reason: string; request_payload: string; state: string; expires_at: string; workspace_id: string }>();
   if (!row) return decisionProblem(env, 404, 'not_found', 'Approval not found', 'This approval no longer exists, or it belongs to a different account.');
   if (request.method === 'POST') {
     // Every refusal below renders a real page naming the cause. These used to
@@ -1490,15 +1491,29 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
   // Pull out the display-only diff/body; show the rest as a small key/value
   // list so the human approves what they can actually read, not a raw hash blob.
-  const { diff, body, diffTotals, ...meta } = payload as {
+  const { diff: inlineDiff, body, diffTotals, diffArtifactId, ...meta } = payload as {
     diff?: string;
     body?: string;
+    diffArtifactId?: string;
     // True scale of the change, independent of how much diff text was attached.
     // A large diff is attached one page of files at a time, so counting the
     // rendered text would under-report what is actually being approved.
     diffTotals?: { files?: number; additions?: number; deletions?: number };
     [key: string]: unknown;
   };
+  let diff = typeof inlineDiff === 'string' ? inlineDiff : '';
+  if ((!diff.trim()) && typeof diffArtifactId === 'string' && diffArtifactId.startsWith('art_') && row.workspace_id) {
+    try {
+      const object = await new R2ArtifactStore(env.ARTIFACTS).get(
+        tenantId as TenantId,
+        row.workspace_id as WorkspaceId,
+        diffArtifactId as ArtifactId
+      );
+      if (object) diff = await object.text();
+    } catch {
+      diff = '';
+    }
+  }
   const metaRows = Object.entries(meta)
     .filter(([, value]) => value !== '' && value !== undefined && value !== null)
     .map(([key, value]) => `<div class="kv"><span>${escapeHtml(key)}</span><code>${escapeHtml(String(value))}</code></div>`)

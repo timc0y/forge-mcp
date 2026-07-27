@@ -24,10 +24,13 @@ Forge exposes a small MCP tool set (see `forgeTools` in `@forge/mcp-core`). Mach
 
 ## Files
 
-- `forge_files_list`, `forge_files_read`, `forge_files_write`
-- `forge_files_write_batch` — up to 20 files, sha receipts (folder/file-by-file)
-- `forge_files_patch` — unified diff; optional `paths=` scopes hunks
-- `forge_files_upload` — binary via base64
+- `forge_files_list`, `forge_files_read`, `forge_files_write` (auto-commits on forge/)
+- `forge_files_write_batch` — up to 20 files, auto-commit, sha receipts
+- `forge_files_replace` — search/replace (preferred over unified diffs)
+- `forge_files_patch` — unified diff; optional `paths=`; auto-commits
+- `forge_files_upload` — binary via base64; auto-commits
+
+Workspace create checks out `ref` then **auto-creates `forge/<id>`** so agents never edit main. `branch_policy` is on every `forge_workspace_get`.
 
 ## Shell and processes
 

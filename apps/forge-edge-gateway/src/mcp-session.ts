@@ -484,15 +484,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     { name: 'Forge MCP', version: '0.1.0' },
     {
       instructions: [
-        'Forge is a remote development computer optimised for hosts with small tool-result budgets. Prefer compact receipts over dumping content.',
-        '1. Live URL look? forge_review — one call; images attached.',
-        '2. Coding? forge_task_create → forge_workspace_create (waits). Reuse workspace_id.',
-        '3. Edit file-by-file or folder-by-folder: forge_files_write_batch (up to 20 files, sha receipts) or forge_files_patch with paths= to scope hunks. Avoid pasting huge diffs into chat.',
-        '4. Shell: compact by default — exitCode + short tails; full output in output_artifact_id when >20KB (forge_artifact_get). Use async:true for long jobs + forge_process_wait/logs.',
-        '5. Diffs: forge_git_diff compact (default) returns file list only; pass compact:false + paths/cursor for hunks.',
-        '6. Ship with forge_submit — echo only submission_receipt. Never invent workers.dev URLs. Deploys: forge_cloudflare_deploy → deploy_receipt.verified_url only.',
-        '7. If push blocked: forge_work_export before destroy. Secrets via portal or forge_secret_*.',
-        '8. Destroy only after submission_receipt.feature_branch_on_origin. On confusion: forge_doctor / forge_operation_get.'
+        'Forge is a remote development computer optimised for small tool budgets. Work ONLY on forge/<task> branches — create auto-checks out forge/<id> from main so you never edit main.',
+        '1. forge_task_create → forge_workspace_create (waits). Check branch_policy / current_branch on the result.',
+        '2. Edit with forge_files_replace (search/replace), forge_files_write_batch (folder/file-by-file), or forge_files_write. Every edit AUTO-COMMITS (and auto-pushes when enabled). No dirty working tree.',
+        '3. Shell is compact by default (tails + output_artifact_id). Diffs compact by default (file list).',
+        '4. Ship with forge_submit — echo submission_receipt only. Deploys: forge_cloudflare_deploy → deploy_receipt.verified_url only.',
+        '5. Never claim work on main. Never invent workers.dev URLs. If push blocked: forge_work_export.',
+        '6. Destroy only after forge/ branch is on origin. On confusion: forge_doctor.'
       ].join(' ')
     }
   );
@@ -1527,14 +1525,25 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (state === 'ready') {
           await coordinator(env, workspaceId).recordPushAuthProbe().catch(() => undefined);
         }
+        const readyState = state === 'ready'
+          ? await coordinator(env, workspaceId).getState({ compact: true }).catch(() => undefined)
+          : undefined;
+        const branch = readyState && typeof readyState === 'object' && 'currentBranch' in readyState
+          ? String((readyState as { currentBranch?: string }).currentBranch ?? '')
+          : undefined;
+        const branch_policy = readyState && typeof readyState === 'object' && 'branch_policy' in readyState
+          ? (readyState as { branch_policy?: unknown }).branch_policy
+          : undefined;
         return {
           workspace_id: workspaceId,
           state,
           operation_id: result.operationId,
           workspace_revision: result.revision,
+          ...(branch ? { current_branch: branch } : {}),
+          ...(branch_policy ? { branch_policy } : {}),
           ...(credentialProfileId ? { credential_profile_id: credentialProfileId } : {}),
           next_step: state === 'ready'
-            ? 'The workspace is ready — use this workspace_id for the rest of the task, and destroy it when done.'
+            ? `Ready on ${branch || 'forge/…'}. Edit with forge_files_replace / forge_files_write_batch (auto-commits). Reuse this workspace_id.`
             : state === 'failed'
               ? 'Provisioning failed. Read forge_workspace_get for the reason; do not keep polling.'
               : `Still provisioning after the wait budget. Call forge_workspace_get with this workspace_id to check again — it is usually ready within a minute of creation.`
@@ -1653,9 +1662,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           written: result.written,
           files: result.files,
           workspaceRevision: result.workspaceRevision,
-          ...(result.replay ? { replay: true, operationId: result.operationId } : {}),
-          next_step: `Wrote ${result.written} file(s). Commit with forge_git_commit, or continue the next folder with another write_batch.`
+          ...('auto_commit' in result && result.auto_commit ? { auto_commit: result.auto_commit } : {}),
+          ...('replay' in result && result.replay ? { replay: true, operationId: result.operationId } : {}),
+          next_step: `Wrote and auto-committed ${result.written} file(s). Continue the next folder or forge_submit.`
         };
+      },
+      forge_files_replace: async (input) => {
+        const identity = this.identity();
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesReplace({
+          path: text(input.path),
+          oldString: text(input.old_string),
+          newString: text(input.new_string),
+          replaceAll: Boolean(input.replace_all),
+          expectedSha256: input.expected_sha256 ? text(input.expected_sha256) : undefined,
+          expectedRevision: optionalNumber(input.expected_revision),
+          idempotencyKey: idempotency(input.idempotency_key)
+        }));
       },
       forge_files_patch: async (input) => {
         const identity = this.identity();
@@ -1726,7 +1748,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             mode: 'read_only'
           });
           const sizeBytes = parseInt(stat.stdout.trim(), 10) || 0;
-          return { path, size_bytes: sizeBytes, uploaded: true };
+          const auto = await workspace.filesUploadCommit({ path });
+          return { path, size_bytes: sizeBytes, uploaded: true, ...auto };
         } catch (error) {
           await workspace.shellExec({
             command: `rm -f '${tmpPath}'`,
@@ -2275,13 +2298,28 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const stagedRef = `forge/staged/${workspaceId}/${branch.replace(/^forge\//, '')}`;
         const staged = await coordinator.stageForReview({ ref: stagedRef });
 
+        let diffArtifactId: string | undefined;
+        if (diff.trim() && utf8Bytes(diff) > 4_096) {
+          const spilled = await spillTextArtifact(env, identity, workspaceId, 'submit-diff', diff, 'text/x-diff');
+          diffArtifactId = spilled.artifact_id;
+        }
         const approval = await requestApproval(
           env,
           identity,
           workspaceId,
           'work.submit',
           `Merge ${branch} into ${prBase}`,
-          { branch, base: prBase, comparisonRef, title, body, commit: staged.commit, diff }
+          {
+            branch,
+            base: prBase,
+            comparisonRef,
+            title,
+            body,
+            commit: staged.commit,
+            ...(diffArtifactId
+              ? { diffArtifactId, diffTotals: { files: filesChanged, additions: outgoing?.totalAdditions ?? 0, deletions: outgoing?.totalDeletions ?? 0 } }
+              : { diff: diff.slice(0, 48_000), diffTotals: { files: filesChanged, additions: outgoing?.totalAdditions ?? 0, deletions: outgoing?.totalDeletions ?? 0 } })
+          }
         );
         const action = await createDeferredAction(env, {
           tenantId: identity.tenantId,

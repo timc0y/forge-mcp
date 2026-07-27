@@ -12,12 +12,12 @@ import { D1AuditStore } from '@forge/audit';
 import { D1MetadataStore } from '@forge/metadata-d1';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
 import { issueCapability } from '@forge/capabilities';
-import { classifyCommand, nonInteractiveShellEnv } from '@forge/policy';
+import { branchPolicyFor, classifyCommand, isAgentForgeBranch, nonInteractiveShellEnv } from '@forge/policy';
 import { filterUnifiedDiff } from '@forge/mcp-core';
 import type { Env } from './env';
 import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
-import { autoPushForgeBranchesEnabled, isAgentForgeBranch } from './auto-push-policy';
+import { autoPushForgeBranchesEnabled } from './auto-push-policy';
 import { snapshotsEnabled, getSnapshot } from './snapshots';
 import { depsCacheKey, getDepsCache } from './deps-cache';
 
@@ -523,13 +523,17 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
               startedAt: check.startedAt
             })),
           allowedNextActions,
-          next_step: allowedNextActions[0]
-            ? `Next safe tool: ${allowedNextActions[0]}`
-            : 'Inspect forge_workspace_get for details.'
+          branch_policy: branchPolicyFor(record.workspace.currentBranch),
+          next_step: !isAgentForgeBranch(record.workspace.currentBranch)
+            ? branchPolicyFor(record.workspace.currentBranch).next_step
+            : allowedNextActions[0]
+              ? `Next safe tool: ${allowedNextActions[0]}`
+              : 'Inspect forge_workspace_get for details.'
         };
       }
       return {
         ...record.workspace,
+        branch_policy: branchPolicyFor(record.workspace.currentBranch),
         processes,
         checks: record.checks,
         lastChecks: Object.entries(record.checks)
@@ -740,6 +744,62 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.readRepoWithRecovery((record) => this.app.read(record, input));
   }
 
+  private assertMutableOnAgentForgeBranch(record: WorkspaceRuntimeRecord): void {
+    if (isAgentForgeBranch(record.workspace.currentBranch)) return;
+    const branch_policy = branchPolicyFor(record.workspace.currentBranch);
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: branch_policy.next_step,
+      retryable: false,
+      details: {
+        branch_policy,
+        next_step: 'forge_git_branch',
+        allowedNextActions: ['forge_git_branch', 'forge_workspace_get']
+      }
+    });
+  }
+
+  private repoRelativePath(path: string): string {
+    return path.replace(/^\/workspace\/repo\//u, '').replace(/^\.\//u, '');
+  }
+
+  /**
+   * Keep the working tree clean on forge/ branches: every file mutation becomes
+   * a commit (and auto-pushes when enabled). Agents never need a separate
+   * forge_git_commit for ordinary edits.
+   */
+  private async autoCommitMutation(
+    record: WorkspaceRuntimeRecord,
+    paths: string[],
+    summary: string
+  ): Promise<{
+    auto_commit: {
+      commit?: string;
+      branch?: string;
+      auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
+    };
+  }> {
+    this.assertMutableOnAgentForgeBranch(record);
+    const relPaths = paths.map((path) => this.repoRelativePath(path)).filter(Boolean);
+    const message = `chore: ${summary}`.slice(0, 500);
+    const committed = await this.app.gitCommit(record, {
+      message,
+      paths: relPaths.length ? relPaths : [],
+      idempotencyKey: `auto-commit-${record.workspace.id}-${record.workspace.revision}-${relPaths[0] ?? 'tree'}`
+    });
+    if ('replay' in committed && committed.replay) {
+      return { auto_commit: { branch: record.workspace.currentBranch ?? undefined } };
+    }
+    const autoPush = await this.tryAutoPushAfterCommit(record);
+    return {
+      auto_commit: {
+        commit: 'commit' in committed ? String(committed.commit) : record.workspace.currentCommit ?? undefined,
+        branch: record.workspace.currentBranch ?? undefined,
+        ...autoPush
+      }
+    };
+  }
+
   async filesWrite(input: {
     path: string;
     content: string;
@@ -750,6 +810,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
+        this.assertMutableOnAgentForgeBranch(record);
         await this.assertCheckpointQuiescent(record);
         const value = await this.app.write(
           record,
@@ -757,8 +818,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.expectedRevision,
           input.idempotencyKey
         );
-        const checkpoint = await this.app.checkpoint(record, `write-${record.workspace.revision}`);
-        return { ...value, checkpoint };
+        await this.app.checkpoint(record, `write-${record.workspace.revision}`);
+        const auto = await this.autoCommitMutation(record, [input.path], `update ${this.repoRelativePath(input.path)}`);
+        return { ...value, ...auto };
       } finally {
         await this.save(record);
       }
@@ -773,6 +835,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
+        this.assertMutableOnAgentForgeBranch(record);
         await this.assertCheckpointQuiescent(record);
         const value = await this.app.writeBatch(
           record,
@@ -782,8 +845,49 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         );
         if (!('replay' in value && value.replay)) {
           await this.app.checkpoint(record, `write-batch-${record.workspace.revision}`);
+          const auto = await this.autoCommitMutation(
+            record,
+            input.files.map((file) => file.path),
+            `update ${input.files.length} file${input.files.length === 1 ? '' : 's'}`
+          );
+          return { ...value, ...auto };
         }
         return value;
+      } finally {
+        await this.save(record);
+      }
+    });
+  }
+
+  async filesReplace(input: {
+    path: string;
+    oldString: string;
+    newString: string;
+    replaceAll?: boolean;
+    expectedSha256?: string;
+    expectedRevision?: number;
+    idempotencyKey: string;
+  }) {
+    return this.serializeMutation(async () => {
+      const record = await this.repoRecord();
+      try {
+        this.assertMutableOnAgentForgeBranch(record);
+        await this.assertCheckpointQuiescent(record);
+        const value = await this.app.replaceInFile(
+          record,
+          {
+            path: input.path,
+            oldString: input.oldString,
+            newString: input.newString,
+            replaceAll: input.replaceAll === true,
+            expectedSha256: input.expectedSha256
+          },
+          input.expectedRevision,
+          input.idempotencyKey
+        );
+        await this.app.checkpoint(record, `replace-${record.workspace.revision}`);
+        const auto = await this.autoCommitMutation(record, [input.path], `replace in ${this.repoRelativePath(input.path)}`);
+        return { ...value, ...auto };
       } finally {
         await this.save(record);
       }
@@ -799,6 +903,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
+        this.assertMutableOnAgentForgeBranch(record);
         await this.assertCheckpointQuiescent(record);
         let patch = input.patch;
         if (input.paths?.length) {
@@ -819,18 +924,47 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.idempotencyKey
         );
         await this.app.checkpoint(record, `patch-${record.workspace.revision}`);
-        // Agent-facing receipt: no raw git apply output / checkpoint blob.
         if ('replay' in value && value.replay) return value;
+        const changed =
+          ('value' in value && value.value && typeof value.value === 'object'
+            ? (value.value as { changedFiles?: string[] }).changedFiles
+            : undefined) ??
+          ('files' in value ? (value.files as Array<{ path: string }>).map((f) => f.path) : []);
+        const auto = await this.autoCommitMutation(
+          record,
+          changed ?? [],
+          `patch ${(changed ?? []).length || 'files'}`
+        );
         return {
           applied: true,
-          changedFiles: ('value' in value && value.value && typeof value.value === 'object'
-            ? (value.value as { changedFiles?: string[] }).changedFiles
-            : undefined) ?? ('files' in value ? (value.files as Array<{ path: string }>).map((f) => f.path) : []),
+          changedFiles: changed,
           files: 'files' in value ? value.files : [],
           workspaceRevision: value.workspaceRevision,
           operationId: value.operationId,
-          readAfterWriteVerified: 'readAfterWriteVerified' in value ? value.readAfterWriteVerified : undefined
+          readAfterWriteVerified: 'readAfterWriteVerified' in value ? value.readAfterWriteVerified : undefined,
+          ...auto
         };
+      } finally {
+        await this.save(record);
+      }
+    });
+  }
+
+  /** Upload path used by forge_files_upload — gate + auto-commit after binary land. */
+  async filesUploadCommit(input: { path: string }): Promise<{
+    auto_commit: {
+      commit?: string;
+      branch?: string;
+      auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
+    };
+  }> {
+    return this.serializeMutation(async () => {
+      const record = await this.repoRecord();
+      try {
+        this.assertMutableOnAgentForgeBranch(record);
+        await this.assertCheckpointQuiescent(record);
+        await this.app.checkpoint(record, `upload-${record.workspace.revision}`);
+        return await this.autoCommitMutation(record, [input.path], `upload ${this.repoRelativePath(input.path)}`);
       } finally {
         await this.save(record);
       }
@@ -886,6 +1020,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const normalizedCwd = input.cwd.replace(/\/+$/u, '') || '/';
       const touchesRepo = normalizedCwd === '/workspace/repo' || normalizedCwd.startsWith('/workspace/repo/');
       const record = touchesRepo ? await this.repoRecord() : await this.getRecord();
+      if (touchesRepo) this.assertMutableOnAgentForgeBranch(record);
       const before = record.workspace.revision;
       const updatedAt = record.workspace.updatedAt;
       const divergenceAt = record.lastGitDivergence?.observedAt;

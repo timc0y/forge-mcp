@@ -15,7 +15,7 @@ import {
   type WorkspaceFailureDetails,
   type WorkspaceId
 } from '@forge/core';
-import { assertCommandAllowed, classifyCommand, nonInteractiveShellEnv } from '@forge/policy';
+import { assertCommandAllowed, classifyCommand, isAgentForgeBranch, nonInteractiveShellEnv, assertForgeBranch as assertForgeBranchPolicy } from '@forge/policy';
 import { classifyPushFailure, type PushFailureCause } from './push-failure';
 export { classifyPushFailure, type PushFailureCause } from './push-failure';
 import { parseDetection, DETECTION_SCRIPT, type ProjectDetection } from '@forge/project-detection';
@@ -144,6 +144,14 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   if (!['ready', 'busy'].includes(record.workspace.state)) {
     return ['forge_workspace_get'];
   }
+  if (!isAgentForgeBranch(record.workspace.currentBranch)) {
+    return [
+      'forge_git_branch',
+      'forge_workspace_get',
+      'forge_git_status',
+      'forge_files_list'
+    ];
+  }
   const deps = dependencyStateView(record.dependencyState);
   if (deps.status !== 'ready') {
     return [
@@ -154,9 +162,10 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
     ];
   }
   return [
+    'forge_files_write_batch',
+    'forge_files_replace',
     'forge_shell',
     'forge_git_status',
-    'forge_git_commit',
     'forge_submit',
     'forge_workspace_get'
   ];
@@ -506,22 +515,11 @@ async function assertRuntimeProfile(handle: SandboxHandle, profile: CreateWorksp
 }
 
 function assertForgeBranch(branch: string): void {
-  if (
-    !/^forge\/[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$/u.test(branch) ||
-    branch.includes('..') ||
-    branch.endsWith('/') ||
-    branch.endsWith('.lock')
-  ) {
-    throw new ForgeError({
-      code: 'FORGE_GIT_PUSH_BLOCKED',
-      message: 'Forge branches must use the forge/<task> namespace.',
-      retryable: false
-    });
-  }
+  assertForgeBranchPolicy(branch);
 }
 
 function isAgentForgeBranchForProve(branch: string): boolean {
-  return branch.startsWith('forge/') && !branch.startsWith('forge/backup/') && !branch.startsWith('forge/staged/');
+  return isAgentForgeBranch(branch);
 }
 
 async function sha256Text(value: string): Promise<string> {
@@ -1321,8 +1319,39 @@ export class ForgeApplicationService {
       record.workspace.currentBranch = parsedProbe.branch || undefined;
       record.workspace.baseCommit = parsedProbe.head;
       record.workspace.initialHeadCommit = parsedProbe.head;
-      record.workspace.lastPushedCommit = parsedProbe.head;
-      record.workspace.lastPushedBranch = parsedProbe.branch || undefined;
+      // Never leave agents on main/master — that is how work gets stranded on
+      // the default branch or lost when destroy "proves" main. Auto-create a
+      // forge/<workspace> branch from the immutable base before marking ready.
+      if (!isAgentForgeBranch(record.workspace.currentBranch)) {
+        const slug = record.workspace.id.replace(/^ws_/u, '').slice(0, 16);
+        const branch = `forge/${slug}`;
+        assertForgeBranch(branch);
+        const created = await handle.exec({
+          command: `git switch -c ${quoted(branch)}`,
+          cwd: '/workspace/repo',
+          timeoutMs: 30_000,
+          outputLimitBytes: 20_000,
+          sessionId: 'system',
+          networkPolicy: 'deny_all'
+        });
+        if (created.exitCode !== 0) {
+          throw new ForgeError({
+            code: 'FORGE_GIT_DIRTY',
+            message: `Forge could not create agent branch ${branch} from ${record.workspace.requestedRef}.`,
+            retryable: true,
+            details: { stderr: created.stderr.slice(0, 500) }
+          });
+        }
+        record.workspace.currentBranch = branch;
+        // Tip matches base until the first agent commit — do not claim main is
+        // the pushed feature branch.
+        record.workspace.lastPushedCommit = undefined;
+        record.workspace.lastPushedBranch = undefined;
+        record.workspace.hasUnpushedWork = false;
+      } else {
+        record.workspace.lastPushedCommit = parsedProbe.head;
+        record.workspace.lastPushedBranch = parsedProbe.branch || undefined;
+      }
       await handle.writeFile({
         path: '/workspace/forge/workspace-id',
         content: `${record.workspace.id}\n`
@@ -1733,6 +1762,74 @@ export class ForgeApplicationService {
       files: written,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision
+    };
+  }
+
+  /**
+   * Surgical edit without unified diffs — preferred for agents under size limits.
+   */
+  async replaceInFile(
+    record: WorkspaceRuntimeRecord,
+    input: {
+      path: string;
+      oldString: string;
+      newString: string;
+      replaceAll: boolean;
+      expectedSha256?: string;
+    },
+    expectedRevision: number | undefined,
+    idempotencyKey: string
+  ) {
+    if (!input.oldString) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: 'old_string must not be empty.',
+        retryable: false
+      });
+    }
+    const previous = await this.read(record, { path: input.path, maxBytes: 1_000_000 });
+    if (input.expectedSha256 && previous.sha256 !== input.expectedSha256) {
+      throw new ForgeError({
+        code: 'FORGE_FILE_CONFLICT',
+        message: `Conflict on ${input.path}: expected hash no longer matches.`,
+        retryable: false,
+        details: { path: input.path, expectedSha256: input.expectedSha256, actualSha256: previous.sha256 }
+      });
+    }
+    const occurrences = previous.content.split(input.oldString).length - 1;
+    if (occurrences === 0) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: `old_string was not found in ${input.path}. Re-read the file and retry.`,
+        retryable: false,
+        details: { path: input.path, hint: 'forge_files_read' }
+      });
+    }
+    if (!input.replaceAll && occurrences > 1) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: `old_string matched ${occurrences} times in ${input.path}. Pass a larger unique snippet, or replace_all:true.`,
+        retryable: false,
+        details: { path: input.path, occurrences }
+      });
+    }
+    const content = input.replaceAll
+      ? previous.content.split(input.oldString).join(input.newString)
+      : previous.content.replace(input.oldString, input.newString);
+    const written = await this.write(
+      record,
+      { path: input.path, content, expectedSha256: previous.sha256 },
+      expectedRevision,
+      idempotencyKey
+    );
+    return {
+      path: input.path,
+      replacements: input.replaceAll ? occurrences : 1,
+      previousSha256: previous.sha256,
+      resultingSha256: written.resultingSha256,
+      sizeBytes: written.sizeBytes,
+      operationId: written.operationId,
+      workspaceRevision: written.filesystemRevision
     };
   }
 
@@ -4121,6 +4218,18 @@ export class ForgeApplicationService {
 
   async assertDestroySafe(record: WorkspaceRuntimeRecord, cloneSource?: RepositoryCloneSource): Promise<void> {
     await this.reconcileGitState(record);
+    if (!isAgentForgeBranch(record.workspace.currentBranch) && !isAgentForgeBranch(record.workspace.lastPushedBranch)) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Forge will not destroy a workspace that is still on main/master (or never pushed a forge/ branch). Create forge/<task>, commit, push, then destroy — or pass force:true to abandon.',
+        retryable: false,
+        details: {
+          currentBranch: record.workspace.currentBranch ?? null,
+          lastPushedBranch: record.workspace.lastPushedBranch ?? null,
+          next_step: 'forge_git_branch'
+        }
+      });
+    }
     const status = await this.gitStatus(record);
     if (!status.clean || status.sync.state !== 'pushed') {
       throw new ForgeError({
@@ -4145,6 +4254,14 @@ export class ForgeApplicationService {
         code: 'FORGE_GIT_PUSH_BLOCKED',
         message: 'Forge cannot prove a remote branch without a recorded pushed branch and commit.',
         retryable: false
+      });
+    }
+    if (!isAgentForgeBranch(branch)) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: `Remote prove requires a forge/<task> branch, not ${branch}. Push the agent branch before destroy.`,
+        retryable: false,
+        details: { lastPushedBranch: branch }
       });
     }
     const configPath = `/workspace/tmp/gitconfig-remote-${record.workspace.id}`;

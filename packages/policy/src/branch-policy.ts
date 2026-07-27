@@ -19,3 +19,38 @@ export function assertAllowedForgeBranch(branch: string, defaultBranch: string):
   if (branch === defaultBranch) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Direct pushes to the default branch are blocked.', retryable: false });
   assertForgeBranch(branch);
 }
+
+/** Agent work branches — not Forge-internal staged/backup refs. */
+export function isAgentForgeBranch(branch: string | undefined | null): branch is string {
+  if (!branch?.startsWith('forge/')) return false;
+  if (branch.startsWith('forge/backup/')) return false;
+  if (branch.startsWith('forge/staged/')) return false;
+  return true;
+}
+
+export function isDefaultGitBranch(branch: string | undefined | null): boolean {
+  if (!branch) return true;
+  return branch === 'main' || branch === 'master';
+}
+
+/** Compact branch guidance for agents (workspace_get / error details). */
+export function branchPolicyFor(branch: string | undefined | null): {
+  requiredPrefix: 'forge/';
+  onAgentBranch: boolean;
+  onDefaultBranch: boolean;
+  currentBranch: string | null;
+  next_step: string;
+} {
+  const onAgentBranch = isAgentForgeBranch(branch);
+  const onDefaultBranch = isDefaultGitBranch(branch);
+  return {
+    requiredPrefix: 'forge/',
+    onAgentBranch,
+    onDefaultBranch,
+    currentBranch: branch ?? null,
+    next_step: onAgentBranch
+      ? 'On a forge/ branch — file edits auto-commit (and auto-push when enabled). Prefer forge_files_write_batch / forge_files_replace over huge patches.'
+      : 'Not on a forge/<task> branch. Call forge_git_branch before any edits — work on main/master is refused so it cannot be stranded or lost.'
+  };
+}
+
