@@ -1,6 +1,6 @@
 # Tool catalog
 
-Forge exposes a small MCP tool set (~33 tools). Machine-readable schemas are generated into `schemas/forge-tools.schema.json`.
+Forge exposes a small MCP tool set (see `forgeTools` in `@forge/mcp-core`). Machine-readable schemas are generated into `schemas/forge-tools.schema.json`.
 
 ## Discover
 
@@ -25,10 +25,13 @@ Forge exposes a small MCP tool set (~33 tools). Machine-readable schemas are gen
 ## Files
 
 - `forge_files_list`, `forge_files_read`, `forge_files_write`
+- `forge_files_write_batch` — up to 20 files, sha receipts (folder/file-by-file)
+- `forge_files_patch` — unified diff; optional `paths=` scopes hunks
+- `forge_files_upload` — binary via base64
 
 ## Shell and processes
 
-- `forge_shell` — run a command; `mode:read_only` for probes; `async:true` for long work (`proc_` id → `forge_process_wait`)
+- `forge_shell` — **compact by default**: exitCode + short tails; full stdout/stderr → `output_artifact_id` when >20KB
 - `forge_process_list` — all processes, or one when `process_id` is set
 - `forge_process_wait` — observational timeouts (`timedOut` + `suggestedTimeoutMs`; do not restart)
 - `forge_process_logs` — incremental logs via cursor
@@ -38,9 +41,13 @@ Forge exposes a small MCP tool set (~33 tools). Machine-readable schemas are gen
 ## Git and ship
 
 - `forge_git_status`
-- `forge_git_diff` — `scope`: `worktree` | `staged` | `outgoing`
-- `forge_git_branch`, `forge_git_commit`
-- `forge_submit` — one-call stage + queue draft PR (human approves later)
+- `forge_git_diff` — **compact by default** (file list); `compact:false` + `paths`/`cursor` for hunks
+- `forge_git_branch`, `forge_git_commit` — auto-push hard-fails when enabled and push fails
+- `forge_git_push`, `forge_git_sync`, `forge_pull_request_create`
+- `forge_submit` — returns `submission_receipt` only
+- `forge_workspace_prove` — verify local Git + remote feature-branch SHA
+- `forge_work_export` — durable recovery artifact when push is blocked
+- `forge_cloudflare_deploy` — `deploy_receipt`; logs spill to `output_artifact_id`
 
 ## Review
 
@@ -58,7 +65,8 @@ Secrets can also be created in the portal UI at `/app/secrets`.
 
 ## Removed / folded (clean break)
 
-Not advertised: credential profiles, Cloudflare deploy helper, check_*, process_start/get/cancel,
-operation_reconcile, files_patch, context_*, diff_metadata, git_push / pull_request_create /
-push envelopes, workspace prove/checkpoint/restore/export, task_summary/resume/handoff/finish
-(as separate tools). Use the folded tools above instead.
+Not advertised: credential-profile MCP tools (`forge_credential_*`), check_*, process_start/get/cancel,
+operation_reconcile, push envelopes, task_summary/resume/handoff/finish as separate tools.
+Use the folded tools above instead. Live Cloudflare deploys use `forge_cloudflare_deploy`
+(attached vault secret with `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`); recovery
+bundles use `forge_work_export`; remote proof uses `forge_workspace_prove`.

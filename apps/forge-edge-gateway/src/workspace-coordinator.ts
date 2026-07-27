@@ -13,6 +13,7 @@ import { D1MetadataStore } from '@forge/metadata-d1';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
 import { issueCapability } from '@forge/capabilities';
 import { classifyCommand, nonInteractiveShellEnv } from '@forge/policy';
+import { filterUnifiedDiff } from '@forge/mcp-core';
 import type { Env } from './env';
 import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
@@ -764,8 +765,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
-  async filesPatch(input: {
-    patch: string;
+  async filesWriteBatch(input: {
+    files: Array<{ path: string; content: string; expectedSha256?: string }>;
     expectedRevision?: number;
     idempotencyKey: string;
   }) {
@@ -773,14 +774,63 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const record = await this.repoRecord();
       try {
         await this.assertCheckpointQuiescent(record);
-        const value = await this.app.patch(
+        const value = await this.app.writeBatch(
           record,
-          { patch: input.patch, cwd: '/workspace/repo' },
+          input.files,
           input.expectedRevision,
           input.idempotencyKey
         );
-        const checkpoint = await this.app.checkpoint(record, `patch-${record.workspace.revision}`);
-        return { ...value, checkpoint };
+        if (!('replay' in value && value.replay)) {
+          await this.app.checkpoint(record, `write-batch-${record.workspace.revision}`);
+        }
+        return value;
+      } finally {
+        await this.save(record);
+      }
+    });
+  }
+
+  async filesPatch(input: {
+    patch: string;
+    paths?: string[];
+    expectedRevision?: number;
+    idempotencyKey: string;
+  }) {
+    return this.serializeMutation(async () => {
+      const record = await this.repoRecord();
+      try {
+        await this.assertCheckpointQuiescent(record);
+        let patch = input.patch;
+        if (input.paths?.length) {
+          try {
+            patch = filterUnifiedDiff(input.patch, input.paths);
+          } catch (error) {
+            throw new ForgeError({
+              code: 'FORGE_VALIDATION_FAILED',
+              message: error instanceof Error ? error.message : 'Patch path filter removed every hunk.',
+              retryable: false
+            });
+          }
+        }
+        const value = await this.app.patch(
+          record,
+          { patch, cwd: '/workspace/repo', ...(input.paths?.length ? { paths: input.paths } : {}) },
+          input.expectedRevision,
+          input.idempotencyKey
+        );
+        await this.app.checkpoint(record, `patch-${record.workspace.revision}`);
+        // Agent-facing receipt: no raw git apply output / checkpoint blob.
+        if ('replay' in value && value.replay) return value;
+        return {
+          applied: true,
+          changedFiles: ('value' in value && value.value && typeof value.value === 'object'
+            ? (value.value as { changedFiles?: string[] }).changedFiles
+            : undefined) ?? ('files' in value ? (value.files as Array<{ path: string }>).map((f) => f.path) : []),
+          files: 'files' in value ? value.files : [],
+          workspaceRevision: value.workspaceRevision,
+          operationId: value.operationId,
+          readAfterWriteVerified: 'readAfterWriteVerified' in value ? value.readAfterWriteVerified : undefined
+        };
       } finally {
         await this.save(record);
       }

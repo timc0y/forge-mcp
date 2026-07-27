@@ -17,7 +17,7 @@ import {
 import { issueCapability } from '@forge/capabilities';
 import { registerForgeToolsV1, type ToolCallTelemetry } from '@forge/mcp-adapter-v1';
 import { ToolCallTracker, hashArgs } from './telemetry';
-import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
+import { forgeToolResponse, type ForgeToolHandlers, AGENT_OUTPUT_SPILL_BYTES, AGENT_OUTPUT_TAIL_BYTES, tailBytes, utf8Bytes } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { D1AuditStore } from '@forge/audit';
@@ -146,6 +146,29 @@ function parseWranglerWorkerName(output: string): string | null {
   if (published?.[1]) return published[1];
   const deployed = output.match(/(?:Deployed|Uploading)\s+([A-Za-z0-9][A-Za-z0-9._-]*)/i);
   return deployed?.[1] ?? null;
+}
+
+async function spillTextArtifact(
+  env: Env,
+  identity: { tenantId: string },
+  workspaceId: string,
+  kind: string,
+  text: string,
+  contentType = 'text/plain; charset=utf-8'
+): Promise<{ artifact_id: string; size_bytes: number; sha256: string }> {
+  const artifactId = ids.artifact() as import('@forge/core').ArtifactId;
+  const bytes = new TextEncoder().encode(text).buffer;
+  const store = new R2ArtifactStore(env.ARTIFACTS);
+  const ref = await store.put({
+    id: artifactId,
+    tenantId: identity.tenantId as import('@forge/core').TenantId,
+    workspaceId: workspaceId as import('@forge/core').WorkspaceId,
+    kind,
+    contentType,
+    bytes,
+    metadata: { kind, workspace_id: workspaceId }
+  });
+  return { artifact_id: ref.id, size_bytes: ref.sizeBytes, sha256: ref.sha256 };
 }
 
 // A url_review workspace (from forge_review) has no WorkspaceCoordinator record,
@@ -461,16 +484,15 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     { name: 'Forge MCP', version: '0.1.0' },
     {
       instructions: [
-        'Forge is a remote development computer; Parallax is its review contract. Keep the tool set small and work in this order:',
-        '1. Live URL look? forge_review — one call, no container; images come back attached.',
-        '2. Coding task? forge_task_create, then one forge_workspace_create (waits until ready — do not poll-loop). Reuse workspace_id.',
-        '3. Read repo instructions / parallax/ before edits. Use forge_shell (async:true for long work) + forge_process_wait; forge_deps_install for installs.',
-        '4. Workspace app look? forge_preview (starts the app if needed). Look at returned images; forge_artifact_get only if captures were omitted.',
-        '5. Inspect with forge_git_diff (scope:outgoing) — comparison base is always requestedRef — then forge_submit for human review. Commits auto-push the forge/ branch when enabled; a failed auto-push fails the commit.',
-        '6. Never claim a branch is on origin, a PR is open, or a Worker is live unless the tool result includes a receipt (submission_receipt.remote_sha, forge_workspace_prove remoteBranch.state=agrees, or deploy_receipt.verified_url). Never invent workers.dev URLs from wrangler name + account subdomain.',
-        '7. Cloudflare deploys: use forge_cloudflare_deploy only (attached secret with CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID). Ungated wrangler deploy via forge_shell is blocked pending approval.',
-        '8. If push is blocked, call forge_work_export before destroy. Secrets: portal (/app/secrets) or forge_secret_create; attach with forge_secret_attach (approval).',
-        '9. Destroy after submit only when submission_receipt.feature_branch_on_origin is true. On confusion, call forge_doctor or forge_operation_get.'
+        'Forge is a remote development computer optimised for hosts with small tool-result budgets. Prefer compact receipts over dumping content.',
+        '1. Live URL look? forge_review — one call; images attached.',
+        '2. Coding? forge_task_create → forge_workspace_create (waits). Reuse workspace_id.',
+        '3. Edit file-by-file or folder-by-folder: forge_files_write_batch (up to 20 files, sha receipts) or forge_files_patch with paths= to scope hunks. Avoid pasting huge diffs into chat.',
+        '4. Shell: compact by default — exitCode + short tails; full output in output_artifact_id when >20KB (forge_artifact_get). Use async:true for long jobs + forge_process_wait/logs.',
+        '5. Diffs: forge_git_diff compact (default) returns file list only; pass compact:false + paths/cursor for hunks.',
+        '6. Ship with forge_submit — echo only submission_receipt. Never invent workers.dev URLs. Deploys: forge_cloudflare_deploy → deploy_receipt.verified_url only.',
+        '7. If push blocked: forge_work_export before destroy. Secrets via portal or forge_secret_*.',
+        '8. Destroy only after submission_receipt.feature_branch_on_origin. On confusion: forge_doctor / forge_operation_get.'
       ].join(' ')
     }
   );
@@ -1594,18 +1616,52 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_files_write: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesWrite({
+        const result = await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesWrite({
           path: text(input.path),
           content: text(input.content),
           expectedSha256: input.expected_sha256 ? text(input.expected_sha256) : undefined,
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: idempotency(input.idempotency_key)
+        });
+        const record = asRecord(result);
+        // Receipt only — omit checkpoint blob from the model channel.
+        const { checkpoint: _checkpoint, ...receipt } = record;
+        return receipt;
+      },
+      forge_files_write_batch: async (input) => {
+        const identity = this.identity();
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const files = (input.files as Array<{ path: string; content: string; expected_sha256?: string }>).map((file) => ({
+          path: text(file.path),
+          content: text(file.content),
+          ...(file.expected_sha256 ? { expectedSha256: text(file.expected_sha256) } : {})
         }));
+        const totalBytes = files.reduce((sum, file) => sum + utf8Bytes(file.content), 0);
+        if (totalBytes > 2_000_000) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `Batch write total content is ${totalBytes} bytes; keep under 2MB per call or split by folder.`,
+            retryable: false
+          });
+        }
+        const result = await (await authorizedCoordinator(env, identity, workspaceId)).filesWriteBatch({
+          files,
+          expectedRevision: optionalNumber(input.expected_revision),
+          idempotencyKey: idempotency(input.idempotency_key)
+        });
+        return {
+          written: result.written,
+          files: result.files,
+          workspaceRevision: result.workspaceRevision,
+          ...(result.replay ? { replay: true, operationId: result.operationId } : {}),
+          next_step: `Wrote ${result.written} file(s). Commit with forge_git_commit, or continue the next folder with another write_batch.`
+        };
       },
       forge_files_patch: async (input) => {
         const identity = this.identity();
         return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesPatch({
           patch: text(input.patch),
+          paths: input.paths === undefined ? undefined : (input.paths as string[]),
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: idempotency(input.idempotency_key)
         }));
@@ -1809,12 +1865,51 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             mode: input.mode === 'read_only' || input.mode === 'mutating' ? input.mode : undefined
           });
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
-          const stdout = 'stdout' in result ? String(result.stdout ?? '') : '';
-          const stderr = 'stderr' in result ? String(result.stderr ?? '') : '';
+          let stdout = 'stdout' in result ? String(result.stdout ?? '') : '';
+          let stderr = 'stderr' in result ? String(result.stderr ?? '') : '';
+          if (attached.redact.size > 0) {
+            stdout = await vaultService(env).redactOutput(stdout, identity.tenantId as TenantId, workspaceId);
+            stderr = await vaultService(env).redactOutput(stderr, identity.tenantId as TenantId, workspaceId);
+          }
+          const compact = input.compact !== false;
+          const combinedBytes = utf8Bytes(stdout) + utf8Bytes(stderr);
+          let outputArtifactId: string | undefined;
+          if (combinedBytes > AGENT_OUTPUT_SPILL_BYTES) {
+            const spilled = await spillTextArtifact(
+              env,
+              identity,
+              workspaceId,
+              'shell-output',
+              `===STDOUT===\n${stdout}\n===STDERR===\n${stderr}\n`
+            );
+            outputArtifactId = spilled.artifact_id;
+          }
+          const base = asRecord(result);
+          const { checkpoint: _checkpoint, stdout: _s, stderr: _e, ...rest } = base;
+          const exitCode = 'exitCode' in result ? Number(result.exitCode) : undefined;
+          if (compact) {
+            return {
+              ...rest,
+              exitCode,
+              compact: true,
+              truncated: Boolean(result.truncated) || Boolean(outputArtifactId),
+              stdout_tail: tailBytes(stdout, AGENT_OUTPUT_TAIL_BYTES),
+              stderr_tail: tailBytes(stderr, AGENT_OUTPUT_TAIL_BYTES),
+              ...(outputArtifactId
+                ? {
+                    output_artifact_id: outputArtifactId,
+                    next_step: `Full output in ${outputArtifactId} (forge_artifact_get). Do not invent missing log lines from the tails.`
+                  }
+                : {})
+            };
+          }
           return {
-            ...asRecord(result),
-            stdout: attached.redact.size > 0 ? await vaultService(env).redactOutput(stdout, identity.tenantId as TenantId, workspaceId) : stdout,
-            stderr: attached.redact.size > 0 ? await vaultService(env).redactOutput(stderr, identity.tenantId as TenantId, workspaceId) : stderr
+            ...rest,
+            exitCode,
+            compact: false,
+            stdout,
+            stderr,
+            ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {})
           };
         } catch (error) {
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
@@ -1875,17 +1970,27 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
         const scope = input.scope === undefined ? 'worktree' : text(input.scope);
-        if (scope === 'outgoing') {
-          const comparisonRef = await outgoingComparisonRef(workspace, input.base === undefined ? undefined : text(input.base));
-          return asRecord(await workspace.gitOutgoingDiff({
-            base: comparisonRef,
-            ...diffPaging(input)
-          }));
-        }
-        return asRecord(await workspace.gitDiff({
-          staged: scope === 'staged',
-          ...diffPaging(input)
-        }));
+        const compact = input.compact !== false;
+        const page = scope === 'outgoing'
+          ? await workspace.gitOutgoingDiff({
+              base: await outgoingComparisonRef(workspace, input.base === undefined ? undefined : text(input.base)),
+              ...diffPaging(input)
+            })
+          : await workspace.gitDiff({
+              staged: scope === 'staged',
+              ...diffPaging(input)
+            });
+        if (!compact) return asRecord(page);
+        // File list + totals only — agents under size limits should request
+        // compact:false + paths for specific hunks.
+        const record = asRecord(page);
+        const { diff: _diff, ...meta } = record;
+        return {
+          ...meta,
+          compact: true,
+          diff: '',
+          next_step: 'File list only. For hunks: forge_git_diff compact:false with paths:[...] or cursor/nextCursor.'
+        };
       },
       forge_git_branch: async (input) => {
         const identity = this.identity();
@@ -1980,7 +2085,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (result.auto_push?.pushed && result.auto_push.remote_sha) {
           await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.auto_push.remote_sha);
         }
-        return asRecord(result);
+        const record = asRecord(result);
+        const { checkpoint: _checkpoint, ...receipt } = record;
+        return {
+          ...receipt,
+          next_step: result.auto_push?.pushed
+            ? `Committed and pushed ${result.auto_push.remote_sha}. Echo that SHA only — do not paste the diff.`
+            : 'Committed locally. Push via forge_submit or forge_git_push when ready.'
+        };
       },
       forge_git_push: async (input) => {
         const identity = this.identity();
@@ -2210,26 +2322,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
 
         return {
           submitted: true,
-          status: action.state,
-          deferred_action_id: action.id,
-          approval_id: approval.approval_id,
-          approval_url: approval.approval_url,
-          staged_ref: staged.ref,
-          commit: staged.commit,
-          remote_sha: staged.remote_sha,
-          branch,
-          pr_base: prBase,
-          comparison_ref: comparisonRef,
-          files_changed: filesChanged,
-          auto_committed: autoCommitted,
           submission_receipt: {
             branch,
             remote_sha: staged.remote_sha,
             staged_ref: staged.ref,
+            approval_id: approval.approval_id,
             approval_url: approval.approval_url,
+            files_changed: filesChanged,
             feature_branch_on_origin: true as const
           },
-          next_step: `Work is on origin at ${branch}@${staged.remote_sha}, staged at ${staged.ref}, and queued for review. Tell the human only these receipt fields — they can approve at ${approval.approval_url} (or ${env.FORGE_PUBLIC_ORIGIN}/app). Do not invent a workers.dev URL. Do not claim a Worker is live. This workspace can be destroyed now.`
+          next_step: `Echo only submission_receipt to the human. Branch ${branch}@${staged.remote_sha} is on origin; approve at ${approval.approval_url}. Do not invent a workers.dev URL.`
         };
       },
       forge_cloudflare_deploy: async (input) => {
@@ -2367,17 +2469,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           http_status: httpStatus,
           command
         };
+        let outputArtifactId: string | undefined;
+        if (utf8Bytes(redacted) > AGENT_OUTPUT_SPILL_BYTES) {
+          const spilled = await spillTextArtifact(env, identity, workspaceId, 'deploy-output', redacted);
+          outputArtifactId = spilled.artifact_id;
+        }
+        const includeOutput = input.include_output === true;
         return {
           deployed: true,
-          account_id: accountId,
-          worker_name: workerName,
-          verified_url: verifiedUrl,
-          http_status: httpStatus,
           deploy_receipt: deployReceipt,
-          stdout_tail: redacted.slice(-3_000),
+          ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {}),
+          ...(includeOutput ? { stdout_tail: redacted.slice(-3_000) } : {}),
           next_step: verifiedUrl
-            ? `Only claim this URL is live: ${verifiedUrl} (HTTP ${httpStatus}). Echo deploy_receipt fields only — never invent a workers.dev hostname.`
-            : 'Deploy command succeeded but Forge could not verify a public URL. Do not invent a workers.dev URL; pass expected_url or inspect stdout_tail.'
+            ? `Only claim this URL is live: ${verifiedUrl} (HTTP ${httpStatus}). Echo deploy_receipt only.${outputArtifactId ? ` Full logs: ${outputArtifactId}.` : ''}`
+            : `Deploy succeeded but URL not verified. Do not invent workers.dev.${outputArtifactId ? ` Inspect ${outputArtifactId} via forge_artifact_get.` : ' Pass expected_url.'}`
         };
       },
       forge_work_export: async (input) => {

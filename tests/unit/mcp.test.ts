@@ -11,7 +11,7 @@ function tool(name: string) {
 
 describe('Forge MCP public contracts', () => {
   it('keeps the KISS catalog small and unique', () => {
-    expect(forgeTools.length).toBeLessThanOrEqual(52);
+    expect(forgeTools.length).toBeLessThanOrEqual(55);
     const names = forgeTools.map((entry) => entry.name);
     expect(new Set(names).size).toBe(names.length);
   });

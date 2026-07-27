@@ -6,6 +6,7 @@ import type { ZodRawShape } from 'zod';
 const RETRY_SAFE_MUTATIONS = new Set([
   'forge_workspace_create',
   'forge_files_write',
+  'forge_files_write_batch',
   'forge_files_patch',
   'forge_files_upload',
   'forge_shell',
@@ -90,6 +91,7 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_submit: { invoking: 'Submitting for review…', invoked: 'Submitted for review' },
   forge_cloudflare_deploy: { invoking: 'Deploying to Cloudflare…', invoked: 'Cloudflare deploy finished' },
   forge_work_export: { invoking: 'Exporting recovery patch…', invoked: 'Recovery patch ready' },
+  forge_files_write_batch: { invoking: 'Writing files…', invoked: 'Files written' },
   forge_repository_list: { invoking: 'Listing repositories…', invoked: 'Repositories ready' },
   forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' },
   forge_artifact_upload: { invoking: 'Uploading artifact…', invoked: 'Artifact uploaded' },

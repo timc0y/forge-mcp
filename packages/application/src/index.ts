@@ -1673,6 +1673,69 @@ export class ForgeApplicationService {
     return { workspaceId: record.workspace.id, path: input.path, previousSha256: previous?.sha256 ?? null, resultingSha256: observed.sha256, shellSha256, sizeBytes: observed.sizeBytes, filesystemRevision: record.workspace.revision, gitWorktreeHash: worktree.hash, readAfterWriteVerified: true, operationId: operation.operationId };
   }
 
+  /**
+   * Write many files in one mutation. Built for agents under host size limits —
+   * one round-trip, compact path+sha receipts, no content echoed back.
+   */
+  async writeBatch(
+    record: WorkspaceRuntimeRecord,
+    files: Array<{ path: string; content: string; expectedSha256?: string }>,
+    expectedRevision: number | undefined,
+    idempotencyKey: string
+  ) {
+    const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
+    if (operation.replay) {
+      return {
+        replay: true,
+        operationId: operation.operationId,
+        workspaceRevision: record.workspace.revision,
+        written: 0,
+        files: [] as Array<{ path: string; resultingSha256: string; sizeBytes: number }>
+      };
+    }
+    const handle = await this.handle(record);
+    const written: Array<{ path: string; resultingSha256: string; sizeBytes: number }> = [];
+    for (const file of files) {
+      if (!file.path.startsWith('/workspace/repo/') || file.path.includes('..') || file.path.includes('\0')) {
+        throw new ForgeError({
+          code: 'FORGE_VALIDATION_FAILED',
+          message: `Invalid write path: ${file.path}`,
+          retryable: false,
+          operationId: operation.operationId
+        });
+      }
+      const previous = await handle.readFile({ path: file.path, maxBytes: 1_000_000 }).catch(() => undefined);
+      if (file.expectedSha256 && previous?.sha256 !== file.expectedSha256) {
+        throw new ForgeError({
+          code: 'FORGE_FILE_CONFLICT',
+          message: `Conflict on ${file.path}: expected hash no longer matches.`,
+          retryable: false,
+          operationId: operation.operationId,
+          details: { path: file.path, expectedSha256: file.expectedSha256, actualSha256: previous?.sha256 }
+        });
+      }
+      await handle.writeFile({ path: file.path, content: file.content, expectedSha256: file.expectedSha256 });
+      const observed = await handle.readFile({ path: file.path, maxBytes: 1_000_000 });
+      const shellSha256 = await this.shellFileSha256(record, file.path);
+      if (shellSha256 !== observed.sha256) {
+        throw new ForgeError({
+          code: 'FORGE_FILE_CONFLICT',
+          message: `Forge shell and file APIs disagreed after writing ${file.path}.`,
+          retryable: false,
+          operationId: operation.operationId
+        });
+      }
+      written.push({ path: file.path, resultingSha256: observed.sha256, sizeBytes: observed.sizeBytes });
+    }
+    record.workspace.hasUnpushedWork = true;
+    return {
+      written: written.length,
+      files: written,
+      operationId: operation.operationId,
+      workspaceRevision: record.workspace.revision
+    };
+  }
+
   async patch(
     record: WorkspaceRuntimeRecord,
     input: PatchInput,
