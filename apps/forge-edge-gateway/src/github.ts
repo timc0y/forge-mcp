@@ -1012,7 +1012,7 @@ export async function requestApproval(
   env: Env,
   identity: Pick<AuthenticatedContext, 'tenantId' | 'subject'>,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string; already_approved: boolean }> {
@@ -1067,7 +1067,7 @@ export async function requireApproval(
   identity: Pick<AuthenticatedContext, 'tenantId'>,
   approvalId: string,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach',
+  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
   expected: Record<string, unknown>
 ): Promise<void> {
   const row = await env.METADATA.prepare(

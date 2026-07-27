@@ -2738,6 +2738,14 @@ export class ForgeApplicationService {
       recommendedAction: string;
       destructiveRecoveryRequired: boolean;
     };
+    healthSignals: {
+      localGit: 'ok' | 'consistent' | 'unknown' | 'diverged' | 'corrupted';
+      remoteAgreement: 'diverged' | 'unknown';
+      baseAgreement: 'ok' | 'unknown';
+      pushAuth: 'ok' | 'failed' | 'unknown';
+      previewReady: 'unknown';
+      submissionReady: 'ready' | 'blocked';
+    };
     processes: Array<{ id: string; command: string; status: string; exitCode?: number }>;
     dependencyState: DependencyStateView;
     trackedChangesPreserved: boolean;

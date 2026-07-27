@@ -11,7 +11,7 @@ function tool(name: string) {
 
 describe('Forge MCP public contracts', () => {
   it('keeps the KISS catalog small and unique', () => {
-    expect(forgeTools.length).toBeLessThanOrEqual(50);
+    expect(forgeTools.length).toBeLessThanOrEqual(52);
     const names = forgeTools.map((entry) => entry.name);
     expect(new Set(names).size).toBe(names.length);
   });
@@ -67,7 +67,8 @@ describe('Forge MCP public contracts', () => {
     expect(forgeTools.some((candidate) => candidate.name === 'forge_observer_workspaces')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_git_sync')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_check_cancel')).toBe(false);
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(false);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_work_export')).toBe(true);
   });
 
   it('exposes secret vault tools (detach folded into attach)', () => {

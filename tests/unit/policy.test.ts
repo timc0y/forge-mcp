@@ -102,6 +102,25 @@ describe('Forge policy', () => {
     }
   });
 
+  it('classifies wrangler deploy as an external side effect requiring approval', () => {
+    for (const command of [
+      'wrangler deploy',
+      'npx wrangler deploy',
+      'pnpm exec wrangler deploy',
+      'wrangler publish',
+      'npx wrangler delete easyroads',
+      'pnpm exec wrangler versions deploy'
+    ]) {
+      const decision = classifyCommand(command, 'development');
+      expect(decision.classification, command).toBe('external_side_effect');
+      expect(decision.approvalRequired, command).toBe(true);
+      expect(() => assertCommandAllowed(command, 'development', false), command).toThrow();
+    }
+    const dryRun = classifyCommand('npx wrangler deploy --dry-run', 'development');
+    expect(dryRun.classification).not.toBe('external_side_effect');
+    expect(dryRun.approvalRequired).toBe(false);
+  });
+
   it('keeps quoted operators out of the split', () => {
     // The && lives inside the commit message, so this is one ordinary command.
     const decision = classifyCommand('git commit -m "fix a && rm -rf b"', 'development');

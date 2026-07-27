@@ -135,6 +135,19 @@ function mayAutoApproveShell(
   return autoApprovableShellClasses(env).has(classification);
 }
 
+/** Prefer the first https://…workers.dev URL wrangler prints after a deploy. */
+function parseWorkersDevUrl(output: string): string | null {
+  const match = output.match(/https:\/\/[a-z0-9][a-z0-9.-]*\.workers\.dev(?:\/[^\s"'<>]*)?/i);
+  return match?.[0]?.replace(/[),.;]+$/u, '') ?? null;
+}
+
+function parseWranglerWorkerName(output: string): string | null {
+  const published = output.match(/Published\s+([A-Za-z0-9][A-Za-z0-9._-]*)/i);
+  if (published?.[1]) return published[1];
+  const deployed = output.match(/(?:Deployed|Uploading)\s+([A-Za-z0-9][A-Za-z0-9._-]*)/i);
+  return deployed?.[1] ?? null;
+}
+
 // A url_review workspace (from forge_review) has no WorkspaceCoordinator record,
 // so its artifacts would otherwise be authorized purely by R2 key shape. Bind the
 // generated workspaceId to its owning (tenant, project) at creation so
@@ -453,10 +466,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         '2. Coding task? forge_task_create, then one forge_workspace_create (waits until ready — do not poll-loop). Reuse workspace_id.',
         '3. Read repo instructions / parallax/ before edits. Use forge_shell (async:true for long work) + forge_process_wait; forge_deps_install for installs.',
         '4. Workspace app look? forge_preview (starts the app if needed). Look at returned images; forge_artifact_get only if captures were omitted.',
-        '5. Inspect with forge_git_diff (scope:outgoing) — comparison base is always requestedRef — then forge_submit for human review. Commits auto-push the forge/ branch when enabled.',
-        '6. Verify remote SHA with forge_workspace_prove before claiming work is pushed.',
-        '7. Secrets: create in the portal (/app/secrets) or forge_secret_create; attach with forge_secret_attach (approval).',
-        '8. Destroy the workspace when done — submitted work is staged off-box and survives teardown. On confusion, call forge_doctor or forge_operation_get.'
+        '5. Inspect with forge_git_diff (scope:outgoing) — comparison base is always requestedRef — then forge_submit for human review. Commits auto-push the forge/ branch when enabled; a failed auto-push fails the commit.',
+        '6. Never claim a branch is on origin, a PR is open, or a Worker is live unless the tool result includes a receipt (submission_receipt.remote_sha, forge_workspace_prove remoteBranch.state=agrees, or deploy_receipt.verified_url). Never invent workers.dev URLs from wrangler name + account subdomain.',
+        '7. Cloudflare deploys: use forge_cloudflare_deploy only (attached secret with CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID). Ungated wrangler deploy via forge_shell is blocked pending approval.',
+        '8. If push is blocked, call forge_work_export before destroy. Secrets: portal (/app/secrets) or forge_secret_create; attach with forge_secret_attach (approval).',
+        '9. Destroy after submit only when submission_receipt.feature_branch_on_origin is true. On confusion, call forge_doctor or forge_operation_get.'
       ].join(' ')
     }
   );
@@ -747,10 +761,31 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     return {
       forge_capabilities: async () => ({
         workspace: { explicit_workspace_id_required: true, filesystem_read_after_write: 'verified_by_forge_files_write', durable_checkpoints: true },
-        git: { immutable_base_commit: true, workspace_proof: true, branch_push: 'approval_required', draft_pull_request: 'approval_required', direct_merge: 'disabled' },
+        git: {
+          immutable_base_commit: true,
+          workspace_proof: true,
+          auto_push_forge_branches: 'hard_fail_on_push_error',
+          branch_push: 'approval_required',
+          draft_pull_request: 'approval_required',
+          submit_requires_feature_branch_on_origin: true,
+          direct_merge: 'disabled'
+        },
         processes: { managed_status: true, persistent_logs: true, preview_requires_exact_process_id: true },
-        deployment: { cloudflare_wrangler: 'approval_required_with_validated_profile' },
-        recovery: { checkpoint: true, destruction_with_uncommitted_or_unpushed_work: 'blocked' },
+        deployment: {
+          cloudflare_wrangler: 'forge_cloudflare_deploy_only',
+          ungated_wrangler_shell: 'blocked_requires_approval',
+          requires_attached_secret_keys: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID'],
+          live_claim_requires: 'deploy_receipt.verified_url'
+        },
+        recovery: {
+          checkpoint: true,
+          work_export: true,
+          destruction_with_uncommitted_or_unpushed_work: 'blocked'
+        },
+        claims: {
+          never_invent_workers_dev_urls: true,
+          echo_only_tool_receipts: ['submission_receipt', 'deploy_receipt', 'remoteBranch']
+        },
         observer: { read_only_tools: ['forge_observer_workspaces', 'forge_observer_workspace', 'forge_observer_activity'], live_portal: '/app/live' }
       }),
       forge_observer_workspaces: async () => {
@@ -2181,12 +2216,197 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           approval_url: approval.approval_url,
           staged_ref: staged.ref,
           commit: staged.commit,
+          remote_sha: staged.remote_sha,
           branch,
           pr_base: prBase,
           comparison_ref: comparisonRef,
           files_changed: filesChanged,
           auto_committed: autoCommitted,
-          next_step: `Work is staged and queued for review. Tell the human it is done and waiting for them at ${approval.approval_url} (or in the Forge portal at ${env.FORGE_PUBLIC_ORIGIN}/app) — they can approve whenever they like, and Forge will push ${branch} and open the draft pull request then. Do not wait for them. This workspace can be destroyed now.`
+          submission_receipt: {
+            branch,
+            remote_sha: staged.remote_sha,
+            staged_ref: staged.ref,
+            approval_url: approval.approval_url,
+            feature_branch_on_origin: true as const
+          },
+          next_step: `Work is on origin at ${branch}@${staged.remote_sha}, staged at ${staged.ref}, and queued for review. Tell the human only these receipt fields — they can approve at ${approval.approval_url} (or ${env.FORGE_PUBLIC_ORIGIN}/app). Do not invent a workers.dev URL. Do not claim a Worker is live. This workspace can be destroyed now.`
+        };
+      },
+      forge_cloudflare_deploy: async (input) => {
+        const identity = this.identity();
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const command = input.command === undefined ? 'npx wrangler deploy' : text(input.command);
+        const cwd = input.cwd === undefined ? '/workspace/repo' : text(input.cwd);
+        const expectedUrl = input.expected_url === undefined ? undefined : text(input.expected_url);
+        const decision = classifyCommand(command, 'development');
+        if (decision.classification !== 'external_side_effect') {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'forge_cloudflare_deploy only runs wrangler deploy/publish/delete commands. Use forge_shell for probes (including --dry-run).',
+            retryable: false
+          });
+        }
+        if (/(^|\s)--dry-run(\s|$)/i.test(command)) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'Dry-run is not a deploy. Use forge_shell with wrangler deploy --dry-run instead.',
+            retryable: false
+          });
+        }
+        const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
+        const token = attached.vars.CLOUDFLARE_API_TOKEN?.trim();
+        const accountId = attached.vars.CLOUDFLARE_ACCOUNT_ID?.trim();
+        if (!token || !accountId) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'Attach a Cloudflare vault secret that includes both CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (forge_secret_attach), then retry. Account pinning prevents deploying to the wrong Cloudflare account.',
+            retryable: false,
+            details: {
+              has_token: Boolean(token),
+              has_account_id: Boolean(accountId),
+              next_step: 'Create the secret in /app/secrets or forge_secret_create, attach it, then call forge_cloudflare_deploy again.'
+            }
+          });
+        }
+        const approvalPayload = {
+          command,
+          cwd,
+          accountId,
+          expectedUrl: expectedUrl ?? null
+        };
+        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        if (!approvalId) {
+          const approval = await requestApproval(
+            env,
+            identity,
+            workspaceId,
+            'cloudflare.deploy',
+            `Deploy with wrangler to Cloudflare account ${accountId}`,
+            approvalPayload
+          );
+          if (approval.already_approved) {
+            approvalId = approval.approval_id;
+            await requireApproval(env, identity, approvalId, workspaceId, 'cloudflare.deploy', approvalPayload);
+          } else {
+            const inline = await this.tryResolveApprovalInline(
+              identity,
+              approval,
+              `Deploy with wrangler to Cloudflare account ${accountId}`
+            );
+            if (!inline) {
+              throw new ForgeError({
+                code: 'FORGE_APPROVAL_REQUIRED',
+                message: 'Cloudflare deploy needs human approval. Open the approval URL, approve, then retry with approval_id.',
+                retryable: false,
+                details: { kind: 'approval', action: 'cloudflare.deploy', ...approval }
+              });
+            }
+            approvalId = inline;
+            await requireApproval(env, identity, approvalId, workspaceId, 'cloudflare.deploy', approvalPayload);
+          }
+        } else {
+          await requireApproval(env, identity, approvalId, workspaceId, 'cloudflare.deploy', approvalPayload);
+        }
+        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const result = await workspace.shellExec({
+          command,
+          cwd,
+          timeoutMs: 300_000,
+          environment: {
+            ...attached.vars,
+            CLOUDFLARE_API_TOKEN: token,
+            CLOUDFLARE_ACCOUNT_ID: accountId
+          },
+          networkPolicy: 'development',
+          outputLimitBytes: 200_000,
+          approved: true,
+          mode: 'mutating'
+        });
+        const combined = `${result.stdout}\n${result.stderr}`;
+        const redacted = await vaultService(env).redactOutput(combined, identity.tenantId as TenantId, workspaceId);
+        if (result.exitCode !== 0) {
+          if (approvalId) await completeApproval(env, approvalId, false);
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `Wrangler deploy failed (exit ${result.exitCode}). Do not claim the Worker is live.`,
+            retryable: true,
+            details: { exitCode: result.exitCode, output_tail: redacted.slice(-4_000) }
+          });
+        }
+        const workerName = parseWranglerWorkerName(redacted);
+        const publishedUrl = expectedUrl ?? parseWorkersDevUrl(redacted);
+        let httpStatus: number | null = null;
+        let verifiedUrl: string | null = null;
+        if (publishedUrl) {
+          try {
+            const probe = await fetch(publishedUrl, {
+              method: 'GET',
+              redirect: 'follow',
+              signal: AbortSignal.timeout(15_000)
+            });
+            httpStatus = probe.status;
+            // Any HTTP response from the hostname proves the Worker route exists;
+            // 404 app content still means the worker is deployed.
+            verifiedUrl = publishedUrl;
+          } catch {
+            httpStatus = null;
+            verifiedUrl = null;
+          }
+        }
+        if (approvalId) await completeApproval(env, approvalId, true);
+        await this.recordAudit(
+          'cloudflare.deploy',
+          identity.tenantId,
+          { accountId, workerName, verifiedUrl, httpStatus, command },
+          { workspaceId }
+        );
+        const deployReceipt = {
+          account_id: accountId,
+          worker_name: workerName,
+          verified_url: verifiedUrl,
+          http_status: httpStatus,
+          command
+        };
+        return {
+          deployed: true,
+          account_id: accountId,
+          worker_name: workerName,
+          verified_url: verifiedUrl,
+          http_status: httpStatus,
+          deploy_receipt: deployReceipt,
+          stdout_tail: redacted.slice(-3_000),
+          next_step: verifiedUrl
+            ? `Only claim this URL is live: ${verifiedUrl} (HTTP ${httpStatus}). Echo deploy_receipt fields only — never invent a workers.dev hostname.`
+            : 'Deploy command succeeded but Forge could not verify a public URL. Do not invent a workers.dev URL; pass expected_url or inspect stdout_tail.'
+        };
+      },
+      forge_work_export: async (input) => {
+        const identity = this.identity();
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const maxBytes = input.max_bytes === undefined ? 2_000_000 : number(input.max_bytes);
+        const exported = await workspace.exportRecoveryPatch({ maxBytes });
+        const artifactId = ids.artifact() as import('@forge/core').ArtifactId;
+        const bytes = new TextEncoder().encode(exported.content).buffer;
+        const store = new R2ArtifactStore(env.ARTIFACTS);
+        const ref = await store.put({
+          id: artifactId,
+          tenantId: identity.tenantId as import('@forge/core').TenantId,
+          workspaceId: workspaceId as import('@forge/core').WorkspaceId,
+          kind: 'recovery-patch',
+          contentType: 'text/plain; charset=utf-8',
+          bytes,
+          metadata: {
+            kind: 'recovery-patch',
+            workspace_id: workspaceId
+          }
+        });
+        return {
+          artifact_id: ref.id,
+          size_bytes: ref.sizeBytes,
+          sha256: ref.sha256,
+          proof: exported.proof,
+          next_step: `Recovery patch stored as ${ref.id}. Fetch with forge_artifact_get if needed. Prefer fixing push (forge_git_push / forge_submit) so the feature branch is on origin.`
         };
       },
       forge_preview_expose: async (input) => {

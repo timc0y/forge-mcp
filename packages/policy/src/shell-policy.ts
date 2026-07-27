@@ -112,6 +112,23 @@ const destructive = [/(^|\s)rm\s+-[^\n]*r[^\n]*f/i, /git\s+reset\s+--hard/i, /gi
 const installs = [/(^|\s)(npm|pnpm|yarn|bun)\s+(install|ci|add|i)(\s|$)/i, /(^|\s)(pip|uv)\s+install(\s|$)/i];
 const network = [/(^|\s)(curl|wget|ssh|scp|rsync)(\s|$)/i];
 
+// Publish / destroy / rollback against a live cloud account. Dry-runs stay local.
+// Matches bare `wrangler deploy` and wrappers (`npx wrangler deploy`, `pnpm exec wrangler …`).
+const WRANGLER_WRAPPER = '(?:(?:npx|bunx|pnpm\\s+(?:dlx|exec)|yarn\\s+dlx)\\s+)?';
+const WRANGLER_MUTATING =
+  /(?:deploy|publish|delete|versions\s+deploy|containers\s+deploy|rollback)\b/i;
+const WRANGLER_EXTERNAL = new RegExp(
+  `(^|\\s)${WRANGLER_WRAPPER}wrangler\\s+${WRANGLER_MUTATING.source}`,
+  'i'
+);
+
+function isExternalWranglerCommand(scrubbed: string): boolean {
+  if (!WRANGLER_EXTERNAL.test(scrubbed)) return false;
+  // `--dry-run` never mutates a live account; keep it out of the approval path.
+  if (/(^|\s)--dry-run(\s|$)/i.test(scrubbed)) return false;
+  return true;
+}
+
 // Commands that only read. `sed` is deliberately absent: `sed -i` edits in place,
 // and the previous rule classified it read_only, which was simply wrong. It is
 // handled below so the non-`-i` form still reads as read-only.
@@ -392,6 +409,14 @@ function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, dep
       networkPolicy !== 'deny_all',
       true,
       'Dependency installation executes repository and package lifecycle scripts.'
+    );
+  }
+  if (isExternalWranglerCommand(trimmed)) {
+    return decide(
+      'external_side_effect',
+      ['development', 'custom_allowlist', 'unrestricted_with_approval'].includes(networkPolicy),
+      true,
+      'Wrangler deploy/publish/delete reaches a live Cloudflare account and requires approval. Use forge_cloudflare_deploy with an attached Cloudflare secret (CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID) so the account is pinned and the URL is verified.'
     );
   }
   if (network.some((rule) => rule.test(trimmed))) {

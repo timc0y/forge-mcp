@@ -10,7 +10,9 @@ Set `FORGE_CREDENTIAL_ENCRYPTION_KEY` as a Worker secret to a 32-byte base64url 
 
 Secrets are decrypted only while a provider validates or uses them. The current Cloudflare provider validates through Cloudflare's token verification endpoint. A selected profile is recorded on a newly created workspace as profile identity only; its token is never mounted in a sandbox.
 
-`forge_cloudflare_deploy` is the controlled exception for a deployment: after explicit approval, Forge injects `CLOUDFLARE_API_TOKEN` (and optional `CLOUDFLARE_ACCOUNT_ID`) only into that one `pnpm exec wrangler deploy` process. It redacts the exact token from returned output, does not persist it to the workspace, and requires a previously validated Cloudflare profile. Because Wrangler may execute repository-controlled hooks, approve deployments only for code you trust.
+`forge_cloudflare_deploy` is the controlled path for a live Worker deploy. After human approval, Forge injects an **attached vault secret** that must include both `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` into that one wrangler process only. The account id pins the deploy so a multi-account OAuth token cannot silently publish under the wrong `*.workers.dev` subdomain. Forge probes any published URL and returns a `deploy_receipt` — agents must not claim a Worker is live without `deploy_receipt.verified_url`. Ungated `wrangler deploy` via `forge_shell` is classified as `external_side_effect` and requires approval.
+
+Create the secret with `forge_secret_create` (provider `cloudflare`) or the portal (`/app/secrets`), then `forge_secret_attach` (approval). Because Wrangler may execute repository-controlled hooks, approve deployments only for code you trust.
 
 ## Profile lifecycle
 

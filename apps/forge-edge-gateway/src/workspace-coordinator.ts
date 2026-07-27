@@ -1256,8 +1256,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
-  async exportRecoveryPatch(input: { maxBytes: number }) {
-    return this.readRepoWithRecovery((record) => this.app.exportRecoveryPatch(record, input.maxBytes));
+  async exportRecoveryPatch(input: { maxBytes?: number } = {}) {
+    return this.readRepoWithRecovery((record) => this.app.exportRecoveryPatch(record, input.maxBytes ?? 2_000_000));
   }
 
   async restoreCheckpoint(input: { snapshotId: string; expectedRevision?: number }) {
@@ -1340,15 +1340,40 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     }
     const branch = record.workspace.currentBranch!;
     const commit = record.workspace.currentCommit ?? '';
-    if (!commit) return { auto_push: { pushed: false, reason: 'no commit' } };
+    if (!commit) {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: 'Auto-push is enabled but there is no commit to push after forge_git_commit.',
+        retryable: false,
+        details: { branch }
+      });
+    }
     let source: { url: string; authorizationHeader: string };
     try {
       source = await repositoryPushSource(this.env, record.workspace, branch, commit);
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 300) : 'no authorization';
-      return { auto_push: { pushed: false, reason: message, causeClass: 'auth' } };
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: `Auto-push of ${branch} failed: ${message}. The commit exists only in this workspace until push succeeds.`,
+        retryable: true,
+        details: { branch, commit, causeClass: 'auth' }
+      });
     }
     const result = await this.app.autoPushForgeBranch(record, source);
+    if (!result.pushed && result.reason !== 'nothing to push') {
+      throw new ForgeError({
+        code: 'FORGE_GIT_PUSH_BLOCKED',
+        message: `Auto-push of ${branch} failed after commit: ${result.reason ?? 'unknown error'}. The commit is local only — fix the push failure and retry; do not claim the branch is on origin.`,
+        retryable: true,
+        details: {
+          branch,
+          commit,
+          causeClass: result.causeClass,
+          reason: result.reason
+        }
+      });
+    }
     return {
       auto_push: {
         pushed: result.pushed,
@@ -1477,34 +1502,62 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
    * Needs no approval of its own: `forge/staged/…` is Forge's namespace, no pull
    * request exists yet, and nothing the user considers their branch has moved.
    */
-  async stageForReview(input: { ref: string }): Promise<{ ref: string; commit: string }> {
+  async stageForReview(input: { ref: string }): Promise<{
+    ref: string;
+    commit: string;
+    feature_branch: string;
+    remote_sha: string;
+  }> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       const commit = record.workspace.currentCommit;
-      if (!record.workspace.currentBranch || !commit) {
+      const featureBranch = record.workspace.currentBranch;
+      if (!featureBranch || !commit) {
         throw new ForgeError({
           code: 'FORGE_VALIDATION_FAILED',
           message: 'Nothing to submit: commit your work to a forge/ branch first.',
           retryable: false
         });
       }
-      const source = await repositoryPushSource(this.env, record.workspace, input.ref, commit);
-      const result = await this.app.pushToRef(record, source, input.ref);
-      if (!result.pushed) {
+      // 1) Park on forge/staged/… so review can survive workspace teardown.
+      const stagedSource = await repositoryPushSource(this.env, record.workspace, input.ref, commit);
+      const staged = await this.app.pushToRef(record, stagedSource, input.ref);
+      if (!staged.pushed) {
         throw new ForgeError({
           code: 'FORGE_GIT_PUSH_BLOCKED',
-          message: `Could not stage the branch for review: ${result.reason ?? 'unknown error'}`,
+          message: `Could not stage the branch for review: ${staged.reason ?? 'unknown error'}`,
           retryable: true
         });
       }
-      // The commits are on GitHub now, which is exactly what hasUnpushedWork
-      // tracks: "would tearing this down lose work?". Leaving it set made
-      // forge_workspace_destroy refuse right after submitting — telling the agent
-      // to push the branch, i.e. steering it back to the blocking path — and made
-      // the idle reaper treat an already-safe workspace as dirty.
-      record.workspace.hasUnpushedWork = false;
+      // 2) Also push the feature branch itself. Staging alone is not "the branch
+      // is on origin" — agents were claiming forge/live-v1 existed when only
+      // forge/staged/... did. Feature-branch push updates lastPushed* and clears
+      // hasUnpushedWork only when origin agrees with HEAD.
+      const featureSource = await repositoryPushSource(this.env, record.workspace, featureBranch, commit);
+      // Force the push path even if a prior soft-fail left hasUnpushedWork false.
+      record.workspace.hasUnpushedWork = true;
+      const featurePush = await this.app.autoPushForgeBranch(record, featureSource);
+      if (!featurePush.pushed || !featurePush.remote_sha) {
+        throw new ForgeError({
+          code: 'FORGE_GIT_PUSH_BLOCKED',
+          message: `Work is on ${input.ref}, but feature branch ${featureBranch} is not on origin yet: ${featurePush.reason ?? 'push failed'}. Do not claim ${featureBranch} is pushed; fix push and call forge_workspace_prove.`,
+          retryable: true,
+          details: {
+            staged_ref: input.ref,
+            feature_branch: featureBranch,
+            commit,
+            reason: featurePush.reason,
+            causeClass: featurePush.causeClass
+          }
+        });
+      }
       await this.save(record);
-      return { ref: input.ref, commit };
+      return {
+        ref: input.ref,
+        commit,
+        feature_branch: featureBranch,
+        remote_sha: featurePush.remote_sha
+      };
     });
   }
 

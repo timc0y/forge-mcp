@@ -88,6 +88,8 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_workspace_snapshot: { invoking: 'Creating snapshot…', invoked: 'Snapshot created' },
   forge_workspace_restore: { invoking: 'Restoring snapshot…', invoked: 'Snapshot restored' },
   forge_submit: { invoking: 'Submitting for review…', invoked: 'Submitted for review' },
+  forge_cloudflare_deploy: { invoking: 'Deploying to Cloudflare…', invoked: 'Cloudflare deploy finished' },
+  forge_work_export: { invoking: 'Exporting recovery patch…', invoked: 'Recovery patch ready' },
   forge_repository_list: { invoking: 'Listing repositories…', invoked: 'Repositories ready' },
   forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' },
   forge_artifact_upload: { invoking: 'Uploading artifact…', invoked: 'Artifact uploaded' },
