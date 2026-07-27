@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev --config ../../infra/wrangler/forge.jsonc --env development",
     "deploy": "wrangler deploy --config ../../infra/wrangler/forge.jsonc --env=\"\"",
+    "deploy:worker": "wrangler deploy --config ../../infra/wrangler/forge.jsonc --env=\"\" --containers-rollout=none",
     "cf:typegen": "wrangler types --config ../../infra/wrangler/forge.jsonc src/worker-configuration.d.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

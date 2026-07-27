@@ -18,9 +18,19 @@ allocation, Browser Run, OAuth, D1, R2, Workflows, or preview routing.
 
 Forge has one deployable environment, defined by `infra/wrangler/forge.jsonc`.
 
+Wrangler is a dev dependency — there is no global `wrangler` on `PATH` unless you
+install it yourself. Use the repo scripts:
+
 ```bash
-pnpm run deploy
+pnpm wrangler login          # refresh Cloudflare OAuth
+pnpm run deploy              # Worker + Sandbox container image (needs Docker)
+pnpm run deploy:worker       # Worker only; skips container image build/push
 ```
+
+**Docker is required for `pnpm run deploy`.** Wrangler builds `infra/wrangler`
+`containers[].image` (`../../Dockerfile`) locally before upload. Start Docker
+Desktop (`open -a Docker`) or use `deploy:worker` when you changed only Worker
+code and do not need a new Sandbox image.
 
 **Deploy applies D1 migrations first.** `migrations/d1/` (`0001`…`0011` today)
 must apply in strict numeric sequence before the Worker goes live; CI checks

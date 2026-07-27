@@ -20,7 +20,9 @@ Production is the top-level environment; development uses the same file with
 `--env development`.
 
 ```bash
-pnpm run deploy
+pnpm wrangler login       # Cloudflare OAuth (no global wrangler binary required)
+pnpm run deploy           # Worker + Sandbox image — Docker Desktop must be running
+pnpm run deploy:worker    # Worker-only when Dockerfile did not change
 ```
 
 Local iteration runs the same config with an auth-relaxed identity:
