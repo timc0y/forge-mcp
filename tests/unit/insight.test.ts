@@ -35,6 +35,12 @@ describe('path classification', () => {
     expect(classifyPath('packages/cart/src/x.ts').packageDir).toBe('packages/cart');
     expect(classifyPath('docs/readme.md').isDoc).toBe(true);
   });
+
+  it('memoizes classification results for identical path queries', () => {
+    const first = classifyPath('packages/core/src/service.ts');
+    const second = classifyPath('packages/core/src/service.ts');
+    expect(first).toBe(second);
+  });
 });
 
 describe('compact diff metadata', () => {

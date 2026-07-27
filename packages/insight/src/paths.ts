@@ -34,13 +34,19 @@ const MIGRATION = /(^|\/)migrations?\/|(^|\/)migrate\//i;
 const GENERATED = /(^|\/)(dist|build|out|\.next|\.turbo|coverage|node_modules|worker-configuration\.d\.ts|.*\.gen\.[cm]?[jt]s)(\/|$)/;
 const DOC = /\.(md|mdx|txt|rst)$|(^|\/)docs?\//i;
 
+const PATH_FACTS_CACHE = new Map<string, PathFacts>();
+const MAX_CACHE_SIZE = 2000;
+
 export function classifyPath(path: string): PathFacts {
+  const cached = PATH_FACTS_CACHE.get(path);
+  if (cached) return cached;
+
   const base = path.split('/').at(-1) ?? path;
   const packageMatch = /^((?:packages|apps|workflows|examples)\/[^/]+)\//.exec(path);
   const isLockfile = LOCKFILES.has(base);
   const isWorkerConfig = WORKER_CONFIG.test(path);
   const isBuildTooling = BUILD_TOOLING.test(path);
-  return {
+  const facts: PathFacts = {
     path,
     isTest: TEST.test(path),
     isConfig: !isBuildTooling && !isWorkerConfig && CONFIG.test(path),
@@ -52,6 +58,13 @@ export function classifyPath(path: string): PathFacts {
     isBuildTooling,
     packageDir: packageMatch?.[1] ?? null
   };
+
+  if (PATH_FACTS_CACHE.size >= MAX_CACHE_SIZE) {
+    const firstKey = PATH_FACTS_CACHE.keys().next().value;
+    if (firstKey !== undefined) PATH_FACTS_CACHE.delete(firstKey);
+  }
+  PATH_FACTS_CACHE.set(path, facts);
+  return facts;
 }
 
 /** Stable, dependency-free FNV-1a hash so analysis stays synchronous and testable. */
