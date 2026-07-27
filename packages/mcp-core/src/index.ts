@@ -173,6 +173,48 @@ const gitStatusOutput = {
   dataLoss: z.object({ at: z.string(), detail: z.string() }).optional().describe('Set when a checkout recovery could only re-clone from the remote and had to discard local-only work.')
 } satisfies ZodRawShape;
 
+const diffMetadataOutput = {
+  schemaVersion: z.number(),
+  totalAdditions: z.number(),
+  totalDeletions: z.number(),
+  files: z.array(z.object({
+    path: z.string(),
+    changeType: z.enum(['added', 'deleted', 'modified', 'renamed']),
+    additions: z.number(),
+    deletions: z.number(),
+    changedSymbols: z.array(z.string()),
+    possibleSecret: z.boolean(),
+    category: z.string()
+  })),
+  changedExports: z.array(z.string()),
+  changedTests: z.array(z.string()),
+  configChanges: z.array(z.string()),
+  workerConfigChanges: z.array(z.string()),
+  migrations: z.array(z.string()),
+  lockfileChanges: z.array(z.string()),
+  generatedChanges: z.array(z.string()),
+  possibleSecretExposure: z.array(z.string()),
+  riskAreas: z.array(z.string()),
+  suggestedHunks: z.array(z.string()),
+  hash: z.string()
+} satisfies ZodRawShape;
+
+const contextGetOutput = {
+  schemaVersion: z.number(),
+  goal: z.string(),
+  results: z.array(z.object({
+    path: z.string(),
+    reason: z.string(),
+    instructions: z.array(z.string()),
+    adjacentTests: z.array(z.string()),
+    packageContext: z.string().nullable(),
+    warnings: z.array(z.string()),
+    confidence: z.number()
+  })),
+  truncated: z.boolean(),
+  consideredFiles: z.number()
+} satisfies ZodRawShape;
+
 // Shared by both diff tools. A diff is the one Forge result whose size is set
 // by the user's repository rather than by anything Forge controls, so it is
 // returned a page of FILES at a time: `files` always lists every changed file
@@ -332,11 +374,17 @@ export const forgeTools = [
   { name: 'forge_workspace_destroy', title: 'Destroy workspace', description: 'Tear down the workspace. Refused if unpushed forge/ commits exist unless force:true.', inputSchema: { workspace_id: workspaceIdOptional, preserve_artifacts: z.boolean().default(true), force: z.boolean().default(false), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'destructive', approval: 'policy' },
   { name: 'forge_doctor', title: 'Doctor workspace', description: 'Reconcile Git, processes, and dependency state after reconnect or weird errors. Never throws — reports gitIntegrity and recommendedAction.', inputSchema: { workspace_id: workspaceIdOptional }, outputSchema: { workspaceId: z.string(), gitIntegrity: z.object({ state: z.enum(['consistent', 'unknown', 'diverged', 'corrupted']), reason: z.string(), blockingProcessId: z.string().optional(), gitHeadReadable: z.boolean(), gitIndexReadable: z.boolean(), workingTreeReadable: z.boolean(), recommendedAction: z.string(), destructiveRecoveryRequired: z.boolean() }), processes: z.array(z.object({ id: z.string(), command: z.string(), status: z.string(), exitCode: z.number().optional() })), dependencyState: dependencyStateOut, trackedChangesPreserved: z.boolean(), checkpointRestored: z.boolean(), workspaceRevision: z.number(), allowedNextActions: z.array(z.string()).optional() }, sideEffect: 'none', approval: 'none' },
   { name: 'forge_operation_get', title: 'Get operation', description: 'After a disconnect or unknown tool outcome, check whether operation op_... finished, failed, or is still active.', inputSchema: { workspace_id: workspaceIdOptional, operation_id: z.string().startsWith('op_') }, outputSchema: { workspaceId: z.string(), operationId: z.string(), idempotencyKey: z.string(), replayed: z.boolean(), originalOperationId: z.string(), status: z.enum(['accepted', 'active', 'completed', 'failed', 'cancelled']), processId: z.string().nullable(), process: z.unknown().nullable(), dependencyState: dependencyStateOut, workspaceRevision: z.number(), allowedNextActions: z.array(z.string()).optional() }, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_workspace_snapshot', title: 'Snapshot workspace', description: 'Capture a named checkpoint of the workspace filesystem. Use before risky operations to enable rollback.', inputSchema: { workspace_id: workspaceIdOptional, name: z.string().min(1).max(200).optional() }, sideEffect: 'workspace', approval: 'none' },
+  { name: 'forge_workspace_restore', title: 'Restore snapshot', description: 'Roll back the workspace to a previous checkpoint. Destroys uncommitted work. Returns the restored state.', inputSchema: { workspace_id: workspaceIdOptional, snapshot_id: z.string().min(1).max(200), expected_revision: revision }, sideEffect: 'destructive', approval: 'policy' },
 
   // Files
   { name: 'forge_files_list', title: 'List files', description: 'List a bounded file tree under /workspace.', inputSchema: { workspace_id: workspaceIdOptional, path: z.string().startsWith('/workspace').default('/workspace/repo'), depth: z.number().int().min(1).max(20).default(4), limit: z.number().int().min(1).max(10000).default(1000) }, outputSchema: { entries: z.array(z.unknown()), truncated: z.boolean(), hint: z.string().optional() }, sideEffect: 'none', approval: 'none' },
   { name: 'forge_files_read', title: 'Read files', description: 'Read one file (path) or several (paths) with content hashes for conflict-safe edits.', inputSchema: { workspace_id: workspaceIdOptional, path: z.string().startsWith('/workspace').optional(), paths: z.array(z.string().startsWith('/workspace')).min(1).max(20).optional(), start_line: z.number().int().positive().optional(), end_line: z.number().int().positive().optional(), max_bytes: z.number().int().min(1).max(500000).default(200000), compact: z.boolean().optional() }, outputSchema: filesReadOutput, sideEffect: 'none', approval: 'none' },
   { name: 'forge_files_write', title: 'Write file', description: 'Create or replace one file. Pass expected_sha256 for conflict-safe overwrite.', inputSchema: { workspace_id: workspaceIdOptional, path: z.string().startsWith('/workspace/repo/').max(1000), content: z.string().max(4000000), expected_sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'workspace', approval: 'none' },
+  { name: 'forge_files_patch', title: 'Patch file', description: 'Apply a unified-diff patch to one or more files in the workspace. The patch is applied via `git apply` with conflict detection and automatic rollback on failure.', inputSchema: { workspace_id: workspaceIdOptional, patch: z.string().min(1).max(2000000), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'workspace', approval: 'none' },
+  { name: 'forge_files_upload', title: 'Upload file', description: 'Upload a binary file to the workspace via base64. Decodes and writes to the target path. For text files, prefer forge_files_write.', inputSchema: { workspace_id: workspaceIdOptional, path: z.string().startsWith('/workspace/repo/').max(1000), content_base64: z.string().min(1), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'workspace', approval: 'none' },
+  { name: 'forge_diff_metadata', title: 'Diff metadata', description: 'Syntax-only metadata over the outgoing diff: changed symbols, secret risk, file classification, and suggested hunks. No model, no semantics — an index into the diff, not a substitute.', inputSchema: { workspace_id: workspaceIdOptional, base: z.string().min(1).max(255).default('main') }, outputSchema: diffMetadataOutput, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_context_get', title: 'Get context', description: 'Deterministic repo-context selection for a goal. Returns ranked file paths with reasons, adjacent tests, governing instructions, and confidence scores. Does NOT return file contents — use forge_files_read for that.', inputSchema: { workspace_id: workspaceIdOptional, goal: z.string().min(1).max(2000), likely_paths: z.array(z.string().min(1).max(500)).max(40).default([]), max_results: z.number().int().min(1).max(100).default(12) }, outputSchema: contextGetOutput, sideEffect: 'none', approval: 'none' },
 
   // Shell + processes
   { name: 'forge_shell', title: 'Run command', description: 'Run a command in the workspace. mode:read_only for probes. async:true for long work (returns proc_ id immediately — then forge_process_wait). Risky commands need approval_id.', inputSchema: { workspace_id: workspaceIdOptional, command: z.string().min(1).max(16384), cwd, timeout_ms: z.number().int().min(100).max(900000).default(300000), environment: z.record(z.string(), z.string()).default({}), network_policy: z.enum(['deny_all','package_install','development','custom_allowlist','unrestricted_with_approval']).default('development'), output_limit_bytes: z.number().int().min(1000).max(1000000).default(200000), mode: z.enum(['read_only', 'mutating']).optional(), async: z.boolean().optional(), compact: z.boolean().optional(), expected_revision: revision, idempotency_key: idempotencyOptional, approval_id: z.string().startsWith('apr_').optional() }, sideEffect: 'workspace', approval: 'policy' },
@@ -350,7 +398,10 @@ export const forgeTools = [
   { name: 'forge_git_status', title: 'Git status', description: 'Working-tree and branch status.', inputSchema: { workspace_id: workspaceIdOptional }, outputSchema: gitStatusOutput, sideEffect: 'none', approval: 'none' },
   { name: 'forge_git_diff', title: 'Git diff', description: 'Paged diff. scope=worktree (default), staged, or outgoing (vs base). Every call returns the full changed-file list; follow nextCursor for hunks.', inputSchema: { workspace_id: workspaceIdOptional, scope: z.enum(['worktree', 'staged', 'outgoing']).default('worktree'), base: z.string().min(1).max(255).default('main'), cursor: diffCursor, max_bytes: diffMaxBytes, paths: diffPaths, compact: z.boolean().optional() }, outputSchema: outgoingDiffOutput, sideEffect: 'none', approval: 'none' },
   { name: 'forge_git_branch', title: 'Create branch', description: 'Create and check out a local forge/ branch.', inputSchema: { workspace_id: workspaceIdOptional, branch: forgeBranch, expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'workspace', approval: 'none' },
+  { name: 'forge_git_rebase', title: 'Rebase branch', description: 'Rebase the current forge/ branch onto the latest upstream base. On conflict, aborts automatically and lists conflicted files.', inputSchema: { workspace_id: workspaceIdOptional, base: z.string().min(1).max(255).default('main') }, sideEffect: 'workspace', approval: 'none' },
   { name: 'forge_git_commit', title: 'Commit', description: 'Stage paths and commit as forge-mcp[bot]. Omit message to auto-generate.', inputSchema: { workspace_id: workspaceIdOptional, message: z.string().min(1).max(500).optional(), paths: z.array(z.string().min(1).max(500)).max(100).default([]), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'workspace', approval: 'none' },
+  { name: 'forge_git_push', title: 'Push branch', description: 'Push the forge/ branch to the remote. Requires approval. Does NOT create a PR — use forge_pull_request_create for that.', inputSchema: { workspace_id: workspaceIdOptional, branch: forgeBranch, base: z.string().min(1).max(255).default('main'), approval_id: z.string().startsWith('apr_').optional() }, sideEffect: 'external', approval: 'required' },
+  { name: 'forge_pull_request_create', title: 'Create PR', description: 'Create a draft pull request from the current forge/ branch. Requires approval. Branch must already be pushed.', inputSchema: { workspace_id: workspaceIdOptional, branch: forgeBranch, base: z.string().min(1).max(255).default('main'), title: z.string().min(1).max(256).optional(), body: z.string().max(60000).default(''), approval_id: z.string().startsWith('apr_').optional() }, sideEffect: 'external', approval: 'required' },
   { name: 'forge_submit', title: 'Submit for review', description: 'One call to finish: auto-commit if needed, stage on a Forge ref, queue draft PR. Human approves later at approval_url. Prefer this over manual push/PR.', inputSchema: { workspace_id: workspaceIdOptional, branch: forgeBranch, base: z.string().min(1).max(255).default('main'), title: z.string().min(1).max(256).optional(), body: z.string().max(60000).default(''), task_id: taskId.optional(), idempotency_key: idempotencyOptional }, outputSchema: { submitted: z.boolean(), status: z.string(), deferred_action_id: z.string(), approval_id: z.string(), approval_url: z.string(), staged_ref: z.string(), commit: z.string(), branch: z.string(), base: z.string(), files_changed: z.number().int(), auto_committed: z.boolean(), next_step: z.string() }, sideEffect: 'external', approval: 'deferred' },
 
   // Review / preview
@@ -358,6 +409,7 @@ export const forgeTools = [
   { name: 'forge_preview_expose', title: 'Expose preview', description: 'Expose a running process through a short-lived Forge preview URL. Private by default; public access needs approval.', inputSchema: { workspace_id: workspaceIdOptional, process_id: z.string().startsWith('proc_'), port: z.number().int().min(1024).max(65535), access: z.enum(['private','tenant','share-link','public']).default('private'), ttl_seconds: z.number().int().min(60).max(86400).default(3600), expected_revision: revision, idempotency_key: idempotencyOptional }, sideEffect: 'workspace', approval: 'policy' },
   { name: 'forge_preview', title: 'Preview capture', description: 'Screenshot your workspace app. Omit preview_id and Forge starts/exposes the dev server. Optional steps drive click/fill before the shot.', inputSchema: { workspace_id: workspaceIdOptional, preview_id: z.string().startsWith('prv_').optional(), preview_wait_ms: z.number().int().min(5000).max(110000).default(60000), captures: z.array(z.object({ route: z.string().startsWith('/'), state: z.string().min(1).max(100).default('entry'), selection: z.string().min(1).max(200).optional(), steps: z.array(z.object({ kind: z.enum(['navigate','click','fill','press','wait_for_selector','wait_for_text','wait','reload']), selector: z.string().min(1).max(1000).optional(), value: z.string().max(10000).optional(), key: z.string().min(1).max(40).optional(), text: z.string().min(1).max(1000).optional(), path: z.string().startsWith('/').optional(), timeout_ms: z.number().int().min(100).max(30000).optional() })).min(1).max(20).optional() })).min(1).max(20), viewports: z.array(z.union([z.enum(['phone','tablet','desktop']), z.object({ id: z.string().min(1).max(40), width: z.number().int().min(240).max(3840), height: z.number().int().min(240).max(2160) })])).min(1).max(4).default(['phone','desktop']) }, outputSchema: reviewCaptureOutput, sideEffect: 'workspace', approval: 'none' },
   { name: 'forge_artifact_get', title: 'Get artifact', description: 'Fetch a stored artifact (images returned as MCP image content).', inputSchema: { workspace_id: workspaceIdOptional, artifact_id: z.string().startsWith('art_'), max_bytes: z.number().int().min(1).max(4000000).default(2500000) }, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_artifact_upload', title: 'Upload artifact', description: 'Upload a binary file as a stored artifact. Pass base64-encoded content. Returns artifact id for later retrieval.', inputSchema: { workspace_id: workspaceIdOptional, filename: z.string().min(1).max(200), content_base64: z.string().min(1), content_type: z.string().min(1).max(100).default('application/octet-stream'), metadata: z.record(z.string(), z.string().max(200)).default({}) }, sideEffect: 'workspace', approval: 'none' },
 
   // Secrets
   { name: 'forge_secret_list', title: 'List secrets', description: 'List stored secrets (labels, providers, env var names). Values never returned.', inputSchema: {}, sideEffect: 'none', approval: 'none' },

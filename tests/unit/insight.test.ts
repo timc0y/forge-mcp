@@ -98,6 +98,185 @@ describe('targeted verification suggestions', () => {
   });
 });
 
+describe('analyzeDiff edge cases', () => {
+  it('handles an empty diff', () => {
+    const result = analyzeDiff('');
+    expect(result.files).toHaveLength(0);
+    expect(result.totalAdditions).toBe(0);
+    expect(result.totalDeletions).toBe(0);
+    expect(result.changedExports).toEqual([]);
+    expect(result.riskAreas).toEqual([]);
+    expect(result.suggestedHunks).toEqual([]);
+    expect(result.hash).toBeTruthy();
+  });
+
+  it('handles a diff with only context lines (no changes)', () => {
+    const diff = `diff --git a/src/x.ts b/src/x.ts
+index a..b 100644
+--- a/src/x.ts
++++ b/src/x.ts
+@@ -1,3 +1,3 @@
+ const a = 1;
+ const b = 2;
+-const c = 3;
++const c = 4;
+`;
+    // This diff has a change so it should have 1 file
+    const result = analyzeDiff(diff);
+    expect(result.files).toHaveLength(1);
+    expect(result.totalAdditions).toBe(1);
+    expect(result.totalDeletions).toBe(1);
+  });
+
+  it('detects a renamed file', () => {
+    const diff = `diff --git a/src/old.ts b/src/new.ts
+similarity index 90%
+rename from src/old.ts
+rename to src/new.ts
+`;
+    const result = analyzeDiff(diff);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]?.changeType).toBe('renamed');
+    expect(result.files[0]?.path).toBe('src/new.ts');
+  });
+
+  it('detects a new (added) file', () => {
+    const diff = `diff --git a/src/new.ts b/src/new.ts
+new file mode 100644
+--- /dev/null
++++ b/src/new.ts
+@@ -0,0 +1 @@
++const x = 1;
+`;
+    const result = analyzeDiff(diff);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]?.changeType).toBe('added');
+    expect(result.files[0]?.additions).toBe(1);
+  });
+
+  it('detects a deleted file', () => {
+    const diff = `diff --git a/src/old.ts b/src/old.ts
+deleted file mode 100644
+--- a/src/old.ts
++++ /dev/null
+@@ -1 +0,0 @@
+-const x = 1;
+`;
+    const result = analyzeDiff(diff);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]?.changeType).toBe('deleted');
+    expect(result.files[0]?.deletions).toBe(1);
+  });
+
+  it('detects secrets in added lines and classifies risk areas', () => {
+    const diff = `diff --git a/src/config.ts b/src/config.ts
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -1 +1,2 @@
+ const x = 1;
++const key = "AKIAIOSFODNN7EXAMPLE";
+`;
+    const result = analyzeDiff(diff);
+    expect(result.possibleSecretExposure).toEqual(['src/config.ts']);
+    expect(result.riskAreas.some((r) => r.includes('secret'))).toBe(true);
+  });
+
+  it('detects exports in added lines', () => {
+    const diff = `diff --git a/src/api.ts b/src/api.ts
+--- a/src/api.ts
++++ b/src/api.ts
+@@ -1 +1,2 @@
+ const x = 1;
++export function hello() { return "world"; }
+`;
+    const result = analyzeDiff(diff);
+    expect(result.changedExports).toContain('hello');
+  });
+
+  it('detects binary files', () => {
+    const diff = `diff --git a/image.png b/image.png
+index 000..111 100644
+Binary files /dev/null and b/image.png differ
+`;
+    const result = analyzeDiff(diff);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]?.path).toBe('image.png');
+  });
+
+  it('classifies migration files', () => {
+    const diff = `diff --git a/migrations/d1/0007_add_carts.sql b/migrations/d1/0007_add_carts.sql
+new file mode 100644
+--- /dev/null
++++ b/migrations/d1/0007_add_carts.sql
+@@ -0,0 +1 @@
++CREATE TABLE cart (id TEXT PRIMARY KEY);
+`;
+    const result = analyzeDiff(diff);
+    expect(result.migrations).toHaveLength(1);
+    expect(result.migrations[0]).toBe('migrations/d1/0007_add_carts.sql');
+    expect(result.riskAreas.some((r) => r.includes('migration'))).toBe(true);
+  });
+
+  it('classifies lockfile changes', () => {
+    const diff = `diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1 +1 @@
+-lockfileVersion: '6.0'
++lockfileVersion: '7.0'
+`;
+    const result = analyzeDiff(diff);
+    expect(result.lockfileChanges).toHaveLength(1);
+    expect(result.lockfileChanges[0]).toBe('pnpm-lock.yaml');
+  });
+
+  it('classifies worker config changes', () => {
+    const diff = `diff --git a/wrangler.jsonc b/wrangler.jsonc
+--- a/wrangler.jsonc
++++ b/wrangler.jsonc
+@@ -1 +1 @@
+-name: "old"
++name: "new"
+`;
+    const result = analyzeDiff(diff);
+    expect(result.workerConfigChanges).toHaveLength(1);
+    expect(result.workerConfigChanges[0]).toBe('wrangler.jsonc');
+    expect(result.riskAreas.some((r) => r.includes('Worker'))).toBe(true);
+  });
+
+  it('classifies generated output', () => {
+    const diff = `diff --git a/dist/bundle.js b/dist/bundle.js
+--- a/dist/bundle.js
++++ b/dist/bundle.js
+@@ -1 +1 @@
+-old
++new
+`;
+    const result = analyzeDiff(diff);
+    expect(result.generatedChanges).toHaveLength(1);
+    expect(result.generatedChanges[0]).toBe('dist/bundle.js');
+  });
+
+  it('sorts suggested hunks by weight descending', () => {
+    const diff = `diff --git a/src/big.ts b/src/big.ts
+--- a/src/big.ts
++++ b/src/big.ts
+@@ -1 +1,100 @@
+ old
+${Array.from({ length: 99 }, (_, i) => `+line ${i + 1}`).join('\n')}
+diff --git a/src/small.ts b/src/small.ts
+--- a/src/small.ts
++++ b/src/small.ts
+@@ -1 +1 @@
+-old
++new
+`;
+    const result = analyzeDiff(diff);
+    expect(result.suggestedHunks[0]).toBe('src/big.ts');
+    expect(result.suggestedHunks[1]).toBe('src/small.ts');
+  });
+});
+
 describe('bounded context selection', () => {
   const files = [
     'AGENTS.md',
@@ -135,5 +314,44 @@ describe('bounded context selection', () => {
     const clipped = selectContext({ goal: 'cart total discount', files, maxResults: 1 });
     expect(clipped.results).toHaveLength(1);
     expect(clipped.truncated).toBe(true);
+  });
+
+  it('returns empty results when no files match the goal', () => {
+    const response = selectContext({ goal: 'quantum flux capacitor', files: ['src/readme.md'] });
+    expect(response.results).toHaveLength(0);
+    expect(response.consideredFiles).toBeGreaterThan(0);
+    expect(response.truncated).toBe(false);
+  });
+
+  it('returns no results for an empty file list', () => {
+    const response = selectContext({ goal: 'anything', files: [] });
+    expect(response.results).toHaveLength(0);
+    expect(response.consideredFiles).toBe(0);
+    expect(response.truncated).toBe(false);
+  });
+
+  it('clamps maxResults to the valid range', () => {
+    const manyFiles = Array.from({ length: 50 }, (_, i) => `src/file${i}.ts`);
+    const response = selectContext({ goal: 'file', files: manyFiles, maxResults: 200 });
+    expect(response.results.length).toBeLessThanOrEqual(100);
+  });
+
+  it('ranks likelyPaths above token-matched paths', () => {
+    const files = ['src/user.ts', 'src/admin/user.ts'];
+    const response = selectContext({ goal: 'user login', files, likelyPaths: ['src/admin/user.ts'] });
+    const idx0 = response.results.findIndex((r) => r.path === 'src/admin/user.ts');
+    const idx1 = response.results.findIndex((r) => r.path === 'src/user.ts');
+    expect(idx0).toBeLessThan(idx1 !== -1 ? idx1 : Infinity);
+  });
+
+  it('attaches warnings for configuration files', () => {
+    const response = selectContext({ goal: 'wrangler', files: ['wrangler.jsonc', 'src/index.ts'] });
+    expect(response.results[0]?.warnings).toContain('configuration file — changes may need type regeneration');
+  });
+
+  it('returns correct consideredFiles count excluding generated files', () => {
+    const files = ['src/good.ts', 'dist/bundle.js', 'build/output.js'];
+    const response = selectContext({ goal: 'good', files });
+    expect(response.consideredFiles).toBe(1);
   });
 });

@@ -51,6 +51,12 @@
     "@forge/evidence": "workspace:*",
     "@forge/app-actions": "workspace:*",
     "@forge/cost": "workspace:*",
-    "@forge/fixture-catalog": "workspace:*"
+    "@forge/fixture-catalog": "workspace:*",
+    "@forge/artifacts-core": "workspace:*",
+    "@forge/git-github": "workspace:*",
+    "@forge/mcp-adapter-v2-beta": "workspace:*",
+    "@forge/workflows-cloudflare": "workspace:*",
+    "@forge/browser-selfhosted": "workspace:*",
+    "jose": "6.2.2"
   }
 }

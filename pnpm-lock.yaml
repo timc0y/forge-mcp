@@ -17,12 +17,18 @@ importers:
       '@forge/application':
         specifier: workspace:*
         version: link:packages/application
+      '@forge/artifacts-core':
+        specifier: workspace:*
+        version: link:packages/artifacts-core
       '@forge/audit':
         specifier: workspace:*
         version: link:packages/audit
       '@forge/browser-core':
         specifier: workspace:*
         version: link:packages/browser-core
+      '@forge/browser-selfhosted':
+        specifier: workspace:*
+        version: link:packages/browser-selfhosted
       '@forge/capabilities':
         specifier: workspace:*
         version: link:packages/capabilities
@@ -41,9 +47,15 @@ importers:
       '@forge/fixture-catalog':
         specifier: workspace:*
         version: link:apps/fixture-catalog
+      '@forge/git-github':
+        specifier: workspace:*
+        version: link:packages/git-github
       '@forge/insight':
         specifier: workspace:*
         version: link:packages/insight
+      '@forge/mcp-adapter-v2-beta':
+        specifier: workspace:*
+        version: link:packages/mcp-adapter-v2-beta
       '@forge/mcp-core':
         specifier: workspace:*
         version: link:packages/mcp-core
@@ -65,9 +77,15 @@ importers:
       '@forge/task-core':
         specifier: workspace:*
         version: link:packages/task-core
+      '@forge/workflows-cloudflare':
+        specifier: workspace:*
+        version: link:packages/workflows-cloudflare
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1
+      jose:
+        specifier: 6.2.2
+        version: 6.2.2
       tsx:
         specifier: 4.21.0
         version: 4.21.0
