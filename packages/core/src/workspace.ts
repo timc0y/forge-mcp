@@ -48,6 +48,19 @@ export interface Workspace {
   // commit, an applied patch or file write). The idle reaper refuses to destroy
   // such a workspace so an agent's unpushed work is never silently lost.
   hasUnpushedWork?: boolean;
+  /** Set when origin disagrees with workspace HEAD on the feature branch. */
+  gitRemoteDivergence?: {
+    remoteSha: string;
+    localHead: string;
+    branch: string;
+    detectedAt: string;
+  };
+  /** Result of a push-authorization probe at workspace create. */
+  pushAuthProbe?: {
+    ok: boolean;
+    checkedAt: string;
+    reason?: string;
+  };
   state: WorkspaceLifecycleState;
   persistenceMode: PersistenceMode;
   runtimeProfile: string;

@@ -38,6 +38,9 @@ A task is a persistent coding-session record; none of these tools start a contai
 | `forge_workspace_create` | none (workspace side effect) | Create a disposable isolated workspace from an authorized repository. Returns immediately with state `requested`; poll `forge_workspace_get` until `ready` (usually under a minute). |
 | `forge_workspace_get` | none | Return lifecycle, repository, revision, processes, previews, snapshot, and outstanding state for one workspace. |
 | `forge_workspace_destroy` | policy (destructive) | Revoke previews and capabilities, stop processes, destroy the sandbox, and mark the workspace destroyed. |
+| `forge_doctor` | none | Reconcile local Git, processes, and dependency state after reconnect. Returns split `healthSignals` (local Git, remote agreement, push auth, submission readiness, and related checks) plus workspace age, branch, and dirty/unpushed hints. |
+| `forge_workspace_prove` | none | Prove local Git state and, when the GitHub App is authorized, verify the remote `forge/*` feature branch SHA with `ls-remote`. Use the returned `remote_sha` before claiming work is pushed. |
+| `forge_git_sync` | none (workspace side effect) | `git fetch` and detect or reconcile divergence between workspace HEAD and the recorded remote feature branch (`detect`, `reset_to_remote`, or `keep_local_and_push`). Mutating tools stay blocked while divergent until reconciled. |
 
 ## Context and diff insight
 
@@ -62,7 +65,7 @@ Deterministic, model-free tools — no embeddings, syntax-only analysis.
 
 | Tool | Approval | Description |
 | --- | --- | --- |
-| `forge_shell_exec` | policy | Execute a foreground command in an explicit directory with timeout, output, and network-policy bounds. Risky commands return a real user-approval URL. |
+| `forge_shell` | policy | Execute a foreground command in an explicit directory with timeout, output, and network-policy bounds. Risky commands return a real user-approval URL. |
 | `forge_process_start` | policy | Start a long-running process (e.g. a dev server) and return a Forge process identifier immediately. |
 | `forge_process_logs` | none | Read a bounded process-log page using an opaque cursor. |
 
@@ -73,9 +76,10 @@ Deterministic, model-free tools — no embeddings, syntax-only analysis.
 | `forge_git_status` | none | Return structured working-tree and branch status. |
 | `forge_git_diff` | none | Return the working-tree or staged diff one page of files at a time. Always returns the complete changed-file list; `diff` holds that page's hunks. See [Paged diffs](#paged-diffs). |
 | `forge_git_branch_create` | none (workspace side effect) | Create and check out a local branch under the required `forge/` namespace. |
-| `forge_git_commit` | none (workspace side effect) | Stage selected paths and create a commit attributed to `forge-mcp[bot]`. Omit `message` to auto-generate a conventional-commit message from the diff (Workers AI). |
-| `forge_git_outgoing_diff` | none | Return the diff between the base branch and the current Forge branch, one page of files at a time, plus `diffHash` over the whole change — call this before any push/PR approval. See [Paged diffs](#paged-diffs). |
-| `forge_git_push` | **required** (external) | Push a non-default `forge/` branch through the GitHub App credential proxy. Always needs a real user-approval page. |
+| `forge_git_commit` | none (workspace side effect) | Stage selected paths and create a commit attributed to `forge-mcp[bot]`. On agent `forge/*` branches, Forge auto-pushes to origin by default after commit (disable with `FORGE_AUTO_PUSH_FORGE_BRANCHES=false`). Returns `auto_push.pushed` and `auto_push.remote_sha` when verified. Omit `message` to auto-generate a conventional-commit message from the diff (Workers AI). |
+| `forge_git_outgoing_diff` | none | Return the diff between the workspace **requestedRef** (immutable base at creation) and the current Forge branch, one page of files at a time, plus `diffHash` over the whole change — call this before any push/PR approval. See [Paged diffs](#paged-diffs). |
+| `forge_git_push` | **required** (external) | Promote an already-pushed or staged `forge/` branch through the GitHub App credential proxy. Always needs a real user-approval page when auto-push did not already durably publish HEAD. |
+| `forge_submit` | **required** (external) | One-call human review path: auto-commit if needed, outgoing diff vs **requestedRef**, stage to `forge/staged/*`, queue draft PR targeting `pr_base` (default `main`). Sets task `submittedAt`; remote durability comes from auto-push (`remoteBranchSha`), not staging alone. |
 | `forge_pull_request_create` | **required** (external) | Create a draft GitHub pull request for an already-pushed Forge branch. Omit `title` to auto-generate title/body from the diff. Always needs approval. |
 
 ## Preview and browser evidence

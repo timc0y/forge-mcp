@@ -215,6 +215,8 @@ type TaskDocument = Pick<
   | 'evidenceIds'
   | 'outstanding'
   | 'pushedAt'
+  | 'remoteBranchSha'
+  | 'submittedAt'
   | 'handoff'
 >;
 
@@ -241,6 +243,8 @@ export class D1TaskStore implements TaskStore {
       evidenceIds: task.evidenceIds,
       outstanding: task.outstanding,
       pushedAt: task.pushedAt,
+      remoteBranchSha: task.remoteBranchSha,
+      submittedAt: task.submittedAt,
       handoff: task.handoff
     };
     await this.db
@@ -301,6 +305,8 @@ export class D1TaskStore implements TaskStore {
       evidenceIds: document.evidenceIds,
       outstanding: document.outstanding,
       ...(document.pushedAt ? { pushedAt: document.pushedAt } : {}),
+      ...(document.remoteBranchSha ? { remoteBranchSha: document.remoteBranchSha } : {}),
+      ...(document.submittedAt ? { submittedAt: document.submittedAt } : {}),
       ...(document.handoff ? { handoff: document.handoff } : {}),
       state: row.state as TaskState,
       revision: Number(row.revision),

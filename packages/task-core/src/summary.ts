@@ -92,8 +92,8 @@ export function deriveLimitations(task: Task): string[] {
   if (task.changedFiles.length > 0 && !task.latestDiffHash && task.state === 'reviewing') {
     limitations.push('Raw diff not yet inspected; push is unsafe until it is.');
   }
-  if (task.changedFiles.length > 0 && !task.pushedAt) {
-    limitations.push('Changed files exist but the branch has not been pushed.');
+  if (task.changedFiles.length > 0 && !task.remoteBranchSha && !task.pushedAt) {
+    limitations.push('Changed files exist but the feature branch is not verified on origin.');
   }
   return limitations;
 }
@@ -113,8 +113,8 @@ export function hasBlockingCompletionGaps(task: Task): string[] {
   if (task.changedFiles.length > 0 && task.checks.length === 0) {
     blocking.push('Changes exist but no checks have been recorded.');
   }
-  if (task.changedFiles.length > 0 && !task.pushedAt) {
-    blocking.push('Changed files exist but the branch has not been pushed.');
+  if (task.changedFiles.length > 0 && !task.remoteBranchSha && !task.pushedAt) {
+    blocking.push('Changed files exist but the feature branch is not verified on origin (remoteBranchSha missing).');
   }
   if (task.outstanding.length > 0) {
     blocking.push(`${task.outstanding.length} outstanding item(s) still recorded.`);

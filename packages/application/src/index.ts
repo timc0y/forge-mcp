@@ -16,6 +16,8 @@ import {
   type WorkspaceId
 } from '@forge/core';
 import { assertCommandAllowed, classifyCommand, nonInteractiveShellEnv } from '@forge/policy';
+import { classifyPushFailure, type PushFailureCause } from './push-failure';
+export { classifyPushFailure, type PushFailureCause } from './push-failure';
 import { parseDetection, DETECTION_SCRIPT, type ProjectDetection } from '@forge/project-detection';
 import type {
   CreateSandboxInput,
@@ -516,6 +518,10 @@ function assertForgeBranch(branch: string): void {
       retryable: false
     });
   }
+}
+
+function isAgentForgeBranchForProve(branch: string): boolean {
+  return branch.startsWith('forge/') && !branch.startsWith('forge/backup/') && !branch.startsWith('forge/staged/');
 }
 
 async function sha256Text(value: string): Promise<string> {
@@ -2903,6 +2909,14 @@ export class ForgeApplicationService {
     }
 
     record.workspace.updatedAt = now;
+    const healthSignals = {
+      localGit: state === 'consistent' ? 'ok' as const : state,
+      remoteAgreement: record.workspace.gitRemoteDivergence ? 'diverged' as const : 'unknown' as const,
+      baseAgreement: record.workspace.baseCommit ? 'ok' as const : 'unknown' as const,
+      pushAuth: record.workspace.pushAuthProbe?.ok ? 'ok' as const : (record.workspace.pushAuthProbe ? 'failed' as const : 'unknown' as const),
+      previewReady: 'unknown' as const,
+      submissionReady: (!record.workspace.hasUnpushedWork && !record.workspace.gitRemoteDivergence) ? 'ready' as const : 'blocked' as const
+    };
     return {
       workspaceId: record.workspace.id,
       gitIntegrity: {
@@ -2915,6 +2929,7 @@ export class ForgeApplicationService {
         recommendedAction,
         destructiveRecoveryRequired
       },
+      healthSignals,
       processes: processReport,
       dependencyState: dependencyStateView(record.dependencyState),
       trackedChangesPreserved,
@@ -3347,7 +3362,7 @@ export class ForgeApplicationService {
     return { ...identity, workspaceHash, workspaceHashAlgorithm: 'content-v2' };
   }
 
-  async proveWorkspaceState(record: WorkspaceRuntimeRecord) {
+  async proveWorkspaceState(record: WorkspaceRuntimeRecord, source?: RepositoryCloneSource) {
     const recorded = { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, baseCommit: record.workspace.baseCommit };
     await this.reconcileGitState(record);
     const status = await this.gitStatus(record);
@@ -3375,7 +3390,40 @@ export class ForgeApplicationService {
       const head = await handle.exec({ command: `git show HEAD:${quoted(path)}`, cwd: '/workspace/repo', timeoutMs: 10_000, outputLimitBytes: 1_000_000, sessionId: 'system', networkPolicy: 'deny_all' });
       return { path, filesystemSha256: filesystem?.sha256 ?? null, headSha256: head.exitCode === 0 ? await sha256Text(head.stdout) : null };
     }));
-    return { workspaceId: record.workspace.id, repository: record.workspace.repository, recorded, observed: { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, baseCommit }, status, uncommittedDiffHash: worktree.hash, untrackedFiles: worktree.untrackedFiles, committedOutgoingDiffHash: await sha256Text(diff), changedPaths: names, files, uncommittedFiles, gitDivergence: record.lastGitDivergence ?? null, remoteBranch: { state: 'not_verified', reason: 'Remote verification requires a fresh repository-scoped capability and is not inferred from local metadata.' } };
+    const branch = record.workspace.currentBranch;
+    let remoteBranch: { state: 'not_verified' | 'agrees' | 'diverged' | 'missing'; remoteSha?: string | null; reason?: string } = {
+      state: 'not_verified',
+      reason: 'Remote verification requires a fresh repository-scoped capability and is not inferred from local metadata.'
+    };
+    if (source && branch && isAgentForgeBranchForProve(branch)) {
+      const remoteSha = await this.readRemoteBranchSha(record, source, branch);
+      if (!remoteSha) {
+        remoteBranch = { state: 'missing', remoteSha: null, reason: 'No remote ref found for the checked-out branch.' };
+      } else if (remoteSha === record.workspace.currentCommit) {
+        remoteBranch = { state: 'agrees', remoteSha };
+      } else {
+        remoteBranch = {
+          state: 'diverged',
+          remoteSha,
+          reason: `Remote ${branch} is at ${remoteSha}; workspace HEAD is ${record.workspace.currentCommit ?? 'unknown'}.`
+        };
+      }
+    }
+    return {
+      workspaceId: record.workspace.id,
+      repository: record.workspace.repository,
+      recorded,
+      observed: { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, baseCommit, requestedRef: record.workspace.requestedRef },
+      status,
+      uncommittedDiffHash: worktree.hash,
+      untrackedFiles: worktree.untrackedFiles,
+      committedOutgoingDiffHash: await sha256Text(diff),
+      changedPaths: names,
+      files,
+      uncommittedFiles,
+      gitDivergence: record.lastGitDivergence ?? null,
+      remoteBranch
+    };
   }
 
   async exportRecoveryPatch(record: WorkspaceRuntimeRecord, maxBytes: number) {
@@ -3814,6 +3862,190 @@ export class ForgeApplicationService {
       return { pushed: false, reason: 'nothing to back up' };
     }
     return this.pushToRef(record, source, `forge/backup/${record.workspace.id}`);
+  }
+
+  /**
+   * Push the checked-out `forge/` branch to GitHub (fast-forward only). Used when
+   * auto-push is enabled so agent work is not stranded in an ephemeral workspace.
+   */
+  async autoPushForgeBranch(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource
+  ): Promise<{ pushed: boolean; branch?: string; commit?: string; remote_sha?: string; reason?: string; causeClass?: PushFailureCause }> {
+    const branch = record.workspace.currentBranch;
+    if (!branch?.startsWith('forge/') || branch.startsWith('forge/backup/') || branch.startsWith('forge/staged/')) {
+      return { pushed: false, reason: 'not an agent forge branch' };
+    }
+    assertForgeBranch(branch);
+    if (!record.workspace.hasUnpushedWork) {
+      return { pushed: false, reason: 'nothing to push' };
+    }
+    if (!record.workspace.currentCommit) {
+      return { pushed: false, reason: 'no commit to push' };
+    }
+    if (!source.authorizationHeader) {
+      return { pushed: false, reason: 'no GitHub App authorization' };
+    }
+    const configPath = `/workspace/tmp/gitconfig-auto-push-${record.workspace.id}`;
+    const handle = await this.handle(record);
+    await handle.writeFile({ path: configPath, content: `[http]\n\textraHeader = ${source.authorizationHeader}\n` });
+    try {
+      const result = await handle.exec({
+        command: `git push ${quoted(source.url)} HEAD:${quoted(`refs/heads/${branch}`)}`,
+        cwd: '/workspace/repo', timeoutMs: 120_000, outputLimitBytes: 200_000,
+        sessionId: 'system', networkPolicy: 'development',
+        environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+      });
+      if (result.exitCode !== 0) {
+        const reason = result.stderr.slice(0, 500) || 'git push failed';
+        return { pushed: false, reason, causeClass: classifyPushFailure({ reason, stderr: result.stderr }) };
+      }
+      const remote = await handle.exec({
+        command: `git ls-remote --exit-code ${quoted(source.url)} ${quoted(`refs/heads/${branch}`)}`,
+        cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 10_000,
+        sessionId: 'system', networkPolicy: 'development',
+        environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+      });
+      const remoteCommit = remote.stdout.trim().split(/\s+/u)[0] ?? '';
+      if (remote.exitCode !== 0 || remoteCommit !== record.workspace.currentCommit) {
+        const reason = 'push finished but remote ref did not match HEAD';
+        return { pushed: false, reason, causeClass: classifyPushFailure({ reason }) };
+      }
+    } finally {
+      await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
+    }
+    record.workspace.lastPushedCommit = record.workspace.currentCommit;
+    record.workspace.lastPushedBranch = branch;
+    record.workspace.hasUnpushedWork = false;
+    record.workspace.gitRemoteDivergence = undefined;
+    record.workspace.updatedAt = new Date().toISOString();
+    return {
+      pushed: true,
+      branch,
+      commit: record.workspace.currentCommit,
+      remote_sha: record.workspace.currentCommit
+    };
+  }
+
+  async readRemoteBranchSha(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource,
+    branch: string
+  ): Promise<string | null> {
+    if (!source.authorizationHeader) return null;
+    const configPath = `/workspace/tmp/gitconfig-remote-read-${record.workspace.id}`;
+    const handle = await this.handle(record);
+    await handle.writeFile({ path: configPath, content: `[http]\n\textraHeader = ${source.authorizationHeader}\n` });
+    try {
+      const remote = await handle.exec({
+        command: `git ls-remote --exit-code ${quoted(source.url)} ${quoted(`refs/heads/${branch}`)}`,
+        cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 10_000,
+        sessionId: 'system', networkPolicy: 'development',
+        environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+      });
+      if (remote.exitCode !== 0) return null;
+      return remote.stdout.trim().split(/\s+/u)[0] ?? null;
+    } finally {
+      await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
+    }
+  }
+
+  async gitSyncRemote(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource,
+    action: 'detect' | 'reset_to_remote' | 'keep_local_and_push'
+  ): Promise<{
+    diverged: boolean;
+    branch?: string;
+    localHead?: string;
+    remoteSha?: string | null;
+    reconciled?: boolean;
+    message: string;
+  }> {
+    await this.reconcileGitState(record);
+    const branch = record.workspace.currentBranch;
+    if (!branch || !isAgentForgeBranchForProve(branch)) {
+      return { diverged: false, message: 'Remote sync applies only to agent forge/ branches.' };
+    }
+    const handle = await this.handle(record);
+    await handle.exec({
+      command: 'git fetch origin',
+      cwd: '/workspace/repo', timeoutMs: 120_000, outputLimitBytes: 50_000,
+      sessionId: 'system', networkPolicy: 'development'
+    }).catch(() => undefined);
+    const remoteSha = await this.readRemoteBranchSha(record, source, branch);
+    const localHead = record.workspace.currentCommit;
+    const diverged = Boolean(remoteSha && localHead && remoteSha !== localHead);
+    if (!diverged) {
+      record.workspace.gitRemoteDivergence = undefined;
+      return { diverged: false, branch, localHead, remoteSha, message: 'Local HEAD matches the remote feature branch.' };
+    }
+    if (action === 'detect') {
+      record.workspace.gitRemoteDivergence = {
+        remoteSha: remoteSha!,
+        localHead: localHead!,
+        branch,
+        detectedAt: new Date().toISOString()
+      };
+      return {
+        diverged: true,
+        branch,
+        localHead,
+        remoteSha,
+        message: `Remote ${branch} diverged from workspace HEAD. Call forge_git_sync with reconcile reset_to_remote or keep_local_and_push.`
+      };
+    }
+    if (action === 'reset_to_remote' && remoteSha) {
+      const reset = await handle.exec({
+        command: `git reset --hard ${quoted(remoteSha)}`,
+        cwd: '/workspace/repo', timeoutMs: 60_000, outputLimitBytes: 10_000,
+        sessionId: 'system', networkPolicy: 'deny_all'
+      });
+      if (reset.exitCode !== 0) {
+        return { diverged: true, branch, localHead, remoteSha, message: 'Could not reset workspace to the remote branch head.' };
+      }
+      record.workspace.currentCommit = remoteSha;
+      record.workspace.hasUnpushedWork = false;
+      record.workspace.gitRemoteDivergence = undefined;
+      return { diverged: false, branch, localHead: remoteSha, remoteSha, reconciled: true, message: 'Reset workspace to remote branch head.' };
+    }
+    if (action === 'keep_local_and_push') {
+      const push = await this.autoPushForgeBranch(record, source);
+      if (push.pushed) {
+        record.workspace.gitRemoteDivergence = undefined;
+        return { diverged: false, branch, localHead, remoteSha: push.remote_sha, reconciled: true, message: 'Pushed local HEAD to the remote feature branch.' };
+      }
+      return { diverged: true, branch, localHead, remoteSha, message: push.reason ?? 'Push failed while reconciling remote divergence.' };
+    }
+    return { diverged: true, branch, localHead, remoteSha, message: 'Unknown reconcile action.' };
+  }
+
+  /**
+   * Commit any dirty tree (WIP) then push the agent `forge/` branch. Best-effort
+   * before idle reap or destroy when auto-push is enabled.
+   */
+  async persistAgentBranchToRemote(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource,
+    input?: { wipMessage?: string; idempotencyKey?: string }
+  ): Promise<{ pushed: boolean; branch?: string; commit?: string; reason?: string; autoCommitted?: boolean }> {
+    await this.reconcileGitState(record);
+    const branch = record.workspace.currentBranch;
+    if (!branch?.startsWith('forge/') || branch.startsWith('forge/backup/') || branch.startsWith('forge/staged/')) {
+      return { pushed: false, reason: 'not an agent forge branch' };
+    }
+    let autoCommitted = false;
+    const status = await this.gitStatus(record);
+    if (!status.clean) {
+      await this.gitCommit(record, {
+        message: input?.wipMessage?.trim() || 'wip: forge auto-save',
+        paths: [],
+        idempotencyKey: input?.idempotencyKey ?? `auto-save-${record.workspace.id}-${record.workspace.revision}`
+      });
+      autoCommitted = true;
+    }
+    const push = await this.autoPushForgeBranch(record, source);
+    return { ...push, autoCommitted };
   }
 
   async assertDestroySafe(record: WorkspaceRuntimeRecord, cloneSource?: RepositoryCloneSource): Promise<void> {

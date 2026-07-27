@@ -16,6 +16,7 @@ import { classifyCommand, nonInteractiveShellEnv } from '@forge/policy';
 import type { Env } from './env';
 import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
+import { autoPushForgeBranchesEnabled, isAgentForgeBranch } from './auto-push-policy';
 import { snapshotsEnabled, getSnapshot } from './snapshots';
 import { depsCacheKey, getDepsCache } from './deps-cache';
 
@@ -1137,10 +1138,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
-  async proveWorkspaceState() {
-    return this.readRepoWithRecovery((record) => this.app.proveWorkspaceState(record));
-  }
-
   async checkpoint(input: { name?: string }) {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
@@ -1206,13 +1203,124 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const record = await this.repoRecord();
       try {
         await this.assertCheckpointQuiescent(record);
+        await this.assertRemoteNotBlocking(record);
         await this.app.reconcileGitState(record);
         const value = await this.app.gitCommit(record, input);
+        const autoPush = await this.tryAutoPushAfterCommit(record);
         const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
-        return { ...value, checkpoint };
+        return { ...value, ...autoPush, checkpoint };
       } finally {
         await this.save(record);
       }
+    });
+  }
+
+  private assertRemoteNotBlocking(record: WorkspaceRuntimeRecord): void {
+    if (record.workspace.gitRemoteDivergence) {
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_CONFLICT',
+        message: 'Remote branch diverged from workspace HEAD. Call forge_git_sync before mutating the repository.',
+        retryable: false,
+        details: record.workspace.gitRemoteDivergence
+      });
+    }
+  }
+
+  async tryAutoPushAfterCommit(record: WorkspaceRuntimeRecord): Promise<{
+    auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
+  }> {
+    if (!autoPushForgeBranchesEnabled(this.env) || !isAgentForgeBranch(record.workspace.currentBranch)) {
+      return { auto_push: { pushed: false, reason: 'disabled' } };
+    }
+    const branch = record.workspace.currentBranch!;
+    const commit = record.workspace.currentCommit ?? '';
+    if (!commit) return { auto_push: { pushed: false, reason: 'no commit' } };
+    let source: { url: string; authorizationHeader: string };
+    try {
+      source = await repositoryPushSource(this.env, record.workspace, branch, commit);
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 300) : 'no authorization';
+      return { auto_push: { pushed: false, reason: message, causeClass: 'auth' } };
+    }
+    const result = await this.app.autoPushForgeBranch(record, source);
+    return {
+      auto_push: {
+        pushed: result.pushed,
+        remote_sha: result.remote_sha,
+        causeClass: result.causeClass,
+        reason: result.reason
+      }
+    };
+  }
+
+  async durablePushBeforeTeardown(): Promise<{
+    pushed: boolean;
+    ref?: string;
+    branch?: string;
+    remote_sha?: string;
+    reason?: string;
+    causeClass?: string;
+  }> {
+    const record = await this.getRecord();
+    if (autoPushForgeBranchesEnabled(this.env) && isAgentForgeBranch(record.workspace.currentBranch)) {
+      const branch = record.workspace.currentBranch!;
+      const commit = record.workspace.currentCommit ?? '';
+      if (commit) {
+        try {
+          const source = await repositoryPushSource(this.env, record.workspace, branch, commit);
+          const persisted = await this.app.persistAgentBranchToRemote(record, source, {
+            idempotencyKey: `teardown-${record.workspace.id}-${record.workspace.revision}`
+          });
+          await this.save(record);
+          if (persisted.pushed) {
+            return { pushed: true, branch: persisted.branch, remote_sha: persisted.commit, ref: persisted.branch };
+          }
+        } catch {
+          // fall through to backup ref
+        }
+      }
+    }
+    return this.backupUnpushedWork();
+  }
+
+  async recordPushAuthProbe(): Promise<{ ok: boolean; reason?: string }> {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      let ok = false;
+      let reason: string | undefined;
+      try {
+        const branch = record.workspace.currentBranch ?? 'forge/probe-auth';
+        const commit = record.workspace.currentCommit ?? '0'.repeat(40);
+        await repositoryPushSource(this.env, record.workspace, branch, commit);
+        ok = true;
+      } catch (error) {
+        reason = error instanceof Error ? error.message.slice(0, 300) : 'push authorization unavailable';
+      }
+      record.workspace.pushAuthProbe = { ok, checkedAt: new Date().toISOString(), ...(reason ? { reason } : {}) };
+      await this.save(record);
+      return { ok, ...(reason ? { reason } : {}) };
+    });
+  }
+
+  async gitSyncRemote(input: { action: 'detect' | 'reset_to_remote' | 'keep_local_and_push' }) {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const source = await repositoryCloneSource(this.env, record.workspace);
+      const value = await this.app.gitSyncRemote(record, source, input.action);
+      await this.save(record);
+      return value;
+    });
+  }
+
+  async proveWorkspaceState() {
+    return this.readRepoWithRecovery(async (record) => {
+      let source: Awaited<ReturnType<typeof repositoryCloneSource>> | undefined;
+      try {
+        source = await repositoryCloneSource(this.env, record.workspace);
+      } catch {
+        source = undefined;
+      }
+      return this.app.proveWorkspaceState(record, source);
     });
   }
 
@@ -1427,6 +1535,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       try {
         await this.app.reconcileGitState(record);
         if (!input.force) {
+          await this.durablePushBeforeTeardown().catch(() => undefined);
           const source = await repositoryCloneSource(this.env, record.workspace);
           await this.app.assertDestroySafe(record, source);
         }

@@ -12,9 +12,9 @@ All workspace mutations, shell operations, Git operations, process operations, p
 
 ## Git truth and submission
 
-Provisioning records `baseCommit` and `initialHeadCommit` from the actual clone. Git comparisons use that immutable base commit rather than a mutable local branch name. `forge_workspace_prove` returns the recorded and observed branch/HEAD, changed paths, worktree hash, outgoing committed hash, file hashes from the filesystem and HEAD, and any observed metadata divergence.
+Provisioning records `baseCommit` and `initialHeadCommit` from the actual clone. Outgoing diffs and `forge_submit` compare against the immutable **requestedRef** recorded at workspace creation, not a mutable branch name like `main`. `forge_workspace_prove` returns the recorded and observed branch/HEAD, changed paths, worktree hash, outgoing committed hash, file hashes from the filesystem and HEAD, and remote branch agreement via `ls-remote` when GitHub auth is available.
 
-`forge_git_status` and `forge_git_diff` report workspace/repository context, exact checked-out branch and HEAD, immutable base, revision, and structured changed paths. A remote branch is never inferred from local metadata: proof reports it as unverified until a repository-scoped remote check is available.
+Agent work on `forge/*` branches is auto-pushed to origin after each successful `forge_git_commit` unless `FORGE_AUTO_PUSH_FORGE_BRANCHES` is `false` or `0`. Task completion requires a verified **remote feature SHA** (`remoteBranchSha`); staging via `forge_submit` sets `submittedAt` only.
 
 ## Recovery
 

@@ -60,6 +60,10 @@ export interface Env {
   // Persist a workspace's /workspace to R2 before the idle reaper destroys it,
   // and restore it on next use (snapshot_on_idle). Optional; off unless 'true'.
   FORGE_SNAPSHOT_ENABLED?: string;
+  // Push `forge/*` agent branches to GitHub without per-push human approval.
+  // Commits trigger a push; idle reap / destroy attempt WIP commit + push first.
+  // Set to `false` or `0` to require forge_git_push approval again. Default on.
+  FORGE_AUTO_PUSH_FORGE_BRANCHES?: string;
   // Operator policy: auto-approve in-workspace shell commands that would
   // otherwise need a human click (dependency installs and other gated shell).
   // GitHub writes (git push / PR create) stay gated regardless. Optional; the

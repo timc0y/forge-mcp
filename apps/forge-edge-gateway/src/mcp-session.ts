@@ -66,6 +66,7 @@ import {
   requireApproval
 } from './github';
 import { createDeferredAction, listDeferredActionsForWorkspace } from './deferred-actions';
+import { autoPushForgeBranchesEnabled } from './auto-push-policy';
 
 interface SessionProps extends Record<string, unknown> {
   subject: string;
@@ -378,6 +379,45 @@ function diffPaging(input: Record<string, unknown>): { cursor?: number; maxBytes
   };
 }
 
+type CompactWorkspaceState = {
+  requestedRef: string;
+  currentCommit?: string;
+  baseCommit?: string;
+  hasUnpushedWork?: boolean;
+  currentBranch?: string;
+};
+
+async function outgoingComparisonRef(workspace: WorkspaceCoordinator, providedBase?: string): Promise<string> {
+  const state = (await workspace.getState({ compact: true })) as CompactWorkspaceState;
+  if (providedBase && providedBase !== state.requestedRef && providedBase !== 'main') {
+    throw new ForgeError({
+      code: 'FORGE_GIT_PUSH_BLOCKED',
+      message: 'Outgoing diffs must compare against the workspace requestedRef recorded at creation.',
+      retryable: false,
+      details: {
+        requestedRef: state.requestedRef,
+        providedBase,
+        head: state.currentCommit ?? null,
+        baseCommit: state.baseCommit ?? null
+      }
+    });
+  }
+  return state.requestedRef;
+}
+
+async function recordTaskRemoteSha(env: Env, workspaceId: WorkspaceId, remoteSha: string): Promise<void> {
+  await new D1TaskStore(env.METADATA).getByWorkspace(workspaceId).then(async (task) => {
+    if (!task) return;
+    const now = new Date().toISOString();
+    await new D1TaskStore(env.METADATA).put({
+      ...task,
+      remoteBranchSha: remoteSha,
+      pushedAt: now,
+      updatedAt: now
+    });
+  }).catch(() => undefined);
+}
+
 /**
  * Idempotency key for a mutating call, minted when the caller did not supply one.
  *
@@ -411,9 +451,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         '2. Coding task? forge_task_create, then one forge_workspace_create (waits until ready — do not poll-loop). Reuse workspace_id.',
         '3. Read repo instructions / parallax/ before edits. Use forge_shell (async:true for long work) + forge_process_wait; forge_deps_install for installs.',
         '4. Workspace app look? forge_preview (starts the app if needed). Look at returned images; forge_artifact_get only if captures were omitted.',
-        '5. Inspect with forge_git_diff (scope:outgoing), then forge_submit — stages work and queues the PR. Never wait for a human; tell them the approval_url.',
-        '6. Secrets: create in the portal (/app/secrets) or forge_secret_create; attach with forge_secret_attach (approval).',
-        '7. Destroy the workspace when done — submitted work is staged off-box and survives teardown. On confusion, call forge_doctor or forge_operation_get.'
+        '5. Inspect with forge_git_diff (scope:outgoing) — comparison base is always requestedRef — then forge_submit for human review. Commits auto-push the forge/ branch when enabled.',
+        '6. Verify remote SHA with forge_workspace_prove before claiming work is pushed.',
+        '7. Secrets: create in the portal (/app/secrets) or forge_secret_create; attach with forge_secret_attach (approval).',
+        '8. Destroy the workspace when done — submitted work is staged off-box and survives teardown. On confusion, call forge_doctor or forge_operation_get.'
       ].join(' ')
     }
   );
@@ -616,7 +657,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           // R2 snapshot can silently come back near-empty, so a fast direct
           // push to a Forge-owned backup ref is tried first, and a destroy
           // that proceeds with neither having worked is logged loudly).
-          const backup: { pushed: boolean; ref?: string; reason?: string } = await coordinator(env, reapedId).backupUnpushedWork().catch((error) => ({
+          const backup: { pushed: boolean; ref?: string; reason?: string } = await coordinator(env, reapedId).durablePushBeforeTeardown().catch((error) => ({
             pushed: false,
             reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
           }));
@@ -754,8 +795,35 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_doctor: async (input) => {
         const identity = this.identity();
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const report = await workspace.reconcile();
+        const compact = (await workspace.getState({ compact: true })) as CompactWorkspaceState & {
+          createdAt?: string;
+          updatedAt?: string;
+          pushAuthProbe?: { ok: boolean };
+        };
+        const ageMinutes = compact.createdAt
+          ? Math.round((Date.now() - new Date(compact.createdAt).getTime()) / 60_000)
+          : undefined;
+        return asRecord({
+          ...report,
+          workspace_age_minutes: ageMinutes,
+          branch: compact.currentBranch,
+          has_unpushed_work: compact.hasUnpushedWork,
+          push_auth_probe: compact.pushAuthProbe ?? null
+        });
+      },
+      forge_workspace_prove: async (input) => {
+        const identity = this.identity();
         const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
-        return asRecord(await workspace.reconcile());
+        return asRecord(await workspace.proveWorkspaceState());
+      },
+      forge_git_sync: async (input) => {
+        const identity = this.identity();
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const action = input.action === undefined ? 'detect' : text(input.action) as 'detect' | 'reset_to_remote' | 'keep_local_and_push';
+        return asRecord(await workspace.gitSyncRemote({ action }));
       },
       forge_workspace_snapshot: async (input) => {
         const identity = this.identity();
@@ -1348,6 +1416,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             if (['ready', 'failed', 'destroyed'].includes(state)) break;
           }
         }
+        if (state === 'ready') {
+          await coordinator(env, workspaceId).recordPushAuthProbe().catch(() => undefined);
+        }
         return {
           workspace_id: workspaceId,
           state,
@@ -1532,7 +1603,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
         const base = text(input.base);
-        const outgoing = await workspace.gitOutgoingDiff({ base, maxBytes: 256_000 });
+        const outgoing = await workspace.gitOutgoingDiff({ base: await outgoingComparisonRef(workspace, base), maxBytes: 256_000 });
         const compact = analyzeDiff(outgoing.diff);
         return asRecord(compact);
       },
@@ -1719,8 +1790,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
         const scope = input.scope === undefined ? 'worktree' : text(input.scope);
         if (scope === 'outgoing') {
+          const comparisonRef = await outgoingComparisonRef(workspace, input.base === undefined ? undefined : text(input.base));
           return asRecord(await workspace.gitOutgoingDiff({
-            base: text(input.base),
+            base: comparisonRef,
             ...diffPaging(input)
           }));
         }
@@ -1815,26 +1887,38 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const diff = await coordinator.gitDiff({ staged: false, maxBytes: 32_000 }).then((r) => r.diff).catch(() => '');
           if (diff.trim()) message = await generateCommitMessage(env, diff);
         }
-        return asRecord(await coordinator.gitCommit({
+        const result = await coordinator.gitCommit({
           message, paths: input.paths as string[], expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
-        }));
+        });
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        if (result.auto_push?.pushed && result.auto_push.remote_sha) {
+          await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.auto_push.remote_sha);
+        }
+        return asRecord(result);
       },
       forge_git_push: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const branch = text(input.branch);
         assertForgeBranch(branch);
-        const base = text(input.base);
+        const prBase = text(input.base);
         const workspace = await authorizedCoordinator(env, identity, workspaceId);
-        const state = await workspace.getState();
-        const repo = state.repository as RepositoryRef;
+        const state = await workspace.getState({ compact: true }) as CompactWorkspaceState;
+        const repo = (await workspace.getState()).repository as RepositoryRef;
         if (!repo?.owner || !repo?.name) {
           throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Workspace has no repository binding.', retryable: false });
         }
+        const head = state.currentCommit;
+        if (!head) {
+          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Nothing to push: commit your work first.', retryable: false });
+        }
         let approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        const alreadyOnRemote = autoPushForgeBranchesEnabled(env) && !state.hasUnpushedWork;
         const stagedRef = `forge/staged/${workspaceId}/${branch.replace(/^forge\//, '')}`;
-        const staged = await workspace.stageForReview({ ref: stagedRef });
-        const approvalPayload = { branch, base, commit: staged.commit, action: 'git.push' };
+        const staged = alreadyOnRemote
+          ? { ref: stagedRef, commit: head }
+          : await workspace.stageForReview({ ref: stagedRef });
+        const approvalPayload = { branch, base: prBase, commit: staged.commit, action: 'git.push' };
         if (!approvalId) {
           const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to remote`, approvalPayload);
           if (approval.already_approved) {
@@ -1860,9 +1944,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         return {
           pushed: true,
           branch,
-          base,
+          pr_base: prBase,
           commit: staged.commit,
-          staged_ref: staged.ref
+          remote_sha: staged.commit,
+          staged_ref: staged.ref,
+          auto_push_already_applied: alreadyOnRemote
         };
       },
       forge_pull_request_create: async (input) => {
@@ -1917,13 +2003,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const branch = text(input.branch);
         assertForgeBranch(branch);
-        const base = text(input.base);
+        const prBase = input.pr_base !== undefined
+          ? text(input.pr_base)
+          : (input.base !== undefined ? text(input.base) : 'main');
         const taskIdInput = input.task_id ? text(input.task_id) : null;
         let title = input.title === undefined ? '' : text(input.title);
         let body = input.body === undefined ? '' : text(input.body);
 
         const coordinator = await authorizedCoordinator(env, identity, workspaceId);
         const state = await coordinator.getState();
+        const comparisonRef = await outgoingComparisonRef(coordinator, input.base !== undefined ? text(input.base) : undefined);
 
         // Commit anything still in the working tree FIRST. Staging pushes HEAD,
         // and the outgoing diff is computed against commits, so uncommitted edits
@@ -1951,7 +2040,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // while `totalFiles` still counts the whole change. Counting
         // `diff --git` lines here would only ever see this page and could call
         // a large submission empty.
-        const outgoing = await coordinator.gitOutgoingDiff({ base, maxBytes: 48_000 }).catch(() => undefined);
+        const outgoing = await coordinator.gitOutgoingDiff({ base: comparisonRef, maxBytes: 48_000 }).catch(() => undefined);
         const diff = outgoing?.diff ?? '';
         const filesChanged = outgoing?.totalFiles ?? 0;
         // Nothing to review is a mistake worth naming, not an empty pull request
@@ -1959,15 +2048,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (filesChanged === 0) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `There is nothing to submit: ${branch} has no changes against ${base}. Make the change first, then submit.`,
-            retryable: false
+            message: `There is nothing to submit: ${branch} has no changes against ${comparisonRef}. Make the change first, then submit.`,
+            retryable: false,
+            details: {
+              comparisonRef,
+              prBase,
+              requestedRef: comparisonRef,
+              baseCommit: state.baseCommit ?? null,
+              head: state.currentCommit ?? null
+            }
           });
         }
 
         // Give the reviewer something readable to decide on. Best-effort: a
         // missing summariser must never be what stops work being submitted.
         if (!title.trim() && aiEnabled(env) && diff.trim()) {
-          const summary = await summarizeDiffForPr(env, diff, { branch, base }).catch(() => undefined);
+          const summary = await summarizeDiffForPr(env, diff, { branch, base: prBase }).catch(() => undefined);
           if (summary) {
             title = summary.title;
             if (!body.trim()) body = summary.body;
@@ -1986,8 +2082,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           identity,
           workspaceId,
           'work.submit',
-          `Merge ${branch} into ${base}`,
-          { branch, base, title, body, commit: staged.commit, diff }
+          `Merge ${branch} into ${prBase}`,
+          { branch, base: prBase, comparisonRef, title, body, commit: staged.commit, diff }
         );
         const action = await createDeferredAction(env, {
           tenantId: identity.tenantId,
@@ -2005,7 +2101,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           ).bind(identity.tenantId, state.repository.owner, state.repository.name)
             .first<{ id: string | null }>().then((row) => row?.id ?? null).catch(() => null),
           branch,
-          base,
+          base: prBase,
           stagedRef: staged.ref,
           commitSha: staged.commit,
           title,
@@ -2017,14 +2113,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         await this.recordAudit(
           'work.submit',
           identity.tenantId,
-          { branch, base, stagedRef: staged.ref, commit: staged.commit, approvalId: approval.approval_id },
+          { branch, prBase, comparisonRef, stagedRef: staged.ref, commit: staged.commit, approvalId: approval.approval_id },
           { workspaceId }
         );
-        // Mark the task pushed: the work is durable off-box now, which is the
-        // thing forge_task_update actually cares about.
+        const submittedAt = new Date().toISOString();
         await new D1TaskStore(env.METADATA).getByWorkspace(workspaceId).then(async (task) => {
           if (!task) return;
-          await new D1TaskStore(env.METADATA).put({ ...task, pushedAt: new Date().toISOString() });
+          await new D1TaskStore(env.METADATA).put({ ...task, submittedAt, updatedAt: submittedAt });
         }).catch(() => undefined);
 
         return {
@@ -2036,7 +2131,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           staged_ref: staged.ref,
           commit: staged.commit,
           branch,
-          base,
+          pr_base: prBase,
+          comparison_ref: comparisonRef,
           files_changed: filesChanged,
           auto_committed: autoCommitted,
           next_step: `Work is staged and queued for review. Tell the human it is done and waiting for them at ${approval.approval_url} (or in the Forge portal at ${env.FORGE_PUBLIC_ORIGIN}/app) — they can approve whenever they like, and Forge will push ${branch} and open the draft pull request then. Do not wait for them. This workspace can be destroyed now.`

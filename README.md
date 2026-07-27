@@ -48,13 +48,13 @@ ever starting a workspace. Full reference: [`docs/tools.md`](docs/tools.md).
 | Context & diff insight | `forge_context_get`, `forge_diff_metadata` | no |
 | Workspace lifecycle | `forge_workspace_create` / `_get` / `_destroy` | yes (create) |
 | Files | `forge_files_tree` / `_read` / `_write` / `_patch` | yes |
-| Shell & processes | `forge_shell_exec`, `forge_process_start` / `_logs` | yes |
-| Git | `forge_git_status` / `_diff` / `_outgoing_diff` / `_branch_create` / `_commit` / `_push` | yes |
+| Shell & processes | `forge_shell`, `forge_process_start` / `_logs` | yes |
+| Git & review | `forge_git_*`, `forge_submit`, `forge_workspace_prove`, `forge_doctor` | yes |
 | Review evidence | `forge_review_capture`, `forge_artifact_get` | mixed |
 | Previews & PRs | `forge_preview_expose`, `forge_pull_request_create` | yes |
 
-External changes — Git push and pull-request creation — are **approval-gated**:
-Forge returns a signed approval page and only proceeds once a human approves.
+External changes — Git push, `forge_submit`, and pull-request creation — are **approval-gated** when auto-push has not already published the feature branch:
+Forge returns a signed approval page and only proceeds once a human approves. Commits on `forge/*` branches auto-push to GitHub by default (`FORGE_AUTO_PUSH_FORGE_BRANCHES`; set to `false` or `0` to disable).
 
 ## Parallax
 

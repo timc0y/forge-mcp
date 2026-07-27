@@ -520,7 +520,7 @@ async function reapAbandonedSlots(env: Env): Promise<void> {
       // "success", so both outcomes are recorded to the audit trail — a
       // destroy that goes ahead with NEITHER backup having actually worked
       // must be loud, not silently indistinguishable from a clean one.
-      const backup: { pushed: boolean; ref?: string; reason?: string } = await stub.backupUnpushedWork().catch((error) => ({
+      const backup: { pushed: boolean; ref?: string; reason?: string } = await stub.durablePushBeforeTeardown().catch((error) => ({
         pushed: false,
         reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
       }));

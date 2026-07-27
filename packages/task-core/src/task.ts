@@ -107,9 +107,11 @@ export interface Task {
   evidenceIds: ArtifactId[];
   /** Hash of the latest inspected raw diff, for push-time safety. */
   latestDiffHash?: string;
-  /** Set when forge_git_push last succeeded for this task's branch. Cleared
-   * implicitly by comparing against changedFiles at completion time — a task
-   * with unpushed changes may not transition to complete. */
+  /** ISO timestamp when the feature branch was verified on origin (ls-remote). */
+  remoteBranchSha?: string;
+  /** ISO timestamp when work was staged for deferred review (forge/staged). */
+  submittedAt?: string;
+  /** @deprecated Use remoteBranchSha — kept for older task documents. */
   pushedAt?: string;
   /** Structured handoff note saved by an agent to allow a fresh session to resume. */
   handoff?: TaskHandoff;
