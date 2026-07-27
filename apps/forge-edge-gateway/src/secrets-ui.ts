@@ -35,7 +35,7 @@ function addSecretForm(error?: string): string {
 </section>`;
 }
 
-function parseEnvText(raw: string): Record<string, string> {
+export function parseEnvText(raw: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const line of raw.split(/\r?\n/u)) {
     const trimmed = line.trim();
