@@ -196,9 +196,9 @@ const diffPageFields = {
 
 const outgoingDiffOutput = {
   ...diffPageFields,
-  diffHash: z.string().describe('Stable hash of the COMPLETE outgoing diff, not just this page; pass it back as expected_diff_hash on push. Identical on every page.'),
+  diffHash: z.string().optional().describe('Stable hash of the COMPLETE outgoing diff, not just this page; pass it back as expected_diff_hash on push. Identical on every page. Only present when scope is outgoing.'),
   branch: z.string().optional(),
-  base: z.string()
+  base: z.string().optional().describe('The base branch the diff was compared against. Only present when scope is outgoing.')
 } satisfies ZodRawShape;
 
 // Paging inputs shared by both diff tools.
