@@ -39,7 +39,7 @@ export interface ContextResponse {
   consideredFiles: number;
 }
 
-const INSTRUCTION_NAMES = new Set(['AGENTS.md', 'CLAUDE.md', 'CODEX.md']);
+const INSTRUCTION_NAMES = new Set(['AGENTS.md', 'CLAUDE.md', 'CODEX.md', '.cursorrules', '.geminirules']);
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'to', 'of', 'in', 'on', 'for', 'and', 'or', 'fix', 'add',
   'update', 'change', 'make', 'with', 'that', 'this', 'is', 'it', 'when', 'bug'

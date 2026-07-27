@@ -308,6 +308,13 @@ describe('bounded context selection', () => {
     expect(total?.confidence).toBeGreaterThan(0);
   });
 
+  it('attaches .cursorrules and .geminirules governing instructions', () => {
+    const filesWithRules = ['.cursorrules', 'packages/cart/.geminirules', 'packages/cart/src/total.ts'];
+    const response = selectContext({ goal: 'cart total', files: filesWithRules, likelyPaths: ['packages/cart/src/total.ts'] });
+    const total = response.results.find((r) => r.path === 'packages/cart/src/total.ts');
+    expect(total?.instructions).toEqual(['.cursorrules', 'packages/cart/.geminirules']);
+  });
+
   it('honours category filters and reports truncation without silent drops', () => {
     const docsOnly = selectContext({ goal: 'cart', files, categories: ['docs'] });
     expect(docsOnly.results.every((r) => r.path.endsWith('.md'))).toBe(true);
