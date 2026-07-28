@@ -68,6 +68,7 @@ import {
 import { createDeferredAction, listDeferredActionsForWorkspace } from './deferred-actions';
 import { autoPushForgeBranchesEnabled } from './auto-push-policy';
 import { durabilityNextStep, type DurabilityVerdict } from './durability';
+import { isTextualArtifact } from './artifact-content';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
 
@@ -203,6 +204,50 @@ async function recordUrlReviewOwner(
 // Returns the recorded (tenant, project) when a binding exists so the caller can
 // distinguish "verified owner" from "no binding on record". If a binding row
 // exists it is authoritative — a tenant/project mismatch is denied outright.
+/**
+ * Who owns a workspace, straight from D1.
+ *
+ * The artifact read used to answer this by asking the workspace's own Durable
+ * Object. That is a liveness dependency in the one code path that exists for
+ * when the workspace is NOT healthy: a recovery export written precisely
+ * because push was blocked became unreadable the moment the workspace it
+ * described stopped answering. D1 holds the same tenant/project binding and
+ * does not depend on the container, so authorization survives the outage the
+ * recovery path is for.
+ */
+async function lookupWorkspaceOwner(
+  env: Pick<Env, 'METADATA'>,
+  workspaceId: string
+): Promise<{ tenantId: string; projectId: string } | null> {
+  try {
+    const row = await env.METADATA.prepare(
+      'SELECT tenant_id, project_id FROM workspaces WHERE id = ?1'
+    ).bind(workspaceId).first<{ tenant_id: string; project_id: string }>();
+    return row ? { tenantId: row.tenant_id, projectId: row.project_id } : null;
+  } catch (error) {
+    console.warn('forge_workspace_owner_read_failed', {
+      workspaceId,
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+    });
+    return null;
+  }
+}
+
+/** Bound a Durable Object read so an unreachable workspace cannot hang a request. */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work.catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function lookupUrlReviewOwner(
   env: Pick<Env, 'METADATA'>,
   workspaceId: string
@@ -2863,17 +2908,28 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // only when — no coordinator record exists, so real cross-project
         // workspaces still fail the authorization check above.
         let workspaceRevision: number | null = null;
-        let source: 'workspace' | 'url_review' = 'workspace';
-        const state = await coordinator(env, workspaceId).tryGetState();
-        if (state) {
-          if (state.tenantId !== identity.tenantId || state.projectId !== identity.projectId) {
+        let source: 'workspace' | 'url_review' | 'degraded_workspace' = 'workspace';
+        // Bounded: a workspace that has stopped answering must not be able to
+        // block the read of its own recovery artifact. On timeout we fall
+        // through to the D1 binding, which carries the same tenant/project
+        // facts without needing the container.
+        const state = await withDeadline((async () => coordinator(env, workspaceId).tryGetState())(), 5_000);
+        // D1 binding, consulted only when the coordinator did not answer. A
+        // real container-backed workspace still authorizes on tenant AND
+        // project — it just no longer needs to be alive to do it.
+        const degradedOwner = state ? null : await lookupWorkspaceOwner(env, workspaceId);
+        if (state || degradedOwner) {
+          const ownerTenant = state ? state.tenantId : degradedOwner!.tenantId;
+          const ownerProject = state ? state.projectId : degradedOwner!.projectId;
+          if (ownerTenant !== identity.tenantId || ownerProject !== identity.projectId) {
             throw new ForgeError({
               code: 'FORGE_PERMISSION_DENIED',
               message: 'This workspace belongs to a different project. Use a workspace_id from the current project.',
               retryable: false
             });
           }
-          workspaceRevision = state.revision;
+          workspaceRevision = state ? state.revision : null;
+          if (!state) source = 'degraded_workspace';
         } else {
           source = 'url_review';
           // Defense-in-depth: the R2 key below is scoped to the caller's own
@@ -2924,12 +2980,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           size_bytes: object.size,
           metadata: object.customMetadata ?? {}
         };
-        if (!mimeType.startsWith('image/')) return value;
-        return forgeToolResponse(value, [{
-          type: 'image',
-          data: base64(await object.arrayBuffer()),
-          mimeType
-        }]);
+        if (mimeType.startsWith('image/')) {
+          return forgeToolResponse(value, [{
+            type: 'image',
+            data: base64(await object.arrayBuffer()),
+            mimeType
+          }]);
+        }
+        // Return the bytes. This used to hand back metadata only for anything
+        // that was not an image, which made forge_work_export write-only: a
+        // recovery patch is stored as text/plain, so the one artifact that
+        // exists to rescue unpushed work could be created and described but
+        // never read back. size_bytes is already bounded by max_bytes above.
+        const bytes = await object.arrayBuffer();
+        return isTextualArtifact(mimeType)
+          ? { ...value, content: new TextDecoder().decode(bytes) }
+          : { ...value, content_base64: base64(bytes) };
       },
       forge_artifact_upload: async (input) => {
         const identity = this.identity();
