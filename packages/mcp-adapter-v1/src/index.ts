@@ -127,6 +127,8 @@ export interface ToolCallTelemetry {
   errorCode?: string;
   errorMessage?: string;
   resultBytes?: number;
+  /** The response body, so a failure can be diagnosed from what the agent saw. */
+  result?: unknown;
   input: Record<string, unknown>;
 }
 
@@ -205,6 +207,7 @@ export function registerForgeToolsV1(
             durationMs: Date.now() - startedAt,
             status: 'success',
             resultBytes: JSON.stringify(response).length,
+            result: response,
             input
           });
 

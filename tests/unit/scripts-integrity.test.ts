@@ -8,7 +8,7 @@ describe('Scripts Integrity Suite', () => {
   it('check-migrations passes without errors', () => {
     const output = execSync('npx tsx scripts/check-migrations.ts', { cwd: root, encoding: 'utf8' });
     expect(output).toContain('D1 migration check passed');
-    expect(output).toContain('sequential 0001..0024');
+    expect(output).toContain('sequential 0001..0025');
   });
 
   it('check-wiring passes without errors', () => {

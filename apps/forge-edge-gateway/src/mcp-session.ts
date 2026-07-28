@@ -72,6 +72,7 @@ import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
 import { durabilityNextStep, describeDurability, type DurabilityVerdict } from './durability';
 import { isTextualArtifact } from './artifact-content';
 import { normalizeRepoPath } from './repo-paths';
+import { recordToolCall, recentToolCalls } from './tool-call-log';
 import { applyReplacements, ReplacementFailed } from './apply-replacements';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
@@ -697,6 +698,24 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       ? event.input.workspace_id.trim()
       : undefined;
     const waitUntil = (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil;
+    // The payload trail. Written alongside the counter so a failure can be
+    // diagnosed from exactly what the agent sent and exactly what it read
+    // back, without waiting for someone to reproduce it.
+    waitUntil?.(
+      recordToolCall(this.env, {
+        tenantId: identity.tenantId,
+        projectId: identity.projectId,
+        workspaceId: workspaceId ?? null,
+        clientName,
+        tool: event.tool,
+        status: event.status,
+        durationMs: event.durationMs,
+        errorCode: event.errorCode,
+        errorMessage: event.errorMessage,
+        request: event.input,
+        response: event.result
+      }).catch(() => undefined)
+    );
     waitUntil?.(
       appendWorkspaceActivity(this.env, {
         tenantId: identity.tenantId,
@@ -981,6 +1000,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           : await resolveWorkspaceId(env, identity, input.workspace_id);
         const limit = input.limit === undefined ? 40 : Number(input.limit);
         const since = input.since === undefined ? undefined : text(input.since);
+        // payloads:true answers "what were they sending", which is the only
+        // view that explains a failure rather than counting it.
+        if (input.payloads === true || input.errors_only === true) {
+          const calls = await recentToolCalls(env, {
+            tenantId: identity.tenantId,
+            workspaceId,
+            onlyErrors: input.errors_only === true,
+            limit: Number.isFinite(limit) ? limit : 40
+          });
+          return {
+            calls,
+            returned: calls.length,
+            note: 'Secret-shaped keys are redacted and long values previewed; request_bytes/response_bytes are the true sizes.'
+          };
+        }
         const activity = await listWorkspaceActivity(env, identity.tenantId, {
           workspaceId,
           limit: Number.isFinite(limit) ? limit : 40,

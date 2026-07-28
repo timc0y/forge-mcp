@@ -54,7 +54,7 @@
     },
     "forge_observer_activity": {
       "title": "Observer: tool activity",
-      "description": "Read-only D1 trail of MCP tool calls for this account (optional workspace filter).",
+      "description": "Read-only trail of MCP tool calls for this account. payloads:true returns what each call actually sent and received (secrets redacted, large values previewed); errors_only:true narrows to failures. Use it to see why agents are failing rather than only that they failed.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -64,6 +64,14 @@
           "workspace_id": {
             "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
             "$ref": "#/$defs/__schema0"
+          },
+          "payloads": {
+            "default": false,
+            "type": "boolean"
+          },
+          "errors_only": {
+            "default": false,
+            "type": "boolean"
           },
           "limit": {
             "default": 40,
@@ -78,6 +86,8 @@
           }
         },
         "required": [
+          "payloads",
+          "errors_only",
           "limit"
         ],
         "additionalProperties": false,
