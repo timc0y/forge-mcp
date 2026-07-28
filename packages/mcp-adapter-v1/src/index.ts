@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { forgeTools, type ForgeToolHandlers, type ForgeToolResponse } from '@forge/mcp-core';
 import { toForgeError } from '@forge/core';
-import type { ZodRawShape } from 'zod';
+import { z, type ZodRawShape } from 'zod';
 
 const RETRY_SAFE_MUTATIONS = new Set([
   'forge_workspace_create',
@@ -122,6 +122,33 @@ function summarize(name: string, value: Record<string, unknown>): string {
   return pick('nextStep') ?? pick('message') ?? pick('summary') ?? `${name} completed`;
 }
 
+/**
+ * Check a result against its declared output shape without failing the call.
+ *
+ * The shapes stay authoritative — drift is a bug and gets reported — but a
+ * result that reached the agent correctly must never be destroyed on the way
+ * out because a field was renamed. Returns the field paths that drifted.
+ */
+export function outputSchemaDrift(
+  name: string,
+  structured: Record<string, unknown>
+): string[] | undefined {
+  const shape = OUTPUT_SHAPES.get(name);
+  if (!shape) return undefined;
+  const parsed = z.object(shape).safeParse(structured);
+  if (parsed.success) return undefined;
+  return parsed.error.issues.map((issue) =>
+    issue.path.length > 0 ? issue.path.join('.') : '(root)'
+  );
+}
+
+const OUTPUT_SHAPES = new Map<string, ZodRawShape>(
+  forgeTools.flatMap((definition) => {
+    const shape = (definition as { outputSchema?: ZodRawShape }).outputSchema;
+    return shape ? [[definition.name, shape] as const] : [];
+  })
+);
+
 export interface ToolCallTelemetry {
   tool: string;
   durationMs: number;
@@ -131,6 +158,11 @@ export interface ToolCallTelemetry {
   resultBytes?: number;
   /** The response body, so a failure can be diagnosed from what the agent saw. */
   result?: unknown;
+  /**
+   * Field paths where a successful result did not match its declared output
+   * shape. The call still succeeded; this is how the drift gets noticed.
+   */
+  schemaDrift?: string[];
   input: Record<string, unknown>;
 }
 
@@ -147,12 +179,13 @@ export function registerForgeToolsV1(
         title: definition.title,
         description: definition.description,
         inputSchema: definition.inputSchema,
-        // Emit the declared output shape so clients can validate results and
-        // render them structurally. Only the tools that carry one (see mcp-core);
-        // the cast reads the optional field off the literal-typed tool union.
-        ...((definition as { outputSchema?: ZodRawShape }).outputSchema
-          ? { outputSchema: (definition as { outputSchema?: ZodRawShape }).outputSchema }
-          : {}),
+        // The declared output shapes (see mcp-core) deliberately do NOT go on
+        // the wire. Registering them cost 37% of every tools/list — ~6.4k
+        // tokens an agent re-reads each turn — to describe payloads it reads
+        // in full when it calls the tool. Worse, the SDK turns any drift
+        // between a shape and a real result into a hard -32602, so a correct
+        // result becomes a broken tool. They are enforced below instead, where
+        // drift is reported and the real result still reaches the agent.
         annotations: toolAnnotations(definition.name, definition.sideEffect),
         // No `ui`/`openai/outputTemplate` here on purpose: Forge serves no
         // ui:// widget resource, so every tool result renders as the host's
@@ -204,12 +237,14 @@ export function registerForgeToolsV1(
             ...(Object.keys(resultMeta).length > 0 ? { _meta: resultMeta } : {})
           };
 
+          const drift = outputSchemaDrift(definition.name, structured);
           onToolCall?.({
             tool: definition.name,
             durationMs: Date.now() - startedAt,
             status: 'success',
             resultBytes: JSON.stringify(response).length,
             result: response,
+            ...(drift ? { schemaDrift: drift } : {}),
             input
           });
 

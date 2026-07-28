@@ -711,8 +711,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         tool: event.tool,
         status: event.status,
         durationMs: event.durationMs,
-        errorCode: event.errorCode,
-        errorMessage: event.errorMessage,
+        // A successful call whose payload drifted from its declared output
+        // shape is recorded as such. It stays status:'success' — the agent got
+        // a real result and must not be told otherwise — but the drift is
+        // queryable here rather than waiting to be noticed by a human.
+        errorCode: event.errorCode ?? (event.schemaDrift ? 'FORGE_OUTPUT_SCHEMA_DRIFT' : undefined),
+        errorMessage:
+          event.errorMessage ??
+          (event.schemaDrift ? `Fields off declared shape: ${event.schemaDrift.join(', ')}` : undefined),
         request: event.input,
         response: event.result,
         argsHash: await hashArgs(event.input)

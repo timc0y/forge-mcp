@@ -53,6 +53,9 @@ importers:
       '@forge/insight':
         specifier: workspace:*
         version: link:packages/insight
+      '@forge/mcp-adapter-v1':
+        specifier: workspace:*
+        version: link:packages/mcp-adapter-v1
       '@forge/mcp-adapter-v2-beta':
         specifier: workspace:*
         version: link:packages/mcp-adapter-v2-beta
@@ -80,6 +83,9 @@ importers:
       '@forge/workflows-cloudflare':
         specifier: workspace:*
         version: link:packages/workflows-cloudflare
+      '@modelcontextprotocol/sdk':
+        specifier: 1.29.0
+        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1
