@@ -74,6 +74,7 @@ import { isTextualArtifact } from './artifact-content';
 import { normalizeRepoPath } from './repo-paths';
 import { recordToolCall, recentToolCalls, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
 import { applyReplacements, ReplacementFailed } from './apply-replacements';
+import { summariseCommandOutput } from './command-summary';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
 
@@ -2158,7 +2159,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             stdout = await vaultService(env).redactOutput(stdout, identity.tenantId as TenantId, workspaceId);
             stderr = await vaultService(env).redactOutput(stderr, identity.tenantId as TenantId, workspaceId);
           }
+          const exitCode = 'exitCode' in result ? Number(result.exitCode) : undefined;
           const compact = input.compact !== false;
+          // Replace the log with the answer when the command's output has a
+          // known shape. A 300KB test run becomes a headline plus the failing
+          // test names — the difference between a session that can run tests,
+          // read failures, fix and re-run, and one that dies on the first run.
+          // The full log is still spilled to an artifact below.
+          const summary = summariseCommandOutput({ command, output: `${stdout}\n${stderr}`, exitCode });
           const combinedBytes = utf8Bytes(stdout) + utf8Bytes(stderr);
           let outputArtifactId: string | undefined;
           if (combinedBytes > AGENT_OUTPUT_SPILL_BYTES) {
@@ -2173,7 +2181,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
           const base = asRecord(result);
           const { checkpoint: _checkpoint, stdout: _s, stderr: _e, ...rest } = base;
-          const exitCode = 'exitCode' in result ? Number(result.exitCode) : undefined;
           // Anything this command wrote lives only in the container, which is
           // the one place that is not durable. Commit it before returning, so
           // a formatter or codemod cannot leave work to be lost at the next
@@ -2199,8 +2206,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               exitCode,
               compact: true,
               truncated: Boolean(result.truncated) || Boolean(outputArtifactId),
-              stdout_tail: tailBytes(stdout, AGENT_OUTPUT_TAIL_BYTES),
-              stderr_tail: tailBytes(stderr, AGENT_OUTPUT_TAIL_BYTES),
+              ...(summary ? { result_summary: summary } : {}),
+              // With a summary the tails are noise; without one they are the
+              // only thing the agent has.
+              stdout_tail: tailBytes(stdout, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
+              stderr_tail: tailBytes(stderr, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
               ...(outputArtifactId
                 ? {
                     output_artifact_id: outputArtifactId,
