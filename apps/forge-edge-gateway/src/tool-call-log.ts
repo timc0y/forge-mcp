@@ -69,6 +69,7 @@ export interface ToolCallRecord {
   errorMessage?: string;
   request: unknown;
   response: unknown;
+  argsHash?: string;
 }
 
 export async function recordToolCall(env: Env, record: ToolCallRecord): Promise<void> {
@@ -77,8 +78,8 @@ export async function recordToolCall(env: Env, record: ToolCallRecord): Promise<
   await env.METADATA.prepare(
     `INSERT INTO mcp_tool_calls
        (id, tenant_id, project_id, workspace_id, client_name, tool, status, duration_ms,
-        error_code, error_message, request_json, response_json, request_bytes, response_bytes, occurred_at)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)`
+        error_code, error_message, request_json, response_json, request_bytes, response_bytes, occurred_at, args_hash)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)`
   ).bind(
     ids.operation(),
     record.tenantId,
@@ -94,7 +95,8 @@ export async function recordToolCall(env: Env, record: ToolCallRecord): Promise<
     response.json,
     request.bytes,
     response.bytes,
-    new Date().toISOString()
+    new Date().toISOString(),
+    record.argsHash ?? null
   ).run();
 }
 
@@ -118,4 +120,34 @@ export async function recentToolCalls(
       ORDER BY occurred_at DESC LIMIT ?${binds.length}`
   ).bind(...binds).all();
   return rows.results ?? [];
+}
+
+/**
+ * How many times this exact call has already failed, recently.
+ *
+ * A retry storm is one failure attempted repeatedly, not many failures, so the
+ * argument hash is what distinguishes it from an agent making progress. Read
+ * only when a call is already failing: the cost lands on the path that is
+ * going wrong, never on the one that is working.
+ */
+export async function priorIdenticalFailures(
+  env: Env,
+  input: { tenantId: string; tool: string; argsHash: string; withinMinutes?: number }
+): Promise<number> {
+  const since = new Date(Date.now() - (input.withinMinutes ?? 10) * 60_000).toISOString();
+  const row = await env.METADATA.prepare(
+    `SELECT COUNT(*) AS n FROM mcp_tool_calls
+      WHERE tenant_id = ?1 AND tool = ?2 AND args_hash = ?3 AND status = 'error' AND occurred_at > ?4`
+  ).bind(input.tenantId, input.tool, input.argsHash, since).first<{ n: number }>();
+  return Number(row?.n ?? 0);
+}
+
+/** The steer attached once a call is provably looping. */
+export function repeatCallGuidance(tool: string, attempts: number): string {
+  return (
+    `You have now called ${tool} with these exact arguments ${attempts} times and it has failed every time. ` +
+    'It will keep failing — the arguments are the problem, not a transient fault. Read the error message above and change ' +
+    'something concrete (different arguments, a different tool, or read the file first), or stop and tell the human what is blocking you. ' +
+    'Do not repeat this call.'
+  );
 }

@@ -754,8 +754,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       retryable: false,
       details: {
         branch_policy,
-        next_step: 'forge_git_branch',
-        allowedNextActions: ['forge_git_branch', 'forge_workspace_get']
+        next_step: 'forge_workspace_create',
+        allowedNextActions: ['forge_workspace_create', 'forge_workspace_get']
       }
     });
   }
@@ -1581,7 +1581,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (record.workspace.gitRemoteDivergence) {
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_CONFLICT',
-        message: 'Remote branch diverged from workspace HEAD. Call forge_git_sync before mutating the repository.',
+        message: 'The branch moved on GitHub. Re-read the files you are changing and call forge_edit again — Forge re-applies onto the new head for you.',
         retryable: false,
         details: record.workspace.gitRemoteDivergence
       });
@@ -1823,7 +1823,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       if (!featurePush.pushed || !featurePush.remote_sha) {
         throw new ForgeError({
           code: 'FORGE_GIT_PUSH_BLOCKED',
-          message: `Work is on ${input.ref}, but feature branch ${featureBranch} is not on origin yet: ${featurePush.reason ?? 'push failed'}. Do not claim ${featureBranch} is pushed; fix push and call forge_workspace_prove.`,
+          message: `Work is on ${input.ref}, but feature branch ${featureBranch} is not on origin yet: ${featurePush.reason ?? 'push failed'}. Do not claim ${featureBranch} is on GitHub; re-apply the work with forge_edit, which commits to origin directly.`,
           retryable: true,
           details: {
             staged_ref: input.ref,

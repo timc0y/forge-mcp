@@ -72,7 +72,7 @@ import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
 import { durabilityNextStep, describeDurability, type DurabilityVerdict } from './durability';
 import { isTextualArtifact } from './artifact-content';
 import { normalizeRepoPath } from './repo-paths';
-import { recordToolCall, recentToolCalls } from './tool-call-log';
+import { recordToolCall, recentToolCalls, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
 import { applyReplacements, ReplacementFailed } from './apply-replacements';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
@@ -659,7 +659,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     const tracker = new ToolCallTracker(this.env, {
       waitUntil: (p) => (this.ctx as unknown as { waitUntil?: (p: Promise<unknown>) => void })?.waitUntil?.(p)
     });
-    registerForgeToolsV1(this.server, this.handlers(), (event) => {
+    registerForgeToolsV1(this.server, this.withRepeatDetection(this.handlers()), (event) => {
       void this.onToolCallTelemetry(tracker, event);
     });
     this.registerPrompts();
@@ -713,7 +713,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         errorCode: event.errorCode,
         errorMessage: event.errorMessage,
         request: event.input,
-        response: event.result
+        response: event.result,
+        argsHash: await hashArgs(event.input)
       }).catch(() => undefined)
     );
     waitUntil?.(
@@ -948,6 +949,55 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       });
     }
     return task;
+  }
+
+  /**
+   * Tell an agent when it is looping, at the moment it loops.
+   *
+   * A strict host retries a failed call, often with identical arguments. The
+   * error is correct each time and says nothing about the repetition, so the
+   * agent has no signal that repeating is futile — which is how one bad call
+   * becomes sixteen. Counting prior identical failures turns the loop itself
+   * into information the agent can act on.
+   *
+   * The lookup runs only on the failing path, so a working session never pays
+   * for it, and it can never turn a success into a failure.
+   */
+  private withRepeatDetection(handlers: ForgeToolHandlers): ForgeToolHandlers {
+    const wrapped = {} as ForgeToolHandlers;
+    for (const name of Object.keys(handlers) as Array<keyof ForgeToolHandlers>) {
+      const original = handlers[name];
+      wrapped[name] = (async (input: Record<string, unknown>) => {
+        try {
+          return await original(input);
+        } catch (error) {
+          const forge = toForgeError(error);
+          try {
+            const identity = this.identity();
+            const argsHash = await hashArgs(input);
+            const prior = await priorIdenticalFailures(this.env, {
+              tenantId: identity.tenantId,
+              tool: String(name),
+              argsHash
+            });
+            if (prior >= 2) {
+              throw new ForgeError({
+                code: forge.code,
+                message: `${forge.message} ${repeatCallGuidance(String(name), prior + 1)}`,
+                retryable: false,
+                ...(forge.operationId ? { operationId: forge.operationId } : {}),
+                details: { ...(forge.details ?? {}), repeatedIdenticalFailures: prior + 1, stopRepeating: true }
+              });
+            }
+          } catch (enrichment) {
+            // Never let the loop detector mask the real failure.
+            if (enrichment instanceof ForgeError && enrichment.details?.stopRepeating) throw enrichment;
+          }
+          throw forge;
+        }
+      }) as ForgeToolHandlers[typeof name];
+    }
+    return wrapped;
   }
 
   private handlers(): ForgeToolHandlers {
@@ -2079,7 +2129,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               operationId: procRecord.operationId,
               workspaceRevision: procRecord.workspaceRevision,
               mutatesFilesystem: value.mutatesFilesystem ?? procRecord.mutatesFilesystem,
-              allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_get'],
+              allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
               next_step: `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for dependency installs), or forge_process_logs to inspect output.`
             };
           }

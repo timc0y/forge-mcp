@@ -40,3 +40,19 @@ describe('tool call payload capture', () => {
     expect(() => serialiseBounded(cyclic)).not.toThrow();
   });
 });
+
+import { repeatCallGuidance } from '../../apps/forge-edge-gateway/src/tool-call-log';
+
+describe('repeat-call steer', () => {
+  it('tells the agent the arguments are the problem, not a transient fault', () => {
+    // A strict host retries identical calls. The error is correct every time
+    // and says nothing about the repetition, so nothing signals that trying
+    // again is futile — which is how one bad call becomes sixteen.
+    const steer = repeatCallGuidance('forge_edit', 3);
+    expect(steer).toContain('3 times');
+    expect(steer).toMatch(/arguments are the problem/u);
+    expect(steer).toMatch(/Do not repeat this call/u);
+    // It must name concrete alternatives, not just forbid the retry.
+    expect(steer).toMatch(/different arguments|different tool|read the file first/u);
+  });
+});
