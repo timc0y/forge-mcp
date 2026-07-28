@@ -1765,6 +1765,32 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (state === 'ready') {
           await coordinator(env, workspaceId).recordPushAuthProbe().catch(() => undefined);
         }
+        // A failed workspace inside a successful tool result is the same lie as
+        // an unpushed commit reported as saved: the field says failed, the
+        // envelope says it worked, and agents read the envelope. One did exactly
+        // that here — took the success, called forge_shell against a dead
+        // workspace, met a bare "Workspace is failed.", and decided the GitHub
+        // App was read-only. Fail the call, and carry the real reason.
+        if (state === 'failed') {
+          const failed = await coordinator(env, workspaceId).getState({ compact: true }).catch(() => undefined);
+          const failure = failed && typeof failed === 'object' && 'failure' in failed
+            ? (failed as { failure?: { stage?: string; code?: string; message?: string } }).failure
+            : undefined;
+          throw new ForgeError({
+            code: 'FORGE_WORKSPACE_NOT_READY',
+            message: `Workspace ${workspaceId} could not be provisioned.${
+              failure?.message ? ` It failed at the ${failure.stage ?? 'provision'} stage: ${failure.message}` : ''
+            } This is a provisioning fault, not a repository permission problem, and there is no read-only mode to fall back to. Call forge_workspace_create again; if it fails a second time, report that rather than working around it.`,
+            retryable: true,
+            details: {
+              workspace_id: workspaceId,
+              state,
+              operation_id: result.operationId,
+              ...(failure?.code ? { failure_code: failure.code } : {}),
+              next_step: 'forge_workspace_create'
+            }
+          });
+        }
         const readyState = state === 'ready'
           ? await coordinator(env, workspaceId).getState({ compact: true }).catch(() => undefined)
           : undefined;
@@ -1782,11 +1808,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           ...(branch ? { current_branch: branch } : {}),
           ...(branch_policy ? { branch_policy } : {}),
           ...(credentialProfileId ? { credential_profile_id: credentialProfileId } : {}),
+          // `failed` never reaches here — it throws above, so this branch only
+          // distinguishes ready from still-provisioning.
           next_step: state === 'ready'
             ? `Ready on ${branch || 'forge/…'}. Edit with forge_edit — it commits to GitHub, no push needed. Reuse this workspace_id.`
-            : state === 'failed'
-              ? 'Provisioning failed. Read forge_workspace_get for the reason; do not keep polling.'
-              : `Still provisioning after the wait budget. Call forge_workspace_get with this workspace_id to check again — it is usually ready within a minute of creation.`
+            : `Still provisioning after the wait budget. Call forge_workspace_get with this workspace_id to check again — it is usually ready within a minute of creation.`
         };
       },
       forge_workspace_get: async (input) => {

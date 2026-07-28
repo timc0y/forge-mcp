@@ -1447,10 +1447,27 @@ export class ForgeApplicationService {
       });
     }
     if (!['ready', 'busy'].includes(record.workspace.state)) {
+      // "Workspace is failed." on its own is a dead end, and an agent facing a
+      // dead end does not stop — it invents a cause and a way round. Two
+      // separate agents met exactly this message, concluded the GitHub App had
+      // read-only access (it has contents:write), and announced they were
+      // switching to a "read-only workspace" that does not exist. The reason
+      // was on the record the whole time and this throw discarded it.
+      const failure = record.workspace.failure;
+      const state = record.workspace.state;
+      const retryable = state === 'suspended' || state === 'provisioning' || state === 'requested';
+      const nextStep = retryable
+        ? 'It is still starting or paused. Retry the same call shortly; do not create a second workspace.'
+        : 'This is a workspace provisioning fault, not a repository permission problem, and there is no read-only or degraded mode to fall back to. Start a new workspace with forge_workspace_create.';
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_NOT_READY',
-        message: `Workspace is ${record.workspace.state}.`,
-        retryable: record.workspace.state === 'suspended'
+        message: `Workspace is ${state}.${failure ? ` It failed at the ${failure.stage} stage: ${failure.message}` : ''} ${nextStep}`,
+        retryable,
+        details: {
+          state,
+          next_step: nextStep,
+          ...(failure ? { failure_stage: failure.stage, failure_code: failure.code } : {})
+        }
       });
     }
     const handle = await this.providerFor(record).get(record.providerId);
