@@ -1321,6 +1321,136 @@
         }
       }
     },
+    "forge_pr": {
+      "title": "Pull requests",
+      "description": "List pull requests, read one’s real merge readiness (checks, reviews, mergeable state), merge it, or close it. status is the one to call before merging — it answers whether merging is safe. Merging re-checks live, so a green result read earlier cannot authorise a merge of newer commits.",
+      "sideEffect": "external",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "action": {
+            "default": "list",
+            "type": "string",
+            "enum": [
+              "list",
+              "status",
+              "merge",
+              "close"
+            ]
+          },
+          "number": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "merge_method": {
+            "default": "merge",
+            "type": "string",
+            "enum": [
+              "merge",
+              "squash",
+              "rebase"
+            ]
+          },
+          "force": {
+            "default": false,
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "action",
+          "merge_method",
+          "force"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_access": {
+      "title": "Repository access",
+      "description": "Why Forge can or cannot reach a repository: which repositories this account has authorized, and for one repo whether the GitHub App is installed and what it can do. Call this when a Git operation fails with a permission error, before assuming the transport is broken.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "forge_history": {
+      "title": "Commit history",
+      "description": "Recent commits on a branch, or the history of one file. Returns sha, message, author and date — not diffs. Use it to see how a file got to its current state without cloning anything.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "limit"
+        ],
+        "additionalProperties": false
+      }
+    },
     "forge_branches": {
       "title": "List or delete branches",
       "description": "List a repository’s branches with whether each is already merged into the default branch, or delete one. Deleting refuses the default branch always, and refuses an unmerged branch unless you pass force with a reason. merged_only:true deletes every merged branch in one call.",

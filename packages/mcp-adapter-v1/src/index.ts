@@ -14,6 +14,8 @@ const RETRY_SAFE_MUTATIONS = new Set([
 ]);
 
 const TRUE_READS = new Set([
+  'forge_access',
+  'forge_history',
   'forge_capabilities',
   'forge_observer_workspaces',
   'forge_observer_workspace',
