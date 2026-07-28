@@ -671,7 +671,7 @@
     },
     "forge_files_list": {
       "title": "List files",
-      "description": "List a bounded file tree. Paths come back relative to root, which is the form forge_edit and forge_files_read take.",
+      "description": "List a bounded file tree, read from the branch tip on GitHub (falls back to the workspace’s cached checkout only if GitHub is unreachable — see `source`). Paths come back relative to root, which is the form forge_edit and forge_files_read take.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -713,7 +713,7 @@
     },
     "forge_files_read": {
       "title": "Read files",
-      "description": "Read one file (path) or several (paths) with content hashes for conflict-safe edits.",
+      "description": "Read one file (path) or several (paths), from the branch tip on GitHub (falls back to the workspace’s cached checkout only if GitHub is unreachable — see `source`). The read guard that protects forge_edit is server-side; no input takes a hash back.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {

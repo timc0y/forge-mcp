@@ -86,7 +86,7 @@ export interface RemoteCommitResult {
 
 export class RemoteCommitConflict extends Error {
   readonly conflictingPaths: string[];
-  constructor(paths: string[], reason: 'branch_moved' | 'stale_read' | 'unread' = 'branch_moved') {
+  constructor(paths: string[], reason: 'branch_moved' | 'stale_read' | 'unread' | 'tree_truncated' = 'branch_moved') {
     super(
       reason === 'unread'
         ? `These files already exist and have not been read in this session: ${paths.join(', ')}. ` +
@@ -94,6 +94,9 @@ export class RemoteCommitConflict extends Error {
         : reason === 'stale_read'
         ? `These paths changed on the branch since they were last read: ${paths.join(', ')}. ` +
           'Read them again and reapply — writing what you last saw would silently revert that change.'
+        : reason === 'tree_truncated'
+        ? `GitHub's file listing for this repository was too large to return in full, so Forge cannot prove these paths were read (or unchanged) before being overwritten: ${paths.join(', ')}. ` +
+          'Read each one again immediately before writing it — a repository this size means an earlier read can no longer be trusted to still be safe.'
         : `The branch moved and these paths changed underneath this edit: ${paths.join(', ')}. ` +
           'Re-read them and reapply — Forge will not silently overwrite someone else\'s change.'
     );
@@ -242,7 +245,7 @@ export async function commitFilesToBranch(
     // retry-time check above cannot see.
     const expectedBlobs = input.expectedBlobs;
     if (input.requireKnownBase || (expectedBlobs && Object.keys(expectedBlobs).length)) {
-      const listing = await expect<{ tree?: Array<{ path: string; sha: string; type: string }> }>(
+      const listing = await expect<{ tree?: Array<{ path: string; sha: string; type: string }>; truncated?: boolean }>(
         request,
         `${base}/git/trees/${parentCommit.tree.sha}?recursive=1`,
         undefined,
@@ -254,6 +257,22 @@ export async function commitFilesToBranch(
         .filter(([path, sha]) => current.has(path) && current.get(path) !== sha)
         .map(([path]) => path);
       if (stale.length) throw new RemoteCommitConflict(stale, 'stale_read');
+
+      // GitHub sets `truncated: true` on this endpoint for very large trees
+      // (~100k entries / 7MB) and silently omits entries past that point.
+      // Every check above and below this line reads absence from `current` as
+      // "new file, nothing to check" — which is correct only when the tree is
+      // complete. On a truncated tree, absence just as easily means "this
+      // path exists but got cut", and the guard has no way to tell the two
+      // apart. Treating the ambiguous case as "allow" is exactly how this
+      // guard degrades open: on a repository large enough to trip GitHub's
+      // limit, it would silently stop protecting the very overwrites it
+      // exists for. Refuse instead — the only safe reading of "cannot tell".
+      if (listing.truncated === true) {
+        const unproven = paths.filter((path) => !current.has(path));
+        if (unproven.length) throw new RemoteCommitConflict(unproven, 'tree_truncated');
+      }
+
       if (input.requireKnownBase) {
         const unseen = paths.filter((path) => current.has(path) && !(expectedBlobs && path in expectedBlobs));
         if (unseen.length) throw new RemoteCommitConflict(unseen, 'unread');

@@ -80,6 +80,7 @@ import {
 } from './durability';
 import { isTextualArtifact } from './artifact-content';
 import { normalizeRepoPath, readableFile, toContainerPath } from './repo-paths';
+import { GitHubReadUnavailable, resolveBranchTree, readBlobFromTree, listEntriesFromTree } from './github-reads';
 import { hoistUniformFields } from './uniform-fields';
 import { recordToolCall, recentToolCalls, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
 import { applyReplacements, ReplacementFailed } from './apply-replacements';
@@ -1903,32 +1904,58 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_files_list: async (input) => {
         const identity = this.identity();
-        const root = toContainerPath(text(input.path));
-        const tree = await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesTree({
-          path: root,
-          depth: number(input.depth),
-          limit: number(input.limit)
-        });
-        // Tell the model the listing was clipped so it narrows (deeper path,
-        // higher limit) instead of assuming it saw the whole tree.
-        const hint = (tree as { truncated?: boolean }).truncated
-          ? 'Listing truncated at the limit. Narrow with a deeper path or raise limit.'
-          : undefined;
-        // Every entry repeated the same directory prefix — at the default
-        // limit of 1000 that is ~16KB of the response saying "/workspace/repo"
-        // over and over. State it once. The relative form is what forge_edit
-        // reports and what forge_files_read now accepts, so these paths can be
-        // passed straight on.
-        const prefix = `${root.replace(/\/+$/u, '')}/`;
-        const entries = Array.isArray((tree as { entries?: unknown }).entries)
-          ? ((tree as { entries: unknown[] }).entries).map((entry) => {
-              const record = entry as { path?: unknown };
-              return typeof record.path === 'string' && record.path.startsWith(prefix)
-                ? { ...record, path: record.path.slice(prefix.length) }
-                : record;
-            })
-          : (tree as { entries?: unknown }).entries;
-        return asRecord({ ...tree, root, entries, ...(hint ? { hint } : {}) });
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const containerRoot = toContainerPath(text(input.path));
+        const relativeRoot = normalizeRepoPath(text(input.path));
+        const depth = number(input.depth);
+        const limit = number(input.limit);
+        try {
+          const { tree } = await resolveBranchTree(env, identity, workspace);
+          const { entries, truncated } = listEntriesFromTree(tree, relativeRoot, depth, limit);
+          // Tell the model the listing was clipped so it narrows (deeper path,
+          // higher limit) instead of assuming it saw the whole tree — or, when
+          // GitHub's own tree read was itself incomplete, that narrowing the
+          // path is the only thing that will actually help (raising limit
+          // will not).
+          const hint = truncated
+            ? (tree.truncated
+                ? 'GitHub could not return this repository\'s whole file tree in one call, so some entries are missing regardless of limit. Narrow with a deeper path.'
+                : 'Listing truncated at the limit. Narrow with a deeper path or raise limit.')
+            : undefined;
+          return asRecord({ root: containerRoot, entries, truncated, source: 'github', ...(hint ? { hint } : {}) });
+        } catch (error) {
+          if (!(error instanceof GitHubReadUnavailable)) throw error;
+          // GitHub itself is unreachable or erroring — fall back to the
+          // container's cached tree rather than failing the call outright,
+          // but say so: an agent must never mistake a cached answer for an
+          // authoritative one.
+          const tree = await workspace.filesTree({ path: containerRoot, depth, limit });
+          const hint = (tree as { truncated?: boolean }).truncated
+            ? 'Listing truncated at the limit. Narrow with a deeper path or raise limit.'
+            : undefined;
+          // Every entry repeated the same directory prefix — at the default
+          // limit of 1000 that is ~16KB of the response saying "/workspace/repo"
+          // over and over. State it once. The relative form is what forge_edit
+          // reports and what forge_files_read now accepts, so these paths can be
+          // passed straight on.
+          const prefix = `${containerRoot.replace(/\/+$/u, '')}/`;
+          const entries = Array.isArray((tree as { entries?: unknown }).entries)
+            ? ((tree as { entries: unknown[] }).entries).map((entry) => {
+                const record = entry as { path?: unknown };
+                return typeof record.path === 'string' && record.path.startsWith(prefix)
+                  ? { ...record, path: record.path.slice(prefix.length) }
+                  : record;
+              })
+            : (tree as { entries?: unknown }).entries;
+          return asRecord({
+            ...tree,
+            root: containerRoot,
+            entries,
+            source: 'container',
+            ...(hint ? { hint } : {}),
+            next_step: `GitHub was unreachable (${error.message}), so this listing came from the workspace's cached checkout instead and may be stale relative to GitHub. Retry shortly for the authoritative listing.`
+          });
+        }
       },
       forge_files_read: async (input) => {
         const identity = this.identity();
@@ -1940,7 +1967,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               : []
         ).map((value) => toContainerPath(value));
         if (paths.length === 0) {
-          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Provide either path or a non-empty paths array.', retryable: false });
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'Provide either path (one file) or a non-empty paths array (several) — forge_files_read needs at least one to know what to read.',
+            retryable: false
+          });
         }
         // Aggregate-work ceiling: the per-file max_bytes (up to 500KB) applied
         // across up to 20 paths would let a single call pull ~10MB into the
@@ -1951,7 +1982,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (paths.length * perFileMaxBytes > MAX_TOTAL_READ_BYTES) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `This read exceeds the ${MAX_TOTAL_READ_BYTES}-byte aggregate limit (${paths.length} paths x ${perFileMaxBytes} bytes each). Reduce max_bytes or read fewer paths per call.`,
+            message: `This read exceeds the ${MAX_TOTAL_READ_BYTES}-byte aggregate limit (${paths.length} paths x ${perFileMaxBytes} bytes each). Reduce max_bytes, or read fewer paths and call forge_files_read again for the rest.`,
             retryable: false,
             details: { paths: paths.length, maxBytes: perFileMaxBytes, totalLimit: MAX_TOTAL_READ_BYTES }
           });
@@ -1963,27 +1994,72 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           endLine: optionalNumber(input.end_line),
           maxBytes: perFileMaxBytes
         };
+        const relativePaths = paths.map((path) => normalizeRepoPath(path));
+        // Only a complete read establishes what the agent saw; a range or a
+        // truncated read must not license a whole-file overwrite.
+        const isCompleteRead = readOne.startLine === undefined && readOne.endLine === undefined;
+
+        // The container fallback, used only when GitHub itself could not be
+        // read — never as the primary source. It still re-hashes decoded
+        // content for rememberReads, because the container has no tree entry
+        // to hand back a real git blob sha from; that is exactly the
+        // divergence-on-CRLF/binary risk the GitHub path exists to remove.
+        const readFromContainer = async (path: string, reason: string): Promise<Record<string, unknown>> => {
+          const one = asRecord(await workspace.filesRead({ path, ...readOne }));
+          if (isCompleteRead && typeof one.content === 'string' && !one.truncated) {
+            await workspace.rememberReads({
+              entries: [{ path: normalizeRepoPath(path), sha: await gitBlobSha(one.content) }]
+            });
+          }
+          return {
+            ...readableFile({ ...one, path }),
+            source: 'container' as const,
+            next_step: `GitHub was unreachable (${reason}), so this came from the workspace's cached checkout instead and may be stale relative to GitHub. Retry shortly for the authoritative read.`
+          };
+        };
+
+        let treeContext: Awaited<ReturnType<typeof resolveBranchTree>> | undefined;
+        let treeUnavailableReason: string | undefined;
+        try {
+          treeContext = await resolveBranchTree(env, identity, workspace);
+        } catch (error) {
+          if (!(error instanceof GitHubReadUnavailable)) throw error;
+          treeUnavailableReason = error.message;
+        }
+
+        const readOnePath = async (containerPath: string, relativePath: string): Promise<Record<string, unknown>> => {
+          if (!treeContext) return readFromContainer(containerPath, treeUnavailableReason as string);
+          try {
+            const result = await readBlobFromTree(
+              treeContext.request,
+              treeContext.repository.owner,
+              treeContext.repository.name,
+              treeContext.tree,
+              relativePath,
+              readOne
+            );
+            if (isCompleteRead) {
+              // The blob sha GitHub just reported for this exact path — not a
+              // re-hash of decoded content, which is what this whole change
+              // exists to stop being wrong on CRLF and binary files.
+              await workspace.rememberReads({ entries: [{ path: relativePath, sha: result.blobSha }] });
+            }
+            return { path: relativePath, content: result.content, sizeBytes: result.sizeBytes, truncated: result.truncated, source: 'github' as const };
+          } catch (error) {
+            if (error instanceof GitHubReadUnavailable) return readFromContainer(containerPath, error.message);
+            throw error;
+          }
+        };
+
         // Single path keeps the original flat shape; multiple returns a files
         // array with per-file errors so one missing file does not fail the batch.
         if (paths.length === 1) {
-          const single = asRecord(await workspace.filesRead({ path: paths[0] as string, ...readOne }));
-          // Only a complete read establishes what the agent saw; a range or a
-          // truncated read must not license a whole-file overwrite.
-          if (typeof single.content === 'string' && !single.truncated && readOne.startLine === undefined && readOne.endLine === undefined) {
-            await workspace.rememberReads({
-              entries: [{ path: normalizeRepoPath(paths[0] as string), sha: await gitBlobSha(single.content) }]
-            });
-          }
-          return readableFile(single);
+          return readOnePath(paths[0] as string, relativePaths[0] as string);
         }
         const files = await Promise.all(
-          paths.map(async (path) => {
+          paths.map(async (path, index) => {
             try {
-              const one = asRecord(await workspace.filesRead({ path, ...readOne }));
-              if (typeof one.content === 'string' && !one.truncated && readOne.startLine === undefined && readOne.endLine === undefined) {
-                await workspace.rememberReads({ entries: [{ path: normalizeRepoPath(path), sha: await gitBlobSha(one.content) }] });
-              }
-              return readableFile({ ...one, path });
+              return await readOnePath(path, relativePaths[index] as string);
             } catch (error) {
               // Surface a real ForgeErrorCode so an agent keying on codes never
               // meets an undocumented one.

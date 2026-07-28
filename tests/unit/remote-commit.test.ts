@@ -18,6 +18,8 @@ function fakeGitHub(options: {
   compareFiles?: string[];
   blobs?: Record<string, string>;
   branchMissingUntilCreated?: boolean;
+  /** Simulates GitHub's own `truncated: true` on a tree too large to return in full. */
+  treeTruncated?: boolean;
 } ) {
   let head = options.head;
   const treeOf = { ...options.treeOf };
@@ -40,7 +42,13 @@ function fakeGitHub(options: {
       return { status: 201, json: {} };
     }
     if (method === 'GET' && path.includes('/git/trees/') && path.includes('recursive=1')) {
-      return { status: 200, json: { tree: Object.entries(options.blobs ?? {}).map(([p, sha]) => ({ path: p, sha, type: 'blob' })) } };
+      return {
+        status: 200,
+        json: {
+          tree: Object.entries(options.blobs ?? {}).map(([p, sha]) => ({ path: p, sha, type: 'blob' })),
+          ...(options.treeTruncated ? { truncated: true } : {})
+        }
+      };
     }
     if (method === 'GET' && path.includes('/git/commits/')) {
       const sha = path.split('/').pop()!;
@@ -228,6 +236,68 @@ describe('stale-read protection', () => {
     const result = await commitFilesToBranch(gh.request, {
       owner: 'acme', repo: 'app', branch: 'forge/x', message: 'new', files: [file],
       expectedBlobs: { 'src/a.ts': 'blob-stale-but-path-is-gone' }
+    });
+
+    expect(result.commitSha).toBeDefined();
+  });
+});
+
+describe('a truncated tree read fails closed instead of open', () => {
+  // GitHub sets `truncated: true` on git/trees?recursive=1 for very large
+  // trees and silently omits entries past that point. Before this guard, a
+  // path missing from `current` was read as "new file, allow" unconditionally
+  // — indistinguishable from "this path exists but the listing cut it off".
+  // On a repository large enough to trip GitHub's limit, that let the
+  // read-before-overwrite guard silently stop guarding, which is the worst
+  // direction for a guard to fail in.
+
+  it('refuses requireKnownBase when the written path is missing from a truncated tree', async () => {
+    // Without the fix this is indistinguishable from "brand new file" and
+    // would be allowed — the exact fail-open case.
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, blobs: {}, treeTruncated: true });
+
+    await expect(
+      commitFilesToBranch(gh.request, {
+        owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit',
+        files: [file], requireKnownBase: true
+      })
+    ).rejects.toThrow(/too large to return in full/u);
+  });
+
+  it('refuses an expectedBlobs write when the written path is missing from a truncated tree', async () => {
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, blobs: {}, treeTruncated: true });
+
+    await expect(
+      commitFilesToBranch(gh.request, {
+        owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file],
+        expectedBlobs: { 'src/a.ts': 'blob-the-agent-read' }
+      })
+    ).rejects.toThrow(/too large to return in full/u);
+  });
+
+  it('still allows the write when a truncated tree happens to include the touched path', async () => {
+    // The path is provably present and unchanged, so truncation elsewhere in
+    // the tree has nothing to do with this write.
+    const gh = fakeGitHub({
+      head: 'head1', treeOf: { head1: 'tree1' }, blobs: { 'src/a.ts': 'blob-same' }, treeTruncated: true
+    });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file],
+      expectedBlobs: { 'src/a.ts': 'blob-same' }
+    });
+
+    expect(result.commitSha).toBeDefined();
+  });
+
+  it('does not misfire when the tree is complete (truncated: false / absent)', async () => {
+    // Regression guard: an untruncated tree must keep allowing genuinely new
+    // files, same as before this change.
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, blobs: {} });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'new', files: [file],
+      requireKnownBase: true
     });
 
     expect(result.commitSha).toBeDefined();

@@ -39,7 +39,7 @@ export function normalizeRepoPath(path: string): string {
   if (!relative || relative.startsWith('../') || relative.includes('/../') || relative.endsWith('/..') || relative === '..' || relative.includes('\0')) {
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',
-      message: `"${path}" is not a path inside the repository.`,
+      message: `"${path}" is not a path inside the repository — it is empty, or escapes the repo root via "..". Use a path relative to the repository root (e.g. "src/a.ts"), or the exact string forge_files_list already returned.`,
       retryable: false
     });
   }
