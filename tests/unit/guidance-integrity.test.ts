@@ -13,11 +13,32 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Prose an agent reads: message/next_step/hint strings and allowedNextActions entries. */
+/**
+ * Prose an agent reads.
+ *
+ * Keyed forms (`next_step: '…'`) are the common case, but they are not the only
+ * one, and keying on them alone left a hole this test existed to close:
+ * branch-policy.ts wrote `next_step: onAgentBranch ? '…' : '…'`, and because a
+ * ternary follows the colon rather than a quote, a live instruction to call the
+ * long-removed forge_git_branch sat there unnoticed.
+ *
+ * So the sweep is now shape-independent: every string literal in the file that
+ * reads like a sentence — it contains a space — counts as prose, wherever it
+ * sits. An identifier like `name: 'forge_edit'` has no space and is skipped, so
+ * ordinary code references stay out of it.
+ */
 function agentFacingStrings(source: string): string[] {
   const found: string[] = [];
-  for (const match of source.matchAll(/(?:message|next_step|hint|nextStep)\s*:\s*(['"`])((?:\\.|(?!\1)[\s\S])*?)\1/gu)) {
-    found.push(match[2] as string);
+  // Look at what FOLLOWS the key rather than requiring a quote to sit against
+  // the colon, then take the prose-shaped literals out of that window. A
+  // sentence has a space in it; `pull_requests: 'forge_pr_can_list_...'` and a
+  // log event name do not, so ordinary code stays out of the sweep.
+  for (const key of source.matchAll(/(?:message|next_step|hint|nextStep)\s*:/gu)) {
+    const window = source.slice(key.index ?? 0, (key.index ?? 0) + 600);
+    for (const literal of window.matchAll(/(['"`])((?:\\.|(?!\1)[^\\])*?)\1/gu)) {
+      const text = literal[2] as string;
+      if (text.includes(' ')) found.push(text);
+    }
   }
   for (const match of source.matchAll(/allowedNextActions\s*:\s*\[([^\]]*)\]/gu)) {
     found.push(match[1] as string);

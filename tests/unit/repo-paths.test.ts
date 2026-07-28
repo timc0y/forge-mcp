@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { forgeTools } from '@forge/mcp-core';
 import { normalizeRepoPath, readableFile, toContainerPath } from '../../apps/forge-edge-gateway/src/repo-paths';
 
 describe('normalizeRepoPath', () => {
@@ -63,5 +64,33 @@ describe('readableFile', () => {
 
   it('reports the path in the form forge_edit accepts', () => {
     expect(readableFile({ path: '/workspace/repo/a.ts' }).path).toBe('a.ts');
+  });
+});
+
+describe('tool path defaults resolve to somewhere real', () => {
+  it('defaults forge_files_list to the repository root, not a directory below it', () => {
+    // The regression: the default was changed to 'repo' when the schema moved
+    // to accepting repo-relative paths, and toContainerPath('repo') yields
+    // /workspace/repo/repo — so a listing call with no path argument walked a
+    // directory that does not exist. Shipped and deployed before it was caught.
+    const listTool = forgeTools.find((tool) => tool.name === 'forge_files_list');
+    const shape = listTool?.inputSchema as { path: { safeParse(v: unknown): { data?: unknown } } };
+    const defaulted = shape.path.safeParse(undefined).data as string;
+
+    expect(toContainerPath(defaulted)).toBe('/workspace/repo');
+  });
+
+  it('leaves every other repo-relative default resolvable too', () => {
+    // Any tool defaulting a path must land inside the checkout, not beside it.
+    for (const tool of forgeTools) {
+      const shape = tool.inputSchema as Record<string, { safeParse?(v: unknown): { data?: unknown } }>;
+      for (const [field, schema] of Object.entries(shape)) {
+        if (field !== 'path' && field !== 'cwd') continue;
+        const defaulted = schema.safeParse?.(undefined)?.data;
+        if (typeof defaulted !== 'string') continue;
+        expect(toContainerPath(defaulted), `${tool.name}.${field}`).toMatch(/^\/workspace(\/|$)/u);
+        expect(toContainerPath(defaulted), `${tool.name}.${field}`).not.toMatch(/\/repo\/repo/u);
+      }
+    }
   });
 });

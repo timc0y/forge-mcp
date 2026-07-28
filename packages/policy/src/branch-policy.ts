@@ -50,7 +50,7 @@ export function branchPolicyFor(branch: string | undefined | null): {
     currentBranch: branch ?? null,
     next_step: onAgentBranch
       ? 'On your Forge branch. Edit with forge_edit — it commits straight to GitHub, so there is nothing to push.'
-      : 'Not on a forge/<task> branch. Call forge_git_branch before any edits — work on main/master is refused so it cannot be stranded or lost.'
+      : 'Not on a forge/<task> branch. Call forge_workspace_create — it cuts the branch for you; work on main/master is refused so it cannot be stranded or lost.'
   };
 }
 

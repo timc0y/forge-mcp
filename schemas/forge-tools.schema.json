@@ -636,7 +636,7 @@
             "description": "Workspace id. Omit to use your open one."
           },
           "path": {
-            "default": "repo",
+            "default": "/workspace/repo",
             "type": "string",
             "minLength": 1,
             "maxLength": 1000,
