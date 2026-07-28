@@ -991,7 +991,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (input.mode === 'read_only' && shellDecision.classification !== 'read_only') {
       throw new ForgeError({
         code: 'FORGE_VALIDATION_FAILED',
-        message: 'mode:read_only was requested but the command is classified as mutating; refuse to run it without a mutation path.',
+        // Say what to do, not just what was refused. The classifier is
+        // conservative and flags shell constructs that only ever print, so an
+        // agent meets this for a harmless command and has no way to know the
+        // fix is simply to drop the parameter.
+        message: 'This command was classified as possibly mutating, so mode:read_only was refused. Nothing ran. If it is safe to let it write, call forge_shell again without mode (the default allows writes, and anything it changes is committed to GitHub for you).',
         retryable: false,
         details: { classification: shellDecision.classification, allowedNextActions: ['forge_shell'] }
       });
