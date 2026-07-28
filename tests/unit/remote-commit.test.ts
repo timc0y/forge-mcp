@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   commitFilesToBranch,
+  createBranchRef,
   RemoteCommitConflict,
   type GitHubRequest
 } from '../../packages/git-github/src/remote-commit';
@@ -234,10 +235,13 @@ describe('stale-read protection', () => {
 });
 
 describe('a branch GitHub has never seen', () => {
+  // Most agent branches now exist on GitHub before any edit — forge_start (or
+  // forge_workspace_create adopting a pre-created ref) creates them up front.
+  // But an agent branch can still be cut without going through forge_start (a
+  // legacy forge_workspace_create call on the default ref, say), so the first
+  // edit of a session like that still targets a ref GitHub has never heard
+  // of. Without this the whole remote-first path fails on call one.
   it('creates the ref from the base commit instead of 404ing', async () => {
-    // Forge cuts forge/<id> inside the container, so the first edit of every
-    // session targets a ref GitHub does not have. Without this the whole
-    // remote-first path fails on call one.
     const gh = fakeGitHub({ head: 'base-sha', treeOf: { 'base-sha': 'tree0' }, branchMissingUntilCreated: true });
 
     const result = await commitFilesToBranch(gh.request, {
@@ -255,6 +259,49 @@ describe('a branch GitHub has never seen', () => {
     await expect(
       commitFilesToBranch(gh.request, { owner: 'a', repo: 'b', branch: 'forge/new', message: 'm', files: [file] })
     ).rejects.toThrow(/does not exist on GitHub and no base commit/u);
+  });
+});
+
+describe('createBranchRef', () => {
+  // This is the one function that ever mints a branch ref on GitHub —
+  // forge_start calls it directly, before any container exists, and
+  // commitFilesToBranch's retry loop calls it too when it hits a 404 on a
+  // branch that was cut locally instead. One function, one behaviour, either
+  // way.
+  it('creates the ref at the given base commit', async () => {
+    const calls: string[] = [];
+    const request: GitHubRequest = async (path, init) => {
+      calls.push(`${init?.method ?? 'GET'} ${path}`);
+      return { status: 201, json: {} };
+    };
+
+    const result = await createBranchRef(request, {
+      owner: 'acme', repo: 'app', branch: 'forge/new-task', baseSha: 'base-sha'
+    });
+
+    expect(result.created).toBe(true);
+    expect(calls).toEqual(['POST /repos/acme/app/git/refs']);
+  });
+
+  it('tolerates a concurrent creation of the same ref', async () => {
+    // 422 means someone else — another call, another retry — created the same
+    // ref between our read and our write. That is a race resolved in our
+    // favour already, not a failure to surface.
+    const request: GitHubRequest = async () => ({ status: 422, json: {} });
+
+    const result = await createBranchRef(request, {
+      owner: 'acme', repo: 'app', branch: 'forge/new-task', baseSha: 'base-sha'
+    });
+
+    expect(result.created).toBe(false);
+  });
+
+  it('throws on any other failure', async () => {
+    const request: GitHubRequest = async () => ({ status: 403, json: {} });
+
+    await expect(
+      createBranchRef(request, { owner: 'acme', repo: 'app', branch: 'forge/new-task', baseSha: 'base-sha' })
+    ).rejects.toThrow(/HTTP 403/u);
   });
 });
 

@@ -380,6 +380,54 @@
         }
       }
     },
+    "forge_start": {
+      "title": "Start a branch",
+      "description": "Create forge/<slug> on GitHub from base_ref (default: the repository’s own default branch) — before any workspace exists, no container. Pass the returned branch as ref to forge_workspace_create: it adopts an already-existing forge/ branch instead of cutting a new one, so the branch is on origin from the moment it exists at all.",
+      "sideEffect": "external",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "base_ref": {
+            "description": "Branch to fork from. Omit to use the repository’s actual default branch, resolved from GitHub rather than assumed to be main.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "slug": {
+            "description": "Branch becomes forge/<slug>. Omit for a generated one.",
+            "$ref": "#/$defs/__schema1"
+          }
+        },
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+          }
+        }
+      }
+    },
     "forge_workspace_create": {
       "title": "Create workspace",
       "description": "Create an isolated workspace from an authorized repo. Checks out ref (default main) then auto-creates forge/<id> so agents never edit main. Waits until ready by default.",

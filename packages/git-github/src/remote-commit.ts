@@ -49,9 +49,12 @@ export interface RemoteCommitInput {
   /**
    * Commit to create the branch from if it is not on origin yet.
    *
-   * Forge cuts the agent's branch inside the container, so the first edit of
-   * every session targets a ref GitHub has never heard of. Without this the
-   * remote-first path 404s on call one, every time.
+   * `forge_start` now creates the branch on origin before any container
+   * exists, so the common case is that this ref is already there. But an
+   * agent branch can still be cut without going through `forge_start` (a
+   * legacy `forge_workspace_create` call with the default ref, say), and its
+   * first edit would then target a ref GitHub has never heard of. Without
+   * this the remote-first path 404s on call one, every time.
    */
   baseSha?: string;
   /**
@@ -103,6 +106,43 @@ const BLOB_MODE = '100644';
 
 function encodePath(value: string): string {
   return value.split('/').map(encodeURIComponent).join('/');
+}
+
+export interface CreateBranchRefInput {
+  owner: string;
+  repo: string;
+  branch: string;
+  /** Commit the new ref should point at. */
+  baseSha: string;
+}
+
+export interface CreateBranchRefResult {
+  /** False when a concurrent caller (or a prior attempt) created it first. */
+  created: boolean;
+}
+
+/**
+ * Create `refs/heads/<branch>` at `baseSha` — the one way Forge ever mints a
+ * branch ref on GitHub, whether that is `forge_start` creating one before any
+ * container exists, or {@link commitFilesToBranch} creating one on the fly for
+ * a branch an agent is already editing.
+ *
+ * A 422 is tolerated, not retried: it means someone else created the same ref
+ * between our read and our write, which is a race won by whichever side got
+ * there first, not a failure.
+ */
+export async function createBranchRef(
+  request: GitHubRequest,
+  input: CreateBranchRefInput
+): Promise<CreateBranchRefResult> {
+  const created = await request(`/repos/${input.owner}/${input.repo}/git/refs`, {
+    method: 'POST',
+    body: { ref: `refs/heads/${input.branch}`, sha: input.baseSha }
+  });
+  if (created.status !== 201 && created.status !== 422) {
+    throw new Error(`GitHub branch create failed with HTTP ${created.status}.`);
+  }
+  return { created: created.status === 201 };
 }
 
 async function expect<T>(
@@ -169,15 +209,9 @@ export async function commitFilesToBranch(
           `The branch ${branch} does not exist on GitHub and no base commit was supplied to create it from.`
         );
       }
-      const created = await request(`${base}/git/refs`, {
-        method: 'POST',
-        body: { ref: `refs/heads/${branch}`, sha: input.baseSha }
-      });
       // 422 means someone created it between our read and our write, which is
       // fine — the next loop reads whatever they created.
-      if (created.status !== 201 && created.status !== 422) {
-        throw new Error(`GitHub branch create failed with HTTP ${created.status}.`);
-      }
+      await createBranchRef(request, { owner, repo, branch, baseSha: input.baseSha });
       continue;
     }
     if (refResponse.status !== 200) throw new Error(`GitHub ref read failed with HTTP ${refResponse.status}.`);

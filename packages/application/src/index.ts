@@ -1282,8 +1282,18 @@ export class ForgeApplicationService {
       record.workspace.baseCommit = parsedProbe.head;
       record.workspace.initialHeadCommit = parsedProbe.head;
       // Never leave agents on main/master — that is how work gets stranded on
-      // the default branch or lost when destroy "proves" main. Auto-create a
-      // forge/<workspace> branch from the immutable base before marking ready.
+      // the default branch or lost when destroy "proves" main.
+      //
+      // The preferred path skips this branch entirely: `forge_start` creates
+      // `forge/<slug>` on GitHub before any container exists, and the caller
+      // passes that ref straight into `ref` here, so `currentBranch` is
+      // already an agent branch by the time we get this far — the branch
+      // exists on origin from the moment it exists at all, with nothing below
+      // to run. This is the fallback for a workspace created on the default
+      // ref (or any non-forge ref) without going through `forge_start` first:
+      // cut `forge/<workspace>` locally from the immutable base so the agent
+      // is never left on main, and let the first `forge_edit` create the ref
+      // on GitHub the moment it lands (see `RemoteCommitInput.baseSha`).
       if (!isAgentForgeBranch(record.workspace.currentBranch)) {
         const slug = record.workspace.id.replace(/^ws_/u, '').slice(0, 16);
         const branch = `forge/${slug}`;

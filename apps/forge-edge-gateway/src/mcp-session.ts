@@ -18,6 +18,7 @@ import { issueCapability } from '@forge/capabilities';
 import { registerForgeToolsV1, type ToolCallTelemetry } from '@forge/mcp-adapter-v1';
 import { ToolCallTracker, hashArgs } from './telemetry';
 import { forgeToolResponse, type ForgeToolHandlers, AGENT_OUTPUT_SPILL_BYTES, AGENT_OUTPUT_TAIL_BYTES, tailBytes, utf8Bytes } from '@forge/mcp-core';
+import { assertCleanForMerge, verifyFeatureBranchOnOrigin } from './merge-guards';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { D1AuditStore } from '@forge/audit';
@@ -52,7 +53,7 @@ import { credentialService } from './credentials';
 import { vaultService } from './vault';
 import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
 import { snapshotsEnabled } from './snapshots';
-import { aiEnabled, generateCommitMessage, summarizeDiffForPr } from './ai';
+import { aiEnabled, summarizeDiffForPr } from './ai';
 import { registerLegacyWidgetStub } from './legacy-widget';
 import {
   authorizeRepository,
@@ -69,7 +70,7 @@ import {
 } from './github';
 import { createDeferredAction, listDeferredActionsForWorkspace } from './deferred-actions';
 import { autoPushForgeBranchesEnabled, isAgentForgeBranch } from './auto-push-policy';
-import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
+import { commitFilesToBranch, createBranchRef, RemoteCommitConflict } from '@forge/git-github';
 import {
   DURABILITY_STATES,
   MUTATION_OUTCOMES,
@@ -650,7 +651,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     {
       instructions: [
         'Forge is a remote development computer. There is no push step and no local-only state: forge_edit commits straight to GitHub on your branch, so an edit either lands on origin or does not happen.',
-        '1. forge_workspace_create — it cuts your branch for you. You never choose, create or switch branches.',
+        '1. forge_workspace_create — it cuts your branch for you. You never choose, create or switch branches. Optional: call forge_start first and pass its branch as ref — it creates the branch on GitHub before any workspace exists, so it is real on origin from the moment it exists at all.',
         '2. Read with forge_context_get / forge_files_read / forge_files_list. Edit with forge_edit (one call, many files; content:null deletes). Each call returns commit_url — that IS the durable record.',
         '3. Run checks with forge_shell. The container is a cache of what is already on GitHub; if it is ever stale it re-syncs itself.',
         '4. When the work is good, ask the human, then forge_merge — it opens the pull request and returns one approval link. Echo the link only.',
@@ -1640,6 +1641,78 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           : `Captured ${evidence.length} of ${cells.length} screenshot(s) of ${text(input.url)} without starting a container (${failures.length} failed, ${skipped.length} skipped).${attachedNote} Re-run the remaining routes in smaller batches.${galleryNote}${structureNote}`;
         content.unshift({ type: 'text', text: summary });
         return forgeToolResponse(packet, content);
+      },
+      forge_start: async (input) => {
+        // Create the agent's branch on GitHub before any container exists, so
+        // it is real on origin from the moment it exists at all. This is what
+        // closes the gap forge_merge's push fallback used to paper over: a
+        // branch cut only inside a container that never received a forge_edit
+        // never reached origin, and forge_merge's only recourse was a force
+        // push that 403'd at the very end of a session. Pass the returned
+        // `branch` as `ref` to forge_workspace_create and it adopts this
+        // branch instead of cutting a new one.
+        const identity = this.identity();
+        const owner = text(input.owner);
+        const repo = text(input.repo);
+        const repository = { provider: 'github' as const, owner, name: repo };
+        const request = await githubRequestForWorkspace(env, identity, { repository });
+
+        let baseRef = input.base_ref === undefined ? '' : text(input.base_ref);
+        if (!baseRef) {
+          const repoInfo = await request(`/repos/${owner}/${repo}`);
+          if (repoInfo.status !== 200) {
+            throw new ForgeError({
+              code: 'FORGE_PROVIDER_UNAVAILABLE',
+              message: `GitHub returned HTTP ${repoInfo.status} reading ${owner}/${repo}, so Forge could not resolve its default branch. Pass base_ref explicitly, or check the repository name with forge_access.`,
+              retryable: repoInfo.status >= 500
+            });
+          }
+          baseRef = String((repoInfo.json as { default_branch?: string }).default_branch ?? 'main');
+        }
+
+        const baseRefRead = await request(
+          `/repos/${owner}/${repo}/git/ref/heads/${baseRef.split('/').map(encodeURIComponent).join('/')}`
+        );
+        if (baseRefRead.status !== 200) {
+          throw new ForgeError({
+            code: 'FORGE_FILE_NOT_FOUND',
+            message: `${baseRef} was not found in ${owner}/${repo} (HTTP ${baseRefRead.status}). Check the branch name, or call forge_branches to list what exists.`,
+            retryable: false,
+            details: { owner, repo, baseRef }
+          });
+        }
+        const baseSha = (baseRefRead.json as { object?: { sha?: string } }).object?.sha;
+        if (!baseSha) {
+          throw new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: `GitHub returned ${baseRef} on ${owner}/${repo} with no commit sha attached. Try again, or pass a different base_ref.`,
+            retryable: true
+          });
+        }
+
+        // Same digest forge_workspace_create's own branch-cutting fallback
+        // uses (scoped by tenant+project, SHA-256, first 16 hex characters),
+        // so a slug this mints and one the fallback would have cut look
+        // identical in form. An explicit slug is taken as-is; assertForgeBranch
+        // below is what actually validates either one.
+        const slug = input.slug !== undefined
+          ? text(input.slug)
+          : (await workspaceIdFromIdempotency(`${identity.tenantId}:${identity.projectId}`, crypto.randomUUID()))
+            .replace(/^ws_/u, '')
+            .slice(0, 16);
+        const branch = `forge/${slug}`;
+        assertForgeBranch(branch);
+
+        await createBranchRef(request, { owner, repo, branch, baseSha });
+
+        return {
+          owner,
+          repo,
+          branch,
+          base_ref: baseRef,
+          base_sha: baseSha,
+          next_step: `${branch} now exists on GitHub at ${baseSha}. Call forge_workspace_create with this repository and ref:'${branch}' — it will adopt this branch instead of cutting a new one, so it is already on origin when the workspace becomes ready.`
+        };
       },
       forge_workspace_create: async (input) => {
         const identity = this.identity();
@@ -2742,27 +2815,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const state = await coordinator.getState();
         const comparisonRef = await outgoingComparisonRef(coordinator, input.base !== undefined ? text(input.base) : undefined);
 
-        // Commit anything still in the working tree FIRST. Staging pushes HEAD,
-        // and the outgoing diff is computed against commits, so uncommitted edits
-        // would be silently absent from both — the human would be shown, and
-        // would approve, a pull request containing none of the actual work. This
-        // is also what makes "submit" a genuine single call rather than a
-        // commit-then-submit dance the agent has to remember.
+        // Uncommitted changes in the working tree are not the same as
+        // unpushed commits: forge_edit and forge_shell's own auto-commit both
+        // already push what they do straight to origin, so a dirty tree here
+        // means a raw write bypassed both of those and forge_merge has never
+        // seen it. It used to commit and push that silently, which is the
+        // other push this design removes — report it instead, naming the
+        // files, and send the agent back to forge_edit to re-apply them
+        // through the path that actually commits them.
         const status = await coordinator.gitStatus().catch(() => undefined);
-        let autoCommitted = false;
-        if (status && !status.clean) {
-          let message = '';
-          if (aiEnabled(env)) {
-            const working = await coordinator.gitDiff({ staged: false, maxBytes: 32_000 }).then((r) => r.diff).catch(() => '');
-            if (working.trim()) message = await generateCommitMessage(env, working).catch(() => '');
-          }
-          await coordinator.gitCommit({
-            message: message.trim() || `chore: submit ${branch.replace(/^forge\//, '')} for review`,
-            paths: [],
-            idempotencyKey: `submit-autocommit-${workspaceId}-${branch}`
-          });
-          autoCommitted = true;
-        }
+        assertCleanForMerge(status);
 
         // A bounded first page: enough diff for the summariser to work from,
         // while `totalFiles` still counts the whole change. Counting
@@ -2801,27 +2863,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
 
         // The commits must be somewhere durable before anything is promised to a
         // human. Under remote-first editing they already are: forge_edit put
-        // them on origin/<branch> as it made them, so staging a second copy
-        // through the Git credential proxy duplicates work that is already done
-        // — over the one transport that can fail. That is exactly how this
-        // failed in the wild: an agent's commit was on origin, forge_merge
-        // pushed it again to forge/staged/*, got HTTP 403, and reported the
-        // whole merge as broken while the work sat safely on the branch.
-        //
-        // So verify instead of re-push, using the same GitHub API path
-        // forge_edit uses. Staging survives only as a fallback for a branch
-        // that genuinely is not on origin.
-        const stagedRef = `forge/staged/${workspaceId}/${branch.replace(/^forge\//, '')}`;
-        let staged: { ref: string; commit: string; remote_sha?: string };
-        const remoteHead = await githubRequestForWorkspace(env, identity, { repository: state.repository as RepositoryRef })
-          .then((request) => request(`/repos/${(state.repository as RepositoryRef).owner}/${(state.repository as RepositoryRef).name}/git/ref/heads/${branch.split('/').map(encodeURIComponent).join('/')}`))
-          .then((response) => (response.status === 200 ? (response.json as { object?: { sha?: string } }).object?.sha : undefined))
-          .catch(() => undefined);
-        if (remoteHead) {
-          staged = { ref: branch, commit: remoteHead, remote_sha: remoteHead };
-        } else {
-          staged = await coordinator.stageForReview({ ref: stagedRef });
-        }
+        // them on origin/<branch> as it made them. Verify that with the same
+        // GitHub API path forge_edit uses — forge_merge itself never pushes,
+        // so there is nothing to fall back to if the branch is not there.
+        // That fallback (stage, then force-push the feature branch) is what
+        // 403'd in the wild: an agent's commit was already on origin,
+        // forge_merge pushed it again, and the whole merge was reported
+        // broken while the work sat safely on the branch the whole time.
+        const repository = state.repository as RepositoryRef;
+        const request = await githubRequestForWorkspace(env, identity, { repository });
+        const remoteHead = await verifyFeatureBranchOnOrigin(request, repository, branch);
+        const staged = { ref: branch, commit: remoteHead, remote_sha: remoteHead };
 
         let diffArtifactId: string | undefined;
         if (diff.trim() && utf8Bytes(diff) > 4_096) {
@@ -2893,13 +2945,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             approval_url: approval.approval_url,
             files_changed: filesChanged,
             // Asserted from the ref actually read back off origin, not
-            // hardcoded. A receipt that claims remote presence unconditionally
-            // is the same false assurance that started all of this.
+            // hardcoded. verifyFeatureBranchOnOrigin already throws above when
+            // this would be false, so reaching here always means true — but
+            // the field still reads it off `remoteHead` rather than assuming
+            // it, in case that guard ever changes.
             feature_branch_on_origin: Boolean(remoteHead)
           },
-          next_step: remoteHead
-            ? `Echo only submission_receipt to the human. Branch ${branch}@${staged.remote_sha} is verified on origin; approve at ${approval.approval_url}.`
-            : `Echo only submission_receipt to the human. ${branch} is NOT on origin — the commits were staged at ${staged.ref} instead. Say that plainly rather than describing the branch as pushed. Approve at ${approval.approval_url}.`
+          next_step: `Echo only submission_receipt to the human. Branch ${branch}@${staged.remote_sha} is verified on origin; approve at ${approval.approval_url}.`
         };
       },
       forge_cloudflare_deploy: async (input) => {
