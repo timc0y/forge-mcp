@@ -3531,6 +3531,46 @@ export class ForgeApplicationService {
   }
 
   /**
+   * Bring the workspace checkout in line with the remote branch head.
+   *
+   * Remote-first editing makes the container a cache: the commit already
+   * exists on origin, so this is a fetch and a hard reset onto it, never a
+   * merge and never a source of conflict. Callers treat failure as harmless.
+   */
+  async fastForwardToRemote(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource
+  ): Promise<{ synced: boolean; commit?: string; branch?: string }> {
+    const branch = record.workspace.currentBranch;
+    if (!branch || !isAgentForgeBranch(branch)) return { synced: false };
+    const handle = await this.handle(record);
+    const configPath = `/workspace/tmp/gitconfig-sync-${record.workspace.id}`;
+    await handle.writeFile({ path: configPath, content: `[http]\n\textraHeader = ${source.authorizationHeader}\n` });
+    try {
+      const synced = await handle.exec({
+        command: `sh -c ${quoted(
+          `git fetch ${quoted(source.url)} ${quoted(branch)} && git reset --hard FETCH_HEAD && git rev-parse HEAD`
+        )}`,
+        cwd: '/workspace/repo', timeoutMs: 120_000, outputLimitBytes: 50_000,
+        sessionId: 'system', networkPolicy: 'development',
+        environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+      });
+      if (synced.exitCode !== 0) return { synced: false, branch };
+      const head = synced.stdout.split('\n').map((line) => line.trim()).filter((line) => /^[0-9a-f]{40,64}$/u.test(line)).pop();
+      if (!head) return { synced: false, branch };
+      record.workspace.currentCommit = head;
+      record.workspace.lastPushedCommit = head;
+      record.workspace.lastPushedBranch = branch;
+      record.workspace.hasUnpushedWork = false;
+      record.workspace.gitRemoteDivergence = undefined;
+      record.workspace.updatedAt = new Date().toISOString();
+      return { synced: true, commit: head, branch };
+    } finally {
+      await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
+    }
+  }
+
+  /**
    * The repository's own file list, for context selection.
    *
    * A filesystem walk cannot do this job: it is bounded by a file limit, and

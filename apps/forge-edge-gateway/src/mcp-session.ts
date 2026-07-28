@@ -63,11 +63,13 @@ import {
   repositoryAccessDiagnosis,
   markApprovalApproved,
   requestApproval,
-  requireApproval
+  requireApproval,
+  githubRequestForWorkspace
 } from './github';
 import { createDeferredAction, listDeferredActionsForWorkspace } from './deferred-actions';
-import { autoPushForgeBranchesEnabled } from './auto-push-policy';
-import { durabilityNextStep, type DurabilityVerdict } from './durability';
+import { autoPushForgeBranchesEnabled, isAgentForgeBranch } from './auto-push-policy';
+import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
+import { durabilityNextStep, describeDurability, type DurabilityVerdict } from './durability';
 import { isTextualArtifact } from './artifact-content';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
@@ -1738,6 +1740,82 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // Receipt only — omit checkpoint blob from the model channel.
         const { checkpoint: _checkpoint, ...receipt } = record;
         return applyDurability(env, workspaceId as WorkspaceId, receipt);
+      },
+      forge_edit: async (input) => {
+        const identity = this.identity();
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const state = (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string };
+        const branch = state.currentBranch;
+        if (!branch || !isAgentForgeBranch(branch)) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'This workspace has no agent branch to edit. Create the workspace through forge_workspace_create, which cuts one for you.',
+            retryable: false
+          });
+        }
+        const files = (input.files as Array<{ path: string; content: string | null }>).map((file) => ({
+          path: text(file.path).replace(/^\/workspace\/repo\//u, '').replace(/^\.\//u, ''),
+          content: file.content === null ? null : text(file.content)
+        }));
+        const message = input.message === undefined
+          ? `edit: ${files.length} file${files.length === 1 ? '' : 's'}`
+          : text(input.message);
+
+        const request = await githubRequestForWorkspace(env, identity, { repository: state.repository });
+        let result;
+        try {
+          result = await commitFilesToBranch(request, {
+            owner: state.repository.owner,
+            repo: state.repository.name,
+            branch,
+            message,
+            files
+          });
+        } catch (error) {
+          if (error instanceof RemoteCommitConflict) {
+            throw new ForgeError({
+              code: 'FORGE_FILE_CONFLICT',
+              message: error.message,
+              retryable: false,
+              details: { conflictingPaths: error.conflictingPaths, branch }
+            });
+          }
+          throw error;
+        }
+
+        // The commit is on origin before this call returns, so durability is
+        // settled here — there is no later push that could fail and strand it.
+        const verdict = describeDurability({
+          branch,
+          commit: result.commitSha ?? result.parentSha,
+          hasUnpushedWork: false,
+          pushVerified: true,
+          remoteSha: result.commitSha ?? result.parentSha,
+          committed: !result.unchanged
+        });
+        if (result.commitSha) {
+          await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.commitSha);
+        }
+        // Best effort: bring the container's checkout in line so forge_run
+        // tests what was just committed. A failure here costs nothing — the
+        // work is already safe on GitHub and the container is a cache.
+        const synced = await workspace.syncToRemoteHead().then(() => true).catch(() => false);
+
+        return {
+          ...verdict,
+          ...(result.commitSha ? { commit_sha: result.commitSha } : {}),
+          ...(result.commitSha
+            ? { commit_url: `https://github.com/${state.repository.owner}/${state.repository.name}/commit/${result.commitSha}` }
+            : {}),
+          branch,
+          paths: result.paths,
+          rebased: result.rebased,
+          workspace_synced: synced,
+          next_step: result.unchanged
+            ? 'Nothing changed — the files already had this content. Continue or call forge_merge.'
+            : `Committed to origin/${branch}. Run checks with forge_shell, then forge_merge when ready.${synced ? '' : ' The container checkout is stale; forge_shell will re-sync.'}`
+        };
       },
       forge_files_write_batch: async (input) => {
         const identity = this.identity();

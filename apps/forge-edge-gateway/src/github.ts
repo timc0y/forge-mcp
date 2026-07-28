@@ -2,6 +2,7 @@ import { SignJWT, importPKCS8 } from 'jose';
 import { ForgeError, ids, type ArtifactId, type RepositoryRef, type TenantId, type Workspace, type WorkspaceId } from '@forge/core';
 import { issueCapability, verifyCapability } from '@forge/capabilities';
 import { assertReceivePackScope, parseReceivePackCommands } from '@forge/git-core';
+import type { GitHubRequest } from '@forge/git-github';
 import { assertAllowedForgeBranch } from '@forge/policy';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
@@ -1772,4 +1773,44 @@ export async function githubWebhook(request: Request, env: Env): Promise<Respons
     }
   }
   return new Response(null, { status: 204 });
+}
+
+/**
+ * An authenticated GitHub REST caller scoped to a workspace's repository.
+ *
+ * This is what makes an edit remote-first: the agent's write becomes a commit
+ * on origin through this transport, so there is never a window where the work
+ * exists only inside a container.
+ */
+export async function githubRequestForWorkspace(
+  env: Env,
+  identity: Pick<AuthenticatedContext, 'tenantId' | 'projectId'>,
+  workspace: Pick<Workspace, 'repository'>
+): Promise<GitHubRequest> {
+  const row = await authorizeRepository(env, identity, workspace.repository);
+  if (!row) {
+    throw new ForgeError({
+      code: 'FORGE_PERMISSION_DENIED',
+      message: 'Install and authorize the Forge GitHub App for this repository before editing.',
+      retryable: false
+    });
+  }
+  const token = await installationToken(env, row.installation_id, workspace.repository.name, 'write');
+  return async (path, init) => {
+    const headers = githubHeaders(token);
+    if (init?.body !== undefined) headers.set('content-type', 'application/json');
+    const response = await fetch(`https://api.github.com${path}`, {
+      method: init?.method ?? 'GET',
+      headers,
+      body: init?.body === undefined ? undefined : JSON.stringify(init.body)
+    });
+    const text = await response.text();
+    let json: unknown = {};
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      json = {};
+    }
+    return { status: response.status, json };
+  };
 }

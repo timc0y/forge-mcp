@@ -142,6 +142,9 @@ importers:
       '@forge/git-core':
         specifier: workspace:*
         version: link:../../packages/git-core
+      '@forge/git-github':
+        specifier: workspace:*
+        version: link:../../packages/git-github
       '@forge/insight':
         specifier: workspace:*
         version: link:../../packages/insight

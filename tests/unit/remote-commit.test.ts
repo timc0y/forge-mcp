@@ -1,0 +1,183 @@
+import { describe, expect, it } from 'vitest';
+import {
+  commitFilesToBranch,
+  RemoteCommitConflict,
+  type GitHubRequest
+} from '../../packages/git-github/src/remote-commit';
+
+/**
+ * A fake GitHub that owns a branch head and lets a test move it mid-flight,
+ * which is the only way to exercise the non-fast-forward path honestly.
+ */
+function fakeGitHub(options: {
+  head: string;
+  treeOf: Record<string, string>;
+  /** Called before each ref update; return a new head to simulate a race. */
+  onRefUpdate?: (attempt: number) => string | undefined;
+  compareFiles?: string[];
+} ) {
+  let head = options.head;
+  const treeOf = { ...options.treeOf };
+  let refUpdates = 0;
+  const calls: string[] = [];
+  let treeSeq = 0;
+
+  const request: GitHubRequest = async (path, init) => {
+    const method = init?.method ?? 'GET';
+    calls.push(`${method} ${path}`);
+
+    if (method === 'GET' && path.includes('/git/ref/heads/')) {
+      return { status: 200, json: { object: { sha: head } } };
+    }
+    if (method === 'GET' && path.includes('/git/commits/')) {
+      const sha = path.split('/').pop()!;
+      return { status: 200, json: { tree: { sha: treeOf[sha] ?? `tree-of-${sha}` } } };
+    }
+    if (method === 'GET' && path.includes('/compare/')) {
+      return { status: 200, json: { files: (options.compareFiles ?? []).map((filename) => ({ filename })) } };
+    }
+    if (method === 'POST' && path.endsWith('/git/blobs')) {
+      const body = init!.body as { content: string };
+      return { status: 201, json: { sha: `blob-${body.content.length}` } };
+    }
+    if (method === 'POST' && path.endsWith('/git/trees')) {
+      const body = init!.body as { base_tree: string };
+      // A distinct tree each time unless the test wants "no change".
+      treeSeq += 1;
+      return { status: 201, json: { sha: options.treeOf.__unchanged__ ? body.base_tree : `newtree-${treeSeq}` } };
+    }
+    if (method === 'POST' && path.endsWith('/git/commits')) {
+      return { status: 201, json: { sha: `commit-${treeSeq}` } };
+    }
+    if (method === 'PATCH' && path.includes('/git/refs/heads/')) {
+      refUpdates += 1;
+      const moved = options.onRefUpdate?.(refUpdates);
+      if (moved) {
+        head = moved;
+        return { status: 422, json: {} };
+      }
+      head = (init!.body as { sha: string }).sha;
+      return { status: 200, json: { object: { sha: head } } };
+    }
+    return { status: 404, json: {} };
+  };
+
+  return { request, calls, get head() { return head; }, get refUpdates() { return refUpdates; } };
+}
+
+const file = { path: 'src/a.ts', content: 'export const a = 1;\n' };
+
+describe('commitFilesToBranch', () => {
+  it('commits to the remote and fast-forwards the branch', async () => {
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' } });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file]
+    });
+
+    expect(result.unchanged).toBe(false);
+    expect(result.commitSha).toBe('commit-1');
+    expect(result.parentSha).toBe('head1');
+    expect(result.attempts).toBe(1);
+    expect(gh.head).toBe('commit-1');
+    // Fast-forward only — never force. Forcing is how concurrent work vanishes.
+    expect(gh.calls.some((c) => c.startsWith('PATCH'))).toBe(true);
+  });
+
+  it('creates no commit when the tree is identical', async () => {
+    // Writing the content a file already has is not work, and an empty commit
+    // would look like it was.
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1', __unchanged__: 'yes' } });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file]
+    });
+
+    expect(result.unchanged).toBe(true);
+    expect(result.commitSha).toBeUndefined();
+    expect(gh.calls.some((c) => c.endsWith('/git/commits') && c.startsWith('POST'))).toBe(false);
+  });
+
+  it('re-applies onto the new head when the branch moves under it', async () => {
+    // Non-fast-forward on the first update, then success. The agent should
+    // never see this — it is Forge's job, not something to reason about.
+    const gh = fakeGitHub({
+      head: 'head1',
+      treeOf: { head1: 'tree1', head2: 'tree2' },
+      onRefUpdate: (attempt) => (attempt === 1 ? 'head2' : undefined),
+      compareFiles: ['docs/unrelated.md']
+    });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file]
+    });
+
+    expect(result.rebased).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(result.parentSha).toBe('head2');
+    expect(gh.refUpdates).toBe(2);
+  });
+
+  it('refuses to overwrite a path the concurrent commit also changed', async () => {
+    const gh = fakeGitHub({
+      head: 'head1',
+      treeOf: { head1: 'tree1', head2: 'tree2' },
+      onRefUpdate: (attempt) => (attempt === 1 ? 'head2' : undefined),
+      compareFiles: ['src/a.ts']
+    });
+
+    await expect(
+      commitFilesToBranch(gh.request, {
+        owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file]
+      })
+    ).rejects.toBeInstanceOf(RemoteCommitConflict);
+  });
+
+  it('gives up after the retry bound rather than looping', async () => {
+    const gh = fakeGitHub({
+      head: 'head1',
+      treeOf: { head1: 'tree1' },
+      onRefUpdate: (attempt) => `head-${attempt + 1}`,
+      compareFiles: []
+    });
+
+    await expect(
+      commitFilesToBranch(gh.request, {
+        owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file], maxAttempts: 2
+      })
+    ).rejects.toThrow(/moved during 2 attempts.*Nothing was committed/u);
+  });
+
+  it('does not retry a failure that is not a non-fast-forward', async () => {
+    const request: GitHubRequest = async (path, init) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && path.includes('/git/ref/heads/')) return { status: 200, json: { object: { sha: 'h' } } };
+      if (method === 'GET' && path.includes('/git/commits/')) return { status: 200, json: { tree: { sha: 't' } } };
+      if (method === 'POST' && path.endsWith('/git/blobs')) return { status: 201, json: { sha: 'b' } };
+      if (method === 'POST' && path.endsWith('/git/trees')) return { status: 201, json: { sha: 'newtree' } };
+      if (method === 'POST' && path.endsWith('/git/commits')) return { status: 201, json: { sha: 'c' } };
+      return { status: 403, json: {} };
+    };
+
+    await expect(
+      commitFilesToBranch(request, { owner: 'a', repo: 'b', branch: 'forge/x', message: 'm', files: [file] })
+    ).rejects.toThrow(/HTTP 403/u);
+  });
+
+  it('deletes a path when content is null', async () => {
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' } });
+    let treeBody: { tree: Array<{ path: string; sha: string | null }> } | undefined;
+    const request: GitHubRequest = async (path, init) => {
+      if ((init?.method ?? 'GET') === 'POST' && path.endsWith('/git/trees')) {
+        treeBody = init!.body as typeof treeBody;
+      }
+      return gh.request(path, init);
+    };
+
+    await commitFilesToBranch(request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'rm', files: [{ path: 'gone.ts', content: null }]
+    });
+
+    expect(treeBody?.tree[0]).toMatchObject({ path: 'gone.ts', sha: null });
+  });
+});

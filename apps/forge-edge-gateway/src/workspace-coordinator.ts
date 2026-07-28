@@ -1426,6 +1426,25 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.readWithRecovery((record) => this.app.checkGet(record, input.processId));
   }
 
+  /**
+   * Fast-forward the container checkout to whatever origin now holds.
+   *
+   * The container is a cache, not the source of truth: an edit is already a
+   * commit on GitHub before this runs. If this fails the work is still safe —
+   * only the local copy is stale — so callers treat it as best effort.
+   */
+  async syncToRemoteHead() {
+    return this.serializeMutation(async () => {
+      const record = await this.repoRecord();
+      try {
+        const source = await repositoryCloneSource(this.env, record.workspace);
+        return await this.app.fastForwardToRemote(record, source);
+      } finally {
+        await this.save(record);
+      }
+    });
+  }
+
   /** Repository file list for context selection — git's view, not a filesystem walk. */
   async listRepositoryFiles(input: { limit?: number } = {}) {
     return this.readRepoWithRecovery((record) => this.app.listRepositoryFiles(record, input.limit ?? 10_000));

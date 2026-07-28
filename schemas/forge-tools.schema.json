@@ -892,6 +892,72 @@
         }
       }
     },
+    "forge_edit": {
+      "title": "Edit files",
+      "description": "Write or delete files. The edit is committed straight to GitHub on your branch — there is no separate push, and nothing is ever left only inside the workspace. Set content to null to delete a path. Returns the commit URL.",
+      "sideEffect": "external",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "files": {
+            "minItems": 1,
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema1"
+            }
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "content": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 500000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
     "forge_files_write_batch": {
       "title": "Write files (batch)",
       "description": "Write up to 20 files on the forge/ branch in one call (auto-commits). Returns path+sha receipts. Refused on main.",

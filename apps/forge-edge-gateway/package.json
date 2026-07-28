@@ -20,6 +20,7 @@
     "@forge/core": "workspace:*",
     "@forge/credentials": "workspace:*",
     "@forge/git-core": "workspace:*",
+    "@forge/git-github": "workspace:*",
     "@forge/mcp-adapter-v1": "workspace:*",
     "@forge/mcp-core": "workspace:*",
     "@forge/metadata-d1": "workspace:*",
