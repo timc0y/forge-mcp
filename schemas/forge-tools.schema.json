@@ -38,18 +38,12 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
-          }
-        },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
             "type": "string",
             "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Workspace id. Omit to use your open one."
           }
-        }
+        },
+        "additionalProperties": false
       }
     },
     "forge_observer_activity": {
@@ -62,8 +56,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "payloads": {
             "default": false,
@@ -90,14 +85,7 @@
           "errors_only",
           "limit"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_repository_list": {
@@ -244,8 +232,9 @@
             ]
           },
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "compact": {
             "type": "boolean"
@@ -255,14 +244,7 @@
           "task_id",
           "mode"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_task_list": {
@@ -368,8 +350,10 @@
             "maxLength": 500
           },
           "expected_revision": {
-            "description": "Fails if the workspace moved on past this revision.",
-            "$ref": "#/$defs/__schema3"
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Fails if the workspace moved on past this revision."
           }
         },
         "required": [
@@ -392,11 +376,6 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
-          },
-          "__schema3": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
           }
         }
       }
@@ -465,8 +444,10 @@
             "maximum": 110000
           },
           "idempotency_key": {
-            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
-            "$ref": "#/$defs/__schema3"
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
@@ -493,12 +474,6 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 100
-          },
-          "__schema3": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -513,21 +488,15 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "compact": {
             "type": "boolean"
           }
         },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_workspace_destroy": {
@@ -540,8 +509,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "preserve_artifacts": {
             "default": true,
@@ -552,37 +522,23 @@
             "type": "boolean"
           },
           "expected_revision": {
-            "description": "Fails if the workspace moved on past this revision.",
-            "$ref": "#/$defs/__schema1"
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Fails if the workspace moved on past this revision."
           },
           "idempotency_key": {
-            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
-            "$ref": "#/$defs/__schema2"
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
           "preserve_artifacts",
           "force"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Stable key makes a retry safe. Fresh value per distinct call."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_operation_get": {
@@ -595,8 +551,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "operation_id": {
             "type": "string",
@@ -606,14 +563,7 @@
         "required": [
           "operation_id"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_workspace_snapshot": {
@@ -626,8 +576,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "name": {
             "type": "string",
@@ -635,14 +586,7 @@
             "maxLength": 200
           }
         },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_workspace_restore": {
@@ -655,8 +599,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "snapshot_id": {
             "type": "string",
@@ -664,26 +609,16 @@
             "maxLength": 200
           },
           "expected_revision": {
-            "description": "Fails if the workspace moved on past this revision.",
-            "$ref": "#/$defs/__schema1"
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Fails if the workspace moved on past this revision."
           }
         },
         "required": [
           "snapshot_id"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_files_list": {
@@ -696,8 +631,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "path": {
             "default": "/workspace/repo",
@@ -722,14 +658,7 @@
           "depth",
           "limit"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_files_read": {
@@ -742,8 +671,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "path": {
             "type": "string",
@@ -754,7 +684,7 @@
             "maxItems": 20,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema1"
+              "$ref": "#/$defs/__schema0"
             }
           },
           "start_line": {
@@ -784,11 +714,6 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "string",
             "pattern": "^\\/workspace.*"
           }
         }
@@ -804,15 +729,16 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "files": {
             "minItems": 1,
             "maxItems": 50,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema1"
+              "$ref": "#/$defs/__schema0"
             }
           },
           "message": {
@@ -827,11 +753,6 @@
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
             "type": "object",
             "properties": {
               "path": {
@@ -855,7 +776,7 @@
                 "maxItems": 20,
                 "type": "array",
                 "items": {
-                  "$ref": "#/$defs/__schema2"
+                  "$ref": "#/$defs/__schema1"
                 }
               }
             },
@@ -864,7 +785,7 @@
             ],
             "additionalProperties": false
           },
-          "__schema2": {
+          "__schema1": {
             "type": "object",
             "properties": {
               "old": {
@@ -899,8 +820,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "base": {
             "default": "main",
@@ -912,14 +834,7 @@
         "required": [
           "base"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_context_get": {
@@ -932,8 +847,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "goal": {
             "type": "string",
@@ -945,7 +861,7 @@
             "maxItems": 40,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema1"
+              "$ref": "#/$defs/__schema0"
             }
           },
           "max_results": {
@@ -964,11 +880,6 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "string",
             "minLength": 1,
             "maxLength": 500
           }
@@ -985,8 +896,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "command": {
             "type": "string",
@@ -996,7 +908,7 @@
           "cwd": {
             "default": "/workspace/repo",
             "description": "Working directory inside the workspace; must start with /workspace.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema0"
           },
           "timeout_ms": {
             "default": 45000,
@@ -1046,12 +958,16 @@
             "type": "boolean"
           },
           "expected_revision": {
-            "description": "Fails if the workspace moved on past this revision.",
-            "$ref": "#/$defs/__schema2"
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Fails if the workspace moved on past this revision."
           },
           "idempotency_key": {
-            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
-            "$ref": "#/$defs/__schema3"
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           },
           "approval_id": {
             "type": "string",
@@ -1071,23 +987,7 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "string",
             "pattern": "^\\/workspace.*"
-          },
-          "__schema2": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "__schema3": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1102,22 +1002,16 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "process_id": {
             "type": "string",
             "pattern": "^proc_.*"
           }
         },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_process_wait": {
@@ -1130,8 +1024,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "process_id": {
             "type": "string",
@@ -1148,14 +1043,7 @@
           "process_id",
           "timeout_ms"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_process_logs": {
@@ -1168,8 +1056,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "process_id": {
             "type": "string",
@@ -1182,14 +1071,7 @@
         "required": [
           "process_id"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_process_stop": {
@@ -1202,8 +1084,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "process_id": {
             "type": "string",
@@ -1214,37 +1097,23 @@
             "type": "boolean"
           },
           "expected_revision": {
-            "description": "Fails if the workspace moved on past this revision.",
-            "$ref": "#/$defs/__schema1"
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Fails if the workspace moved on past this revision."
           },
           "idempotency_key": {
-            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
-            "$ref": "#/$defs/__schema2"
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
           "process_id",
           "force"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Stable key makes a retry safe. Fresh value per distinct call."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_deps_install": {
@@ -1257,8 +1126,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "frozen_lockfile": {
             "default": true,
@@ -1286,12 +1156,16 @@
             "maximum": 900000
           },
           "expected_revision": {
-            "description": "Fails if the workspace moved on past this revision.",
-            "$ref": "#/$defs/__schema1"
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Fails if the workspace moved on past this revision."
           },
           "idempotency_key": {
-            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
-            "$ref": "#/$defs/__schema2"
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
@@ -1300,25 +1174,7 @@
           "network_policy",
           "timeout_ms"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Stable key makes a retry safe. Fresh value per distinct call."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_pr": {
@@ -1517,8 +1373,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "branch": {
             "type": "string",
@@ -1552,28 +1409,17 @@
             "description": "Target task id (task_...)."
           },
           "idempotency_key": {
-            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
-            "$ref": "#/$defs/__schema1"
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
           "pr_base",
           "body"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Stable key makes a retry safe. Fresh value per distinct call."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_cloudflare_deploy": {
@@ -1586,8 +1432,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "command": {
             "default": "npx wrangler deploy",
@@ -1598,7 +1445,7 @@
           "cwd": {
             "default": "/workspace/repo",
             "description": "Working directory inside the workspace; must start with /workspace.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema0"
           },
           "expected_url": {
             "type": "string",
@@ -1613,8 +1460,10 @@
             "pattern": "^apr_.*"
           },
           "idempotency_key": {
-            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
-            "$ref": "#/$defs/__schema2"
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
@@ -1626,18 +1475,7 @@
         "$defs": {
           "__schema0": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "string",
             "pattern": "^\\/workspace.*"
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1777,8 +1615,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "process_id": {
             "type": "string",
@@ -1806,12 +1645,16 @@
             "maximum": 86400
           },
           "expected_revision": {
-            "description": "Fails if the workspace moved on past this revision.",
-            "$ref": "#/$defs/__schema1"
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Fails if the workspace moved on past this revision."
           },
           "idempotency_key": {
-            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
-            "$ref": "#/$defs/__schema2"
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
@@ -1820,25 +1663,7 @@
           "access",
           "ttl_seconds"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Stable key makes a retry safe. Fresh value per distinct call."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_preview": {
@@ -1851,8 +1676,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "preview_id": {
             "type": "string",
@@ -1869,7 +1695,7 @@
             "maxItems": 20,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema1"
+              "$ref": "#/$defs/__schema0"
             }
           },
           "viewports": {
@@ -1881,7 +1707,7 @@
             "maxItems": 4,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema3"
+              "$ref": "#/$defs/__schema2"
             }
           }
         },
@@ -1893,11 +1719,6 @@
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
             "type": "object",
             "properties": {
               "route": {
@@ -1920,7 +1741,7 @@
                 "maxItems": 20,
                 "type": "array",
                 "items": {
-                  "$ref": "#/$defs/__schema2"
+                  "$ref": "#/$defs/__schema1"
                 }
               }
             },
@@ -1930,7 +1751,7 @@
             ],
             "additionalProperties": false
           },
-          "__schema2": {
+          "__schema1": {
             "type": "object",
             "properties": {
               "kind": {
@@ -1980,7 +1801,7 @@
             ],
             "additionalProperties": false
           },
-          "__schema3": {
+          "__schema2": {
             "anyOf": [
               {
                 "type": "string",
@@ -2031,8 +1852,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "artifact_id": {
             "type": "string",
@@ -2049,14 +1871,7 @@
           "artifact_id",
           "max_bytes"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_artifact_upload": {
@@ -2069,8 +1884,9 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "filename": {
             "type": "string",
@@ -2105,14 +1921,7 @@
           "content_type",
           "metadata"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     },
     "forge_secret_list": {
@@ -2266,8 +2075,9 @@
             "description": "Secret id (sec_...)."
           },
           "workspace_id": {
-            "description": "Workspace id. Omit to use your open one.",
-            "$ref": "#/$defs/__schema0"
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Workspace id. Omit to use your open one."
           },
           "attached": {
             "default": true,
@@ -2282,14 +2092,7 @@
           "secret_id",
           "attached"
         ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
+        "additionalProperties": false
       }
     }
   }
