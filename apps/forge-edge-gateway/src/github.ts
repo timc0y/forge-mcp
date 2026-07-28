@@ -915,7 +915,13 @@ export async function repositoryPushSource(env: Env, workspace: Workspace, branc
     gitCommit: commit,
     nonce: crypto.randomUUID(),
     issuedAt: now,
-    expiresAt: now + 5 * 60
+    // The push itself is allowed 120s and the ls-remote verification another
+    // 60s, so a 5-minute window left almost no margin: a cold container or a
+    // large packfile could expire the capability mid-push and surface as an
+    // unexplained 403. Widening the window costs nothing here — this capability
+    // is pinned to one workspace, repository, branch AND exact commit, so time
+    // is not what bounds it.
+    expiresAt: now + 15 * 60
   }, env.FORGE_CAPABILITY_SIGNING_KEY);
   return {
     url: `${env.FORGE_PUBLIC_ORIGIN}/git/${workspace.id}/${workspace.repository.owner}/${workspace.repository.name}.git`,
@@ -982,12 +988,28 @@ export async function gitCredentialProxy(request: Request, env: Env): Promise<Re
     if (!upstreamBody || !claims.branchPattern || !claims.gitCommit) {
       throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Git push capability is missing its approved branch or commit.', retryable: false });
     }
+    // Keep the real cause. This used to be a bare `catch` that reported every
+    // failure here as "outside its approved branch or commit scope" — so a
+    // truncated body, an unparseable packet or a genuine scope violation were
+    // indistinguishable, and all three reached the agent as an opaque HTTP 403
+    // from what looked like GitHub. The push was in fact refused by Forge.
     try {
       const inspected = await inspectReceivePackBody(upstreamBody);
       assertReceivePackScope(inspected.commands, claims.branchPattern, claims.gitCommit);
       upstreamBody = inspected.body;
-    } catch {
-      throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Git push is outside its approved branch or commit scope.', retryable: false });
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      throw new ForgeError({
+        code: 'FORGE_PERMISSION_DENIED',
+        message: `Forge refused this push before it reached GitHub: ${cause}`,
+        retryable: false,
+        details: {
+          refusedBy: 'forge_git_proxy',
+          expectedRef: `refs/heads/${claims.branchPattern}`,
+          expectedCommit: claims.gitCommit,
+          cause
+        }
+      });
     }
   }
   const token = await installationToken(env, repository.installation_id, repository.name, push ? 'write' : 'read');

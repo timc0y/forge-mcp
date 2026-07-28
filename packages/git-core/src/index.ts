@@ -35,7 +35,18 @@ export function parseReceivePackCommands(bytes: Uint8Array): ReceivePackCommand[
 }
 
 export function assertReceivePackScope(commands: ReceivePackCommand[] | null, branch: string, commit: string): void {
-  if (!commands?.length || commands.some((command) => command.ref !== `refs/heads/${branch}` || command.newCommit !== commit)) {
-    throw new Error('Git receive-pack request is outside the approved branch or commit scope.');
+  // Name what was actually seen. A bare "outside the approved scope" message
+  // reaches the agent as an opaque 403 and is indistinguishable from a GitHub
+  // permissions failure — the two need completely different fixes.
+  if (!commands) throw new Error('Git receive-pack command section was incomplete, so its scope could not be checked.');
+  if (!commands.length) throw new Error('Git receive-pack request contained no ref updates.');
+  const expectedRef = `refs/heads/${branch}`;
+  const offending = commands.find((command) => command.ref !== expectedRef || command.newCommit !== commit);
+  if (offending) {
+    throw new Error(
+      offending.ref !== expectedRef
+        ? `Git receive-pack targets ${offending.ref}, but this capability only authorises ${expectedRef}.`
+        : `Git receive-pack pushes ${offending.newCommit} to ${expectedRef}, but this capability only authorises commit ${commit}.`
+    );
   }
 }

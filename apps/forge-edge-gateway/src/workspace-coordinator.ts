@@ -788,6 +788,12 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       paths: relPaths.length ? relPaths : [],
       idempotencyKey: `auto-commit-${record.workspace.id}-${record.workspace.revision}-${relPaths[0] ?? 'tree'}`
     });
+    // Checkpoint AFTER the commit, never before. Callers used to snapshot right
+    // after writing the file, so the checkpoint captured the pre-commit Git
+    // identity: restoring it returned a tree whose content was current but
+    // whose HEAD predated the commit that contained it. Ordering is
+    // commit -> checkpoint -> push so the snapshot always agrees with HEAD.
+    await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
     // Reconcile durability even when this commit was a replay or a no-op:
     // an earlier commit may still be sitting unpushed, and this is the only
     // place the edit path gets to retry it.
@@ -820,7 +826,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.expectedRevision,
           input.idempotencyKey
         );
-        await this.app.checkpoint(record, `write-${record.workspace.revision}`);
         const auto = await this.autoCommitMutation(record, [input.path], `update ${this.repoRelativePath(input.path)}`);
         return { ...value, ...auto };
       } finally {
@@ -846,7 +851,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.idempotencyKey
         );
         if (!('replay' in value && value.replay)) {
-          await this.app.checkpoint(record, `write-batch-${record.workspace.revision}`);
           const auto = await this.autoCommitMutation(
             record,
             input.files.map((file) => file.path),
@@ -887,7 +891,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.expectedRevision,
           input.idempotencyKey
         );
-        await this.app.checkpoint(record, `replace-${record.workspace.revision}`);
         const auto = await this.autoCommitMutation(record, [input.path], `replace in ${this.repoRelativePath(input.path)}`);
         return { ...value, ...auto };
       } finally {
@@ -925,7 +928,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.expectedRevision,
           input.idempotencyKey
         );
-        await this.app.checkpoint(record, `patch-${record.workspace.revision}`);
         if ('replay' in value && value.replay) return value;
         const changed =
           ('value' in value && value.value && typeof value.value === 'object'
@@ -965,7 +967,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       try {
         this.assertMutableOnAgentForgeBranch(record);
         await this.assertCheckpointQuiescent(record);
-        await this.app.checkpoint(record, `upload-${record.workspace.revision}`);
         return await this.autoCommitMutation(record, [input.path], `upload ${this.repoRelativePath(input.path)}`);
       } finally {
         await this.save(record);
@@ -1499,8 +1500,10 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         await this.assertRemoteNotBlocking(record);
         await this.app.reconcileGitState(record);
         const value = await this.app.gitCommit(record, input);
-        const durability = await this.reconcileDurability(record);
+        // commit -> checkpoint -> push: the snapshot must record the identity
+        // of the commit it contains, and a push failure must not cost us it.
         const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
+        const durability = await this.reconcileDurability(record);
         return { ...value, ...durability, checkpoint };
       } finally {
         await this.save(record);

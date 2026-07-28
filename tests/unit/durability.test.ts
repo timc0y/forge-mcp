@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ForgeApplicationService } from '@forge/application';
 import type { ExecResult, SandboxHandle, SandboxProvider } from '@forge/sandbox-core';
 import { describeDurability, durabilityNextStep } from '../../apps/forge-edge-gateway/src/durability';
+import { assertReceivePackScope } from '../../packages/git-core/src/index';
 
 describe('describeDurability', () => {
   it('refuses to call an unpushed commit "on the branch"', () => {
@@ -134,5 +135,33 @@ describe('gitCommit with nothing staged', () => {
     expect(result).toMatchObject({ committed: true, commit: head });
     // Unpushed until a push is verified — this flag is what drives the retry.
     expect(record.workspace.hasUnpushedWork).toBe(true);
+  });
+});
+
+describe('receive-pack scope diagnostics', () => {
+  const ref = 'refs/heads/forge/x';
+  const commit = 'e'.repeat(40);
+  const ok = { oldCommit: '0'.repeat(40), newCommit: commit, ref };
+
+  it('accepts a push that matches the capability', () => {
+    expect(() => assertReceivePackScope([ok], 'forge/x', commit)).not.toThrow();
+  });
+
+  it('distinguishes an incomplete body from a scope violation', () => {
+    // Both used to surface as the same opaque 403, and they need different fixes.
+    expect(() => assertReceivePackScope(null, 'forge/x', commit)).toThrow(/incomplete/iu);
+    expect(() => assertReceivePackScope([], 'forge/x', commit)).toThrow(/no ref updates/iu);
+  });
+
+  it('names the offending ref when the branch is wrong', () => {
+    const wrongRef = { ...ok, ref: 'refs/heads/main' };
+    expect(() => assertReceivePackScope([wrongRef], 'forge/x', commit))
+      .toThrow(/refs\/heads\/main.*only authorises refs\/heads\/forge\/x/u);
+  });
+
+  it('names both commits when the commit is wrong', () => {
+    const wrongCommit = { ...ok, newCommit: 'f'.repeat(40) };
+    expect(() => assertReceivePackScope([wrongCommit], 'forge/x', commit))
+      .toThrow(/f{40}.*only authorises commit e{40}/u);
   });
 });
