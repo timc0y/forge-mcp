@@ -33,7 +33,19 @@ const MAX_FAILURES = 25;
  * hide this completely — the parser has to see what a terminal actually emits.
  */
 export function stripAnsi(value: string): string {
-  return value.replace(/\u001b\[[0-9;]*[A-Za-z]/gu, '');
+  return (
+    value
+      // OSC hyperlinks (pnpm, vitest): ESC ] 8 ; ; <url> BEL <text> ESC ] 8 ; ; BEL.
+      // The wrappers and their URLs go; the visible text between them stays.
+      .replace(/\u001b\][0-9]*;[^\u0007\u001b]*(?:\u0007|\u001b\\)/gu, '')
+      // CSI. The parameter class must include `?`, or the cursor show/hide pair
+      // a progress spinner emits on every line (ESC[?25l, ESC[?25h) survives
+      // stripping — and that is the most repeated escape in real CI output.
+      .replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, '')
+      // Two-character escapes (charset selection, keypad mode) runners emit
+      // around cursor work.
+      .replace(/\u001b[=>()][0-9A-Za-z]?/gu, '')
+  );
 }
 
 function dedupe(values: string[]): string[] {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { summariseCommandOutput } from '../../apps/forge-edge-gateway/src/command-summary';
+import { stripAnsi, summariseCommandOutput } from '../../apps/forge-edge-gateway/src/command-summary';
 
 const VITEST_PASS = `
  ✓ tests/unit/a.test.ts (12 tests) 40ms
@@ -79,5 +79,36 @@ describe('real terminal output', () => {
     expect(summary.ok).toBe(false);
     expect(summary.headline).toMatch(/No tests ran/u);
     expect(summary.headline).toMatch(/Cannot find package/u);
+  });
+});
+
+describe('stripAnsi', () => {
+  const ESC = String.fromCharCode(27);
+  const BEL = String.fromCharCode(7);
+
+  it('removes the escapes a real runner emits, not just colours', () => {
+    // Every one of these appeared in a live forge_shell response. The cursor
+    // pair is the most repeated escape in CI output and the old pattern's
+    // parameter class had no `?`, so it survived untouched.
+    expect(stripAnsi(`${ESC}[31mfail${ESC}[39m`)).toBe('fail');
+    expect(stripAnsi(`${ESC}[?25lworking${ESC}[?25h`)).toBe('working');
+    expect(stripAnsi(`${ESC}[2K${ESC}[1Gline`)).toBe('line');
+    expect(stripAnsi(`${ESC}]8;;https://example.com${BEL}docs${ESC}]8;;${BEL}`)).toBe('docs');
+    expect(stripAnsi('plain text')).toBe('plain text');
+  });
+
+  it('leaves the failing assertion readable and much shorter', () => {
+    const coloured =
+      `\n${ESC}[1m${ESC}[30m${ESC}[46m RUN ${ESC}[49m${ESC}[39m${ESC}[22m ${ESC}[36mv4.1.10${ESC}[39m\n` +
+      ` ${ESC}[31m❯${ESC}[39m tests/unit/mcp.test.ts ${ESC}[2m(0 test)${ESC}[22m\n` +
+      `${ESC}[2m Test Files ${ESC}[22m ${ESC}[1m${ESC}[31m2 failed${ESC}[39m${ESC}[22m\n`;
+    const stripped = stripAnsi(coloured);
+
+    expect(stripped).toContain('2 failed');
+    expect(stripped).toContain('tests/unit/mcp.test.ts');
+    expect(stripped).not.toContain(ESC);
+    // Measured on the live payload this fixture is copied from: the escapes
+    // were 940 of 2,337 response bytes.
+    expect(JSON.stringify(stripped).length).toBeLessThan(JSON.stringify(coloured).length * 0.5);
   });
 });

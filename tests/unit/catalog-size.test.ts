@@ -5,6 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { forgeTools, type ForgeToolHandlers } from '@forge/mcp-core';
 import {
   outputSchemaDrift,
+  slimResponse,
   registerForgeToolsV1,
   type ToolCallTelemetry
 } from '../../packages/mcp-adapter-v1/src/index';
@@ -92,5 +93,33 @@ describe('output shape enforcement', () => {
       commit_url: 'https://github.com/o/r/commit/abc'
     });
     expect(calls.at(-1)?.schemaDrift).toEqual(expect.arrayContaining(['durability']));
+  });
+});
+
+describe('response slimming', () => {
+  const operation = {
+    operationId: 'op_abc',
+    originalOperationId: 'op_abc',
+    replayed: false,
+    idempotencyKey: 'a-key-the-agent-sent',
+    compact: true,
+    exitCode: 0
+  };
+
+  it('drops fields that restate a sibling in the same response', () => {
+    expect(slimResponse('forge_shell', operation)).toEqual({
+      operationId: 'op_abc',
+      replayed: false,
+      exitCode: 0
+    });
+  });
+
+  it('keeps the original operation id when the call really was a replay', () => {
+    const replay = { ...operation, replayed: true, originalOperationId: 'op_first' };
+    expect(slimResponse('forge_shell', replay).originalOperationId).toBe('op_first');
+  });
+
+  it('answers forge_operation_get in full, since that bookkeeping is its subject', () => {
+    expect(slimResponse('forge_operation_get', operation)).toEqual(operation);
   });
 });

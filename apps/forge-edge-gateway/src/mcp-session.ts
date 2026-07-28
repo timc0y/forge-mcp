@@ -71,10 +71,10 @@ import { autoPushForgeBranchesEnabled, isAgentForgeBranch } from './auto-push-po
 import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
 import { durabilityNextStep, describeDurability, type DurabilityVerdict } from './durability';
 import { isTextualArtifact } from './artifact-content';
-import { normalizeRepoPath } from './repo-paths';
+import { normalizeRepoPath, toContainerPath } from './repo-paths';
 import { recordToolCall, recentToolCalls, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
 import { applyReplacements, ReplacementFailed } from './apply-replacements';
-import { summariseCommandOutput } from './command-summary';
+import { stripAnsi, summariseCommandOutput } from './command-summary';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
 
@@ -1779,8 +1779,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_files_list: async (input) => {
         const identity = this.identity();
+        const root = toContainerPath(text(input.path));
         const tree = await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesTree({
-          path: text(input.path),
+          path: root,
           depth: number(input.depth),
           limit: number(input.limit)
         });
@@ -1789,15 +1790,31 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const hint = (tree as { truncated?: boolean }).truncated
           ? 'Listing truncated at the limit. Narrow with a deeper path or raise limit.'
           : undefined;
-        return asRecord({ ...tree, ...(hint ? { hint } : {}) });
+        // Every entry repeated the same directory prefix — at the default
+        // limit of 1000 that is ~16KB of the response saying "/workspace/repo"
+        // over and over. State it once. The relative form is what forge_edit
+        // reports and what forge_files_read now accepts, so these paths can be
+        // passed straight on.
+        const prefix = `${root.replace(/\/+$/u, '')}/`;
+        const entries = Array.isArray((tree as { entries?: unknown }).entries)
+          ? ((tree as { entries: unknown[] }).entries).map((entry) => {
+              const record = entry as { path?: unknown };
+              return typeof record.path === 'string' && record.path.startsWith(prefix)
+                ? { ...record, path: record.path.slice(prefix.length) }
+                : record;
+            })
+          : (tree as { entries?: unknown }).entries;
+        return asRecord({ ...tree, root, entries, ...(hint ? { hint } : {}) });
       },
       forge_files_read: async (input) => {
         const identity = this.identity();
-        const paths = Array.isArray(input.paths) && input.paths.length > 0
-          ? (input.paths as unknown[]).map((value) => text(value))
-          : input.path !== undefined
-            ? [text(input.path)]
-            : [];
+        const paths = (
+          Array.isArray(input.paths) && input.paths.length > 0
+            ? (input.paths as unknown[]).map((value) => text(value))
+            : input.path !== undefined
+              ? [text(input.path)]
+              : []
+        ).map((value) => toContainerPath(value));
         if (paths.length === 0) {
           throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Provide either path or a non-empty paths array.', retryable: false });
         }
@@ -2178,8 +2195,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             mode: input.mode === 'read_only' || input.mode === 'mutating' ? input.mode : undefined
           });
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, true, { reusable: true });
-          let stdout = 'stdout' in result ? String(result.stdout ?? '') : '';
-          let stderr = 'stderr' in result ? String(result.stderr ?? '') : '';
+          // Colour codes are 40% of a real test-run response and mean nothing
+          // to a reader that is not a terminal: one `[31m` is ten JSON
+          // characters the agent cannot act on. Stripping here — before
+          // redaction, the summariser, the tails and the artifact spill — also
+          // makes the tail budget carry ~2.4x more actual output, which is the
+          // difference between seeing the failing assertion and seeing the
+          // escape codes around it. Redaction runs on clean text too, so a
+          // secret printed with colour in the middle still matches.
+          let stdout = stripAnsi('stdout' in result ? String(result.stdout ?? '') : '');
+          let stderr = stripAnsi('stderr' in result ? String(result.stderr ?? '') : '');
           if (attached.redact.size > 0) {
             stdout = await vaultService(env).redactOutput(stdout, identity.tenantId as TenantId, workspaceId);
             stderr = await vaultService(env).redactOutput(stderr, identity.tenantId as TenantId, workspaceId);

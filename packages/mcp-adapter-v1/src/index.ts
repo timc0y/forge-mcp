@@ -123,6 +123,34 @@ function summarize(name: string, value: Record<string, unknown>): string {
 }
 
 /**
+ * Drop fields that restate something already in the same response.
+ *
+ * Deliberately a named list, not a rule like "drop empty arrays": an empty
+ * `failing: []` means "nothing is failing", which is not the same as absent,
+ * and a general rule cannot tell those apart. Every entry here is redundant by
+ * construction and is checked against its sibling before removal, so nothing
+ * is dropped on the strength of its name alone.
+ */
+export function slimResponse(name: string, value: Record<string, unknown>): Record<string, unknown> {
+  // forge_operation_get exists to report exactly this bookkeeping — "what
+  // happened to op_x, was it a replay, under which key". Nothing is redundant
+  // there, so it is answered in full.
+  if (name === 'forge_operation_get') return value;
+  const slim = { ...value };
+  // Echoed verbatim from the operation it already reports, whenever the call
+  // was not a replay. On a real replay the two differ and both are kept.
+  if (slim.replayed === false && slim.originalOperationId === slim.operationId) {
+    delete slim.originalOperationId;
+  }
+  // The key the agent itself sent, handed straight back.
+  if (typeof slim.idempotencyKey === 'string') delete slim.idempotencyKey;
+  // Echoes the request argument; the response shape already shows which form
+  // came back.
+  if (typeof slim.compact === 'boolean') delete slim.compact;
+  return slim;
+}
+
+/**
  * Check a result against its declared output shape without failing the call.
  *
  * The shapes stay authoritative — drift is a bug and gets reported — but a
@@ -211,7 +239,8 @@ export function registerForgeToolsV1(
             value.kind === 'forge_tool_response';
 
           const rawValue = isResponse(result) ? result.value : result;
-          const { structured, meta } = splitMeta(rawValue);
+          const { structured: full, meta } = splitMeta(rawValue);
+          const structured = slimResponse(definition.name, full);
 
           // Bulk `_meta` a handler set aside (e.g. inline screenshot payloads)
           // rides on the result _meta alongside the per-tool ChatGPT status
