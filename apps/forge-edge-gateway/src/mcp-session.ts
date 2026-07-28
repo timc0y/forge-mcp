@@ -2298,6 +2298,204 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         });
         return asRecord(result);
       },
+      forge_pr: async (input) => {
+        const identity = this.identity();
+        const owner = text(input.owner);
+        const repo = text(input.repo);
+        const request = await githubRequestForWorkspace(env, identity, { repository: { provider: 'github' as const, owner, name: repo } });
+        const base = `/repos/${owner}/${repo}`;
+
+        if (input.action === undefined || input.action === 'list') {
+          const listed = await request(`${base}/pulls?state=open&per_page=50`);
+          if (listed.status !== 200) {
+            throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: `GitHub returned HTTP ${listed.status} listing pull requests.`, retryable: true });
+          }
+          const pulls = (listed.json as Array<{ number: number; title: string; head: { ref: string }; base: { ref: string }; draft?: boolean; html_url: string }>).map((pr) => ({
+            number: pr.number, title: pr.title, head: pr.head.ref, base: pr.base.ref, draft: pr.draft === true, url: pr.html_url
+          }));
+          return {
+            repository: `${owner}/${repo}`,
+            pull_requests: pulls,
+            next_step: pulls.length
+              ? `${pulls.length} open. Call action:'status' with a number before merging — it reports whether merging is actually safe.`
+              : 'No open pull requests.'
+          };
+        }
+
+        const number = input.number === undefined ? undefined : Number(input.number);
+        if (!number) {
+          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `action:'${text(input.action)}' needs a pull request number. Call action:'list' first.`, retryable: false });
+        }
+
+        // Always read fresh. A status an agent read earlier describes the head
+        // it saw then; merging on it would merge commits nobody assessed.
+        const readStatus = async () => {
+          const pr = await request(`${base}/pulls/${number}`);
+          if (pr.status !== 200) {
+            throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `Pull request #${number} was not found in ${owner}/${repo}.`, retryable: false });
+          }
+          const body = pr.json as { number: number; title: string; draft?: boolean; merged?: boolean; state: string; mergeable: boolean | null; mergeable_state?: string; head: { sha: string } };
+          const runs = await request(`${base}/commits/${body.head.sha}/check-runs?per_page=100`);
+          const checkRuns = runs.status === 200 ? (runs.json as { check_runs?: Array<{ name: string; status: string; conclusion: string | null }> }).check_runs ?? [] : [];
+          const failing = checkRuns.filter((run) => run.status === 'completed' && run.conclusion !== null && !['success', 'neutral', 'skipped'].includes(run.conclusion)).map((run) => run.name);
+          const pending = checkRuns.filter((run) => run.status !== 'completed').length;
+          const passed = checkRuns.filter((run) => run.status === 'completed' && ['success', 'neutral', 'skipped'].includes(run.conclusion ?? '')).length;
+          const blockers: string[] = [];
+          if (body.merged) blockers.push('Already merged.');
+          if (body.state !== 'open') blockers.push(`State is ${body.state}, not open.`);
+          if (body.draft) blockers.push('Still a draft.');
+          if (body.mergeable === false) blockers.push(`GitHub reports it not mergeable (${body.mergeable_state ?? 'unknown'}).`);
+          if (failing.length) blockers.push(`${failing.length} check(s) failing: ${failing.join(', ')}.`);
+          if (pending) blockers.push(`${pending} check(s) still running.`);
+          return {
+            number: body.number, title: body.title, head_sha: body.head.sha,
+            mergeable: body.mergeable, mergeable_state: String(body.mergeable_state ?? 'unknown'),
+            checks: { total: checkRuns.length, passed, failed: failing.length, pending, failing },
+            review_decision: null as string | null,
+            safe_to_merge: blockers.length === 0,
+            blockers
+          };
+        };
+
+        if (input.action === 'status') {
+          const status = await readStatus();
+          return {
+            repository: `${owner}/${repo}`,
+            status,
+            next_step: status.safe_to_merge
+              ? `#${number} is safe to merge at ${status.head_sha.slice(0, 12)}. Ask the human, then action:'merge'.`
+              : `#${number} is NOT safe to merge: ${status.blockers.join(' ')}`
+          };
+        }
+
+        if (input.action === 'close') {
+          const closed = await request(`${base}/pulls/${number}`, { method: 'PATCH', body: { state: 'closed' } });
+          if (closed.status !== 200) {
+            throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: `GitHub returned HTTP ${closed.status} closing #${number}.`, retryable: true });
+          }
+          return { repository: `${owner}/${repo}`, closed: true, next_step: `Closed #${number} without merging.` };
+        }
+
+        const status = await readStatus();
+        if (!status.safe_to_merge && input.force !== true) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `#${number} is not safe to merge: ${status.blockers.join(' ')} Nothing was merged. Fix these, or pass force:true with a reason to merge anyway.`,
+            retryable: false,
+            details: { number, blockers: status.blockers, head_sha: status.head_sha }
+          });
+        }
+        if (!status.safe_to_merge && !input.reason) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'force:true requires a reason, so the record says why a pull request was merged past its own blockers.',
+            retryable: false,
+            details: { number, blockers: status.blockers }
+          });
+        }
+        const merged = await request(`${base}/pulls/${number}/merge`, {
+          method: 'PUT',
+          body: { merge_method: input.merge_method === undefined ? 'merge' : text(input.merge_method), sha: status.head_sha }
+        });
+        if (merged.status !== 200) {
+          throw new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: `GitHub refused the merge of #${number} with HTTP ${merged.status}. Nothing was merged.`,
+            retryable: merged.status >= 500,
+            details: { number, head_sha: status.head_sha }
+          });
+        }
+        return {
+          repository: `${owner}/${repo}`,
+          merged: true,
+          merge_sha: String((merged.json as { sha?: string }).sha ?? ''),
+          next_step: `Merged #${number}. Delete the branch with forge_branches if it is no longer needed.`
+        };
+      },
+      forge_access: async (input) => {
+        const identity = this.identity();
+        const rows = await listAuthorizedRepositories(env, identity.tenantId);
+        const authorized = rows.map((row) => `${String(row.owner)}/${String(row.name)}`);
+        if (input.owner === undefined || input.repo === undefined) {
+          return {
+            authorized_repositories: authorized,
+            next_step: authorized.length
+              ? `Forge can reach ${authorized.length} repositor(y/ies). Pass owner and repo to check one specifically.`
+              : 'No repositories are authorized. Install the Forge GitHub App and grant it the repositories you want.'
+          };
+        }
+        const owner = text(input.owner);
+        const repo = text(input.repo);
+        const checked = `${owner}/${repo}`;
+        if (!authorized.some((entry) => entry.toLowerCase() === checked.toLowerCase())) {
+          return {
+            authorized_repositories: authorized,
+            checked,
+            authorized: false,
+            can_read: false,
+            can_write: false,
+            reason: `${checked} is not in this account's authorized repositories.`,
+            next_step: `Install or grant the Forge GitHub App access to ${checked}. This is an installation problem, not a Git transport problem — retrying a push will not fix it.`
+          };
+        }
+        // Authorized in Forge's records is not the same as reachable now, so
+        // prove it against GitHub rather than reporting the row.
+        const request = await githubRequestForWorkspace(env, identity, { repository: { provider: 'github' as const, owner, name: repo } }).catch(() => undefined);
+        if (!request) {
+          return { authorized_repositories: authorized, checked, authorized: true, can_read: false, can_write: false, reason: 'Forge could not mint an installation token for this repository.', next_step: `Re-install the Forge GitHub App for ${checked}.` };
+        }
+        const info = await request(`/repos/${owner}/${repo}`);
+        const permissions = (info.json as { permissions?: { push?: boolean; pull?: boolean }; default_branch?: string }).permissions;
+        return {
+          authorized_repositories: authorized,
+          checked,
+          authorized: true,
+          can_read: info.status === 200,
+          can_write: permissions?.push === true,
+          ...(info.status === 200 ? { default_branch: String((info.json as { default_branch?: string }).default_branch ?? 'main') } : {}),
+          ...(info.status === 200 ? {} : { reason: `GitHub returned HTTP ${info.status} for ${checked}.` }),
+          next_step: info.status === 200
+            ? `Forge can read ${checked}${permissions?.push === true ? ' and write to it' : ' but NOT write to it — grant contents:write'}.`
+            : `Forge cannot read ${checked} (HTTP ${info.status}). Check the App installation before assuming a transport fault.`
+        };
+      },
+      forge_history: async (input) => {
+        const identity = this.identity();
+        const owner = text(input.owner);
+        const repo = text(input.repo);
+        const request = await githubRequestForWorkspace(env, identity, { repository: { provider: 'github' as const, owner, name: repo } });
+        const limit = input.limit === undefined ? 20 : Number(input.limit);
+        const query = new URLSearchParams({ per_page: String(Math.min(Math.max(limit, 1), 50)) });
+        if (input.ref !== undefined) query.set('sha', text(input.ref));
+        if (input.path !== undefined) query.set('path', normalizeRepoPath(text(input.path)));
+        const listed = await request(`/repos/${owner}/${repo}/commits?${query.toString()}`);
+        if (listed.status !== 200) {
+          throw new ForgeError({
+            code: listed.status === 404 ? 'FORGE_FILE_NOT_FOUND' : 'FORGE_PROVIDER_UNAVAILABLE',
+            message: input.path === undefined
+              ? `GitHub returned HTTP ${listed.status} reading history for ${owner}/${repo}.`
+              : `No history for ${text(input.path)} on ${input.ref === undefined ? 'the default branch' : text(input.ref)} (HTTP ${listed.status}). Check the path.`,
+            retryable: listed.status >= 500
+          });
+        }
+        const commits = (listed.json as Array<{ sha: string; html_url: string; commit: { message: string; author?: { name?: string; date?: string } } }>).map((entry) => ({
+          sha: entry.sha,
+          message: entry.commit.message.split('\n')[0] ?? '',
+          author: entry.commit.author?.name ?? 'unknown',
+          date: entry.commit.author?.date ?? '',
+          url: entry.html_url
+        }));
+        return {
+          repository: `${owner}/${repo}`,
+          ref: input.ref === undefined ? 'default' : text(input.ref),
+          ...(input.path === undefined ? {} : { path: normalizeRepoPath(text(input.path)) }),
+          commits,
+          returned: commits.length,
+          next_step: commits.length
+            ? `${commits.length} commit(s). Read any file at a commit with forge_files_read, or open a URL above.`
+            : 'No commits matched.'
+        };
+      },
       forge_branches: async (input) => {
         const identity = this.identity();
         const owner = text(input.owner);

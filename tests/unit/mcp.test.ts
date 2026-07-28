@@ -11,7 +11,12 @@ function tool(name: string) {
 
 describe('Forge MCP public contracts', () => {
   it('keeps the KISS catalog small and unique', () => {
-    expect(forgeTools.length).toBeLessThanOrEqual(40);
+    // The bound exists because the catalog is re-sent every turn: 42 tools
+    // cost ~10.7k tokens per turn. Raised from 40 to 45 for forge_pr,
+    // forge_access, forge_history and forge_branches — each ~150-280 tokens,
+    // and each removes an operation that otherwise requires a browser. Raise
+    // it again only for a tool that earns its rent the same way.
+    expect(forgeTools.length).toBeLessThanOrEqual(45);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_edit')).toBe(true);
     const names = forgeTools.map((entry) => entry.name);
     expect(new Set(names).size).toBe(names.length);
