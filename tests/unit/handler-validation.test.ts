@@ -39,24 +39,8 @@ describe('assertForgeBranch (used by forge_git_push, forge_pull_request_create, 
 describe('new tool definitions', () => {
   const tool = (name: string) => forgeTools.find((t) => t.name === name)!;
 
-  it('forge_git_rebase is a workspace mutation without approval', () => {
-    const t = tool('forge_git_rebase');
-    expect(t.sideEffect).toBe('workspace');
-    expect(t.approval).toBe('none');
-    expect(t.inputSchema).toBeDefined();
-  });
 
-  it('forge_git_push is an external side-effect requiring approval', () => {
-    const t = tool('forge_git_push');
-    expect(t.sideEffect).toBe('external');
-    expect(t.approval).toBe('required');
-  });
 
-  it('forge_pull_request_create is an external side-effect requiring approval', () => {
-    const t = tool('forge_pull_request_create');
-    expect(t.sideEffect).toBe('external');
-    expect(t.approval).toBe('required');
-  });
 
   it('forge_workspace_restore is destructive with policy approval', () => {
     const t = tool('forge_workspace_restore');
@@ -64,12 +48,6 @@ describe('new tool definitions', () => {
     expect(t.approval).toBe('policy');
   });
 
-  it('forge_files_upload works on repo paths only', () => {
-    const t = tool('forge_files_upload');
-    const schema = t.inputSchema as { path: { safeParse(v: unknown): { success: boolean } } };
-    expect(schema.path.safeParse('/workspace/repo/foo.png').success).toBe(true);
-    expect(schema.path.safeParse('/workspace/other/foo.png').success).toBe(false);
-  });
 
   it('forge_artifact_upload has no revision or idempotency key', () => {
     const t = tool('forge_artifact_upload');
@@ -86,12 +64,6 @@ describe('new tool definitions', () => {
     expect(schema.max_results.safeParse(12).success).toBe(true);
   });
 
-  it('forge_files_patch limits patch size to 2MB', () => {
-    const t = tool('forge_files_patch');
-    const schema = t.inputSchema as { patch: { safeParse(v: unknown): { success: boolean } } };
-    expect(schema.patch.safeParse('x'.repeat(2_000_001)).success).toBe(false);
-    expect(schema.patch.safeParse('x'.repeat(2_000_000)).success).toBe(true);
-  });
 });
 
 describe('approval lifecycle (completeApproval on failure)', () => {
