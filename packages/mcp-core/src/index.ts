@@ -6,16 +6,16 @@ const workspaceId = z.string().regex(/^ws_[0-9a-hjkmnp-tv-z]{20,32}$/).describe(
 // model creates a second workspace and strands the first with the work in it.
 // Omitting it resolves to the single open workspace; with none or several, the
 // error says exactly what to do rather than guessing at one.
-const workspaceIdOptional = workspaceId.optional().describe('Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.');
-const revision = z.number().int().positive().optional().describe('Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.');
-const idempotency = z.string().min(8).max(200).describe('Unique key that makes this mutation safe to retry; use a fresh value per distinct call.');
+const workspaceIdOptional = workspaceId.optional().describe('Workspace id. Omit to use your open one.');
+const revision = z.number().int().positive().optional().describe('Fails if the workspace moved on past this revision.');
+const idempotency = z.string().min(8).max(200).describe('Stable key makes a retry safe. Fresh value per distinct call.');
 // Optional on every mutating tool. Supplying a stable key makes a retried call
 // safe to repeat; omitting it means "no retry protection", and the server mints
 // a fresh key so the call simply executes. Requiring it made the common case (a
 // single call, never retried) pay for the rare one, and pushed callers into
 // inventing keys they then accidentally reused — turning a real second command
 // into a silent replay.
-const idempotencyOptional = idempotency.optional().describe('Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.');
+const idempotencyOptional = idempotency.optional().describe('Optional. Stable key makes a retry safe; omit to always execute.');
 const forgeBranch = z.string().startsWith('forge/').max(107).refine(
   (v) => !v.includes('..') && !v.endsWith('/') && !v.endsWith('.lock'),
   'Branch must not contain .., trailing /, or .lock suffix'

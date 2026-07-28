@@ -38,7 +38,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           }
         },
@@ -62,7 +62,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "payloads": {
@@ -244,7 +244,7 @@
             ]
           },
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "compact": {
@@ -368,7 +368,7 @@
             "maxLength": 500
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema3"
           }
         },
@@ -465,7 +465,7 @@
             "maximum": 110000
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema3"
           }
         },
@@ -498,7 +498,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -513,7 +513,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "compact": {
@@ -540,7 +540,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "preserve_artifacts": {
@@ -552,11 +552,11 @@
             "type": "boolean"
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema2"
           }
         },
@@ -580,7 +580,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -595,7 +595,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "operation_id": {
@@ -626,7 +626,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "name": {
@@ -655,7 +655,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "snapshot_id": {
@@ -664,7 +664,7 @@
             "maxLength": 200
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           }
         },
@@ -696,7 +696,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "path": {
@@ -742,7 +742,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "path": {
@@ -804,7 +804,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "files": {
@@ -899,7 +899,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "base": {
@@ -932,7 +932,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "goal": {
@@ -985,7 +985,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "command": {
@@ -1046,11 +1046,11 @@
             "type": "boolean"
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema2"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema3"
           },
           "approval_id": {
@@ -1087,7 +1087,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1102,7 +1102,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1130,7 +1130,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1168,7 +1168,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1202,7 +1202,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1214,11 +1214,11 @@
             "type": "boolean"
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema2"
           }
         },
@@ -1242,7 +1242,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1257,7 +1257,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "frozen_lockfile": {
@@ -1286,11 +1286,11 @@
             "maximum": 900000
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema2"
           }
         },
@@ -1316,7 +1316,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1331,7 +1331,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "branch": {
@@ -1366,7 +1366,7 @@
             "description": "Target task id (task_...)."
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema1"
           }
         },
@@ -1385,7 +1385,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1400,7 +1400,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "command": {
@@ -1427,7 +1427,7 @@
             "pattern": "^apr_.*"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema2"
           }
         },
@@ -1451,7 +1451,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1591,7 +1591,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1620,11 +1620,11 @@
             "maximum": 86400
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema2"
           }
         },
@@ -1650,7 +1650,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1665,7 +1665,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "preview_id": {
@@ -1845,7 +1845,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "artifact_id": {
@@ -1883,7 +1883,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "filename": {
@@ -2080,7 +2080,7 @@
             "description": "Secret id (sec_...)."
           },
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "attached": {
