@@ -69,9 +69,16 @@ import {
 import { createDeferredAction, listDeferredActionsForWorkspace } from './deferred-actions';
 import { autoPushForgeBranchesEnabled, isAgentForgeBranch } from './auto-push-policy';
 import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
-import { durabilityNextStep, describeDurability, type DurabilityVerdict } from './durability';
+import {
+  DURABILITY_STATES,
+  MUTATION_OUTCOMES,
+  durabilityNextStep,
+  describeDurability,
+  type DurabilityVerdict
+} from './durability';
 import { isTextualArtifact } from './artifact-content';
-import { normalizeRepoPath, toContainerPath } from './repo-paths';
+import { normalizeRepoPath, readableFile, toContainerPath } from './repo-paths';
+import { hoistUniformFields } from './uniform-fields';
 import { recordToolCall, recentToolCalls, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
 import { applyReplacements, ReplacementFailed } from './apply-replacements';
 import { stripAnsi, summariseCommandOutput } from './command-summary';
@@ -1010,18 +1017,28 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   private handlers(): ForgeToolHandlers {
     const env = this.env;
     return {
+      // Answers "what is true about this system", so every claim has to still
+      // be true. The previous literal described the pre-remote-first Forge: it
+      // told agents branch_push was approval_required and direct_merge was
+      // disabled, when there is no push step at all and forge_pr merges. An
+      // agent orienting itself here was sent looking for a stage that no longer
+      // exists. The vocabularies now come from durability.ts rather than being
+      // restated, so they cannot drift from the values actually returned.
       forge_capabilities: async () => ({
-        workspace: { explicit_workspace_id_required: true, filesystem_read_after_write: 'verified_by_forge_edit', durable_checkpoints: true },
+        model: 'remote_first',
+        editing: {
+          commits_straight_to_github: true,
+          push_step: 'none',
+          branch: 'cut_by_forge_workspace_create',
+          conflict: 're_read_then_edit_again',
+          container: 'cache_of_github_resyncs_itself'
+        },
         git: {
-          immutable_base_commit: true,
-          workspace_proof: true,
-          auto_push_forge_branches: 'reported_via_mutation_outcome',
-          mutation_outcomes: ['unchanged', 'workspace_changed', 'committed_local', 'pushed_remote', 'unknown'],
-          durability_states: ['local_only', 'remote_branch', 'pull_request', 'failed_recovered'],
-          branch_push: 'approval_required',
-          draft_pull_request: 'approval_required',
-          submit_requires_feature_branch_on_origin: true,
-          direct_merge: 'disabled'
+          mutation_outcomes: MUTATION_OUTCOMES,
+          durability_states: DURABILITY_STATES,
+          merge: 'forge_merge_opens_pr_for_human_approval',
+          pull_requests: 'forge_pr_can_list_status_merge_close',
+          branches: 'forge_branches_can_list_and_delete'
         },
         processes: { managed_status: true, persistent_logs: true, preview_requires_exact_process_id: true },
         deployment: {
@@ -1030,14 +1047,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           requires_attached_secret_keys: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID'],
           live_claim_requires: 'deploy_receipt.verified_url'
         },
-        recovery: {
-          checkpoint: true,
-          work_export: true,
-          destruction_with_uncommitted_or_unpushed_work: 'blocked'
-        },
         claims: {
-          never_invent_workers_dev_urls: true,
-          echo_only_tool_receipts: ['submission_receipt', 'deploy_receipt', 'remoteBranch']
+          never_invent_urls: true,
+          echo_only_tool_receipts: ['submission_receipt', 'deploy_receipt', 'commit_url']
         },
         observer: { read_only_tools: ['forge_observer_workspaces', 'forge_observer_workspace', 'forge_observer_activity'], live_portal: '/app/live' }
       }),
@@ -1162,8 +1174,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_repository_list: async () => {
         const identity = this.identity();
-        const repositories = await listAuthorizedRepositories(env, identity.tenantId);
-        if (repositories.length > 0) return { repositories };
+        const all = await listAuthorizedRepositories(env, identity.tenantId);
+        if (all.length > 0) {
+          // installation_id is GitHub's internal handle for the App install.
+          // No Forge tool accepts one — forge_workspace_create takes
+          // {provider, owner, name} — so it was 32 identical bytes per row
+          // that an agent could not act on. Dropped, not hoisted.
+          const withoutInstallId = all.map(({ installation_id: _installationId, ...rest }) => rest);
+          const { rows: repositories, shared } = hoistUniformFields(withoutInstallId, [
+            'last_verified_at',
+            'default_branch'
+          ]);
+          return { repositories, ...shared };
+        }
+        const repositories = all;
         // An empty list reads as "Forge is broken" unless it says otherwise. Tell
         // the caller which of the several very different reasons this is, and
         // exactly where the human has to click, so it can pass that on instead of
@@ -1850,7 +1874,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               entries: [{ path: normalizeRepoPath(paths[0] as string), sha: await gitBlobSha(single.content) }]
             });
           }
-          return single;
+          return readableFile(single);
         }
         const files = await Promise.all(
           paths.map(async (path) => {
@@ -1859,7 +1883,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               if (typeof one.content === 'string' && !one.truncated && readOne.startLine === undefined && readOne.endLine === undefined) {
                 await workspace.rememberReads({ entries: [{ path: normalizeRepoPath(path), sha: await gitBlobSha(one.content) }] });
               }
-              return { ...one, path };
+              return readableFile({ ...one, path });
             } catch (error) {
               // Surface a real ForgeErrorCode so an agent keying on codes never
               // meets an undocumented one.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeRepoPath, toContainerPath } from '../../apps/forge-edge-gateway/src/repo-paths';
+import { normalizeRepoPath, readableFile, toContainerPath } from '../../apps/forge-edge-gateway/src/repo-paths';
 
 describe('normalizeRepoPath', () => {
   it('accepts repo-relative and absolute workspace paths identically', () => {
@@ -44,5 +44,24 @@ describe('toContainerPath', () => {
     const relative = listed.slice(`${root}/`.length);
     expect(relative).toBe('tests/unit/a.test.ts');
     expect(toContainerPath(relative)).toBe(listed);
+  });
+});
+
+describe('readableFile', () => {
+  it('drops the hash no tool input has ever accepted', () => {
+    // It was described as being "for a conflict-safe later edit", but the read
+    // guard is server-side and no schema takes a hash — so it cost 66 bytes a
+    // file and pointed at a workflow the agent could not carry out.
+    const read = readableFile({
+      path: '/workspace/repo/src/a.ts',
+      content: 'x',
+      sha256: 'f'.repeat(64),
+      sizeBytes: 1
+    });
+    expect(read).toEqual({ path: 'src/a.ts', content: 'x', sizeBytes: 1 });
+  });
+
+  it('reports the path in the form forge_edit accepts', () => {
+    expect(readableFile({ path: '/workspace/repo/a.ts' }).path).toBe('a.ts');
   });
 });

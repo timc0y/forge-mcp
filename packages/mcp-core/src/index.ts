@@ -262,16 +262,18 @@ const diffCursor = z.string().max(64).optional().describe('Opaque cursor from a 
 const diffMaxBytes = z.number().int().min(2_000).max(400_000).default(64_000).describe('Approximate byte budget for this page of hunks. Lower it if results are still too large to read comfortably.');
 const diffPaths = z.array(z.string().min(1).max(400)).max(200).optional().describe('Restrict the diff to these exact paths (from `files`). Use this to read one large file\'s change directly instead of paging to it.');
 
+// No sha256 here on purpose. It was returned per file and described as being
+// "for a conflict-safe later edit", but no tool input has ever accepted a hash
+// — the read guard is server-side, recorded when the file is read. So it cost
+// 66 bytes a file and advertised a workflow an agent could not carry out.
 const filesReadOutput = {
   path: z.string().optional(),
   content: z.string().optional(),
-  sha256: z.string().optional().describe('Content hash of the file, for a conflict-safe later edit.'),
   sizeBytes: z.number().optional(),
   truncated: z.boolean().optional(),
   files: z.array(z.object({
     path: z.string(),
     content: z.string().optional(),
-    sha256: z.string().optional(),
     sizeBytes: z.number().optional(),
     truncated: z.boolean().optional(),
     error: z.string().optional(),
@@ -360,9 +362,12 @@ const repositoryListOutput = {
     name: z.string(),
     visibility: z.string().optional(),
     default_branch: z.string().optional(),
-    installation_id: z.unknown().optional(),
     last_verified_at: z.unknown().optional()
   })),
+  // Hoisted off the rows whenever every repository agrees, which is the normal
+  // case: one install, one sync. A row keeps its own value when it differs.
+  default_branch: z.string().optional(),
+  last_verified_at: z.unknown().optional(),
   reason: z.string().optional().describe('Present only when the list is empty: why there are none (never_installed, revoked, stale_owner, ok).'),
   next_step: z.string().optional().describe('Present only when the list is empty: what the account owner has to do, and where.')
 } satisfies ZodRawShape;

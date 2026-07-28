@@ -11,6 +11,22 @@ export const REPO_ROOT = '/workspace/repo';
  * the exact string one tool handed back was rejected by the next. Both forms
  * resolve here, and traversal is still refused by normalizeRepoPath.
  */
+/**
+ * Trim a read result down to what an agent can act on.
+ *
+ * `sha256` went out on every file described as being "for a conflict-safe later
+ * edit", but no tool input has ever accepted a hash — the read guard is
+ * server-side, recorded when the file is read. It cost 66 bytes a file and
+ * pointed at a workflow that does not exist. The path is reported repo-relative
+ * for the same reason forge_files_list does: that is the form forge_edit takes.
+ */
+export function readableFile(file: Record<string, unknown>): Record<string, unknown> {
+  const { sha256: _sha256, ...rest } = file;
+  return typeof rest.path === 'string'
+    ? { ...rest, path: normalizeRepoPath(rest.path) }
+    : rest;
+}
+
 export function toContainerPath(path: string): string {
   const trimmed = path.trim();
   if (trimmed === '/workspace' || trimmed.startsWith('/workspace/')) return trimmed;

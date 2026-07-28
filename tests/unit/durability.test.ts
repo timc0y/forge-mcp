@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { ForgeApplicationService } from '@forge/application';
 import type { ExecResult, SandboxHandle, SandboxProvider } from '@forge/sandbox-core';
-import { describeDurability, durabilityNextStep } from '../../apps/forge-edge-gateway/src/durability';
+import {
+  DURABILITY_STATES,
+  MUTATION_OUTCOMES,
+  describeDurability,
+  durabilityNextStep
+} from '../../apps/forge-edge-gateway/src/durability';
 import { assertReceivePackScope } from '../../packages/git-core/src/index';
 
 describe('describeDurability', () => {
@@ -163,5 +168,36 @@ describe('receive-pack scope diagnostics', () => {
     const wrongCommit = { ...ok, newCommit: 'f'.repeat(40) };
     expect(() => assertReceivePackScope([wrongCommit], 'forge/x', commit))
       .toThrow(/f{40}.*only authorises commit e{40}/u);
+  });
+});
+
+describe('advertised vocabularies', () => {
+  it('lists exactly the states describeDurability can return', () => {
+    // forge_capabilities used to restate these as a hand-written literal and
+    // drifted: it told agents branch_push was approval_required and
+    // direct_merge disabled, long after forge_edit committed straight to
+    // GitHub and forge_pr could merge. An agent orienting itself there was
+    // sent looking for a stage that no longer existed. Reading them from here
+    // is what stops that happening again.
+    expect([...DURABILITY_STATES].sort()).toEqual(
+      ['failed_recovered', 'local_only', 'pull_request', 'remote_branch']
+    );
+    expect([...MUTATION_OUTCOMES].sort()).toEqual(
+      ['committed_local', 'pushed_remote', 'unchanged', 'unknown', 'workspace_changed']
+    );
+
+    // Every state the builder can actually produce must be advertised.
+    const produced = new Set([
+      describeDurability({ branch: 'forge/a', commit: 'a'.repeat(40), hasUnpushedWork: true }).durability,
+      describeDurability({ branch: 'forge/a', commit: 'a'.repeat(40), hasUnpushedWork: false, pushVerified: true }).durability,
+      describeDurability({
+        branch: 'forge/a',
+        commit: 'a'.repeat(40),
+        hasUnpushedWork: false,
+        pushVerified: true,
+        pullRequestUrl: 'https://github.com/o/r/pull/1'
+      }).durability
+    ]);
+    for (const state of produced) expect(DURABILITY_STATES).toContain(state);
   });
 });

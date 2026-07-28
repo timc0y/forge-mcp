@@ -33,6 +33,26 @@ export type MutationOutcome =
 /** Where the work now lives. */
 export type DurabilityState = 'local_only' | 'remote_branch' | 'pull_request' | 'failed_recovered';
 
+/**
+ * The same two vocabularies as values, so anything that advertises them to an
+ * agent reads them from here. forge_capabilities used to restate them as a
+ * hand-written literal and drifted away from the system it described.
+ */
+export const MUTATION_OUTCOMES: readonly MutationOutcome[] = [
+  'unchanged',
+  'workspace_changed',
+  'committed_local',
+  'pushed_remote',
+  'unknown'
+];
+
+export const DURABILITY_STATES: readonly DurabilityState[] = [
+  'local_only',
+  'remote_branch',
+  'pull_request',
+  'failed_recovered'
+];
+
 export interface DurabilityVerdict {
   mutationOutcome: MutationOutcome;
   durability: DurabilityState;
