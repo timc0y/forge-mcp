@@ -1,1 +1,0 @@
-{"name":"@forge/app-actions","version":"0.1.0","type":"module","exports":"./src/index.ts","scripts":{"typecheck":"tsc -p tsconfig.json --noEmit"}}

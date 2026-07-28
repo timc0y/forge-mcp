@@ -11,9 +11,6 @@ importers:
       '@cloudflare/workers-types':
         specifier: 5.20260712.1
         version: 5.20260712.1
-      '@forge/app-actions':
-        specifier: workspace:*
-        version: link:packages/app-actions
       '@forge/application':
         specifier: workspace:*
         version: link:packages/application
@@ -35,15 +32,9 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:packages/core
-      '@forge/cost':
-        specifier: workspace:*
-        version: link:packages/cost
       '@forge/credentials':
         specifier: workspace:*
         version: link:packages/credentials
-      '@forge/evidence':
-        specifier: workspace:*
-        version: link:packages/evidence
       '@forge/fixture-catalog':
         specifier: workspace:*
         version: link:apps/fixture-catalog
@@ -56,9 +47,6 @@ importers:
       '@forge/mcp-adapter-v1':
         specifier: workspace:*
         version: link:packages/mcp-adapter-v1
-      '@forge/mcp-adapter-v2-beta':
-        specifier: workspace:*
-        version: link:packages/mcp-adapter-v2-beta
       '@forge/mcp-core':
         specifier: workspace:*
         version: link:packages/mcp-core
@@ -68,15 +56,9 @@ importers:
       '@forge/project-detection':
         specifier: workspace:*
         version: link:packages/project-detection
-      '@forge/repo-index':
-        specifier: workspace:*
-        version: link:packages/repo-index
       '@forge/sandbox-core':
         specifier: workspace:*
         version: link:packages/sandbox-core
-      '@forge/sandbox-local-docker':
-        specifier: workspace:*
-        version: link:packages/sandbox-local-docker
       '@forge/task-core':
         specifier: workspace:*
         version: link:packages/task-core
@@ -172,9 +154,6 @@ importers:
       '@forge/sandbox-core':
         specifier: workspace:*
         version: link:../../packages/sandbox-core
-      '@forge/sandbox-selfhosted':
-        specifier: workspace:*
-        version: link:../../packages/sandbox-selfhosted
       '@forge/task-core':
         specifier: workspace:*
         version: link:../../packages/task-core
@@ -197,8 +176,6 @@ importers:
       wrangler:
         specifier: 4.110.0
         version: 4.110.0(@cloudflare/workers-types@5.20260712.1)
-
-  packages/app-actions: {}
 
   packages/application:
     dependencies:
@@ -280,8 +257,6 @@ importers:
 
   packages/core: {}
 
-  packages/cost: {}
-
   packages/credentials:
     dependencies:
       '@forge/core':
@@ -293,8 +268,6 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:../core
-
-  packages/evidence: {}
 
   packages/git-core:
     dependencies:
@@ -334,12 +307,6 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
-  packages/mcp-adapter-v2-beta:
-    dependencies:
-      '@forge/mcp-core':
-        specifier: workspace:*
-        version: link:../mcp-core
-
   packages/mcp-core:
     dependencies:
       '@forge/core':
@@ -373,12 +340,6 @@ importers:
         specifier: workspace:*
         version: link:../sandbox-core
 
-  packages/repo-index:
-    dependencies:
-      '@forge/sandbox-core':
-        specifier: workspace:*
-        version: link:../sandbox-core
-
   packages/sandbox-cloudflare:
     dependencies:
       '@cloudflare/sandbox':
@@ -396,24 +357,6 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:../core
-
-  packages/sandbox-local-docker:
-    dependencies:
-      '@forge/core':
-        specifier: workspace:*
-        version: link:../core
-      '@forge/sandbox-core':
-        specifier: workspace:*
-        version: link:../sandbox-core
-
-  packages/sandbox-selfhosted:
-    dependencies:
-      '@forge/core':
-        specifier: workspace:*
-        version: link:../core
-      '@forge/sandbox-core':
-        specifier: workspace:*
-        version: link:../sandbox-core
 
   packages/task-core:
     dependencies:

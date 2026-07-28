@@ -16,7 +16,7 @@ function serviceWithFailedWorkspace(failure?: {
   retryable: boolean;
 }) {
   const service = new ForgeApplicationService({
-    kind: 'local-docker',
+    kind: 'cloudflare',
     version: 'test',
     get: async () => ({ exec: async () => ({ exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] }) }) as unknown as SandboxHandle
   } as unknown as SandboxProvider);

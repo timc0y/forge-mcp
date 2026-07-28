@@ -569,40 +569,8 @@ function withTimeout<T>(
 }
 
 
-// Routes sandbox work across backends (e.g. a self-hosted box vs Cloudflare).
-// `selectForCreate` decides which backend a new workspace lands on (with its own
-// health-check + fallback); `forKind` resolves the backend a workspace is
-// already bound to, read from its persisted provider.kind.
-export interface SandboxRouter {
-  readonly default: SandboxProvider;
-  selectForCreate(): Promise<SandboxProvider>;
-  forKind(kind: SandboxProvider['kind']): SandboxProvider;
-}
-
-// Wrap a single provider so the app can always talk to a router internally,
-// keeping the common (Cloudflare-only) case and existing tests unchanged.
-function singleProviderRouter(provider: SandboxProvider): SandboxRouter {
-  return {
-    default: provider,
-    async selectForCreate() {
-      return provider;
-    },
-    forKind() {
-      return provider;
-    }
-  };
-}
-
 export class ForgeApplicationService {
-  private readonly router: SandboxRouter;
-
-  constructor(sandbox: SandboxProvider | SandboxRouter) {
-    this.router = 'selectForCreate' in sandbox ? sandbox : singleProviderRouter(sandbox);
-  }
-
-  private providerFor(record: WorkspaceRuntimeRecord): SandboxProvider {
-    return this.router.forKind(record.workspace.provider.kind);
-  }
+  constructor(private readonly provider: SandboxProvider) {}
 
   private restoreInput(record: WorkspaceRuntimeRecord): CreateSandboxInput {
     return {
@@ -751,7 +719,7 @@ export class ForgeApplicationService {
     code: 'FORGE_SNAPSHOT_INCOMPATIBLE' | 'FORGE_WORKSPACE_GIT_STATE_DIVERGED',
     message: string
   ): Promise<never> {
-    await this.providerFor(record).destroy(record.providerId).catch(() => undefined);
+    await this.provider.destroy(record.providerId).catch(() => undefined);
     record.workspace.state = 'failed';
     record.workspace.failure = { stage: 'recovery', code, message, retryable: false };
     record.workspace.revision = nextRevision(record.workspace.revision);
@@ -801,7 +769,7 @@ export class ForgeApplicationService {
     let restored: SandboxHandle;
     let restoredManifest: NonNullable<WorkspaceCheckpoint['manifest']>;
     try {
-      restored = await this.providerFor(record).restore(snapshot, this.restoreInput(record));
+      restored = await this.provider.restore(snapshot, this.restoreInput(record));
       restoredManifest = await this.workspaceManifest(restored);
     } catch (error) {
       return this.quarantineRecovery(
@@ -879,10 +847,10 @@ export class ForgeApplicationService {
         persistenceMode: input.persistence,
         runtimeProfile: input.runtimeProfile,
         provider: {
-          // Provisional; provisionWorkspace() selects the real backend (with a
-          // health-check) and rewrites this before the sandbox is created.
-          kind: this.router.default.kind,
-          version: this.router.default.version
+          // Provisional; provisionWorkspace() rewrites this before the sandbox
+          // is created.
+          kind: this.provider.kind,
+          version: this.provider.version
         },
         revision: 1,
         createdBy: input.actor,
@@ -1058,7 +1026,7 @@ export class ForgeApplicationService {
     const hadUnpushedWork = record.workspace.hasUnpushedWork === true;
     const lostBranch = record.workspace.currentBranch;
     const recoverRef = lostBranch ?? record.workspace.requestedRef;
-    const handle = await this.providerFor(record).get(record.providerId);
+    const handle = await this.provider.get(record.providerId);
     await handle.exec({
       command: 'rm -rf /workspace/repo',
       cwd: '/workspace',
@@ -1127,10 +1095,9 @@ export class ForgeApplicationService {
     await onStateChange(record);
 
     try {
-      // Pick the backend now (self-hosted if healthy, else Cloudflare) and
-      // record it so every later operation on this workspace routes to the same
-      // place. Transparent to the caller — Forge chooses.
-      const provider = await this.router.selectForCreate();
+      // Record the backend now so every later operation on this workspace
+      // routes to the same place.
+      const provider = this.provider;
       record.workspace.provider = { kind: provider.kind, version: provider.version };
       // container_create is deterministically keyed on record.providerId, so a
       // create that times out (the underlying promise keeps running, since the
@@ -1361,7 +1328,7 @@ export class ForgeApplicationService {
       await onStateChange(record);
       return record;
     } catch (error) {
-      await this.providerFor(record).destroy(record.providerId).catch(() => undefined);
+      await this.provider.destroy(record.providerId).catch(() => undefined);
       const forgeError = error instanceof ForgeError
         ? error
         : new ForgeError({
@@ -1470,7 +1437,7 @@ export class ForgeApplicationService {
         }
       });
     }
-    const handle = await this.providerFor(record).get(record.providerId);
+    const handle = await this.provider.get(record.providerId);
     // Runtime records created before manifest-backed checkpoints (and focused
     // unit/provider adapters) still use the checkout-health path below. New
     // workspaces always have an active checkpoint before becoming ready.
@@ -1540,7 +1507,7 @@ export class ForgeApplicationService {
     completed: number;
   }> {
     const finalize = options.finalize !== false;
-    const handle = await this.providerFor(record).get(record.providerId);
+    const handle = await this.provider.get(record.providerId);
     let running = 0;
     let completed = 0;
     for (const [id, entry] of Object.entries(record.processes)) {
@@ -1596,7 +1563,7 @@ export class ForgeApplicationService {
   }
 
   private async setWorkspaceKeepAlive(record: WorkspaceRuntimeRecord, keepAlive: boolean): Promise<void> {
-    const provider = this.providerFor(record);
+    const provider = this.provider;
     if (!provider.setKeepAlive) return;
     await provider.setKeepAlive(record.providerId, keepAlive).catch(() => undefined);
   }
@@ -1615,7 +1582,7 @@ export class ForgeApplicationService {
       record.workspace.checkout = { healthy: true, checkedAt };
       return;
     }
-    const handle = await this.providerFor(record).get(record.providerId);
+    const handle = await this.provider.get(record.providerId);
     const probe = await handle.exec({
       command: 'test -d /workspace/repo/.git && echo forge_checkout_present || echo forge_checkout_missing',
       cwd: '/workspace',
@@ -1923,7 +1890,7 @@ export class ForgeApplicationService {
   async checkpoint(record: WorkspaceRuntimeRecord, name?: string, existingHandle?: SandboxHandle) {
     const handle = existingHandle ?? await this.handle(record);
     const manifest = await this.workspaceManifest(handle);
-    const snapshot = await this.providerFor(record).snapshot(record.providerId, {
+    const snapshot = await this.provider.snapshot(record.providerId, {
       name: name ?? `forge-${record.workspace.id}-${record.workspace.revision}`,
       ttlSeconds: 7 * 24 * 60 * 60,
       excludeGitignored: false
@@ -1974,8 +1941,8 @@ export class ForgeApplicationService {
     record.workspace.revision = nextRevision(record.workspace.revision, expectedRevision);
     record.workspace.updatedAt = new Date().toISOString();
     try {
-      await this.providerFor(record).destroy(record.providerId);
-      const restored = await this.providerFor(record).restore(snapshot, restoreInput);
+      await this.provider.destroy(record.providerId);
+      const restored = await this.provider.restore(snapshot, restoreInput);
       const restoredManifest = await this.workspaceManifest(restored);
       if (
         restoredManifest.commit !== expectedManifest.commit ||
@@ -1999,7 +1966,7 @@ export class ForgeApplicationService {
       const rollbackSnapshot = record.snapshots[rollback.snapshotId]!;
       const rollbackExpectedManifest = rollbackSnapshot.manifest;
       if (!rollbackExpectedManifest) throw error;
-      const recovered = await this.providerFor(record).restore(rollbackSnapshot, restoreInput)
+      const recovered = await this.provider.restore(rollbackSnapshot, restoreInput)
         .then(async (rollbackHandle) => {
           const rollbackManifest = await this.workspaceManifest(rollbackHandle);
           if (
@@ -2637,7 +2604,7 @@ export class ForgeApplicationService {
   }
 
   async reconcileGitState(record: WorkspaceRuntimeRecord): Promise<boolean> {
-    const handle = await this.providerFor(record).get(record.providerId);
+    const handle = await this.provider.get(record.providerId);
     let inspection = await this.inspectWorkspace(handle, record);
     if (inspection.state === 'unavailable') {
       inspection = await this.recoverUnavailableInspection(record, handle, inspection);
@@ -2925,7 +2892,7 @@ export class ForgeApplicationService {
     workspaceRevision: number;
     allowedNextActions: string[];
   }> {
-    const handle = await this.providerFor(record).get(record.providerId);
+    const handle = await this.provider.get(record.providerId);
     const now = new Date().toISOString();
 
     // 1. Stop or adopt unknown workspace processes.
@@ -4565,7 +4532,7 @@ export class ForgeApplicationService {
         retryable: false
       });
     }
-    const handle = await this.providerFor(record).get(record.providerId);
+    const handle = await this.provider.get(record.providerId);
     const git = await handle.exec({
       command: 'git status --porcelain=v2 --branch && git rev-parse HEAD && git branch --show-current',
       cwd: '/workspace/repo', timeoutMs: 30_000, outputLimitBytes: 200_000,
@@ -4590,7 +4557,7 @@ export class ForgeApplicationService {
     for (const processId of Object.keys(record.processes) as ProcessId[]) {
       await handle.stopProcess(processId).catch(() => undefined);
     }
-    await this.providerFor(record).destroy(record.providerId);
+    await this.provider.destroy(record.providerId);
     record.workspace.state = 'destroyed';
     record.workspace.revision = nextRevision(record.workspace.revision);
     record.workspace.updatedAt = new Date().toISOString();

@@ -234,33 +234,13 @@ async function sandboxPreviewFetch(
   path: string,
   search: string
 ): Promise<{ response: Response; target: URL }> {
-  // Self-hosted workspaces serve their preview from the user's own machine, so
-  // proxy through the agent's preview route (over the tunnel) instead of the
-  // Cloudflare sandbox binding. Gated on the persisted provider kind, so the
-  // Cloudflare path below is untouched for cloud workspaces.
-  if (detail.workspace.provider.kind === 'self-hosted') {
-    if (!env.FORGE_SELFHOST_URL || !env.FORGE_SELFHOST_TOKEN) {
-      throw new ForgeError({
-        code: 'FORGE_PREVIEW_UNAVAILABLE',
-        message: 'Self-hosted preview backend is not configured.',
-        retryable: false
-      });
-    }
-    const base = env.FORGE_SELFHOST_URL.replace(/\/+$/, '');
-    const target = new URL(
-      `${base}/preview/${encodeURIComponent(detail.providerId)}/${detail.preview.port}${path}`
-    );
-    target.search = search;
-    const headers = cleanPreviewHeaders(request);
-    headers.set('authorization', `Bearer ${env.FORGE_SELFHOST_TOKEN}`);
-    const response = await fetch(target, {
-      method: request.method,
-      headers,
-      body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
-      redirect: 'manual'
-    });
-    return { response, target };
-  }
+  // The self-hosted sandbox branch that used to live here is gone with its
+  // provider. Nothing can produce a workspace of that kind any more and no
+  // stored workspace has one, so the branch was unreachable — and an
+  // unreachable branch describing a backend that no longer exists is exactly
+  // what sent agents looking for stages Forge had already removed.
+  // FORGE_SELFHOST_* survives because the self-hosted *browser* still uses it
+  // (see browser-router.ts); that is a different subsystem.
   const target = new URL(path, 'http://forge-container.internal');
   target.search = search;
   const upstreamRequest = new Request(target, {

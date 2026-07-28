@@ -552,18 +552,6 @@ export class CloudflareSandboxProvider implements SandboxProvider {
     }
   }
 
-  async suspend(providerId: string): Promise<void> {
-    try {
-      await this.sandbox(providerId).killAllProcesses();
-    } catch (error) {
-      throw mapCloudflareSandboxError(error, 'suspend');
-    }
-  }
-
-  async resume(providerId: string): Promise<SandboxHandle> {
-    return this.get(providerId);
-  }
-
   async destroy(providerId: string): Promise<void> {
     try {
       await this.sandbox(providerId).destroy();

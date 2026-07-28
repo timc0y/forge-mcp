@@ -7,10 +7,6 @@ import {
   summarizeTask
 } from '@forge/task-core';
 import { analyzeDiff, selectContext, suggestChecks } from '@forge/insight';
-import { Cart, ACTION_MANIFEST, runAction } from '@forge/fixture-catalog';
-import { runJourney, type ActionTransport } from '@forge/app-actions';
-import { createEvidence } from '@forge/evidence';
-import { budgetPosition, costMetadata, emptyUsage, gateComputeAction } from '@forge/cost';
 import { closeBrowserSession, openBrowserSession, recordCapture } from '@forge/browser-core';
 
 /**
@@ -22,21 +18,8 @@ import { closeBrowserSession, openBrowserSession, recordCapture } from '@forge/b
 
 const AT = '2026-07-16T00:00:00.000Z';
 
-/** In-process transport over the fixture's structured actions. */
-function fixtureTransport(): ActionTransport {
-  const cart = new Cart();
-  return {
-    async manifest() {
-      return ACTION_MANIFEST;
-    },
-    async call(name, input) {
-      return runAction(cart, name, input);
-    }
-  };
-}
-
 describe('reference acceptance flow (repository-local)', () => {
-  it('runs task → context → patch metadata → checks → journey → evidence → summary → cost gate', async () => {
+  it('runs task → context → patch metadata → checks → browser capture → summary', async () => {
     // 1-3. Start a durable task; one workspace would attach here.
     const store = new InMemoryTaskStore();
     let task = createTask(ids.task(), AT, {
@@ -86,14 +69,6 @@ describe('reference acceptance flow (repository-local)', () => {
       latestDiffHash: compact.hash
     }, AT);
 
-    // 8-10. Structured functional journey against the fixture preview.
-    const journey = await runJourney(fixtureTransport(), [
-      { action: 'reset_cart' },
-      { action: 'add_to_cart', input: { productId: 'sku-mug', quantity: 2 } },
-      { action: 'get_cart', assert: { path: 'totals.itemCount', equals: 2 } }
-    ]);
-    expect(journey.state).toBe('passed');
-
     // 11-12. Browser session capturing phone and desktop evidence.
     let bs = openBrowserSession({ id: 'bs_1', workspaceId: task.workspaceId!, previewId: 'prv_1', at: AT });
     bs = recordCapture(bs, 'art_phone', AT);
@@ -101,25 +76,9 @@ describe('reference acceptance flow (repository-local)', () => {
     bs = closeBrowserSession(bs, '2026-07-16T00:00:03.000Z');
     expect(bs.captureIds).toHaveLength(2);
 
-    const functionalEvidence = createEvidence({
-      id: ids.artifact(),
-      kind: 'structured_app_journey',
-      state: journey.state,
-      summary: { steps: journey.steps.length },
-      capturedAt: AT
-    });
-    const screenshotEvidence = createEvidence({
-      id: ids.artifact(),
-      kind: 'screenshot',
-      state: 'captured',
-      summary: { viewport: 'phone' },
-      capturedAt: AT
-    });
-    // Functional and browser evidence remain separate concepts.
-    expect(functionalEvidence.kind).not.toBe(screenshotEvidence.kind);
     task = applyTaskPatch(task, {
       state: 'reviewing',
-      addEvidenceIds: [functionalEvidence.id, screenshotEvidence.id]
+      addEvidenceIds: [ids.artifact(), ids.artifact()]
     }, AT);
     await store.put(task);
 
@@ -128,18 +87,6 @@ describe('reference acceptance flow (repository-local)', () => {
     expect(summary.filesChanged).toContain('apps/fixture-catalog/src/catalog.ts');
     expect(summary.evidence).toHaveLength(2);
     expect(summary.checks[0].status).toBe('passed');
-
-    // 18-19 (cost). A fresh workspace would be gated at the hard threshold; here we are well under.
-    const position = budgetPosition(emptyUsage());
-    expect(gateComputeAction(position, { createsCloudCompute: true }).allowed).toBe(true);
-    const meta = costMetadata({
-      backend: 'repository-local',
-      containerUsed: false,
-      browserUsed: true,
-      costClass: 'cheap',
-      position
-    });
-    expect(meta.budget.level).toBe('ok');
 
     // 20. Task and evidence records remain retrievable after completion.
     task = applyTaskPatch(task, { state: 'complete' }, AT);

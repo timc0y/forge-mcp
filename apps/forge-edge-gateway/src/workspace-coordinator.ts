@@ -11,11 +11,11 @@ import { ForgeError, type OperationId, type ProcessId } from '@forge/core';
 import { D1AuditStore } from '@forge/audit';
 import { D1MetadataStore } from '@forge/metadata-d1';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
+import { CloudflareSandboxProvider } from '@forge/sandbox-cloudflare';
 import { issueCapability } from '@forge/capabilities';
 import { branchPolicyFor, classifyCommand, isAgentForgeBranch, nonInteractiveShellEnv } from '@forge/policy';
 import { filterUnifiedDiff } from '@forge/mcp-core';
 import type { Env } from './env';
-import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
 import { autoPushForgeBranchesEnabled } from './auto-push-policy';
 import { describeDurability, type DurabilityVerdict } from './durability';
@@ -49,7 +49,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.app = new ForgeApplicationService(createSandboxRouter(env));
+    this.app = new ForgeApplicationService(new CloudflareSandboxProvider(env));
     this.metadata = new D1MetadataStore(env.METADATA);
   }
 

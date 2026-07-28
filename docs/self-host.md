@@ -1,5 +1,10 @@
 # Run Forge on your own Mac mini
 
+> **Note:** Workspace (sandbox) self-hosting is not currently supported — the
+> self-hosted sandbox provider described below has been removed and Cloudflare
+> is now the only sandbox backend. This document is kept for reference only
+> and does not describe current workspace routing behavior.
+
 Forge can run workspaces (and browser evidence) on a machine you own — a Mac
 mini is ideal because it's cheap, quiet, and can stay on 24/7. Forge **health-checks
 your machine and only routes work to it when it's up and passing its self-test**;

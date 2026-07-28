@@ -26,7 +26,6 @@
     "@forge/metadata-d1": "workspace:*",
     "@forge/policy": "workspace:*",
     "@forge/sandbox-cloudflare": "workspace:*",
-    "@forge/sandbox-selfhosted": "workspace:*",
     "@forge/browser-selfhosted": "workspace:*",
     "@forge/artifacts-core": "workspace:*",
     "@forge/sandbox-core": "workspace:*",

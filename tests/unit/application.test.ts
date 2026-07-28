@@ -9,7 +9,7 @@ import type {
 } from '@forge/sandbox-core';
 
 class FakeProvider implements SandboxProvider {
-  readonly kind = 'local-docker' as const;
+  readonly kind = 'cloudflare' as const;
   readonly version = 'test';
   readonly calls: string[] = [];
   readonly files = new Map<string, string>();
@@ -247,8 +247,6 @@ class FakeProvider implements SandboxProvider {
     this.keepAlive = keepAlive;
     this.calls.push(`keepAlive:${keepAlive}`);
   }
-  async suspend() {}
-  async resume() { return this.handle; }
   async destroy() { this.calls.push('destroy'); }
   async snapshot() { return { id: ids.snapshot(), providerSnapshotId: 'snapshot', providerVersion: this.version, createdAt: new Date().toISOString() }; }
   async restore(snapshot: Parameters<SandboxProvider['restore']>[0]) {

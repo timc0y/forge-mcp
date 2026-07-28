@@ -15,7 +15,7 @@ function serviceRecordingExecs(commands: ExecInput[], stdout: string): ForgeAppl
     }
   } as unknown as SandboxHandle;
   const provider = {
-    kind: 'local-docker',
+    kind: 'cloudflare',
     version: 'test',
     get: async () => handle
   } as unknown as SandboxProvider;

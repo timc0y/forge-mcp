@@ -78,7 +78,7 @@ function serviceReturning(result: Partial<ExecResult>): ForgeApplicationService 
     })
   } as unknown as SandboxHandle;
   return new ForgeApplicationService({
-    kind: 'local-docker',
+    kind: 'cloudflare',
     version: 'test',
     get: async () => handle
   } as unknown as SandboxProvider);

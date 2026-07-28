@@ -14,7 +14,7 @@ function serviceWithProbe(stdout: string): ForgeApplicationService {
     })
   } as unknown as SandboxHandle;
   const provider = {
-    kind: 'local-docker',
+    kind: 'cloudflare',
     version: 'test',
     get: async () => handle
   } as unknown as SandboxProvider;
