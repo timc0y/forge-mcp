@@ -3531,6 +3531,42 @@ export class ForgeApplicationService {
   }
 
   /**
+   * Everything the container has written that GitHub does not know about.
+   *
+   * Remote-first editing makes GitHub the only durable place, so anything a
+   * shell command changed — a formatter, a codemod, a generator — is local and
+   * would be lost at the next sync. Collecting it lets Forge commit it for
+   * real instead of asking the agent to notice and re-do it.
+   */
+  async collectWorktreeChanges(
+    record: WorkspaceRuntimeRecord,
+    limit = 50
+  ): Promise<{ changes: Array<{ path: string; content: string | null }>; truncated: boolean }> {
+    const handle = await this.handle(record);
+    const status = await handle.exec({
+      command: 'git status --porcelain', cwd: '/workspace/repo', timeoutMs: 30_000,
+      outputLimitBytes: 200_000, sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (status.exitCode !== 0) return { changes: [], truncated: false };
+    const entries = status.stdout.split('\n').map((line) => line.trimEnd()).filter(Boolean);
+    const changes: Array<{ path: string; content: string | null }> = [];
+    for (const entry of entries.slice(0, limit)) {
+      const code = entry.slice(0, 2);
+      // Rename lines read "R  old -> new"; only the destination matters here.
+      const raw = entry.slice(3).split(' -> ').pop() ?? '';
+      const path = raw.replace(/^"|"$/gu, '');
+      if (!path || path.includes('..')) continue;
+      if (code.includes('D')) {
+        changes.push({ path, content: null });
+        continue;
+      }
+      const file = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 500_000 }).catch(() => undefined);
+      if (file && typeof file.content === 'string') changes.push({ path, content: file.content });
+    }
+    return { changes, truncated: entries.length > limit };
+  }
+
+  /**
    * Bring the workspace checkout in line with the remote branch head.
    *
    * Remote-first editing makes the container a cache: the commit already
@@ -3540,10 +3576,22 @@ export class ForgeApplicationService {
   async fastForwardToRemote(
     record: WorkspaceRuntimeRecord,
     source: RepositoryCloneSource
-  ): Promise<{ synced: boolean; commit?: string; branch?: string }> {
+  ): Promise<{ synced: boolean; commit?: string; branch?: string; blockedByLocalChanges?: boolean }> {
     const branch = record.workspace.currentBranch;
     if (!branch || !isAgentForgeBranch(branch)) return { synced: false };
     const handle = await this.handle(record);
+    // Never reset over uncommitted work. This sync is a hard reset onto the
+    // remote head, so a dirty tree here means something wrote to the container
+    // outside forge_edit — a shell command, a formatter, a codemod — and
+    // resetting would destroy it silently. Refuse instead; the caller ingests
+    // those changes as a real commit first.
+    const dirty = await handle.exec({
+      command: 'git status --porcelain', cwd: '/workspace/repo', timeoutMs: 30_000,
+      outputLimitBytes: 100_000, sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (dirty.exitCode !== 0 || dirty.stdout.trim()) {
+      return { synced: false, branch, blockedByLocalChanges: true };
+    }
     const configPath = `/workspace/tmp/gitconfig-sync-${record.workspace.id}`;
     await handle.writeFile({ path: configPath, content: `[http]\n\textraHeader = ${source.authorizationHeader}\n` });
     try {

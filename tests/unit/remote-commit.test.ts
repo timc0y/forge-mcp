@@ -15,6 +15,7 @@ function fakeGitHub(options: {
   /** Called before each ref update; return a new head to simulate a race. */
   onRefUpdate?: (attempt: number) => string | undefined;
   compareFiles?: string[];
+  blobs?: Record<string, string>;
 } ) {
   let head = options.head;
   const treeOf = { ...options.treeOf };
@@ -28,6 +29,9 @@ function fakeGitHub(options: {
 
     if (method === 'GET' && path.includes('/git/ref/heads/')) {
       return { status: 200, json: { object: { sha: head } } };
+    }
+    if (method === 'GET' && path.includes('/git/trees/') && path.includes('recursive=1')) {
+      return { status: 200, json: { tree: Object.entries(options.blobs ?? {}).map(([p, sha]) => ({ path: p, sha, type: 'blob' })) } };
     }
     if (method === 'GET' && path.includes('/git/commits/')) {
       const sha = path.split('/').pop()!;
@@ -179,5 +183,44 @@ describe('commitFilesToBranch', () => {
     });
 
     expect(treeBody?.tree[0]).toMatchObject({ path: 'gone.ts', sha: null });
+  });
+});
+
+describe('stale-read protection', () => {
+  it('refuses to overwrite a file that changed since the agent read it', async () => {
+    // The silent-revert case: the agent read at one version, the branch moved
+    // before the edit even started, and a whole-file write would quietly undo
+    // the other change. The retry-time check cannot see this — only what the
+    // reader actually saw can.
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, blobs: { 'src/a.ts': 'blob-current' } });
+
+    await expect(
+      commitFilesToBranch(gh.request, {
+        owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file],
+        expectedBlobs: { 'src/a.ts': 'blob-the-agent-read' }
+      })
+    ).rejects.toThrow(/changed on the branch since they were last read/u);
+  });
+
+  it('allows the write when what the agent read is still current', async () => {
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, blobs: { 'src/a.ts': 'blob-same' } });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file],
+      expectedBlobs: { 'src/a.ts': 'blob-same' }
+    });
+
+    expect(result.commitSha).toBeDefined();
+  });
+
+  it('allows a new file, which the agent could not have read', async () => {
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, blobs: {} });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'new', files: [file],
+      expectedBlobs: { 'src/a.ts': 'blob-stale-but-path-is-gone' }
+    });
+
+    expect(result.commitSha).toBeDefined();
   });
 });

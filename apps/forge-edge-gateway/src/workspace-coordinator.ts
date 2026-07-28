@@ -1426,6 +1426,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.readWithRecovery((record) => this.app.checkGet(record, input.processId));
   }
 
+  /** Whatever the container wrote that GitHub does not know about yet. */
+  async worktreeChanges(input: { limit?: number } = {}) {
+    return this.readRepoWithRecovery((record) => this.app.collectWorktreeChanges(record, input.limit ?? 50));
+  }
+
   /**
    * Fast-forward the container checkout to whatever origin now holds.
    *

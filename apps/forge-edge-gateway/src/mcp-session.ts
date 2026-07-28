@@ -71,6 +71,7 @@ import { autoPushForgeBranchesEnabled, isAgentForgeBranch } from './auto-push-po
 import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
 import { durabilityNextStep, describeDurability, type DurabilityVerdict } from './durability';
 import { isTextualArtifact } from './artifact-content';
+import { normalizeRepoPath } from './repo-paths';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
 
@@ -575,12 +576,85 @@ function idempotency(value: unknown): string {
   return value === undefined || value === null || value === '' ? crypto.randomUUID() : String(value);
 }
 
+/** Git's own object id for a blob: sha1("blob <bytes>\0" + content). */
+async function gitBlobSha(content: string): Promise<string> {
+  const body = new TextEncoder().encode(content);
+  const header = new TextEncoder().encode(`blob ${body.length}\0`);
+  const buffer = new Uint8Array(header.length + body.length);
+  buffer.set(header);
+  buffer.set(body, header.length);
+  const digest = await crypto.subtle.digest('SHA-1', buffer);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
+  /**
+   * Git blob SHA of every file this session has read, keyed `workspace:path`.
+   *
+   * A whole-file write is a blind overwrite. Rather than ask the agent to
+   * carry a revision token — which is one more thing to get wrong — Forge
+   * remembers what it handed over, and refuses an edit that would overwrite a
+   * version the agent never saw. Absent entries mean a new file, which needs
+   * no check.
+   */
+  private readonly seenBlobs = new Map<string, string>();
+
+  private rememberRead(workspaceId: string, path: string, content: string): void {
+    void gitBlobSha(content).then((sha) => this.seenBlobs.set(`${workspaceId}:${normalizeRepoPath(path)}`, sha));
+  }
+
+  /**
+   * Commit anything the container wrote outside forge_edit.
+   *
+   * A shell command that edits files — a formatter, a codemod, a generator —
+   * would otherwise leave work in the only place that is not durable, and the
+   * next sync would reset over it. Committing it makes the container's output
+   * as safe as an edit, with no extra step for the agent to remember.
+   */
+  private async ingestContainerWrites(
+    env: Env,
+    identity: SessionProps,
+    workspaceId: string,
+    workspace: Awaited<ReturnType<typeof authorizedCoordinator>>,
+    reason: string
+  ): Promise<{ committed: boolean; commit_sha?: string; paths: string[]; truncated: boolean }> {
+    const collected = await workspace.worktreeChanges({}).catch(() => ({ changes: [], truncated: false }));
+    if (!collected.changes.length) return { committed: false, paths: [], truncated: collected.truncated };
+    const state = (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string };
+    const branch = state.currentBranch;
+    if (!branch || !isAgentForgeBranch(branch)) return { committed: false, paths: [], truncated: collected.truncated };
+    const request = await githubRequestForWorkspace(env, identity, { repository: state.repository });
+    const result = await commitFilesToBranch(request, {
+      owner: state.repository.owner,
+      repo: state.repository.name,
+      branch,
+      message: `chore: ${reason}`.slice(0, 500),
+      files: collected.changes
+    });
+    if (result.commitSha) await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.commitSha);
+    await workspace.syncToRemoteHead().catch(() => undefined);
+    return {
+      committed: Boolean(result.commitSha),
+      ...(result.commitSha ? { commit_sha: result.commitSha } : {}),
+      paths: result.paths,
+      truncated: collected.truncated
+    };
+  }
+
+  private expectedBlobsFor(workspaceId: string, paths: string[]): Record<string, string> {
+    const expected: Record<string, string> = {};
+    for (const path of paths) {
+      const sha = this.seenBlobs.get(`${workspaceId}:${path}`);
+      if (sha) expected[path] = sha;
+    }
+    return expected;
+  }
+
   server = new McpServer(
     { name: 'Forge MCP', version: '0.1.0' },
     {
@@ -1670,7 +1744,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             details: { paths: paths.length, maxBytes: perFileMaxBytes, totalLimit: MAX_TOTAL_READ_BYTES }
           });
         }
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const readWorkspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspace = await authorizedCoordinator(env, identity, readWorkspaceId);
         const readOne = {
           startLine: optionalNumber(input.start_line),
           endLine: optionalNumber(input.end_line),
@@ -1679,12 +1754,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // Single path keeps the original flat shape; multiple returns a files
         // array with per-file errors so one missing file does not fail the batch.
         if (paths.length === 1) {
-          return asRecord(await workspace.filesRead({ path: paths[0] as string, ...readOne }));
+          const single = asRecord(await workspace.filesRead({ path: paths[0] as string, ...readOne }));
+          // Only a complete read establishes what the agent saw; a range or a
+          // truncated read must not license a whole-file overwrite.
+          if (typeof single.content === 'string' && !single.truncated && readOne.startLine === undefined && readOne.endLine === undefined) {
+            this.rememberRead(readWorkspaceId, paths[0] as string, single.content);
+          }
+          return single;
         }
         const files = await Promise.all(
           paths.map(async (path) => {
             try {
-              return { ...(await workspace.filesRead({ path, ...readOne })), path };
+              const one = asRecord(await workspace.filesRead({ path, ...readOne }));
+              if (typeof one.content === 'string' && !one.truncated && readOne.startLine === undefined && readOne.endLine === undefined) {
+                this.rememberRead(readWorkspaceId, path, one.content);
+              }
+              return { ...one, path };
             } catch (error) {
               // Surface a real ForgeErrorCode so an agent keying on codes never
               // meets an undocumented one.
@@ -1708,9 +1793,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
         }
         const files = (input.files as Array<{ path: string; content: string | null }>).map((file) => ({
-          path: text(file.path).replace(/^\/workspace\/repo\//u, '').replace(/^\.\//u, ''),
+          path: normalizeRepoPath(text(file.path)),
           content: file.content === null ? null : text(file.content)
         }));
+        const duplicate = files.map((f) => f.path).find((path, index, all) => all.indexOf(path) !== index);
+        if (duplicate) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `"${duplicate}" appears twice in one edit. Send each path once — the last write would silently win.`,
+            retryable: false
+          });
+        }
         const message = input.message === undefined
           ? `edit: ${files.length} file${files.length === 1 ? '' : 's'}`
           : text(input.message);
@@ -1723,7 +1816,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             repo: state.repository.name,
             branch,
             message,
-            files
+            files,
+            expectedBlobs: this.expectedBlobsFor(workspaceId, files.map((file) => file.path))
           });
         } catch (error) {
           if (error instanceof RemoteCommitConflict) {
@@ -1921,9 +2015,28 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const base = asRecord(result);
           const { checkpoint: _checkpoint, stdout: _s, stderr: _e, ...rest } = base;
           const exitCode = 'exitCode' in result ? Number(result.exitCode) : undefined;
+          // Anything this command wrote lives only in the container, which is
+          // the one place that is not durable. Commit it before returning, so
+          // a formatter or codemod cannot leave work to be lost at the next
+          // sync — and so the agent is never holding changes it must remember
+          // to save.
+          const ingested = input.mode === 'read_only'
+            ? { committed: false, paths: [] as string[], truncated: false }
+            : await this.ingestContainerWrites(env, identity, workspaceId, workspace, `${command.slice(0, 80)}`)
+                .catch(() => ({ committed: false, paths: [] as string[], truncated: false, failed: true }));
+          const wrote = ingested.paths.length
+            ? {
+                committed_files: ingested.paths,
+                ...('commit_sha' in ingested && ingested.commit_sha ? { commit_sha: ingested.commit_sha } : {}),
+                ...('failed' in ingested && ingested.failed
+                  ? { committed_files_warning: 'This command changed files that Forge could not commit to GitHub. They exist only in the container. Re-apply them with forge_edit.' }
+                  : {})
+              }
+            : {};
           if (compact) {
             return {
               ...rest,
+              ...wrote,
               exitCode,
               compact: true,
               truncated: Boolean(result.truncated) || Boolean(outputArtifactId),
@@ -1939,6 +2052,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
           return {
             ...rest,
+            ...wrote,
             exitCode,
             compact: false,
             stdout,

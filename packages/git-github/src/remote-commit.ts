@@ -36,6 +36,16 @@ export interface RemoteCommitInput {
   files: RemoteFileChange[];
   /** Bounds the rebase-retry loop when the branch moves under us. */
   maxAttempts?: number;
+  /**
+   * Git blob SHAs the caller last saw for these paths.
+   *
+   * Whole-file writes are a blind overwrite: an agent that read a file, then
+   * had the branch move underneath it, would revert the other change without
+   * either side noticing. Checking what the writer actually saw turns that
+   * silent revert into a refusal. Paths absent here are new files or content
+   * the caller never read, and are written without a check.
+   */
+  expectedBlobs?: Record<string, string>;
 }
 
 export interface RemoteCommitResult {
@@ -54,10 +64,13 @@ export interface RemoteCommitResult {
 
 export class RemoteCommitConflict extends Error {
   readonly conflictingPaths: string[];
-  constructor(paths: string[]) {
+  constructor(paths: string[], reason: 'branch_moved' | 'stale_read' = 'branch_moved') {
     super(
-      `The branch moved and these paths changed underneath this edit: ${paths.join(', ')}. ` +
-        'Re-read them and reapply — Forge will not silently overwrite someone else\'s change.'
+      reason === 'stale_read'
+        ? `These paths changed on the branch since they were last read: ${paths.join(', ')}. ` +
+          'Read them again and reapply — writing what you last saw would silently revert that change.'
+        : `The branch moved and these paths changed underneath this edit: ${paths.join(', ')}. ` +
+          'Re-read them and reapply — Forge will not silently overwrite someone else\'s change.'
     );
     this.name = 'RemoteCommitConflict';
     this.conflictingPaths = paths;
@@ -153,6 +166,26 @@ export async function commitFilesToBranch(
       const changed = await changedPathsBetween(request, base, firstParent, parentSha);
       const collisions = paths.filter((path) => changed.has(path));
       if (collisions.length) throw new RemoteCommitConflict(collisions);
+    }
+
+    // What the writer last saw must still be what is on the branch. This runs
+    // against the base tree on every attempt, so it also covers the case where
+    // the branch had already moved before this call started — which the
+    // retry-time check above cannot see.
+    const expectedBlobs = input.expectedBlobs;
+    if (expectedBlobs && Object.keys(expectedBlobs).length) {
+      const listing = await expect<{ tree?: Array<{ path: string; sha: string; type: string }> }>(
+        request,
+        `${base}/git/trees/${parentCommit.tree.sha}?recursive=1`,
+        undefined,
+        (status) => status === 200,
+        'tree read'
+      );
+      const current = new Map((listing.tree ?? []).filter((e) => e.type === 'blob').map((e) => [e.path, e.sha]));
+      const stale = Object.entries(expectedBlobs)
+        .filter(([path, sha]) => current.has(path) && current.get(path) !== sha)
+        .map(([path]) => path);
+      if (stale.length) throw new RemoteCommitConflict(stale, 'stale_read');
     }
 
     const tree = await expect<{ sha: string }>(
