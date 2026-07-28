@@ -439,3 +439,37 @@ export {
   utf8Bytes
 } from './agent-output';
 
+
+/**
+ * Tools that were removed, and what replaced them.
+ *
+ * A client caches `tools/list` at connect time, so every session that was
+ * already open when the catalog shrank still believes these exist. Calling one
+ * yields a bare JSON-RPC `-32602 Tool not found`: no error code, no
+ * replacement, no hint that reconnecting would fix it — and an agent that hits
+ * it works down the list, trying five dead write tools in a row. That is the
+ * retry storm this whole redesign exists to remove, reintroduced by the
+ * removal itself.
+ *
+ * These names stay dispatchable purely so they can say what happened. They are
+ * a migration aid: once connectors have refreshed, delete this map.
+ */
+export const REMOVED_TOOLS: Record<string, string> = {
+  forge_files_write: 'forge_edit writes files and commits them to GitHub in one call.',
+  forge_files_write_batch: 'forge_edit takes many files in one call.',
+  forge_files_replace: 'Read the file with forge_files_read, then send the whole new content to forge_edit.',
+  forge_files_patch: 'Read the file with forge_files_read, then send the whole new content to forge_edit.',
+  forge_files_upload: 'forge_edit writes file content directly.',
+  forge_git_status: 'There is no local state to inspect — every edit is already committed to GitHub.',
+  forge_git_diff: 'Use forge_diff_metadata, or read the branch on GitHub.',
+  forge_git_branch: 'Forge cuts your branch when the workspace is created. You never choose one.',
+  forge_git_commit: 'forge_edit commits as part of the edit.',
+  forge_git_push: 'Nothing needs pushing — forge_edit commits straight to GitHub.',
+  forge_git_sync: 'The workspace tracks GitHub automatically.',
+  forge_git_rebase: 'Forge re-applies onto the branch head for you when it moves.',
+  forge_pull_request_create: 'forge_merge opens the pull request and returns the approval link.',
+  forge_submit: 'forge_merge replaces it.',
+  forge_work_export: 'Nothing is ever local-only, so there is nothing to export.',
+  forge_doctor: 'There is no split-brain state left to diagnose.',
+  forge_workspace_prove: 'Every edit returns a verified commit URL — that is the proof.'
+};

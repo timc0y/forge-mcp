@@ -9,6 +9,7 @@ import { verifyCapability } from '@forge/capabilities';
 import { D1AuditStore } from '@forge/audit';
 import openapi from '../../../openapi/forge.openapi.json';
 import { ForgeMcpSession } from './mcp-session';
+import { removedToolCall, removedToolResponse } from './removed-tools';
 import { WorkspaceCoordinator } from './workspace-coordinator';
 import { ProvisionWorkspaceWorkflow, DestroyWorkspaceWorkflow } from './workflows';
 import { authenticate, constantTimeEqual, oauthChallenge } from './auth';
@@ -776,10 +777,19 @@ export default {
       if (url.pathname === '/mcp') {
         const auth = await authenticate(request, env);
         const mcpContext = mcpExecutionContext(ctx, auth as unknown as Record<string, unknown>);
+        let forwarded = request;
+        if (request.method === 'POST') {
+          // Buffer once so a call to a removed tool can be answered with a real
+          // Forge error instead of a bare -32602 the agent cannot act on.
+          const body = await request.text();
+          const removed = removedToolCall(body);
+          if (removed) return json(removedToolResponse(removed));
+          forwarded = new Request(request.url, { method: 'POST', headers: request.headers, body });
+        }
         return await ForgeMcpSession.serve('/mcp', {
           binding: 'MCP_SESSIONS',
           transport: 'streamable-http'
-        }).fetch(request, env, mcpContext);
+        }).fetch(forwarded, env, mcpContext);
       }
       if (url.pathname.startsWith('/preview/')) return await preview(request, env, url);
       if (url.pathname === '/openapi.json') return json(openapi);
