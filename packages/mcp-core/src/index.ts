@@ -457,8 +457,8 @@ export {
 export const REMOVED_TOOLS: Record<string, string> = {
   forge_files_write: 'forge_edit writes files and commits them to GitHub in one call.',
   forge_files_write_batch: 'forge_edit takes many files in one call.',
-  forge_files_replace: 'Read the file with forge_files_read, then send the whole new content to forge_edit.',
-  forge_files_patch: 'Read the file with forge_files_read, then send the whole new content to forge_edit.',
+  forge_files_replace: 'forge_edit takes replace: [{old,new}] — send just the fragment and Forge applies it.',
+  forge_files_patch: 'forge_edit takes replace: [{old,new}] — send just the fragment and Forge applies it.',
   forge_files_upload: 'forge_edit writes file content directly.',
   forge_git_status: 'There is no local state to inspect — every edit is already committed to GitHub.',
   forge_git_diff: 'Use forge_diff_metadata, or read the branch on GitHub.',

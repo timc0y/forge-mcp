@@ -146,9 +146,7 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   }
   if (!isAgentForgeBranch(record.workspace.currentBranch)) {
     return [
-      'forge_git_branch',
       'forge_workspace_get',
-      'forge_git_status',
       'forge_files_list'
     ];
   }
@@ -157,16 +155,13 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
     return [
       'forge_deps_install',
       'forge_shell',
-      'forge_git_status',
       'forge_workspace_get'
     ];
   }
   return [
-    'forge_files_write_batch',
-    'forge_files_replace',
+    'forge_edit',
     'forge_shell',
-    'forge_git_status',
-    'forge_submit',
+    'forge_merge',
     'forge_workspace_get'
   ];
 }
@@ -1102,7 +1097,7 @@ export class ForgeApplicationService {
       };
       throw new ForgeError({
         code: 'FORGE_CHECKOUT_DATA_LOSS',
-        message: `The workspace container was recycled and its checkout had to be re-cloned from the remote. Uncommitted or unpushed work on ${lostBranch ?? '(unknown branch)'} was lost — it is not recoverable. The workspace is usable again, but re-check forge_git_status and re-apply any lost changes.`,
+        message: `The workspace container was recycled and its checkout had to be re-cloned from the remote. Uncommitted or unpushed work on ${lostBranch ?? '(unknown branch)'} was lost — it is not recoverable. The workspace is usable again, but re-apply any lost changes with forge_edit.`,
         retryable: false,
         details: { workspaceId: record.workspace.id, lostBranch, recoveredRef: recoverRef }
       });
@@ -1854,15 +1849,15 @@ export class ForgeApplicationService {
       throw new ForgeError({
         code: 'FORGE_PATCH_REJECTED',
         message: rejectedFiles.length
-          ? `The patch did not apply to ${rejectedFiles.join(', ')}. The working tree was left unchanged. Re-read the file (forge_files_read) to get its current content and hash, then retry with a diff built against that content — or use forge_files_write to replace the whole file.`
-          : 'The patch could not be applied cleanly. The working tree was left unchanged. Re-read the file (forge_files_read) for its current content, then rebuild the diff — or use forge_files_write to replace the whole file.',
+          ? `The patch did not apply to ${rejectedFiles.join(', ')}. The working tree was left unchanged. Re-read the file (forge_files_read) to get its current content and hash, then retry — or send the whole file as forge_edit content.`
+          : 'The patch could not be applied cleanly. The working tree was left unchanged. Re-read the file (forge_files_read) for its current content, then retry — or send the whole file as forge_edit content.',
         retryable: false,
         operationId: operation.operationId,
         details: {
           output: value.output.slice(0, 4_000),
           ...(rejectedFiles.length ? { rejectedFiles } : {}),
           rolledBack: value.rolledBack ?? true,
-          hint: 'forge_files_write replaces an entire file and avoids diff-context mismatches.'
+          hint: 'forge_edit with replace:[{old,new}] changes a fragment without re-sending the whole file.'
         }
       });
     }
@@ -3026,7 +3021,7 @@ export class ForgeApplicationService {
       state = 'unknown';
       reason = 'git_lock_file_present';
       recommendedAction = blockingProcessId
-        ? `Wait for or cancel process ${blockingProcessId}, then retry forge_doctor.`
+        ? `Wait for or cancel process ${blockingProcessId}, then retry.`
         : 'A Git lock file exists but no managed process is blocking. Remove stale lock files or retry.';
     } else if (!gitHeadReadable) {
       state = 'corrupted';
@@ -3293,7 +3288,7 @@ export class ForgeApplicationService {
           installCommand,
           lockfileHashAfter,
           processId,
-          allowedNextActions: ['forge_doctor', 'forge_deps_install', 'forge_workspace_get']
+          allowedNextActions: ['forge_deps_install', 'forge_workspace_get']
         }
       });
     }
@@ -3325,8 +3320,8 @@ export class ForgeApplicationService {
       stderr: logs.data.slice(-2_000),
       stdout: logs.data.slice(0, 1_000),
       allowedNextActions: success
-        ? ['forge_shell', 'forge_git_status', 'forge_workspace_get']
-        : ['forge_deps_install', 'forge_doctor', 'forge_workspace_get'],
+        ? ['forge_shell', 'forge_workspace_get']
+        : ['forge_deps_install', 'forge_workspace_get'],
       next_step: success
         ? 'Dependencies are usable. Continue with forge_shell / validation.'
         : 'Dependency install failed. Inspect logs with forge_process_logs, then retry with a new idempotency key only if needed.'
@@ -4342,7 +4337,7 @@ export class ForgeApplicationService {
         localHead,
         remoteSha,
         remoteState,
-        message: `Remote ${branch} diverged from workspace HEAD. Call forge_git_sync with reconcile reset_to_remote or keep_local_and_push.`
+        message: `Remote ${branch} diverged from workspace HEAD. Re-read the affected files and edit again; Forge re-applies onto the branch head for you.`
       };
     }
     if (action === 'reset_to_remote' && remoteSha) {
@@ -4408,7 +4403,7 @@ export class ForgeApplicationService {
         details: {
           currentBranch: record.workspace.currentBranch ?? null,
           lastPushedBranch: record.workspace.lastPushedBranch ?? null,
-          next_step: 'forge_git_branch'
+          next_step: 'forge_workspace_create'
         }
       });
     }

@@ -758,7 +758,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       ({ repository, task }) =>
         userText(
-          `Start a coding task on ${repository}: ${task}. Prefer forge_task_create, then forge_workspace_create (it waits until ready — do not poll-loop) and reuse workspace_id. Read repository instructions and any parallax/ files before changes. Implement and verify, inspect with forge_git_diff scope:outgoing, then forge_merge. Tell me it is submitted and where to approve it, then destroy the workspace.`
+          `Start a coding task on ${repository}: ${task}. Prefer forge_task_create, then forge_workspace_create (it waits until ready — do not poll-loop) and reuse workspace_id. Read repository instructions and any parallax/ files before changes. Implement and verify, inspect with forge_diff_metadata, then forge_merge. Tell me it is submitted and where to approve it, then destroy the workspace.`
         )
     );
 
@@ -775,7 +775,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         userText(
           `Submit the current work for review${
             workspace_id ? ` in workspace ${workspace_id}` : ''
-          } once tests pass. Run the tests and confirm they are green, inspect the outgoing diff with forge_git_diff, then call forge_merge. It stages the branch and queues the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
+          } once tests pass. Run the tests and confirm they are green, inspect the outgoing change with forge_diff_metadata, then call forge_merge. It opens the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
         )
     );
   }
@@ -935,7 +935,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     const env = this.env;
     return {
       forge_capabilities: async () => ({
-        workspace: { explicit_workspace_id_required: true, filesystem_read_after_write: 'verified_by_forge_files_write', durable_checkpoints: true },
+        workspace: { explicit_workspace_id_required: true, filesystem_read_after_write: 'verified_by_forge_edit', durable_checkpoints: true },
         git: {
           immutable_base_commit: true,
           workspace_proof: true,
@@ -2049,6 +2049,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               next_step: `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for dependency installs), or forge_process_logs to inspect output.`
             };
           }
+          // Bring the checkout up to the branch before running anything. The
+          // container is a cache of what is on GitHub, and forge_edit's own
+          // sync is best-effort — so without this a command can test code that
+          // is not what was committed, pass, and be reported as proof. That is
+          // the same false assurance as claiming unpushed work was saved.
+          await workspace.syncToRemoteHead().catch(() => undefined);
           const result = await workspace.shellExec({
             command,
             cwd,

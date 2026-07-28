@@ -113,11 +113,11 @@ export function durabilityNextStep(verdict: DurabilityVerdict): string {
   if (verdict.mutationOutcome === 'committed_local') {
     // The edit itself succeeded. Say so first, or the agent re-applies it and
     // then meets "nothing to commit" as a second, unrelated-looking fault.
-    return 'Your edit IS committed in the workspace — do NOT repeat it. It is LOCAL ONLY and not yet on GitHub. Retry the push (forge_git_push / forge_submit) before reporting this work as saved; if it cannot be pushed, say so explicitly and export the content.';
+    return 'Your edit IS committed in the workspace — do NOT repeat it. It is LOCAL ONLY and not yet on GitHub. Retry the edit with forge_edit before reporting this work as saved; if it cannot reach GitHub, say so explicitly.';
   }
   switch (verdict.durability) {
     case 'remote_branch':
-      return `Verified on origin/${verdict.remote_branch}. Safe to report as saved. Use forge_submit to open a pull request.`;
+      return `Verified on origin/${verdict.remote_branch}. Safe to report as saved. Use forge_merge to open a pull request.`;
     case 'pull_request':
       return 'Pushed and a pull request is open. Report the PR URL.';
     case 'failed_recovered':
