@@ -3541,13 +3541,13 @@ export class ForgeApplicationService {
   async collectWorktreeChanges(
     record: WorkspaceRuntimeRecord,
     limit = 50
-  ): Promise<{ changes: Array<{ path: string; content: string | null }>; truncated: boolean }> {
+  ): Promise<{ changes: Array<{ path: string; content: string | null }>; truncated: boolean; baseBlobs: Record<string, string> }> {
     const handle = await this.handle(record);
     const status = await handle.exec({
       command: 'git status --porcelain', cwd: '/workspace/repo', timeoutMs: 30_000,
       outputLimitBytes: 200_000, sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (status.exitCode !== 0) return { changes: [], truncated: false };
+    if (status.exitCode !== 0) return { changes: [], truncated: false, baseBlobs: {} };
     const entries = status.stdout.split('\n').map((line) => line.trimEnd()).filter(Boolean);
     const changes: Array<{ path: string; content: string | null }> = [];
     for (const entry of entries.slice(0, limit)) {
@@ -3563,7 +3563,25 @@ export class ForgeApplicationService {
       const file = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 500_000 }).catch(() => undefined);
       if (file && typeof file.content === 'string') changes.push({ path, content: file.content });
     }
-    return { changes, truncated: entries.length > limit };
+    // What each changed file looked like at the commit the container is on.
+    // A shell command edits from that base, so if origin has moved past it,
+    // committing this content would revert whatever moved — the same silent
+    // overwrite the read-check prevents for agent edits.
+    const baseBlobs: Record<string, string> = {};
+    if (changes.length) {
+      const listed = await handle.exec({
+        command: 'git ls-tree -r HEAD', cwd: '/workspace/repo', timeoutMs: 30_000,
+        outputLimitBytes: 1_000_000, sessionId: 'system', networkPolicy: 'deny_all'
+      });
+      if (listed.exitCode === 0) {
+        const wanted = new Set(changes.map((change) => change.path));
+        for (const line of listed.stdout.split('\n')) {
+          const match = /^\d+ blob ([0-9a-f]{40,64})\t(.+)$/u.exec(line.trimEnd());
+          if (match && wanted.has(match[2] as string)) baseBlobs[match[2] as string] = match[1] as string;
+        }
+      }
+    }
+    return { changes, truncated: entries.length > limit, baseBlobs };
   }
 
   /**

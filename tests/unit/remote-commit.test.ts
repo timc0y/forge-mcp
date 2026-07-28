@@ -16,19 +16,27 @@ function fakeGitHub(options: {
   onRefUpdate?: (attempt: number) => string | undefined;
   compareFiles?: string[];
   blobs?: Record<string, string>;
+  branchMissingUntilCreated?: boolean;
 } ) {
   let head = options.head;
   const treeOf = { ...options.treeOf };
   let refUpdates = 0;
   const calls: string[] = [];
   let treeSeq = 0;
+  let created = false;
 
   const request: GitHubRequest = async (path, init) => {
     const method = init?.method ?? 'GET';
     calls.push(`${method} ${path}`);
 
     if (method === 'GET' && path.includes('/git/ref/heads/')) {
+      if (options.branchMissingUntilCreated && !created) return { status: 404, json: {} };
       return { status: 200, json: { object: { sha: head } } };
+    }
+    if (method === 'POST' && path.endsWith('/git/refs')) {
+      created = true;
+      head = (init!.body as { sha: string }).sha;
+      return { status: 201, json: {} };
     }
     if (method === 'GET' && path.includes('/git/trees/') && path.includes('recursive=1')) {
       return { status: 200, json: { tree: Object.entries(options.blobs ?? {}).map(([p, sha]) => ({ path: p, sha, type: 'blob' })) } };
@@ -66,7 +74,7 @@ function fakeGitHub(options: {
     return { status: 404, json: {} };
   };
 
-  return { request, calls, get head() { return head; }, get refUpdates() { return refUpdates; } };
+  return { request, calls, get head() { return head; }, get refUpdates() { return refUpdates; }, get created() { return created; } };
 }
 
 const file = { path: 'src/a.ts', content: 'export const a = 1;\n' };
@@ -219,6 +227,70 @@ describe('stale-read protection', () => {
     const result = await commitFilesToBranch(gh.request, {
       owner: 'acme', repo: 'app', branch: 'forge/x', message: 'new', files: [file],
       expectedBlobs: { 'src/a.ts': 'blob-stale-but-path-is-gone' }
+    });
+
+    expect(result.commitSha).toBeDefined();
+  });
+});
+
+describe('a branch GitHub has never seen', () => {
+  it('creates the ref from the base commit instead of 404ing', async () => {
+    // Forge cuts forge/<id> inside the container, so the first edit of every
+    // session targets a ref GitHub does not have. Without this the whole
+    // remote-first path fails on call one.
+    const gh = fakeGitHub({ head: 'base-sha', treeOf: { 'base-sha': 'tree0' }, branchMissingUntilCreated: true });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/new', message: 'first edit',
+      files: [file], baseSha: 'base-sha'
+    });
+
+    expect(gh.created).toBe(true);
+    expect(result.commitSha).toBeDefined();
+    expect(gh.calls.some((c) => c === 'POST /repos/acme/app/git/refs')).toBe(true);
+  });
+
+  it('says so plainly when there is no base to create it from', async () => {
+    const gh = fakeGitHub({ head: 'x', treeOf: {}, branchMissingUntilCreated: true });
+    await expect(
+      commitFilesToBranch(gh.request, { owner: 'a', repo: 'b', branch: 'forge/new', message: 'm', files: [file] })
+    ).rejects.toThrow(/does not exist on GitHub and no base commit/u);
+  });
+});
+
+describe('unread files are not overwritable', () => {
+  it('refuses to replace an existing file the session never read', async () => {
+    // expectedBlobs only guards paths that happen to have been read, so a
+    // dropped session would silently downgrade it to no protection at all.
+    // Not having read a file has to be disqualifying by itself.
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, blobs: { 'src/a.ts': 'blob-current' } });
+
+    await expect(
+      commitFilesToBranch(gh.request, {
+        owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit',
+        files: [file], requireKnownBase: true
+      })
+    ).rejects.toThrow(/have not been read in this session/u);
+  });
+
+  it('still allows creating a file that does not exist', async () => {
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, blobs: {} });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'new',
+      files: [file], requireKnownBase: true
+    });
+
+    expect(result.commitSha).toBeDefined();
+  });
+
+  it('does not apply the rule to machine-generated writes', async () => {
+    // A formatter reports what a file already became; it is not claiming to
+    // have read it first.
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, blobs: { 'src/a.ts': 'blob-current' } });
+
+    const result = await commitFilesToBranch(gh.request, {
+      owner: 'acme', repo: 'app', branch: 'forge/x', message: 'format', files: [file]
     });
 
     expect(result.commitSha).toBeDefined();

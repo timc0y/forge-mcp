@@ -623,7 +623,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     workspace: Awaited<ReturnType<typeof authorizedCoordinator>>,
     reason: string
   ): Promise<{ committed: boolean; commit_sha?: string; paths: string[]; truncated: boolean }> {
-    const collected = await workspace.worktreeChanges({}).catch(() => ({ changes: [], truncated: false }));
+    const collected = await workspace.worktreeChanges({}).catch(() => ({ changes: [], truncated: false, baseBlobs: {} as Record<string, string> }));
     if (!collected.changes.length) return { committed: false, paths: [], truncated: collected.truncated };
     const state = (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string };
     const branch = state.currentBranch;
@@ -634,7 +634,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       repo: state.repository.name,
       branch,
       message: `chore: ${reason}`.slice(0, 500),
-      files: collected.changes
+      files: collected.changes,
+      // The container edited from its own HEAD; if origin moved past that,
+      // this content would revert the difference rather than add to it.
+      expectedBlobs: collected.baseBlobs
     });
     if (result.commitSha) await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.commitSha);
     await workspace.syncToRemoteHead().catch(() => undefined);
@@ -644,6 +647,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       paths: result.paths,
       truncated: collected.truncated
     };
+  }
+
+  private forgetRead(workspaceId: string, path: string): void {
+    this.seenBlobs.delete(`${workspaceId}:${path}`);
   }
 
   private expectedBlobsFor(workspaceId: string, paths: string[]): Record<string, string> {
@@ -1783,7 +1790,18 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const workspace = await authorizedCoordinator(env, identity, workspaceId);
-        const state = (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string };
+        const state = await withDeadline(
+          (async () => (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string; baseCommit?: string; currentCommit?: string })(),
+          15_000
+        );
+        if (!state) {
+          throw new ForgeError({
+            code: 'FORGE_WORKSPACE_NOT_READY',
+            message: 'The workspace did not respond in time, so Forge cannot tell which branch to commit to. Nothing was written. Retry the same call.',
+            retryable: true,
+            details: { workspaceId }
+          });
+        }
         const branch = state.currentBranch;
         if (!branch || !isAgentForgeBranch(branch)) {
           throw new ForgeError({
@@ -1817,7 +1835,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             branch,
             message,
             files,
-            expectedBlobs: this.expectedBlobsFor(workspaceId, files.map((file) => file.path))
+            expectedBlobs: this.expectedBlobsFor(workspaceId, files.map((file) => file.path)),
+            // The agent branch is cut inside the container, so GitHub has not
+            // seen it until the first edit lands.
+            baseSha: state.baseCommit ?? state.currentCommit,
+            requireKnownBase: true
           });
         } catch (error) {
           if (error instanceof RemoteCommitConflict) {
@@ -1843,6 +1865,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         });
         if (result.commitSha) {
           await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.commitSha);
+        }
+        // What we just wrote is now what is on the branch, so a second edit to
+        // the same path does not need an intervening read.
+        for (const file of files) {
+          if (file.content === null) this.forgetRead(workspaceId, file.path);
+          else this.rememberRead(workspaceId, file.path, file.content);
         }
         // Best effort: bring the container's checkout in line so forge_run
         // tests what was just committed. A failure here costs nothing — the
@@ -2113,7 +2141,26 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_merge: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const branch = text(input.branch);
+        // The branch is Forge's, not the agent's, so it does not have to know
+        // or repeat it. If one is supplied it must be the workspace's own —
+        // merging some other branch is never what was meant.
+        const workspaceBranch = ((await (await authorizedCoordinator(env, identity, workspaceId)).getState()) as { currentBranch?: string }).currentBranch;
+        const branch = input.branch === undefined ? (workspaceBranch ?? '') : text(input.branch);
+        if (!branch) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'This workspace has no agent branch to merge. Nothing has been edited yet.',
+            retryable: false
+          });
+        }
+        if (workspaceBranch && branch !== workspaceBranch) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `This workspace is on ${workspaceBranch}, not ${branch}. Omit branch and Forge merges the one you have been editing.`,
+            retryable: false,
+            details: { workspaceBranch, requested: branch }
+          });
+        }
         assertForgeBranch(branch);
         const prBase = input.pr_base !== undefined
           ? text(input.pr_base)

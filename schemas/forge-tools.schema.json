@@ -1283,8 +1283,8 @@
       }
     },
     "forge_merge": {
-      "title": "Submit for review",
-      "description": "Auto-commit if needed, push feature branch + stage, queue draft PR. Returns submission_receipt only (small) — do not invent URLs. Echo receipt fields to the human.",
+      "title": "Merge for review",
+      "description": "Ask the human to merge your work. Opens a pull request from your branch and returns one approval link — echo the link, do not invent URLs. Your branch is already on GitHub; nothing is pushed here.",
       "sideEffect": "external",
       "approval": "deferred",
       "inputSchema": {
@@ -1332,7 +1332,6 @@
           }
         },
         "required": [
-          "branch",
           "pr_base",
           "body"
         ],

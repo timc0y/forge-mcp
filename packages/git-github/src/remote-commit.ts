@@ -46,6 +46,25 @@ export interface RemoteCommitInput {
    * the caller never read, and are written without a check.
    */
   expectedBlobs?: Record<string, string>;
+  /**
+   * Commit to create the branch from if it is not on origin yet.
+   *
+   * Forge cuts the agent's branch inside the container, so the first edit of
+   * every session targets a ref GitHub has never heard of. Without this the
+   * remote-first path 404s on call one, every time.
+   */
+  baseSha?: string;
+  /**
+   * Refuse to overwrite an existing file whose current content the caller has
+   * not seen.
+   *
+   * `expectedBlobs` only protects paths the caller happens to have read. This
+   * inverts the default: for an agent edit, not having read a file is itself
+   * disqualifying, so a dropped session cannot quietly downgrade the check
+   * into a blind overwrite. Machine-generated writes (a formatter's output,
+   * say) pass false — they are reporting what a file already became.
+   */
+  requireKnownBase?: boolean;
 }
 
 export interface RemoteCommitResult {
@@ -64,9 +83,12 @@ export interface RemoteCommitResult {
 
 export class RemoteCommitConflict extends Error {
   readonly conflictingPaths: string[];
-  constructor(paths: string[], reason: 'branch_moved' | 'stale_read' = 'branch_moved') {
+  constructor(paths: string[], reason: 'branch_moved' | 'stale_read' | 'unread' = 'branch_moved') {
     super(
-      reason === 'stale_read'
+      reason === 'unread'
+        ? `These files already exist and have not been read in this session: ${paths.join(', ')}. ` +
+          'Read them first — writing a whole file you have not seen would discard whatever it currently contains.'
+        : reason === 'stale_read'
         ? `These paths changed on the branch since they were last read: ${paths.join(', ')}. ` +
           'Read them again and reapply — writing what you last saw would silently revert that change.'
         : `The branch moved and these paths changed underneath this edit: ${paths.join(', ')}. ` +
@@ -140,14 +162,26 @@ export async function commitFilesToBranch(
 
   for (;;) {
     attempts += 1;
-    const ref = await expect<{ object: { sha: string } }>(
-      request,
-      `${base}/git/ref/heads/${encodePath(branch)}`,
-      undefined,
-      (status) => status === 200,
-      'ref read'
-    );
-    const parentSha = ref.object.sha;
+    const refResponse = await request(`${base}/git/ref/heads/${encodePath(branch)}`);
+    if (refResponse.status === 404) {
+      if (!input.baseSha) {
+        throw new Error(
+          `The branch ${branch} does not exist on GitHub and no base commit was supplied to create it from.`
+        );
+      }
+      const created = await request(`${base}/git/refs`, {
+        method: 'POST',
+        body: { ref: `refs/heads/${branch}`, sha: input.baseSha }
+      });
+      // 422 means someone created it between our read and our write, which is
+      // fine — the next loop reads whatever they created.
+      if (created.status !== 201 && created.status !== 422) {
+        throw new Error(`GitHub branch create failed with HTTP ${created.status}.`);
+      }
+      continue;
+    }
+    if (refResponse.status !== 200) throw new Error(`GitHub ref read failed with HTTP ${refResponse.status}.`);
+    const parentSha = (refResponse.json as { object: { sha: string } }).object.sha;
     firstParent ??= parentSha;
 
     const parentCommit = await expect<{ tree: { sha: string } }>(
@@ -173,7 +207,7 @@ export async function commitFilesToBranch(
     // the branch had already moved before this call started — which the
     // retry-time check above cannot see.
     const expectedBlobs = input.expectedBlobs;
-    if (expectedBlobs && Object.keys(expectedBlobs).length) {
+    if (input.requireKnownBase || (expectedBlobs && Object.keys(expectedBlobs).length)) {
       const listing = await expect<{ tree?: Array<{ path: string; sha: string; type: string }> }>(
         request,
         `${base}/git/trees/${parentCommit.tree.sha}?recursive=1`,
@@ -182,10 +216,14 @@ export async function commitFilesToBranch(
         'tree read'
       );
       const current = new Map((listing.tree ?? []).filter((e) => e.type === 'blob').map((e) => [e.path, e.sha]));
-      const stale = Object.entries(expectedBlobs)
+      const stale = Object.entries(expectedBlobs ?? {})
         .filter(([path, sha]) => current.has(path) && current.get(path) !== sha)
         .map(([path]) => path);
       if (stale.length) throw new RemoteCommitConflict(stale, 'stale_read');
+      if (input.requireKnownBase) {
+        const unseen = paths.filter((path) => current.has(path) && !(expectedBlobs && path in expectedBlobs));
+        if (unseen.length) throw new RemoteCommitConflict(unseen, 'unread');
+      }
     }
 
     const tree = await expect<{ sha: string }>(
