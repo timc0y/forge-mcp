@@ -2298,6 +2298,118 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         });
         return asRecord(result);
       },
+      forge_branches: async (input) => {
+        const identity = this.identity();
+        const owner = text(input.owner);
+        const repo = text(input.repo);
+        const repository = { provider: 'github' as const, owner, name: repo };
+        const request = await githubRequestForWorkspace(env, identity, { repository });
+        const base = `/repos/${owner}/${repo}`;
+
+        const repoInfo = await request(base);
+        if (repoInfo.status !== 200) {
+          throw new ForgeError({
+            code: 'FORGE_PERMISSION_DENIED',
+            message: `Forge cannot read ${owner}/${repo}. Install and authorize the Forge GitHub App for it.`,
+            retryable: false
+          });
+        }
+        const defaultBranch = String((repoInfo.json as { default_branch?: string }).default_branch ?? 'main');
+
+        const listed = await request(`${base}/branches?per_page=100`);
+        if (listed.status !== 200) {
+          throw new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: `GitHub returned HTTP ${listed.status} listing branches for ${owner}/${repo}.`,
+            retryable: true
+          });
+        }
+        const raw = listed.json as Array<{ name: string; commit: { sha: string }; protected?: boolean }>;
+
+        // "Merged" is decided by asking GitHub whether the default branch
+        // already contains the tip, never by the branch's name or age. A
+        // deletion that guessed would be unrecoverable.
+        const branches = await Promise.all(
+          raw.map(async (entry) => {
+            const isDefault = entry.name === defaultBranch;
+            if (isDefault) return { name: entry.name, sha: entry.commit.sha, merged: true, is_default: true, protected: entry.protected === true };
+            const compared = await request(`${base}/compare/${encodeURIComponent(defaultBranch)}...${entry.name.split('/').map(encodeURIComponent).join('/')}`);
+            const status = compared.status === 200 ? (compared.json as { status?: string }).status : undefined;
+            // behind or identical => everything on it is already in default.
+            return {
+              name: entry.name,
+              sha: entry.commit.sha,
+              merged: status === 'behind' || status === 'identical',
+              is_default: false,
+              protected: entry.protected === true
+            };
+          })
+        );
+
+        if (input.action !== 'delete') {
+          const mergedCount = branches.filter((entry) => entry.merged && !entry.is_default).length;
+          return {
+            repository: `${owner}/${repo}`,
+            default_branch: defaultBranch,
+            branches: branches.map(({ protected: _p, ...rest }) => rest),
+            next_step: mergedCount
+              ? `${mergedCount} branch(es) are already merged into ${defaultBranch}. Delete them with action:'delete', merged_only:true.`
+              : `Nothing is safely deletable — no branch other than ${defaultBranch} is fully merged.`
+          };
+        }
+
+        const wanted = input.merged_only === true
+          ? branches.filter((entry) => entry.merged && !entry.is_default)
+          : branches.filter((entry) => entry.name === (input.branch === undefined ? '' : text(input.branch)));
+        if (!wanted.length) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: input.merged_only === true
+              ? `No merged branches to delete in ${owner}/${repo}.`
+              : `Branch ${input.branch === undefined ? '(none given)' : text(input.branch)} does not exist in ${owner}/${repo}. Run action:'list' first.`,
+            retryable: false
+          });
+        }
+
+        const deleted: string[] = [];
+        const refused: Array<{ branch: string; reason: string }> = [];
+        for (const entry of wanted) {
+          // Three refusals that no flag overrides, because each one destroys
+          // something that cannot be recovered from Forge.
+          if (entry.is_default) {
+            refused.push({ branch: entry.name, reason: `${entry.name} is the default branch.` });
+            continue;
+          }
+          if (entry.protected) {
+            refused.push({ branch: entry.name, reason: `${entry.name} is protected on GitHub.` });
+            continue;
+          }
+          if (!entry.merged && input.force !== true) {
+            refused.push({
+              branch: entry.name,
+              reason: `${entry.name} has commits that are not on ${defaultBranch}; deleting it would lose them. Pass force:true with a reason if that is intended.`
+            });
+            continue;
+          }
+          if (!entry.merged && !input.reason) {
+            refused.push({ branch: entry.name, reason: 'force:true requires a reason, so the record says why unmerged work was discarded.' });
+            continue;
+          }
+          const removed = await request(`${base}/git/refs/heads/${entry.name.split('/').map(encodeURIComponent).join('/')}`, { method: 'DELETE' });
+          if (removed.status === 204) deleted.push(entry.name);
+          else refused.push({ branch: entry.name, reason: `GitHub returned HTTP ${removed.status}.` });
+        }
+
+        return {
+          repository: `${owner}/${repo}`,
+          default_branch: defaultBranch,
+          deleted,
+          refused,
+          next_step: deleted.length
+            ? `Deleted ${deleted.length} branch(es) on GitHub: ${deleted.join(', ')}.${refused.length ? ` ${refused.length} refused.` : ''}`
+            : `Nothing was deleted. ${refused.map((entry) => entry.reason).join(' ')}`
+        };
+      },
       forge_merge: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);

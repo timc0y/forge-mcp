@@ -1321,6 +1321,62 @@
         }
       }
     },
+    "forge_branches": {
+      "title": "List or delete branches",
+      "description": "List a repository’s branches with whether each is already merged into the default branch, or delete one. Deleting refuses the default branch always, and refuses an unmerged branch unless you pass force with a reason. merged_only:true deletes every merged branch in one call.",
+      "sideEffect": "external",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "action": {
+            "default": "list",
+            "type": "string",
+            "enum": [
+              "list",
+              "delete"
+            ]
+          },
+          "branch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "merged_only": {
+            "default": false,
+            "type": "boolean"
+          },
+          "force": {
+            "default": false,
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "action",
+          "merged_only",
+          "force"
+        ],
+        "additionalProperties": false
+      }
+    },
     "forge_merge": {
       "title": "Merge for review",
       "description": "Ask the human to merge your work. Opens a pull request from your branch and returns one approval link — echo the link, do not invent URLs. Your branch is already on GitHub; nothing is pushed here.",
