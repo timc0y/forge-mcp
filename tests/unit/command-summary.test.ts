@@ -59,3 +59,25 @@ describe('summariseCommandOutput', () => {
     expect(summary.failures!.length).toBeLessThanOrEqual(25);
   });
 });
+
+const ESC = String.fromCharCode(27);
+const ANSI_REAL = `${ESC}[2m Test Files ${ESC}[22m ${ESC}[31m2 failed${ESC}[39m (74)\n${ESC}[2m      Tests ${ESC}[22m ${ESC}[31m3 failed${ESC}[39m | ${ESC}[32m524 passed${ESC}[39m (527)\n`;
+const ANSI_NO_TESTS = `${ESC}[2m      Tests ${ESC}[22m ${ESC}[2mno tests${ESC}[22m\n${ESC}[41m FAIL ${ESC}[49m tests/unit/policy.test.ts\nError: Cannot find package '@forge/policy'\n`;
+
+describe('real terminal output', () => {
+  it('parses a colourised summary', () => {
+    // Runners colour their output. Clean fixtures hid this entirely, and the
+    // summariser silently returned nothing against every real run.
+    const summary = summariseCommandOutput({ command: 'pnpm test', output: ANSI_REAL, exitCode: 1 })!;
+    expect(summary.failed).toBe(3);
+    expect(summary.passed).toBe(524);
+    expect(summary.ok).toBe(false);
+  });
+
+  it('reports a suite that failed to load rather than staying silent', () => {
+    const summary = summariseCommandOutput({ command: 'npx vitest run', output: ANSI_NO_TESTS, exitCode: 1 })!;
+    expect(summary.ok).toBe(false);
+    expect(summary.headline).toMatch(/No tests ran/u);
+    expect(summary.headline).toMatch(/Cannot find package/u);
+  });
+});

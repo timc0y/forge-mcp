@@ -27,15 +27,37 @@ export interface CommandSummary {
 
 const MAX_FAILURES = 25;
 
+/**
+ * Real runners colour their output, so every summary line arrives wrapped in
+ * escape codes and no amount of careful line matching finds it. Clean fixtures
+ * hide this completely — the parser has to see what a terminal actually emits.
+ */
+export function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*[A-Za-z]/gu, '');
+}
+
 function dedupe(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 /** Vitest and Jest share this summary shape closely enough to parse together. */
-function summariseTests(output: string): CommandSummary | undefined {
+function summariseTests(raw: string): CommandSummary | undefined {
+  const output = stripAnsi(raw);
   // "Tests  1 failed | 525 passed | 1 skipped (527)" / "Tests: 3 failed, 5 passed, 8 total"
   const line = /^\s*Tests[: ]\s+(.+)$/mu.exec(output);
   if (!line) return undefined;
+  // "no tests" means the files never loaded — a failure with nothing to count.
+  if (/\bno tests\b/iu.test(line[1] as string)) {
+    const suites = dedupe([...output.matchAll(/^\s*FAIL\s+(.+)$/gmu)].map((match) => match[1] as string));
+    const reason = /Error:\s*(.+)$/mu.exec(output)?.[1]?.trim();
+    return {
+      kind: 'tests',
+      ok: false,
+      headline: `No tests ran — ${suites.length || 'some'} test file(s) failed to load.${reason ? ` ${reason}` : ''}`,
+      failed: suites.length,
+      ...(suites.length ? { failures: suites.slice(0, MAX_FAILURES) } : {})
+    };
+  }
   const body = line[1] as string;
   const count = (label: string): number | undefined => {
     const match = new RegExp(`(\\d+)\\s+${label}`, 'u').exec(body);
@@ -72,7 +94,8 @@ function summariseTests(output: string): CommandSummary | undefined {
   };
 }
 
-function summariseTypecheck(output: string): CommandSummary | undefined {
+function summariseTypecheck(raw: string): CommandSummary | undefined {
+  const output = stripAnsi(raw);
   const errors = dedupe(
     [...output.matchAll(/^(.*?\(\d+,\d+\): error TS\d+: .*)$/gmu)].map((match) => match[1] as string)
   );
