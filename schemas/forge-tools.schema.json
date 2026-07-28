@@ -37,13 +37,19 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_observer_activity": {
@@ -55,10 +61,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "payloads": {
             "default": false,
@@ -85,7 +90,14 @@
           "errors_only",
           "limit"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_repository_list": {
@@ -231,10 +243,9 @@
               "resume"
             ]
           },
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "compact": {
             "type": "boolean"
@@ -244,7 +255,14 @@
           "task_id",
           "mode"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_task_list": {
@@ -535,16 +553,22 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "compact": {
             "type": "boolean"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_workspace_destroy": {
@@ -556,10 +580,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "preserve_artifacts": {
             "default": true,
@@ -586,7 +609,14 @@
           "preserve_artifacts",
           "force"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_operation_get": {
@@ -598,10 +628,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "operation_id": {
             "type": "string",
@@ -611,7 +640,14 @@
         "required": [
           "operation_id"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_workspace_snapshot": {
@@ -623,10 +659,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "name": {
             "type": "string",
@@ -634,7 +669,14 @@
             "maxLength": 200
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_workspace_restore": {
@@ -646,10 +688,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "snapshot_id": {
             "type": "string",
@@ -666,7 +707,14 @@
         "required": [
           "snapshot_id"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_files_list": {
@@ -678,10 +726,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "path": {
             "default": "/workspace/repo",
@@ -708,7 +755,14 @@
           "depth",
           "limit"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_files_read": {
@@ -720,10 +774,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "path": {
             "type": "string",
@@ -736,7 +789,7 @@
             "maxItems": 20,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema0"
+              "$ref": "#/$defs/__schema1"
             }
           },
           "start_line": {
@@ -767,6 +820,11 @@
           "__schema0": {
             "type": "string",
             "minLength": 1,
+            "maxLength": 400
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 1,
             "maxLength": 1000,
             "description": "Repo-relative, or absolute under /workspace."
           }
@@ -782,17 +840,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "files": {
             "minItems": 1,
             "maxItems": 50,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema0"
+              "$ref": "#/$defs/__schema1"
             }
           },
           "message": {
@@ -807,6 +864,11 @@
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "__schema1": {
             "type": "object",
             "properties": {
               "path": {
@@ -830,7 +892,7 @@
                 "maxItems": 20,
                 "type": "array",
                 "items": {
-                  "$ref": "#/$defs/__schema1"
+                  "$ref": "#/$defs/__schema2"
                 }
               }
             },
@@ -839,7 +901,7 @@
             ],
             "additionalProperties": false
           },
-          "__schema1": {
+          "__schema2": {
             "type": "object",
             "properties": {
               "old": {
@@ -873,10 +935,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "base": {
             "default": "main",
@@ -888,7 +949,14 @@
         "required": [
           "base"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_context_get": {
@@ -900,10 +968,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "goal": {
             "type": "string",
@@ -915,7 +982,7 @@
             "maxItems": 40,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema0"
+              "$ref": "#/$defs/__schema1"
             }
           },
           "max_results": {
@@ -935,6 +1002,11 @@
           "__schema0": {
             "type": "string",
             "minLength": 1,
+            "maxLength": 400
+          },
+          "__schema1": {
+            "type": "string",
+            "minLength": 1,
             "maxLength": 500
           }
         }
@@ -949,10 +1021,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "command": {
             "type": "string",
@@ -962,7 +1033,7 @@
           "cwd": {
             "default": "/workspace/repo",
             "description": "Working directory inside the workspace; must start with /workspace.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "timeout_ms": {
             "default": 45000,
@@ -1041,6 +1112,11 @@
         "$defs": {
           "__schema0": {
             "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "__schema1": {
+            "type": "string",
             "pattern": "^\\/workspace.*"
           }
         }
@@ -1055,17 +1131,23 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "process_id": {
             "type": "string",
             "pattern": "^proc_.*"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_process_wait": {
@@ -1077,10 +1159,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "process_id": {
             "type": "string",
@@ -1097,7 +1178,14 @@
           "process_id",
           "timeout_ms"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_process_logs": {
@@ -1109,10 +1197,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "process_id": {
             "type": "string",
@@ -1125,7 +1212,14 @@
         "required": [
           "process_id"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_process_stop": {
@@ -1137,10 +1231,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "process_id": {
             "type": "string",
@@ -1167,7 +1260,14 @@
           "process_id",
           "force"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_deps_install": {
@@ -1179,10 +1279,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "frozen_lockfile": {
             "default": true,
@@ -1228,7 +1327,14 @@
           "network_policy",
           "timeout_ms"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_pr": {
@@ -1426,15 +1532,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
-          },
-          "branch": {
-            "type": "string",
-            "maxLength": 107,
-            "pattern": "^forge\\/.*"
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "pr_base": {
             "default": "main",
@@ -1473,7 +1573,14 @@
           "pr_base",
           "body"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_cloudflare_deploy": {
@@ -1485,10 +1592,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "command": {
             "default": "npx wrangler deploy",
@@ -1499,7 +1605,7 @@
           "cwd": {
             "default": "/workspace/repo",
             "description": "Working directory inside the workspace; must start with /workspace.",
-            "$ref": "#/$defs/__schema0"
+            "$ref": "#/$defs/__schema1"
           },
           "expected_url": {
             "type": "string",
@@ -1528,6 +1634,11 @@
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "__schema1": {
             "type": "string",
             "pattern": "^\\/workspace.*"
           }
@@ -1668,10 +1779,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "process_id": {
             "type": "string",
@@ -1717,7 +1827,14 @@
           "access",
           "ttl_seconds"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_preview": {
@@ -1729,10 +1846,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "preview_id": {
             "type": "string",
@@ -1749,7 +1865,7 @@
             "maxItems": 20,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema0"
+              "$ref": "#/$defs/__schema1"
             }
           },
           "viewports": {
@@ -1761,7 +1877,7 @@
             "maxItems": 4,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema2"
+              "$ref": "#/$defs/__schema3"
             }
           }
         },
@@ -1773,6 +1889,11 @@
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "__schema1": {
             "type": "object",
             "properties": {
               "route": {
@@ -1795,7 +1916,7 @@
                 "maxItems": 20,
                 "type": "array",
                 "items": {
-                  "$ref": "#/$defs/__schema1"
+                  "$ref": "#/$defs/__schema2"
                 }
               }
             },
@@ -1805,7 +1926,7 @@
             ],
             "additionalProperties": false
           },
-          "__schema1": {
+          "__schema2": {
             "type": "object",
             "properties": {
               "kind": {
@@ -1855,7 +1976,7 @@
             ],
             "additionalProperties": false
           },
-          "__schema2": {
+          "__schema3": {
             "anyOf": [
               {
                 "type": "string",
@@ -1898,7 +2019,7 @@
     },
     "forge_artifact_get": {
       "title": "Get artifact",
-      "description": "Fetch a stored artifact (images returned as MCP image content).",
+      "description": "Fetch a stored artifact (images returned as MCP image content). workspace for a workspace artifact; workspace_id for a forge_review screenshot (it has no repository/branch).",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1908,7 +2029,11 @@
           "workspace_id": {
             "type": "string",
             "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+            "description": "Workspace id from a forge_review result (no repository/branch). Otherwise use workspace."
+          },
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "artifact_id": {
             "type": "string",
@@ -1925,7 +2050,14 @@
           "artifact_id",
           "max_bytes"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_artifact_upload": {
@@ -1937,10 +2069,9 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "filename": {
             "type": "string",
@@ -1975,7 +2106,14 @@
           "content_type",
           "metadata"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     },
     "forge_secret_list": {
@@ -2128,10 +2266,9 @@
             "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
             "description": "Secret id (sec_...)."
           },
-          "workspace_id": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id. Omit to use your open one."
+          "workspace": {
+            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "$ref": "#/$defs/__schema0"
           },
           "attached": {
             "default": true,
@@ -2146,7 +2283,14 @@
           "secret_id",
           "attached"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          }
+        }
       }
     }
   }

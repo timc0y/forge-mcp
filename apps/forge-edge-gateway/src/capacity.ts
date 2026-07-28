@@ -22,7 +22,10 @@ const DEFAULT_GLOBAL_CAP = 8;
 // deployment via FORGE_MAX_WORKSPACES_PER_TENANT; it is always clamped to the
 // global cap in workspaceCaps().
 const DEFAULT_PER_TENANT_CAP = 5;
-const TERMINAL_STATES = ['suspended', 'failed', 'destroying', 'destroyed'];
+// Exported so workspace-resolve.ts can exclude the same states when deciding
+// which workspaces are "live" candidates for owner/repo/branch resolution —
+// one definition of "terminal", not two that can drift apart.
+export const TERMINAL_STATES = ['suspended', 'failed', 'destroying', 'destroyed'];
 // Non-terminal provisioning states. A workspace should march through these in
 // well under a minute; sitting in one for longer than STUCK_PROVISION_MS means
 // the provision workflow died mid-run (timed out / evicted before its JS catch)
@@ -50,6 +53,28 @@ export interface SlotOccupant {
   // STUCK_PROVISION_MS. The watchdog reaps these via markProvisioningExhausted
   // (force `failed`) rather than the normal destroy-workflow teardown.
   stuckProvisioning: boolean;
+  // Which repository and branch this occupant's workspace is on, so
+  // workspace-resolve.ts can answer "which workspace did the caller mean"
+  // without the caller ever naming the workspace id. Null when the joined
+  // workspace row is missing, or its `repository` column does not parse as
+  // `owner/name` (defensive: one malformed row must not break resolution for
+  // every other occupant in the list).
+  repository: { owner: string; name: string } | null;
+  currentBranch: string | null;
+}
+
+// `workspaces.repository` is stored as a plain "owner/name" string (see
+// packages/metadata-d1/src/index.ts), not JSON — parsed the same way
+// D1MetadataStore.getWorkspace does, but tolerant of a row that does not
+// match the shape instead of throwing, since this feeds ambiguity resolution
+// for every OTHER live workspace too.
+function parseRepositoryColumn(raw: string | null): { owner: string; name: string } | null {
+  if (!raw) return null;
+  const separator = raw.indexOf('/');
+  if (separator <= 0 || separator === raw.length - 1) return null;
+  const owner = raw.slice(0, separator);
+  const name = raw.slice(separator + 1);
+  return owner && name ? { owner, name } : null;
 }
 
 export interface ReclaimedSlot {
@@ -101,13 +126,15 @@ export async function listSlotOccupants(
 ): Promise<SlotOccupant[]> {
   const rows = await database.prepare(
     `SELECT s.slot AS slot, s.tenant_id AS tenant_id, s.workspace_id AS workspace_id, s.claimed_at AS claimed_at,
-            w.state AS state, w.updated_at AS updated_at, w.has_unpushed_work AS has_unpushed_work
+            w.state AS state, w.updated_at AS updated_at, w.has_unpushed_work AS has_unpushed_work,
+            w.repository AS repository, w.current_branch AS current_branch
        FROM workspace_slots AS s
        LEFT JOIN workspaces AS w ON w.id = s.workspace_id
        ${tenantId ? 'WHERE s.tenant_id = ?1' : ''}
        ORDER BY s.tenant_id, s.slot`
   ).bind(...(tenantId ? [tenantId] : [])).all<{
     slot: number; tenant_id: string; workspace_id: string; claimed_at: string; state: string | null; updated_at: string | null; has_unpushed_work: number | null;
+    repository: string | null; current_branch: string | null;
   }>();
   const ttlMinutes = ttlMs / 60_000;
   return (rows.results ?? []).map((row) => {
@@ -140,7 +167,9 @@ export async function listSlotOccupants(
       ageMinutes: ageMinutes(row.claimed_at, now) ?? 0,
       idleMinutes: idle,
       stale,
-      stuckProvisioning
+      stuckProvisioning,
+      repository: parseRepositoryColumn(row.repository),
+      currentBranch: row.current_branch
     };
   });
 }

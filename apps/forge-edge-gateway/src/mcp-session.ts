@@ -44,7 +44,7 @@ import { selectBrowserProvider } from './browser-router';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { classifyCommand, assertPublicHost, assertForgeBranch } from '@forge/policy';
 import { normalizeViewports, prepareInlineImages } from './review-images';
-import { resolveWorkspaceId } from './workspace-resolve';
+import { resolveWorkspaceId, parseWorkspaceAddress } from './workspace-resolve';
 import { storeGallery } from './review-gallery';
 import type { CommandClass } from '@forge/policy';
 import type { Env } from './env';
@@ -410,7 +410,7 @@ async function authorizedCoordinator(
   if (state.tenantId !== identity.tenantId || state.projectId !== identity.projectId) {
     throw new ForgeError({
       code: 'FORGE_PERMISSION_DENIED',
-      message: 'This workspace belongs to a different project. Use a workspace_id from the current project.',
+      message: 'This workspace belongs to a different project. Use owner/repo/branch (or none, to use the one you have open) to address a workspace in the current project instead.',
       retryable: false
     });
   }
@@ -444,6 +444,37 @@ function optionalNumber(value: unknown): number | undefined {
 
 function asRecord(value: object): Record<string, unknown> {
   return value as unknown as Record<string, unknown>;
+}
+
+// The single `workspace` field ("owner/repo#branch", "owner/repo", or a bare
+// branch) a tool input carries instead of an opaque workspace_id (see
+// workspace-resolve.ts). Every workspace-scoped handler below passes this
+// straight to resolveWorkspaceId; forge_artifact_get is the one exception
+// that also threads workspace_id through (see its own handler).
+function workspaceAddress(input: Record<string, unknown>): { workspace?: unknown } {
+  return { workspace: input.workspace };
+}
+
+// True once the caller has given resolveWorkspaceId something to go on. Used
+// where "nothing given" should mean "do not require exactly one workspace"
+// rather than "resolve one" — e.g. forge_observer_activity, which is happy to
+// report across every workspace when no address narrows it.
+function hasWorkspaceAddress(input: Record<string, unknown>): boolean {
+  return input.workspace !== undefined;
+}
+
+// Best-effort recovery of a successful call's workspace id from its own
+// result, for the audit trail only (see onToolCallTelemetry) — never used to
+// authorize or resolve anything. `result` is the adapter's response envelope
+// (structuredContent, not the bare handler value); a handler's own return
+// object almost always carries workspace_id or workspaceId as a receipt.
+function workspaceIdFromResult(result: unknown): string | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const structured = (result as { structuredContent?: unknown }).structuredContent;
+  if (!structured || typeof structured !== 'object') return undefined;
+  const record = structured as Record<string, unknown>;
+  const candidate = record.workspace_id ?? record.workspaceId;
+  return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : undefined;
 }
 
 function shellQuote(value: string): string {
@@ -492,7 +523,7 @@ async function outgoingComparisonRef(workspace: DurableObjectStub<WorkspaceCoord
   if (providedBase && providedBase !== state.requestedRef && providedBase !== 'main') {
     throw new ForgeError({
       code: 'FORGE_GIT_PUSH_BLOCKED',
-      message: 'Outgoing diffs must compare against the workspace requestedRef recorded at creation.',
+      message: `Outgoing diffs must compare against '${state.requestedRef}', the ref this workspace was created from, not '${providedBase}'. Pass base:'${state.requestedRef}', or omit base to use it automatically.`,
       retryable: false,
       details: {
         requestedRef: state.requestedRef,
@@ -705,9 +736,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       Date.now()
     );
-    const workspaceId = typeof event.input.workspace_id === 'string' && event.input.workspace_id.trim()
+    // Most workspace-scoped tools no longer take workspace_id as input (see
+    // workspace-resolve.ts) — they resolve it from owner/repo/branch instead —
+    // so it is no longer reliably on event.input. It is on event.result
+    // instead: every workspace-scoped handler still returns workspace_id or
+    // workspaceId to the caller as a receipt (see invariant A's allowlist
+    // decision), and this audit trail is exactly what forge_observer_activity
+    // filters by workspace, so losing that association here would make that
+    // tool worse at the one job it exists for.
+    const workspaceId = (typeof event.input.workspace_id === 'string' && event.input.workspace_id.trim())
       ? event.input.workspace_id.trim()
-      : undefined;
+      : workspaceIdFromResult(event.result);
     const waitUntil = (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil;
     // The payload trail. Written alongside the counter so a failure can be
     // diagnosed from exactly what the agent sent and exactly what it read
@@ -1062,14 +1101,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_observer_workspace: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         return asRecord(await buildWorkspaceObserverDetail(env, identity.tenantId, workspaceId));
       },
       forge_observer_activity: async (input) => {
         const identity = this.identity();
-        const workspaceId = input.workspace_id === undefined
-          ? undefined
-          : await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = hasWorkspaceAddress(input)
+          ? await resolveWorkspaceId(env, identity, workspaceAddress(input))
+          : undefined;
         const limit = input.limit === undefined ? 40 : Number(input.limit);
         const since = input.since === undefined ? undefined : text(input.since);
         // payloads:true answers "what were they sending", which is the only
@@ -1131,7 +1170,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_secret_attach: async (input) => {
         const identity = this.identity();
         const secretId = text(input.secret_id) as SecretId;
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         if (input.attached === false) {
           await vaultService(env).detach(identity.tenantId as TenantId, secretId, workspaceId);
           return { attached: false, secret_id: secretId, workspace_id: workspaceId };
@@ -1164,12 +1203,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_workspace_snapshot: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         return asRecord(await workspace.checkpoint({ name: input.name ? text(input.name) : undefined }));
       },
       forge_workspace_restore: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         return asRecord(await workspace.restoreCheckpoint({
           snapshotId: text(input.snapshot_id),
           expectedRevision: optionalNumber(input.expected_revision)
@@ -1240,7 +1279,15 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // mode === 'resume'
         let workspaceState: Record<string, unknown> | null = null;
         let gitSummary: Record<string, unknown> | null = null;
-        const targetWorkspaceId = input.workspace_id ? text(input.workspace_id) : task.workspaceId;
+        // The task itself already remembers which workspace it last touched —
+        // a better default than "the tenant's one open workspace" (what
+        // resolveWorkspaceId would fall back to with nothing given), since a
+        // task can outlive the workspace that was open when it was created.
+        // owner/repo/branch, when given, overrides that remembered workspace —
+        // e.g. resuming against a newer workspace for the same task.
+        const targetWorkspaceId = hasWorkspaceAddress(input)
+          ? await resolveWorkspaceId(env, identity, workspaceAddress(input))
+          : task.workspaceId;
         if (targetWorkspaceId) {
           try {
             const workspace = await authorizedCoordinator(env, identity, targetWorkspaceId);
@@ -1851,11 +1898,18 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const failure = failed && typeof failed === 'object' && 'failure' in failed
             ? (failed as { failure?: { stage?: string; code?: string; message?: string } }).failure
             : undefined;
+          // Composed outside the message template on purpose: a nested
+          // backtick literal in `message:` (this one had one, for the failure
+          // detail) defeats invariants.test.ts's static message sweep, which
+          // does not parse JS — it would see the fallback stage name
+          // ('provision') as if it were the whole message. One flat template
+          // with no nested backtick keeps the real message auditable.
+          const failureDetail = failure?.message
+            ? ` It failed at the ${failure.stage ?? 'provision'} stage: ${failure.message}.`
+            : '';
           throw new ForgeError({
             code: 'FORGE_WORKSPACE_NOT_READY',
-            message: `Workspace ${workspaceId} could not be provisioned.${
-              failure?.message ? ` It failed at the ${failure.stage ?? 'provision'} stage: ${failure.message}` : ''
-            } This is a provisioning fault, not a repository permission problem, and there is no read-only mode to fall back to. Call forge_workspace_create again; if it fails a second time, report that rather than working around it.`,
+            message: `Workspace ${workspaceId} could not be provisioned.${failureDetail} This is a provisioning fault, not a repository permission problem — call forge_workspace_create again with the same owner/repo/branch; if it fails a second time, report that rather than working around it.`,
             retryable: true,
             details: {
               workspace_id: workspaceId,
@@ -1892,19 +1946,19 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_workspace_get: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).getState({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)))).getState({
           compact: Boolean(input.compact)
         }));
       },
       forge_operation_get: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).operationGet({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)))).operationGet({
           operationId: text(input.operation_id) as OperationId
         }));
       },
       forge_files_list: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         const containerRoot = toContainerPath(text(input.path));
         const relativeRoot = normalizeRepoPath(text(input.path));
         const depth = number(input.depth);
@@ -1987,7 +2041,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             details: { paths: paths.length, maxBytes: perFileMaxBytes, totalLimit: MAX_TOTAL_READ_BYTES }
           });
         }
-        const readWorkspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const readWorkspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         const workspace = await authorizedCoordinator(env, identity, readWorkspaceId);
         const readOne = {
           startLine: optionalNumber(input.start_line),
@@ -2071,7 +2125,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_edit: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         const workspace = await authorizedCoordinator(env, identity, workspaceId);
         const state = await withDeadline(
           (async () => (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string; baseCommit?: string; currentCommit?: string })(),
@@ -2243,7 +2297,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_diff_metadata: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         const base = text(input.base);
         const outgoing = await workspace.gitOutgoingDiff({ base: await outgoingComparisonRef(workspace, base), maxBytes: 256_000 });
         const compact = analyzeDiff(outgoing.diff);
@@ -2251,7 +2305,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_context_get: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         // git's file list, not a filesystem walk: node_modules used to consume
         // the whole bounded result, so the selector never saw a source file.
         let files = await workspace.listRepositoryFiles({ limit: 10_000 }).catch(() => [] as string[]);
@@ -2273,7 +2327,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_shell: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         const command = text(input.command);
         const cwd = text(input.cwd);
         const networkPolicy = text(input.network_policy) as never;
@@ -2485,14 +2539,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_logs: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processLogs({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)))).processLogs({
           processId: text(input.process_id) as ProcessId,
           cursor: input.cursor ? text(input.cursor) : undefined
         }));
       },
       forge_process_list: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         if (input.process_id) {
           return asRecord(await workspace.processGet({ processId: text(input.process_id) as ProcessId }));
         }
@@ -2500,7 +2554,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_stop: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         const args = {
           processId: text(input.process_id) as ProcessId,
           expectedRevision: optionalNumber(input.expected_revision),
@@ -2510,14 +2564,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_wait: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).processWait({
+        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)))).processWait({
           processId: text(input.process_id) as ProcessId,
           timeoutMs: optionalNumber(input.timeout_ms) ?? 120_000
         }));
       },
       forge_deps_install: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         const coordinator = await authorizedCoordinator(env, identity, workspaceId);
         const result = await coordinator.dependenciesInstall({
           frozenLockfile: Boolean(input.frozen_lockfile),
@@ -2858,23 +2912,31 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_merge: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         // The branch is Forge's, not the agent's, so it does not have to know
         // or repeat it. If one is supplied it must be the workspace's own —
         // merging some other branch is never what was meant.
         const workspaceBranch = ((await (await authorizedCoordinator(env, identity, workspaceId)).getState()) as { currentBranch?: string }).currentBranch;
-        const branch = input.branch === undefined ? (workspaceBranch ?? '') : text(input.branch);
+        // `workspace` already resolved the workspace above; re-read just the
+        // branch half of it (if the caller pinned one) to cross-check against
+        // the workspace's actual branch — malformed input would already have
+        // thrown inside resolveWorkspaceId, so this second parse cannot fail
+        // where the first one succeeded.
+        const requestedBranch = typeof input.workspace === 'string' && input.workspace.trim()
+          ? parseWorkspaceAddress(input.workspace.trim()).branch
+          : undefined;
+        const branch = requestedBranch === undefined ? (workspaceBranch ?? '') : requestedBranch;
         if (!branch) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: 'This workspace has no agent branch to merge. Nothing has been edited yet.',
+            message: 'This workspace has no agent branch to merge yet — nothing has been edited. Call forge_edit to make a change, then call forge_merge again.',
             retryable: false
           });
         }
         if (workspaceBranch && branch !== workspaceBranch) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `This workspace is on ${workspaceBranch}, not ${branch}. Omit branch and Forge merges the one you have been editing.`,
+            message: `This workspace is on ${workspaceBranch}, not ${branch}. Omit workspace, or pass workspace:'${workspaceBranch}', and forge_merge merges the one you have been editing.`,
             retryable: false,
             details: { workspaceBranch, requested: branch }
           });
@@ -3032,7 +3094,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_cloudflare_deploy: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         const command = input.command === undefined ? 'npx wrangler deploy' : text(input.command);
         const cwd = input.cwd === undefined ? '/workspace/repo' : text(input.cwd);
         const expectedUrl = input.expected_url === undefined ? undefined : text(input.expected_url);
@@ -3183,7 +3245,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_preview_expose: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id) as WorkspaceId;
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input)) as WorkspaceId;
         const value = await (await authorizedCoordinator(env, identity, workspaceId)).previewExpose({
           processId: text(input.process_id) as ProcessId,
           port: number(input.port),
@@ -3217,7 +3279,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
             forge_preview: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id) as WorkspaceId;
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input)) as WorkspaceId;
         // Getting here used to cost four calls and a polling loop: start the dev
         // server, poll its logs until it booted, expose a preview, then capture.
         // That is the whole "how does my app look right now" loop, and it is the
@@ -3438,7 +3500,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_artifact_get: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, { workspaceId: input.workspace_id, ...workspaceAddress(input) });
         const artifactId = text(input.artifact_id);
         // A container-backed workspace has a coordinator record that binds it to
         // the caller's tenant and project. A URL-review workspace (from
@@ -3463,7 +3525,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if (ownerTenant !== identity.tenantId || ownerProject !== identity.projectId) {
             throw new ForgeError({
               code: 'FORGE_PERMISSION_DENIED',
-              message: 'This workspace belongs to a different project. Use a workspace_id from the current project.',
+              message: 'This workspace belongs to a different project. Use owner/repo/branch (or none, to use the one you have open) to address a workspace in the current project instead.',
               retryable: false
             });
           }
@@ -3481,7 +3543,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if (owner && (owner.tenantId !== identity.tenantId || owner.projectId !== identity.projectId)) {
             throw new ForgeError({
               code: 'FORGE_PERMISSION_DENIED',
-              message: 'This url_review artifact belongs to a different project.',
+              message: 'This url_review artifact belongs to a different project. Call forge_review again from this project — it mints a fresh workspace and artifacts you can fetch.',
               retryable: false
             });
           }
@@ -3496,7 +3558,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (!object) {
           throw new ForgeError({
             code: 'FORGE_ARTIFACT_NOT_FOUND',
-            message: 'No artifact with this artifact_id exists in this workspace.',
+            message: 'No artifact with this artifact_id exists in the resolved workspace. Artifact ids do not carry over between workspaces — call forge_review, forge_shell, or whichever tool produced it again to get a fresh one.',
             retryable: false
           });
         }
@@ -3538,7 +3600,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_artifact_upload: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         const artifactId = ids.artifact() as import('@forge/core').ArtifactId;
         const bytes = Uint8Array.from(atob(text(input.content_base64)), (c) => c.charCodeAt(0)).buffer;
         const store = new R2ArtifactStore(env.ARTIFACTS);
@@ -3561,7 +3623,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_workspace_destroy: async (input) => {
         const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id) as WorkspaceId;
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input)) as WorkspaceId;
         const idempotencyKey = idempotency(input.idempotency_key);
         const request = await (await authorizedCoordinator(env, identity, workspaceId)).requestDestroy({
           expectedRevision: optionalNumber(input.expected_revision),
