@@ -1,32 +1,40 @@
 /**
- * Where a piece of agent work actually lives.
+ * What a mutating tool call actually achieved.
  *
  * The incident this file exists for: an agent wrote a document, Forge
  * auto-committed it on a `forge/` branch, the push failed, and the agent
  * reported the work as being "on the branch" — naming a real branch and a real
- * commit SHA. Every fact it cited was true, and the conclusion was still wrong,
- * because a branch name, a commit SHA and an outgoing diff are all equally true
- * of work that exists only inside a temporary workspace. The workspace was
- * later reaped and the document went with it.
+ * commit SHA. Every fact it cited was true and the conclusion was still wrong,
+ * because a branch name, a commit SHA and an outgoing diff are all equally
+ * true of work that exists only inside a temporary workspace. The workspace
+ * was later reaped and the document went with it.
  *
- * So the branch/SHA/diff triple is not evidence of durability and must never be
- * summarised as such. This module is the one place that decides the question,
- * and it answers with a state plus a sentence the agent can repeat verbatim
- * without overclaiming.
+ * The design conclusion is that local editing and remote persistence are
+ * separate outcomes and must be reported separately. A tool returns as soon as
+ * the edit is committed and checkpointed; the push is a distinct, separately
+ * recoverable step. So one field answers "did my edit land?" and a second
+ * answers "does it survive the workspace?" — and neither can be mistaken for
+ * the other.
  */
 
-/** The four terminal states any Forge work can be in. */
-export type DurabilityState =
-  /** Committed inside the workspace only. Dies with the workspace. */
-  | 'local_only'
-  /** Commit verified present on the origin branch. */
-  | 'remote_branch'
-  /** On origin and a pull request points at it. */
-  | 'pull_request'
-  /** Workspace failed; content survives only as an artifact/transcript. */
-  | 'failed_recovered';
+/** What happened to the workspace. */
+export type MutationOutcome =
+  /** Nothing changed — the content was already what was asked for. */
+  | 'unchanged'
+  /** Files changed on disk but nothing is committed yet. */
+  | 'workspace_changed'
+  /** Committed inside the workspace. Dies with the workspace. */
+  | 'committed_local'
+  /** Committed and verified present on the origin branch. */
+  | 'pushed_remote'
+  /** Forge could not establish what happened. Read before retrying. */
+  | 'unknown';
+
+/** Where the work now lives. */
+export type DurabilityState = 'local_only' | 'remote_branch' | 'pull_request' | 'failed_recovered';
 
 export interface DurabilityVerdict {
+  mutationOutcome: MutationOutcome;
   durability: DurabilityState;
   /** True only when the commit is verified present on origin. */
   on_remote: boolean;
@@ -50,13 +58,17 @@ export function describeDurability(input: {
   remoteSha?: string;
   pushFailureReason?: string;
   pullRequestUrl?: string;
+  /** False when this call found nothing to commit (a replayed or repeated edit). */
+  committed?: boolean;
 }): DurabilityVerdict {
   const branch = input.branch;
   const onRemote = input.pushVerified === true || input.hasUnpushedWork === false;
   const remoteSha = input.remoteSha ?? (onRemote ? input.commit : undefined);
+  const nothingToDo = input.committed === false;
 
   if (onRemote && input.pullRequestUrl) {
     return {
+      mutationOutcome: nothingToDo ? 'unchanged' : 'pushed_remote',
       durability: 'pull_request',
       on_remote: true,
       durability_statement: `Pushed to origin/${branch} (${short(remoteSha)}) and a pull request is open at ${input.pullRequestUrl}.`,
@@ -67,9 +79,12 @@ export function describeDurability(input: {
 
   if (onRemote) {
     return {
+      mutationOutcome: nothingToDo ? 'unchanged' : 'pushed_remote',
       durability: 'remote_branch',
       on_remote: true,
-      durability_statement: `Pushed and verified on GitHub: origin/${branch} is at ${short(remoteSha)}. This survives the workspace.`,
+      durability_statement: nothingToDo
+        ? `Nothing to commit — origin/${branch} is already at ${short(remoteSha)}. No new work was created by this call.`
+        : `Pushed and verified on GitHub: origin/${branch} is at ${short(remoteSha)}. This survives the workspace.`,
       ...(branch ? { remote_branch: branch } : {}),
       ...(remoteSha ? { remote_sha: remoteSha } : {})
     };
@@ -77,6 +92,7 @@ export function describeDurability(input: {
 
   const because = input.pushFailureReason ? ` Push failed: ${input.pushFailureReason.slice(0, 200)}.` : '';
   return {
+    mutationOutcome: 'committed_local',
     durability: 'local_only',
     on_remote: false,
     durability_statement:
@@ -94,14 +110,19 @@ function short(sha?: string): string {
  * verdict so the steer and the state can never drift apart.
  */
 export function durabilityNextStep(verdict: DurabilityVerdict): string {
+  if (verdict.mutationOutcome === 'committed_local') {
+    // The edit itself succeeded. Say so first, or the agent re-applies it and
+    // then meets "nothing to commit" as a second, unrelated-looking fault.
+    return 'Your edit IS committed in the workspace — do NOT repeat it. It is LOCAL ONLY and not yet on GitHub. Retry the push (forge_git_push / forge_submit) before reporting this work as saved; if it cannot be pushed, say so explicitly and export the content.';
+  }
   switch (verdict.durability) {
-    case 'local_only':
-      return 'Work is LOCAL ONLY. Retry the push (edit again, or forge_git_push / forge_submit) before reporting this work as saved. If it cannot be pushed, say so explicitly and export the content.';
     case 'remote_branch':
       return `Verified on origin/${verdict.remote_branch}. Safe to report as saved. Use forge_submit to open a pull request.`;
     case 'pull_request':
       return 'Pushed and a pull request is open. Report the PR URL.';
     case 'failed_recovered':
       return 'The workspace failed. Supply the content as an artifact and state plainly that nothing reached GitHub.';
+    default:
+      return 'Work is LOCAL ONLY. Retry the push before reporting this work as saved.';
   }
 }

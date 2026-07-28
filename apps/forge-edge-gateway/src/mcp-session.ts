@@ -527,7 +527,13 @@ function durabilityOf(value: Record<string, unknown>): DurabilityVerdict | undef
   if (state !== 'local_only' && state !== 'remote_branch' && state !== 'pull_request' && state !== 'failed_recovered') {
     return undefined;
   }
+  const outcome = value.mutationOutcome;
   return {
+    mutationOutcome:
+      outcome === 'unchanged' || outcome === 'workspace_changed' || outcome === 'committed_local' ||
+      outcome === 'pushed_remote' || outcome === 'unknown'
+        ? outcome
+        : 'unknown',
     durability: state,
     on_remote: value.on_remote === true,
     durability_statement: String(value.durability_statement ?? ''),
@@ -877,7 +883,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         git: {
           immutable_base_commit: true,
           workspace_proof: true,
-          auto_push_forge_branches: 'reported_via_durability_field',
+          auto_push_forge_branches: 'reported_via_mutation_outcome',
+          mutation_outcomes: ['unchanged', 'workspace_changed', 'committed_local', 'pushed_remote', 'unknown'],
           durability_states: ['local_only', 'remote_branch', 'pull_request', 'failed_recovered'],
           branch_push: 'approval_required',
           draft_pull_request: 'approval_required',
@@ -1873,12 +1880,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_context_get: async (input) => {
         const identity = this.identity();
         const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
-        const tree = await workspace.filesTree({ path: '/workspace/repo', depth: 20, limit: 10_000 });
-        const entries = (tree as { entries?: Array<{ path?: string; name?: string; type?: string }> }).entries ?? [];
-        const files = entries
-          .filter((e) => e.type !== 'directory' && e.path)
-          .map((e) => e.path!.replace(/^\/workspace\/repo\//, ''))
-          .filter((p) => p && !p.startsWith('.'));
+        // git's file list, not a filesystem walk: node_modules used to consume
+        // the whole bounded result, so the selector never saw a source file.
+        let files = await workspace.listRepositoryFiles({ limit: 10_000 }).catch(() => [] as string[]);
+        if (!files.length) {
+          const tree = await workspace.filesTree({ path: '/workspace/repo', depth: 20, limit: 10_000 });
+          const entries = (tree as { entries?: Array<{ path?: string; name?: string; type?: string }> }).entries ?? [];
+          files = entries
+            .filter((e) => e.type !== 'directory' && e.path)
+            .map((e) => e.path!.replace(/^\/workspace\/repo\//, ''));
+        }
+        files = files.filter((p) => p && !p.startsWith('.'));
         const response = selectContext({
           goal: text(input.goal),
           files,

@@ -3530,6 +3530,38 @@ export class ForgeApplicationService {
     return { ...identity, workspaceHash, workspaceHashAlgorithm: 'content-v2' };
   }
 
+  /**
+   * The repository's own file list, for context selection.
+   *
+   * A filesystem walk cannot do this job: it is bounded by a file limit, and
+   * `node_modules` alone blows past any sane bound, so the budget was spent
+   * before a single source file was reached and the agent got a "context" of
+   * dependency internals. `git ls-files` is the repository's own view —
+   * `--others --exclude-standard` keeps newly written, not-yet-committed files
+   * while .gitignore keeps build output and dependencies out for free.
+   *
+   * Newline-delimited rather than `-z`: git C-quotes any path containing a
+   * newline, so this stays unambiguous without depending on NUL bytes
+   * surviving the exec transport.
+   */
+  async listRepositoryFiles(record: WorkspaceRuntimeRecord, limit = 10_000): Promise<string[]> {
+    const handle = await this.handle(record);
+    const listed = await handle.exec({
+      command: 'git ls-files --cached --others --exclude-standard',
+      cwd: '/workspace/repo',
+      timeoutMs: 30_000,
+      outputLimitBytes: 1_000_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    });
+    if (listed.exitCode !== 0) return [];
+    return listed.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, limit);
+  }
+
   async proveWorkspaceState(record: WorkspaceRuntimeRecord, source?: RepositoryCloneSource) {
     const recorded = { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, baseCommit: record.workspace.baseCommit };
     await this.reconcileGitState(record);
@@ -4143,6 +4175,9 @@ export class ForgeApplicationService {
     action: 'detect' | 'reset_to_remote' | 'keep_local_and_push'
   ): Promise<{
     diverged: boolean;
+    /** Explicit three-state answer. `diverged: false` alone cannot distinguish
+     *  "the remote agrees" from "there is no remote branch". */
+    remoteState?: 'missing' | 'matching' | 'diverged' | 'not_applicable';
     branch?: string;
     localHead?: string;
     remoteSha?: string | null;
@@ -4152,7 +4187,7 @@ export class ForgeApplicationService {
     await this.reconcileGitState(record);
     const branch = record.workspace.currentBranch;
     if (!branch || !isAgentForgeBranchForProve(branch)) {
-      return { diverged: false, message: 'Remote sync applies only to agent forge/ branches.' };
+      return { diverged: false, remoteState: 'not_applicable', message: 'Remote sync applies only to agent forge/ branches.' };
     }
     const handle = await this.handle(record);
     await handle.exec({
@@ -4162,11 +4197,32 @@ export class ForgeApplicationService {
     }).catch(() => undefined);
     const remoteSha = await this.readRemoteBranchSha(record, source, branch);
     const localHead = record.workspace.currentCommit;
-    const diverged = Boolean(remoteSha && localHead && remoteSha !== localHead);
-    if (!diverged) {
+    // Three states, never two. "Not diverged" used to cover both "the remote
+    // agrees" and "there is no remote branch at all", and both reported
+    // "Local HEAD matches the remote feature branch." — so a branch that had
+    // never reached GitHub was described as matching it. That is the same
+    // false assurance that let unpushed work be reported as saved.
+    const remoteState: 'missing' | 'matching' | 'diverged' = !remoteSha
+      ? 'missing'
+      : remoteSha === localHead
+        ? 'matching'
+        : 'diverged';
+    if (remoteState === 'missing') {
       record.workspace.gitRemoteDivergence = undefined;
-      return { diverged: false, branch, localHead, remoteSha, message: 'Local HEAD matches the remote feature branch.' };
+      return {
+        diverged: false,
+        remoteState,
+        branch,
+        localHead,
+        remoteSha: null,
+        message: `origin/${branch} does not exist on GitHub. There is nothing to compare against — this work is LOCAL ONLY and will be lost with the workspace. Push it before relying on it.`
+      };
     }
+    if (remoteState === 'matching') {
+      record.workspace.gitRemoteDivergence = undefined;
+      return { diverged: false, remoteState, branch, localHead, remoteSha, message: `origin/${branch} is at ${localHead} — verified match with workspace HEAD.` };
+    }
+    const diverged = true;
     if (action === 'detect') {
       record.workspace.gitRemoteDivergence = {
         remoteSha: remoteSha!,
@@ -4179,6 +4235,7 @@ export class ForgeApplicationService {
         branch,
         localHead,
         remoteSha,
+        remoteState,
         message: `Remote ${branch} diverged from workspace HEAD. Call forge_git_sync with reconcile reset_to_remote or keep_local_and_push.`
       };
     }

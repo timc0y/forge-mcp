@@ -797,7 +797,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     // Reconcile durability even when this commit was a replay or a no-op:
     // an earlier commit may still be sitting unpushed, and this is the only
     // place the edit path gets to retry it.
-    const { auto_push, ...verdict } = await this.reconcileDurability(record);
+    const madeCommit = !('replay' in committed && committed.replay) && ('committed' in committed ? committed.committed !== false : true);
+    const { auto_push, ...verdict } = await this.reconcileDurability(record, madeCommit);
     return {
       auto_commit: {
         commit: 'commit' in committed && committed.commit ? String(committed.commit) : record.workspace.currentCommit ?? undefined,
@@ -1425,6 +1426,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.readWithRecovery((record) => this.app.checkGet(record, input.processId));
   }
 
+  /** Repository file list for context selection — git's view, not a filesystem walk. */
+  async listRepositoryFiles(input: { limit?: number } = {}) {
+    return this.readRepoWithRecovery((record) => this.app.listRepositoryFiles(record, input.limit ?? 10_000));
+  }
+
   async gitStatus() {
     return this.readRepoWithRecovery(async (record) => {
       await this.app.reconcileGitState(record);
@@ -1503,7 +1509,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         // commit -> checkpoint -> push: the snapshot must record the identity
         // of the commit it contains, and a push failure must not cost us it.
         const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
-        const durability = await this.reconcileDurability(record);
+        const durability = await this.reconcileDurability(record, 'committed' in value ? value.committed !== false : true);
         return { ...value, ...durability, checkpoint };
       } finally {
         await this.save(record);
@@ -1539,7 +1545,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
    *    nothing in the edit path would ever try again. Now every subsequent
    *    mutation re-attempts the push until origin actually has the work.
    */
-  async reconcileDurability(record: WorkspaceRuntimeRecord): Promise<{
+  async reconcileDurability(record: WorkspaceRuntimeRecord, committed?: boolean): Promise<{
     auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
   } & DurabilityVerdict> {
     const branch = record.workspace.currentBranch ?? undefined;
@@ -1548,7 +1554,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (!autoPushForgeBranchesEnabled(this.env) || !isAgentForgeBranch(branch)) {
       return {
         auto_push: { pushed: false, reason: 'disabled' },
-        ...describeDurability({ branch, commit, hasUnpushedWork: true, pushFailureReason: 'auto-push is disabled for this branch' })
+        ...describeDurability({ branch, commit, hasUnpushedWork: true, committed, pushFailureReason: 'auto-push is disabled for this branch' })
       };
     }
     if (!record.workspace.hasUnpushedWork) {
@@ -1558,6 +1564,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           branch,
           commit,
           hasUnpushedWork: false,
+          committed,
           remoteSha: record.workspace.lastPushedCommit ?? commit
         })
       };
@@ -1565,7 +1572,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (!commit) {
       return {
         auto_push: { pushed: false, reason: 'no commit to push' },
-        ...describeDurability({ branch, commit, hasUnpushedWork: true, pushFailureReason: 'there is no commit to push' })
+        ...describeDurability({ branch, commit, hasUnpushedWork: true, committed, pushFailureReason: 'there is no commit to push' })
       };
     }
 
@@ -1593,6 +1600,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         commit,
         hasUnpushedWork: !result.pushed,
         pushVerified: result.pushed,
+        committed,
         remoteSha: result.remote_sha,
         ...(result.pushed ? {} : { pushFailureReason: result.reason })
       })
