@@ -2390,11 +2390,29 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
         if (!title.trim()) title = `Forge: ${branch}`;
 
-        // Park the commits somewhere durable BEFORE promising the human anything.
-        // If staging fails there is nothing to approve, and the agent should hear
-        // about it now rather than the reviewer discovering it days later.
+        // The commits must be somewhere durable before anything is promised to a
+        // human. Under remote-first editing they already are: forge_edit put
+        // them on origin/<branch> as it made them, so staging a second copy
+        // through the Git credential proxy duplicates work that is already done
+        // — over the one transport that can fail. That is exactly how this
+        // failed in the wild: an agent's commit was on origin, forge_merge
+        // pushed it again to forge/staged/*, got HTTP 403, and reported the
+        // whole merge as broken while the work sat safely on the branch.
+        //
+        // So verify instead of re-push, using the same GitHub API path
+        // forge_edit uses. Staging survives only as a fallback for a branch
+        // that genuinely is not on origin.
         const stagedRef = `forge/staged/${workspaceId}/${branch.replace(/^forge\//, '')}`;
-        const staged = await coordinator.stageForReview({ ref: stagedRef });
+        let staged: { ref: string; commit: string; remote_sha?: string };
+        const remoteHead = await githubRequestForWorkspace(env, identity, { repository: state.repository as RepositoryRef })
+          .then((request) => request(`/repos/${(state.repository as RepositoryRef).owner}/${(state.repository as RepositoryRef).name}/git/ref/heads/${branch.split('/').map(encodeURIComponent).join('/')}`))
+          .then((response) => (response.status === 200 ? (response.json as { object?: { sha?: string } }).object?.sha : undefined))
+          .catch(() => undefined);
+        if (remoteHead) {
+          staged = { ref: branch, commit: remoteHead, remote_sha: remoteHead };
+        } else {
+          staged = await coordinator.stageForReview({ ref: stagedRef });
+        }
 
         let diffArtifactId: string | undefined;
         if (diff.trim() && utf8Bytes(diff) > 4_096) {
@@ -2465,9 +2483,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             approval_id: approval.approval_id,
             approval_url: approval.approval_url,
             files_changed: filesChanged,
-            feature_branch_on_origin: true as const
+            // Asserted from the ref actually read back off origin, not
+            // hardcoded. A receipt that claims remote presence unconditionally
+            // is the same false assurance that started all of this.
+            feature_branch_on_origin: Boolean(remoteHead)
           },
-          next_step: `Echo only submission_receipt to the human. Branch ${branch}@${staged.remote_sha} is on origin; approve at ${approval.approval_url}. Do not invent a workers.dev URL.`
+          next_step: remoteHead
+            ? `Echo only submission_receipt to the human. Branch ${branch}@${staged.remote_sha} is verified on origin; approve at ${approval.approval_url}.`
+            : `Echo only submission_receipt to the human. ${branch} is NOT on origin — the commits were staged at ${staged.ref} instead. Say that plainly rather than describing the branch as pushed. Approve at ${approval.approval_url}.`
         };
       },
       forge_cloudflare_deploy: async (input) => {
