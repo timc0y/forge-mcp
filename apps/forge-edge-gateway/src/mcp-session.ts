@@ -72,6 +72,7 @@ import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
 import { durabilityNextStep, describeDurability, type DurabilityVerdict } from './durability';
 import { isTextualArtifact } from './artifact-content';
 import { normalizeRepoPath } from './repo-paths';
+import { applyReplacements, ReplacementFailed } from './apply-replacements';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
 
@@ -1784,11 +1785,23 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             retryable: false
           });
         }
-        const files = (input.files as Array<{ path: string; content: string | null }>).map((file) => ({
+        const requested = (input.files as Array<{ path: string; content?: string | null; replace?: Array<{ old: string; new: string; all?: boolean }> }>).map((file) => ({
           path: normalizeRepoPath(text(file.path)),
-          content: file.content === null ? null : text(file.content)
+          content: file.content === undefined ? undefined : file.content === null ? null : text(file.content),
+          replace: file.replace
         }));
-        const duplicate = files.map((f) => f.path).find((path, index, all) => all.indexOf(path) !== index);
+        for (const file of requested) {
+          const hasContent = file.content !== undefined;
+          const hasReplace = Array.isArray(file.replace) && file.replace.length > 0;
+          if (hasContent === hasReplace) {
+            throw new ForgeError({
+              code: 'FORGE_VALIDATION_FAILED',
+              message: `${file.path}: send either content (whole file, or null to delete) or replace (fragments), not both and not neither.`,
+              retryable: false
+            });
+          }
+        }
+        const duplicate = requested.map((f) => f.path).find((path, index, all) => all.indexOf(path) !== index);
         if (duplicate) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
@@ -1797,10 +1810,60 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
         }
         const message = input.message === undefined
-          ? `edit: ${files.length} file${files.length === 1 ? '' : 's'}`
+          ? `edit: ${requested.length} file${requested.length === 1 ? '' : 's'}`
           : text(input.message);
 
         const request = await githubRequestForWorkspace(env, identity, { repository: state.repository });
+        // Fragment edits are resolved here, against what the file actually
+        // contains right now. Forge does the reading, so the agent never has
+        // to re-emit a whole file and cannot lose the parts it did not send.
+        const resolvedBlobs: Record<string, string> = {};
+        const files: Array<{ path: string; content: string | null }> = [];
+        for (const file of requested) {
+          if (file.content !== undefined) {
+            files.push({ path: file.path, content: file.content });
+            continue;
+          }
+          const fetched = await request(
+            `/repos/${state.repository.owner}/${state.repository.name}/contents/${file.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`
+          );
+          if (fetched.status !== 200) {
+            throw new ForgeError({
+              code: 'FORGE_FILE_NOT_FOUND',
+              message: `${file.path} does not exist on ${branch}, so there is nothing to replace in it. Send content to create it.`,
+              retryable: false,
+              details: { path: file.path, branch }
+            });
+          }
+          const body = fetched.json as { content?: string; sha?: string; encoding?: string };
+          if (typeof body.content !== 'string' || typeof body.sha !== 'string') {
+            throw new ForgeError({
+              code: 'FORGE_FILE_CONFLICT',
+              message: `${file.path} could not be read as text, so fragment replacement cannot be applied to it.`,
+              retryable: false,
+              details: { path: file.path }
+            });
+          }
+          const currentText = new TextDecoder().decode(
+            Uint8Array.from(atob(body.content.replace(/\n/gu, '')), (character) => character.charCodeAt(0))
+          );
+          try {
+            files.push({ path: file.path, content: applyReplacements(file.path, currentText, file.replace!) });
+          } catch (error) {
+            if (error instanceof ReplacementFailed) {
+              throw new ForgeError({
+                code: 'FORGE_FILE_CONFLICT',
+                message: error.message,
+                retryable: false,
+                details: { path: error.path, reason: error.reason }
+              });
+            }
+            throw error;
+          }
+          // Forge read it, so the read-before-overwrite guard is satisfied by
+          // the blob it actually applied the change to.
+          resolvedBlobs[file.path] = body.sha;
+        }
         let result;
         try {
           result = await commitFilesToBranch(request, {
@@ -1809,7 +1872,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             branch,
             message,
             files,
-            expectedBlobs: await workspace.seenBlobs({ paths: files.map((file) => file.path) }),
+            expectedBlobs: { ...(await workspace.seenBlobs({ paths: files.map((file) => file.path) })), ...resolvedBlobs },
             // The agent branch is cut inside the container, so GitHub has not
             // seen it until the first edit lands.
             baseSha: state.baseCommit ?? state.currentCommit,

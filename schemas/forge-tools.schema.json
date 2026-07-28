@@ -786,7 +786,7 @@
     },
     "forge_edit": {
       "title": "Edit files",
-      "description": "Write or delete files. The edit is committed straight to GitHub on your branch — there is no separate push, and nothing is ever left only inside the workspace. Set content to null to delete a path. Returns the commit URL.",
+      "description": "Edit files. Committed straight to GitHub on your branch — no push, nothing left only in the workspace. Prefer replace: [{old,new}] and send only the fragment you are changing; Forge reads the current file and applies it. Use content for a whole new file, or content:null to delete. Returns the commit URL.",
       "sideEffect": "external",
       "approval": "none",
       "inputSchema": {
@@ -839,11 +839,40 @@
                     "type": "null"
                   }
                 ]
+              },
+              "replace": {
+                "minItems": 1,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/__schema2"
+                }
               }
             },
             "required": [
-              "path",
-              "content"
+              "path"
+            ],
+            "additionalProperties": false
+          },
+          "__schema2": {
+            "type": "object",
+            "properties": {
+              "old": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100000
+              },
+              "new": {
+                "type": "string",
+                "maxLength": 100000
+              },
+              "all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "old",
+              "new"
             ],
             "additionalProperties": false
           }
