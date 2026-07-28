@@ -67,6 +67,7 @@ import {
 } from './github';
 import { createDeferredAction, listDeferredActionsForWorkspace } from './deferred-actions';
 import { autoPushForgeBranchesEnabled } from './auto-push-policy';
+import { durabilityNextStep, type DurabilityVerdict } from './durability';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
 
@@ -443,6 +444,53 @@ async function outgoingComparisonRef(workspace: DurableObjectStub<WorkspaceCoord
   return state.requestedRef;
 }
 
+/**
+ * Persist the durability verdict from any mutating tool onto the task, and
+ * hand the agent one unambiguous sentence about where the work lives.
+ *
+ * Previously only `forge_git_commit` recorded `remoteBranchSha`. Every file
+ * tool auto-commits and auto-pushes through a different path, so an agent that
+ * did the whole job with `forge_files_write*` — the documented way to edit —
+ * genuinely landed its work on origin but left `remoteBranchSha` unset. Task
+ * completion then refused with "the feature branch is not verified on origin",
+ * about a branch that was on origin. That false blocker is its own source of
+ * flailing, and it hid the true one.
+ */
+async function applyDurability<T extends Record<string, unknown>>(
+  env: Env,
+  workspaceId: WorkspaceId,
+  result: T
+): Promise<T & { next_step?: string }> {
+  const verdict = durabilityOf(result);
+  if (!verdict) return result;
+  if (verdict.on_remote && verdict.remote_sha) {
+    await recordTaskRemoteSha(env, workspaceId, verdict.remote_sha);
+  }
+  const existing = typeof result.next_step === 'string' ? `${result.next_step} ` : '';
+  return { ...result, next_step: `${existing}${durabilityNextStep(verdict)}` };
+}
+
+/** The verdict fields, lifted out of a coordinator result for re-emission. */
+function durabilityFields(value: object): Partial<DurabilityVerdict> {
+  const verdict = durabilityOf(asRecord(value));
+  return verdict ?? {};
+}
+
+/** Read a durability verdict off a coordinator result, if it carries one. */
+function durabilityOf(value: Record<string, unknown>): DurabilityVerdict | undefined {
+  const state = value.durability;
+  if (state !== 'local_only' && state !== 'remote_branch' && state !== 'pull_request' && state !== 'failed_recovered') {
+    return undefined;
+  }
+  return {
+    durability: state,
+    on_remote: value.on_remote === true,
+    durability_statement: String(value.durability_statement ?? ''),
+    ...(typeof value.remote_branch === 'string' ? { remote_branch: value.remote_branch } : {}),
+    ...(typeof value.remote_sha === 'string' ? { remote_sha: value.remote_sha } : {})
+  };
+}
+
 async function recordTaskRemoteSha(env: Env, workspaceId: WorkspaceId, remoteSha: string): Promise<void> {
   await new D1TaskStore(env.METADATA).getByWorkspace(workspaceId).then(async (task) => {
     if (!task) return;
@@ -784,7 +832,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         git: {
           immutable_base_commit: true,
           workspace_proof: true,
-          auto_push_forge_branches: 'hard_fail_on_push_error',
+          auto_push_forge_branches: 'reported_via_durability_field',
+          durability_states: ['local_only', 'remote_branch', 'pull_request', 'failed_recovered'],
           branch_push: 'approval_required',
           draft_pull_request: 'approval_required',
           submit_requires_feature_branch_on_origin: true,
@@ -1625,7 +1674,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_files_write: async (input) => {
         const identity = this.identity();
-        const result = await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesWrite({
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const result = await (await authorizedCoordinator(env, identity, workspaceId)).filesWrite({
           path: text(input.path),
           content: text(input.content),
           expectedSha256: input.expected_sha256 ? text(input.expected_sha256) : undefined,
@@ -1635,7 +1685,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const record = asRecord(result);
         // Receipt only — omit checkpoint blob from the model channel.
         const { checkpoint: _checkpoint, ...receipt } = record;
-        return receipt;
+        return applyDurability(env, workspaceId as WorkspaceId, receipt);
       },
       forge_files_write_batch: async (input) => {
         const identity = this.identity();
@@ -1658,18 +1708,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: idempotency(input.idempotency_key)
         });
-        return {
+        return applyDurability(env, workspaceId as WorkspaceId, {
           written: result.written,
           files: result.files,
           workspaceRevision: result.workspaceRevision,
           ...('auto_commit' in result && result.auto_commit ? { auto_commit: result.auto_commit } : {}),
           ...('replay' in result && result.replay ? { replay: true, operationId: result.operationId } : {}),
-          next_step: `Wrote and auto-committed ${result.written} file(s). Continue the next folder or forge_submit.`
-        };
+          ...durabilityFields(result),
+          next_step: `Wrote and auto-committed ${result.written} file(s).`
+        });
       },
       forge_files_replace: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesReplace({
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        return applyDurability(env, workspaceId as WorkspaceId, asRecord(await (await authorizedCoordinator(env, identity, workspaceId)).filesReplace({
           path: text(input.path),
           oldString: text(input.old_string),
           newString: text(input.new_string),
@@ -1677,16 +1729,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           expectedSha256: input.expected_sha256 ? text(input.expected_sha256) : undefined,
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: idempotency(input.idempotency_key)
-        }));
+        })));
       },
       forge_files_patch: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesPatch({
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        return applyDurability(env, workspaceId as WorkspaceId, asRecord(await (await authorizedCoordinator(env, identity, workspaceId)).filesPatch({
           patch: text(input.patch),
           paths: input.paths === undefined ? undefined : (input.paths as string[]),
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: idempotency(input.idempotency_key)
-        }));
+        })));
       },
       forge_files_upload: async (input) => {
         const identity = this.identity();
@@ -1749,7 +1802,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
           const sizeBytes = parseInt(stat.stdout.trim(), 10) || 0;
           const auto = await workspace.filesUploadCommit({ path });
-          return { path, size_bytes: sizeBytes, uploaded: true, ...auto };
+          return await applyDurability(env, workspaceId as WorkspaceId, { path, size_bytes: sizeBytes, uploaded: true, ...auto });
         } catch (error) {
           await workspace.shellExec({
             command: `rm -f '${tmpPath}'`,
@@ -2105,17 +2158,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           message, paths: input.paths as string[], expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
         });
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        if (result.auto_push?.pushed && result.auto_push.remote_sha) {
-          await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.auto_push.remote_sha);
-        }
         const record = asRecord(result);
         const { checkpoint: _checkpoint, ...receipt } = record;
-        return {
-          ...receipt,
-          next_step: result.auto_push?.pushed
-            ? `Committed and pushed ${result.auto_push.remote_sha}. Echo that SHA only — do not paste the diff.`
-            : 'Committed locally. Push via forge_submit or forge_git_push when ready.'
-        };
+        return applyDurability(env, workspaceId as WorkspaceId, receipt);
       },
       forge_git_push: async (input) => {
         const identity = this.identity();

@@ -18,6 +18,7 @@ import type { Env } from './env';
 import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
 import { autoPushForgeBranchesEnabled } from './auto-push-policy';
+import { describeDurability, type DurabilityVerdict } from './durability';
 import { snapshotsEnabled, getSnapshot } from './snapshots';
 import { depsCacheKey, getDepsCache } from './deps-cache';
 
@@ -778,7 +779,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       branch?: string;
       auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
     };
-  }> {
+  } & DurabilityVerdict> {
     this.assertMutableOnAgentForgeBranch(record);
     const relPaths = paths.map((path) => this.repoRelativePath(path)).filter(Boolean);
     const message = `chore: ${summary}`.slice(0, 500);
@@ -787,16 +788,17 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       paths: relPaths.length ? relPaths : [],
       idempotencyKey: `auto-commit-${record.workspace.id}-${record.workspace.revision}-${relPaths[0] ?? 'tree'}`
     });
-    if ('replay' in committed && committed.replay) {
-      return { auto_commit: { branch: record.workspace.currentBranch ?? undefined } };
-    }
-    const autoPush = await this.tryAutoPushAfterCommit(record);
+    // Reconcile durability even when this commit was a replay or a no-op:
+    // an earlier commit may still be sitting unpushed, and this is the only
+    // place the edit path gets to retry it.
+    const { auto_push, ...verdict } = await this.reconcileDurability(record);
     return {
       auto_commit: {
-        commit: 'commit' in committed ? String(committed.commit) : record.workspace.currentCommit ?? undefined,
+        commit: 'commit' in committed && committed.commit ? String(committed.commit) : record.workspace.currentCommit ?? undefined,
         branch: record.workspace.currentBranch ?? undefined,
-        ...autoPush
-      }
+        ...(auto_push ? { auto_push } : {})
+      },
+      ...verdict
     };
   }
 
@@ -957,7 +959,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       branch?: string;
       auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
     };
-  }> {
+  } & DurabilityVerdict> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
@@ -1497,9 +1499,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         await this.assertRemoteNotBlocking(record);
         await this.app.reconcileGitState(record);
         const value = await this.app.gitCommit(record, input);
-        const autoPush = await this.tryAutoPushAfterCommit(record);
+        const durability = await this.reconcileDurability(record);
         const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
-        return { ...value, ...autoPush, checkpoint };
+        return { ...value, ...durability, checkpoint };
       } finally {
         await this.save(record);
       }
@@ -1517,55 +1519,80 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     }
   }
 
-  async tryAutoPushAfterCommit(record: WorkspaceRuntimeRecord): Promise<{
+  /**
+   * Push whatever is unpushed on the agent's `forge/` branch and state plainly
+   * where the work now lives.
+   *
+   * Two deliberate properties, both learned from the incident this replaced a
+   * throwing version over:
+   *
+   * 1. It never throws for a push failure. The write and the commit genuinely
+   *    succeeded; turning that into a tool error told the agent "your write
+   *    failed", which is false and is what made it retry the write instead of
+   *    the push. The push outcome is data, not an exception.
+   * 2. It keys off `hasUnpushedWork`, not off whether *this* call produced a
+   *    commit. Previously a retry whose commit was a no-op skipped the push
+   *    entirely, so the first failed push stranded that commit permanently —
+   *    nothing in the edit path would ever try again. Now every subsequent
+   *    mutation re-attempts the push until origin actually has the work.
+   */
+  async reconcileDurability(record: WorkspaceRuntimeRecord): Promise<{
     auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
-  }> {
-    if (!autoPushForgeBranchesEnabled(this.env) || !isAgentForgeBranch(record.workspace.currentBranch)) {
-      return { auto_push: { pushed: false, reason: 'disabled' } };
+  } & DurabilityVerdict> {
+    const branch = record.workspace.currentBranch ?? undefined;
+    const commit = record.workspace.currentCommit ?? undefined;
+
+    if (!autoPushForgeBranchesEnabled(this.env) || !isAgentForgeBranch(branch)) {
+      return {
+        auto_push: { pushed: false, reason: 'disabled' },
+        ...describeDurability({ branch, commit, hasUnpushedWork: true, pushFailureReason: 'auto-push is disabled for this branch' })
+      };
     }
-    const branch = record.workspace.currentBranch!;
-    const commit = record.workspace.currentCommit ?? '';
-    if (!commit) {
-      throw new ForgeError({
-        code: 'FORGE_GIT_PUSH_BLOCKED',
-        message: 'Auto-push is enabled but there is no commit to push after forge_git_commit.',
-        retryable: false,
-        details: { branch }
-      });
-    }
-    let source: { url: string; authorizationHeader: string };
-    try {
-      source = await repositoryPushSource(this.env, record.workspace, branch, commit);
-    } catch (error) {
-      const message = error instanceof Error ? error.message.slice(0, 300) : 'no authorization';
-      throw new ForgeError({
-        code: 'FORGE_GIT_PUSH_BLOCKED',
-        message: `Auto-push of ${branch} failed: ${message}. The commit exists only in this workspace until push succeeds.`,
-        retryable: true,
-        details: { branch, commit, causeClass: 'auth' }
-      });
-    }
-    const result = await this.app.autoPushForgeBranch(record, source);
-    if (!result.pushed && result.reason !== 'nothing to push') {
-      throw new ForgeError({
-        code: 'FORGE_GIT_PUSH_BLOCKED',
-        message: `Auto-push of ${branch} failed after commit: ${result.reason ?? 'unknown error'}. The commit is local only — fix the push failure and retry; do not claim the branch is on origin.`,
-        retryable: true,
-        details: {
+    if (!record.workspace.hasUnpushedWork) {
+      return {
+        auto_push: { pushed: false, reason: 'nothing to push' },
+        ...describeDurability({
           branch,
           commit,
-          causeClass: result.causeClass,
-          reason: result.reason
-        }
-      });
+          hasUnpushedWork: false,
+          remoteSha: record.workspace.lastPushedCommit ?? commit
+        })
+      };
     }
+    if (!commit) {
+      return {
+        auto_push: { pushed: false, reason: 'no commit to push' },
+        ...describeDurability({ branch, commit, hasUnpushedWork: true, pushFailureReason: 'there is no commit to push' })
+      };
+    }
+
+    let result: { pushed: boolean; remote_sha?: string; reason?: string; causeClass?: string };
+    try {
+      const source = await repositoryPushSource(this.env, record.workspace, branch!, commit);
+      result = await this.app.autoPushForgeBranch(record, source);
+    } catch (error) {
+      result = {
+        pushed: false,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'no GitHub App authorization',
+        causeClass: 'auth'
+      };
+    }
+
     return {
       auto_push: {
         pushed: result.pushed,
         remote_sha: result.remote_sha,
         causeClass: result.causeClass,
         reason: result.reason
-      }
+      },
+      ...describeDurability({
+        branch,
+        commit,
+        hasUnpushedWork: !result.pushed,
+        pushVerified: result.pushed,
+        remoteSha: result.remote_sha,
+        ...(result.pushed ? {} : { pushFailureReason: result.reason })
+      })
     };
   }
 

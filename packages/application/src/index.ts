@@ -3807,7 +3807,26 @@ export class ForgeApplicationService {
         GIT_COMMITTER_EMAIL: 'forge-mcp[bot]@users.noreply.github.com'
       }
     });
-    if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
+    if (commit.exitCode !== 0) {
+      // "Nothing to commit" is not a failure — it is the normal result of
+      // re-running a mutation whose content already landed (an agent retrying
+      // after a push error, or a replayed write). Reporting it as
+      // FORGE_GIT_DIRTY sent agents chasing a phantom second fault while the
+      // real problem — an earlier commit still sitting unpushed — went
+      // unmentioned. Return the existing HEAD so the caller can get on with
+      // reconciling durability.
+      if (/nothing (?:added )?to commit|no changes added to commit|working tree clean/iu.test(`${commit.stdout}\n${commit.stderr}`)) {
+        return {
+          committed: false,
+          reason: 'nothing to commit',
+          commit: record.workspace.currentCommit,
+          branch: record.workspace.currentBranch,
+          operationId: operation.operationId,
+          workspaceRevision: record.workspace.revision
+        };
+      }
+      throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
+    }
     // Parse HEAD defensively instead of blindly taking the last stdout line: a
     // commit-msg / post-commit hook that echoes to stdout runs DURING `git commit`
     // (before rev-parse), so the genuine object name is the LAST line that is a
@@ -3847,7 +3866,7 @@ export class ForgeApplicationService {
     record.lastGitDivergence = undefined;
     record.workspace.updatedAt = new Date().toISOString();
     record.workspace.hasUnpushedWork = true;
-    return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+    return { committed: true, commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
   /**
