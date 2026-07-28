@@ -18,6 +18,7 @@ import type { Env } from './env';
 import { createSandboxRouter } from './sandbox-router-env';
 import { repositoryCloneSource, repositoryPushSource } from './github';
 import { autoPushForgeBranchesEnabled } from './auto-push-policy';
+import { describeDurability, type DurabilityVerdict } from './durability';
 import { snapshotsEnabled, getSnapshot } from './snapshots';
 import { depsCacheKey, getDepsCache } from './deps-cache';
 
@@ -753,8 +754,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       retryable: false,
       details: {
         branch_policy,
-        next_step: 'forge_git_branch',
-        allowedNextActions: ['forge_git_branch', 'forge_workspace_get']
+        next_step: 'forge_workspace_create',
+        allowedNextActions: ['forge_workspace_create', 'forge_workspace_get']
       }
     });
   }
@@ -778,7 +779,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       branch?: string;
       auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
     };
-  }> {
+  } & DurabilityVerdict> {
     this.assertMutableOnAgentForgeBranch(record);
     const relPaths = paths.map((path) => this.repoRelativePath(path)).filter(Boolean);
     const message = `chore: ${summary}`.slice(0, 500);
@@ -787,16 +788,24 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       paths: relPaths.length ? relPaths : [],
       idempotencyKey: `auto-commit-${record.workspace.id}-${record.workspace.revision}-${relPaths[0] ?? 'tree'}`
     });
-    if ('replay' in committed && committed.replay) {
-      return { auto_commit: { branch: record.workspace.currentBranch ?? undefined } };
-    }
-    const autoPush = await this.tryAutoPushAfterCommit(record);
+    // Checkpoint AFTER the commit, never before. Callers used to snapshot right
+    // after writing the file, so the checkpoint captured the pre-commit Git
+    // identity: restoring it returned a tree whose content was current but
+    // whose HEAD predated the commit that contained it. Ordering is
+    // commit -> checkpoint -> push so the snapshot always agrees with HEAD.
+    await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
+    // Reconcile durability even when this commit was a replay or a no-op:
+    // an earlier commit may still be sitting unpushed, and this is the only
+    // place the edit path gets to retry it.
+    const madeCommit = !('replay' in committed && committed.replay) && ('committed' in committed ? committed.committed !== false : true);
+    const { auto_push, ...verdict } = await this.reconcileDurability(record, madeCommit);
     return {
       auto_commit: {
-        commit: 'commit' in committed ? String(committed.commit) : record.workspace.currentCommit ?? undefined,
+        commit: 'commit' in committed && committed.commit ? String(committed.commit) : record.workspace.currentCommit ?? undefined,
         branch: record.workspace.currentBranch ?? undefined,
-        ...autoPush
-      }
+        ...(auto_push ? { auto_push } : {})
+      },
+      ...verdict
     };
   }
 
@@ -818,7 +827,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.expectedRevision,
           input.idempotencyKey
         );
-        await this.app.checkpoint(record, `write-${record.workspace.revision}`);
         const auto = await this.autoCommitMutation(record, [input.path], `update ${this.repoRelativePath(input.path)}`);
         return { ...value, ...auto };
       } finally {
@@ -844,7 +852,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.idempotencyKey
         );
         if (!('replay' in value && value.replay)) {
-          await this.app.checkpoint(record, `write-batch-${record.workspace.revision}`);
           const auto = await this.autoCommitMutation(
             record,
             input.files.map((file) => file.path),
@@ -885,7 +892,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.expectedRevision,
           input.idempotencyKey
         );
-        await this.app.checkpoint(record, `replace-${record.workspace.revision}`);
         const auto = await this.autoCommitMutation(record, [input.path], `replace in ${this.repoRelativePath(input.path)}`);
         return { ...value, ...auto };
       } finally {
@@ -923,7 +929,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           input.expectedRevision,
           input.idempotencyKey
         );
-        await this.app.checkpoint(record, `patch-${record.workspace.revision}`);
         if ('replay' in value && value.replay) return value;
         const changed =
           ('value' in value && value.value && typeof value.value === 'object'
@@ -957,13 +962,12 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       branch?: string;
       auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
     };
-  }> {
+  } & DurabilityVerdict> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
         this.assertMutableOnAgentForgeBranch(record);
         await this.assertCheckpointQuiescent(record);
-        await this.app.checkpoint(record, `upload-${record.workspace.revision}`);
         return await this.autoCommitMutation(record, [input.path], `upload ${this.repoRelativePath(input.path)}`);
       } finally {
         await this.save(record);
@@ -987,7 +991,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (input.mode === 'read_only' && shellDecision.classification !== 'read_only') {
       throw new ForgeError({
         code: 'FORGE_VALIDATION_FAILED',
-        message: 'mode:read_only was requested but the command is classified as mutating; refuse to run it without a mutation path.',
+        // Say what to do, not just what was refused. The classifier is
+        // conservative and flags shell constructs that only ever print, so an
+        // agent meets this for a harmless command and has no way to know the
+        // fix is simply to drop the parameter.
+        message: 'This command was classified as possibly mutating, so mode:read_only was refused. Nothing ran. If it is safe to let it write, call forge_shell again without mode (the default allows writes, and anything it changes is committed to GitHub for you).',
         retryable: false,
         details: { classification: shellDecision.classification, allowedNextActions: ['forge_shell'] }
       });
@@ -1422,6 +1430,67 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.readWithRecovery((record) => this.app.checkGet(record, input.processId));
   }
 
+  /**
+   * Remember the content an agent was actually shown, so a later whole-file
+   * write can be checked against it.
+   *
+   * This lives in Durable Object storage rather than the MCP session because
+   * the session object does not survive between tool calls. Held there, the
+   * record was empty by the time the next call arrived, so "have you read
+   * this file" was permanently false and no existing file could ever be
+   * edited — a guard that deadlocked instead of protecting.
+   */
+  async rememberReads(input: { entries: Array<{ path: string; sha: string }> }): Promise<void> {
+    if (!input.entries.length) return;
+    await this.ctx.storage.put(
+      Object.fromEntries(input.entries.map((entry) => [`seen:${entry.path}`, entry.sha]))
+    );
+  }
+
+  async seenBlobs(input: { paths: string[] }): Promise<Record<string, string>> {
+    if (!input.paths.length) return {};
+    const stored = await this.ctx.storage.get<string>(input.paths.map((path) => `seen:${path}`));
+    const seen: Record<string, string> = {};
+    for (const [key, value] of stored) {
+      if (typeof value === 'string') seen[key.slice('seen:'.length)] = value;
+    }
+    return seen;
+  }
+
+  async forgetReads(input: { paths: string[] }): Promise<void> {
+    if (!input.paths.length) return;
+    await this.ctx.storage.delete(input.paths.map((path) => `seen:${path}`));
+  }
+
+  /** Whatever the container wrote that GitHub does not know about yet. */
+  async worktreeChanges(input: { limit?: number } = {}) {
+    return this.readRepoWithRecovery((record) => this.app.collectWorktreeChanges(record, input.limit ?? 50));
+  }
+
+  /**
+   * Fast-forward the container checkout to whatever origin now holds.
+   *
+   * The container is a cache, not the source of truth: an edit is already a
+   * commit on GitHub before this runs. If this fails the work is still safe —
+   * only the local copy is stale — so callers treat it as best effort.
+   */
+  async syncToRemoteHead() {
+    return this.serializeMutation(async () => {
+      const record = await this.repoRecord();
+      try {
+        const source = await repositoryCloneSource(this.env, record.workspace);
+        return await this.app.fastForwardToRemote(record, source);
+      } finally {
+        await this.save(record);
+      }
+    });
+  }
+
+  /** Repository file list for context selection — git's view, not a filesystem walk. */
+  async listRepositoryFiles(input: { limit?: number } = {}) {
+    return this.readRepoWithRecovery((record) => this.app.listRepositoryFiles(record, input.limit ?? 10_000));
+  }
+
   async gitStatus() {
     return this.readRepoWithRecovery(async (record) => {
       await this.app.reconcileGitState(record);
@@ -1497,9 +1566,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         await this.assertRemoteNotBlocking(record);
         await this.app.reconcileGitState(record);
         const value = await this.app.gitCommit(record, input);
-        const autoPush = await this.tryAutoPushAfterCommit(record);
+        // commit -> checkpoint -> push: the snapshot must record the identity
+        // of the commit it contains, and a push failure must not cost us it.
         const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
-        return { ...value, ...autoPush, checkpoint };
+        const durability = await this.reconcileDurability(record, 'committed' in value ? value.committed !== false : true);
+        return { ...value, ...durability, checkpoint };
       } finally {
         await this.save(record);
       }
@@ -1510,62 +1581,89 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (record.workspace.gitRemoteDivergence) {
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_CONFLICT',
-        message: 'Remote branch diverged from workspace HEAD. Call forge_git_sync before mutating the repository.',
+        message: 'The branch moved on GitHub. Re-read the files you are changing and call forge_edit again — Forge re-applies onto the new head for you.',
         retryable: false,
         details: record.workspace.gitRemoteDivergence
       });
     }
   }
 
-  async tryAutoPushAfterCommit(record: WorkspaceRuntimeRecord): Promise<{
+  /**
+   * Push whatever is unpushed on the agent's `forge/` branch and state plainly
+   * where the work now lives.
+   *
+   * Two deliberate properties, both learned from the incident this replaced a
+   * throwing version over:
+   *
+   * 1. It never throws for a push failure. The write and the commit genuinely
+   *    succeeded; turning that into a tool error told the agent "your write
+   *    failed", which is false and is what made it retry the write instead of
+   *    the push. The push outcome is data, not an exception.
+   * 2. It keys off `hasUnpushedWork`, not off whether *this* call produced a
+   *    commit. Previously a retry whose commit was a no-op skipped the push
+   *    entirely, so the first failed push stranded that commit permanently —
+   *    nothing in the edit path would ever try again. Now every subsequent
+   *    mutation re-attempts the push until origin actually has the work.
+   */
+  async reconcileDurability(record: WorkspaceRuntimeRecord, committed?: boolean): Promise<{
     auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
-  }> {
-    if (!autoPushForgeBranchesEnabled(this.env) || !isAgentForgeBranch(record.workspace.currentBranch)) {
-      return { auto_push: { pushed: false, reason: 'disabled' } };
+  } & DurabilityVerdict> {
+    const branch = record.workspace.currentBranch ?? undefined;
+    const commit = record.workspace.currentCommit ?? undefined;
+
+    if (!autoPushForgeBranchesEnabled(this.env) || !isAgentForgeBranch(branch)) {
+      return {
+        auto_push: { pushed: false, reason: 'disabled' },
+        ...describeDurability({ branch, commit, hasUnpushedWork: true, committed, pushFailureReason: 'auto-push is disabled for this branch' })
+      };
     }
-    const branch = record.workspace.currentBranch!;
-    const commit = record.workspace.currentCommit ?? '';
-    if (!commit) {
-      throw new ForgeError({
-        code: 'FORGE_GIT_PUSH_BLOCKED',
-        message: 'Auto-push is enabled but there is no commit to push after forge_git_commit.',
-        retryable: false,
-        details: { branch }
-      });
-    }
-    let source: { url: string; authorizationHeader: string };
-    try {
-      source = await repositoryPushSource(this.env, record.workspace, branch, commit);
-    } catch (error) {
-      const message = error instanceof Error ? error.message.slice(0, 300) : 'no authorization';
-      throw new ForgeError({
-        code: 'FORGE_GIT_PUSH_BLOCKED',
-        message: `Auto-push of ${branch} failed: ${message}. The commit exists only in this workspace until push succeeds.`,
-        retryable: true,
-        details: { branch, commit, causeClass: 'auth' }
-      });
-    }
-    const result = await this.app.autoPushForgeBranch(record, source);
-    if (!result.pushed && result.reason !== 'nothing to push') {
-      throw new ForgeError({
-        code: 'FORGE_GIT_PUSH_BLOCKED',
-        message: `Auto-push of ${branch} failed after commit: ${result.reason ?? 'unknown error'}. The commit is local only — fix the push failure and retry; do not claim the branch is on origin.`,
-        retryable: true,
-        details: {
+    if (!record.workspace.hasUnpushedWork) {
+      return {
+        auto_push: { pushed: false, reason: 'nothing to push' },
+        ...describeDurability({
           branch,
           commit,
-          causeClass: result.causeClass,
-          reason: result.reason
-        }
-      });
+          hasUnpushedWork: false,
+          committed,
+          remoteSha: record.workspace.lastPushedCommit ?? commit
+        })
+      };
     }
+    if (!commit) {
+      return {
+        auto_push: { pushed: false, reason: 'no commit to push' },
+        ...describeDurability({ branch, commit, hasUnpushedWork: true, committed, pushFailureReason: 'there is no commit to push' })
+      };
+    }
+
+    let result: { pushed: boolean; remote_sha?: string; reason?: string; causeClass?: string };
+    try {
+      const source = await repositoryPushSource(this.env, record.workspace, branch!, commit);
+      result = await this.app.autoPushForgeBranch(record, source);
+    } catch (error) {
+      result = {
+        pushed: false,
+        reason: error instanceof Error ? error.message.slice(0, 300) : 'no GitHub App authorization',
+        causeClass: 'auth'
+      };
+    }
+
     return {
       auto_push: {
         pushed: result.pushed,
         remote_sha: result.remote_sha,
         causeClass: result.causeClass,
         reason: result.reason
-      }
+      },
+      ...describeDurability({
+        branch,
+        commit,
+        hasUnpushedWork: !result.pushed,
+        pushVerified: result.pushed,
+        committed,
+        remoteSha: result.remote_sha,
+        ...(result.pushed ? {} : { pushFailureReason: result.reason })
+      })
     };
   }
 
@@ -1725,7 +1823,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       if (!featurePush.pushed || !featurePush.remote_sha) {
         throw new ForgeError({
           code: 'FORGE_GIT_PUSH_BLOCKED',
-          message: `Work is on ${input.ref}, but feature branch ${featureBranch} is not on origin yet: ${featurePush.reason ?? 'push failed'}. Do not claim ${featureBranch} is pushed; fix push and call forge_workspace_prove.`,
+          message: `Work is on ${input.ref}, but feature branch ${featureBranch} is not on origin yet: ${featurePush.reason ?? 'push failed'}. Do not claim ${featureBranch} is on GitHub; re-apply the work with forge_edit, which commits to origin directly.`,
           retryable: true,
           details: {
             staged_ref: input.ref,

@@ -49,7 +49,7 @@ export function branchPolicyFor(branch: string | undefined | null): {
     onDefaultBranch,
     currentBranch: branch ?? null,
     next_step: onAgentBranch
-      ? 'On a forge/ branch — file edits auto-commit (and auto-push when enabled). Prefer forge_files_write_batch / forge_files_replace over huge patches.'
+      ? 'On your Forge branch. Edit with forge_edit — it commits straight to GitHub, so there is nothing to push.'
       : 'Not on a forge/<task> branch. Call forge_git_branch before any edits — work on main/master is refused so it cannot be stranded or lost.'
   };
 }

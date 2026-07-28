@@ -11,8 +11,8 @@ function tool(name: string) {
 
 describe('Forge MCP public contracts', () => {
   it('keeps the KISS catalog small and unique', () => {
-    expect(forgeTools.length).toBeLessThanOrEqual(56);
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_files_replace')).toBe(true);
+    expect(forgeTools.length).toBeLessThanOrEqual(40);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_edit')).toBe(true);
     const names = forgeTools.map((entry) => entry.name);
     expect(new Set(names).size).toBe(names.length);
   });
@@ -53,23 +53,42 @@ describe('Forge MCP public contracts', () => {
 
   it('marks only retry-safe tools idempotent and true reads read-only', () => {
     expect(toolAnnotations('forge_review', 'none')).toMatchObject({ readOnlyHint: false, idempotentHint: false });
-    expect(toolAnnotations('forge_submit', 'external')).toMatchObject({ idempotentHint: false });
+    expect(toolAnnotations('forge_merge', 'external')).toMatchObject({ idempotentHint: false });
     expect(toolAnnotations('forge_files_read', 'none')).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     expect(toolAnnotations('forge_workspace_create', 'workspace')).toMatchObject({ idempotentHint: true });
-    expect(toolAnnotations('forge_files_write', 'workspace')).toMatchObject({ idempotentHint: true });
+    expect(toolAnnotations('forge_edit', 'external')).toMatchObject({ idempotentHint: false });
   });
 
-  it('exposes doctor + write + process stop instead of recovery sprawl', () => {
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_doctor')).toBe(true);
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_files_write')).toBe(true);
+  it('exposes no git plumbing at all', () => {
+    // The point of remote-first editing is that an agent cannot reason about
+    // pushing, because there is nothing to push and no tool to push with.
+    // Every name here existed to manage the gap between a local edit and
+    // GitHub; closing that gap deletes the gap and its tools together.
+    const gone = [
+      'forge_git_status', 'forge_git_diff', 'forge_git_branch', 'forge_git_rebase',
+      'forge_git_commit', 'forge_git_push', 'forge_git_sync', 'forge_pull_request_create',
+      'forge_files_write', 'forge_files_write_batch', 'forge_files_replace',
+      'forge_files_patch', 'forge_files_upload',
+      // Recovery tools that only existed to clean up after lost work.
+      'forge_work_export', 'forge_doctor', 'forge_workspace_prove'
+    ];
+    for (const name of gone) {
+      expect(forgeTools.some((candidate) => candidate.name === name), name).toBe(false);
+    }
     expect(forgeTools.some((candidate) => candidate.name === 'forge_process_stop')).toBe(true);
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_credential_list')).toBe(false);
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_workspace_prove')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_observer_workspaces')).toBe(true);
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_git_sync')).toBe(true);
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_check_cancel')).toBe(false);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(true);
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_work_export')).toBe(true);
+  });
+
+  it('commits remotely rather than mutating a workspace', () => {
+    // forge_edit is an external side effect because the commit lands on
+    // GitHub during the call — not a workspace mutation awaiting a push.
+    const edit = tool('forge_edit');
+    expect(edit.sideEffect).toBe('external');
+    expect(edit.approval).toBe('none');
+    const schema = edit.inputSchema as Record<string, unknown>;
+    expect(Object.keys(schema)).toContain('files');
+    expect(Object.keys(schema)).not.toContain('expected_revision');
   });
 
   it('exposes secret vault tools (detach folded into attach)', () => {
@@ -165,24 +184,15 @@ describe('Forge MCP public contracts', () => {
     expect(shell.async.safeParse(true).success).toBe(true);
     const list = tool('forge_process_list').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
     expect(list.process_id.safeParse('proc_abc').success).toBe(true);
-    const diff = tool('forge_git_diff').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
-    expect(diff.scope.safeParse('outgoing').success).toBe(true);
-    expect(diff.scope.safeParse('staged').success).toBe(true);
   });
 
-  it('exposes a full-file write tool and multi-file read for headless agents', () => {
-    const write = tool('forge_files_write');
-    expect(write.sideEffect).toBe('workspace');
-    const writeSchema = write.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
-    expect(writeSchema.expected_sha256.safeParse(undefined).success).toBe(true);
-    expect(writeSchema.expected_sha256.safeParse('a'.repeat(64)).success).toBe(true);
-    expect(writeSchema.expected_sha256.safeParse('nothex').success).toBe(false);
-    expect(writeSchema.path.safeParse('/workspace/repo/src/new.ts').success).toBe(true);
-    expect(toolAnnotations('forge_files_write', 'none')).toMatchObject({ readOnlyHint: false });
-
-    const readSchema = tool('forge_files_read').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
-    expect(readSchema.paths.safeParse(['/workspace/a', '/workspace/b']).success).toBe(true);
-    expect(readSchema.paths.safeParse([]).success).toBe(false);
+  it('edits whole files and deletes by null content', () => {
+    const edit = tool('forge_edit');
+    const schema = edit.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    // A delete is an edit with no content — not a separate tool to choose between.
+    expect(schema.files.safeParse([{ path: 'src/a.ts', content: 'x' }]).success).toBe(true);
+    expect(schema.files.safeParse([{ path: 'src/a.ts', content: null }]).success).toBe(true);
+    expect(schema.files.safeParse([]).success).toBe(false);
   });
 
   it('folds interactive steps into forge_preview (no separate browser tools)', () => {

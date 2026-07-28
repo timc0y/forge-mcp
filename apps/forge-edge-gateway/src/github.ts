@@ -2,6 +2,7 @@ import { SignJWT, importPKCS8 } from 'jose';
 import { ForgeError, ids, type ArtifactId, type RepositoryRef, type TenantId, type Workspace, type WorkspaceId } from '@forge/core';
 import { issueCapability, verifyCapability } from '@forge/capabilities';
 import { assertReceivePackScope, parseReceivePackCommands } from '@forge/git-core';
+import type { GitHubRequest } from '@forge/git-github';
 import { assertAllowedForgeBranch } from '@forge/policy';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
@@ -915,7 +916,13 @@ export async function repositoryPushSource(env: Env, workspace: Workspace, branc
     gitCommit: commit,
     nonce: crypto.randomUUID(),
     issuedAt: now,
-    expiresAt: now + 5 * 60
+    // The push itself is allowed 120s and the ls-remote verification another
+    // 60s, so a 5-minute window left almost no margin: a cold container or a
+    // large packfile could expire the capability mid-push and surface as an
+    // unexplained 403. Widening the window costs nothing here — this capability
+    // is pinned to one workspace, repository, branch AND exact commit, so time
+    // is not what bounds it.
+    expiresAt: now + 15 * 60
   }, env.FORGE_CAPABILITY_SIGNING_KEY);
   return {
     url: `${env.FORGE_PUBLIC_ORIGIN}/git/${workspace.id}/${workspace.repository.owner}/${workspace.repository.name}.git`,
@@ -982,12 +989,28 @@ export async function gitCredentialProxy(request: Request, env: Env): Promise<Re
     if (!upstreamBody || !claims.branchPattern || !claims.gitCommit) {
       throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Git push capability is missing its approved branch or commit.', retryable: false });
     }
+    // Keep the real cause. This used to be a bare `catch` that reported every
+    // failure here as "outside its approved branch or commit scope" — so a
+    // truncated body, an unparseable packet or a genuine scope violation were
+    // indistinguishable, and all three reached the agent as an opaque HTTP 403
+    // from what looked like GitHub. The push was in fact refused by Forge.
     try {
       const inspected = await inspectReceivePackBody(upstreamBody);
       assertReceivePackScope(inspected.commands, claims.branchPattern, claims.gitCommit);
       upstreamBody = inspected.body;
-    } catch {
-      throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Git push is outside its approved branch or commit scope.', retryable: false });
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      throw new ForgeError({
+        code: 'FORGE_PERMISSION_DENIED',
+        message: `Forge refused this push before it reached GitHub: ${cause}`,
+        retryable: false,
+        details: {
+          refusedBy: 'forge_git_proxy',
+          expectedRef: `refs/heads/${claims.branchPattern}`,
+          expectedCommit: claims.gitCommit,
+          cause
+        }
+      });
     }
   }
   const token = await installationToken(env, repository.installation_id, repository.name, push ? 'write' : 'read');
@@ -1098,7 +1121,7 @@ export async function requireApproval(
     // trivial, without re-deriving it themselves.
     throw new ForgeError({
       code: 'FORGE_APPROVAL_REQUIRED',
-      message: `The operation changed since it was approved: ${changed.map((c) => `${c.field} was ${String(c.approved)}, is now ${String(c.current)}`).join('; ')}. Re-run forge_git_diff and request a fresh approval.`,
+      message: `The operation changed since it was approved: ${changed.map((c) => `${c.field} was ${String(c.approved)}, is now ${String(c.current)}`).join('; ')}. Re-check the outgoing change with forge_diff_metadata and request a fresh approval.`,
       retryable: false,
       details: { changed }
     });
@@ -1750,4 +1773,44 @@ export async function githubWebhook(request: Request, env: Env): Promise<Respons
     }
   }
   return new Response(null, { status: 204 });
+}
+
+/**
+ * An authenticated GitHub REST caller scoped to a workspace's repository.
+ *
+ * This is what makes an edit remote-first: the agent's write becomes a commit
+ * on origin through this transport, so there is never a window where the work
+ * exists only inside a container.
+ */
+export async function githubRequestForWorkspace(
+  env: Env,
+  identity: Pick<AuthenticatedContext, 'tenantId' | 'projectId'>,
+  workspace: Pick<Workspace, 'repository'>
+): Promise<GitHubRequest> {
+  const row = await authorizeRepository(env, identity, workspace.repository);
+  if (!row) {
+    throw new ForgeError({
+      code: 'FORGE_PERMISSION_DENIED',
+      message: 'Install and authorize the Forge GitHub App for this repository before editing.',
+      retryable: false
+    });
+  }
+  const token = await installationToken(env, row.installation_id, workspace.repository.name, 'write');
+  return async (path, init) => {
+    const headers = githubHeaders(token);
+    if (init?.body !== undefined) headers.set('content-type', 'application/json');
+    const response = await fetch(`https://api.github.com${path}`, {
+      method: init?.method ?? 'GET',
+      headers,
+      body: init?.body === undefined ? undefined : JSON.stringify(init.body)
+    });
+    const text = await response.text();
+    let json: unknown = {};
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      json = {};
+    }
+    return { status: response.status, json };
+  };
 }

@@ -16,6 +16,90 @@
         "additionalProperties": false
       }
     },
+    "forge_observer_workspaces": {
+      "title": "Observer: list workspaces",
+      "description": "Read-only snapshot of live workspace slots, tasks, and branch state for operator visibility. Does not mutate sandboxes.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "forge_observer_workspace": {
+      "title": "Observer: workspace detail",
+      "description": "Read-only observer bundle: processes, merged MCP tool trail, log tail. Same data as /app/live for one workspace.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "description": "Workspace id. Omit to use your open one.",
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          }
+        }
+      }
+    },
+    "forge_observer_activity": {
+      "title": "Observer: tool activity",
+      "description": "Read-only trail of MCP tool calls for this account. payloads:true returns what each call actually sent and received (secrets redacted, large values previewed); errors_only:true narrows to failures. Use it to see why agents are failing rather than only that they failed.",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "description": "Workspace id. Omit to use your open one.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "payloads": {
+            "default": false,
+            "type": "boolean"
+          },
+          "errors_only": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+          }
+        },
+        "required": [
+          "payloads",
+          "errors_only",
+          "limit"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          }
+        }
+      }
+    },
     "forge_repository_list": {
       "title": "List repositories",
       "description": "List GitHub repositories authorized for this account. No container.",
@@ -160,7 +244,7 @@
             ]
           },
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "compact": {
@@ -284,7 +368,7 @@
             "maxLength": 500
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema3"
           }
         },
@@ -319,7 +403,7 @@
     },
     "forge_workspace_create": {
       "title": "Create workspace",
-      "description": "Create an isolated workspace from an authorized repo. Waits until ready by default — do not poll in a loop.",
+      "description": "Create an isolated workspace from an authorized repo. Checks out ref (default main) then auto-creates forge/<id> so agents never edit main. Waits until ready by default.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -381,7 +465,7 @@
             "maximum": 110000
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema3"
           }
         },
@@ -414,14 +498,14 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
     },
     "forge_workspace_get": {
       "title": "Get workspace",
-      "description": "Compact workspace summary: branch, head, deps, processes, Git integrity, allowedNextActions. Prefer compact:true in ChatGPT.",
+      "description": "Compact workspace summary including branch_policy (must be on forge/). Prefer compact:true in ChatGPT.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -429,7 +513,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "compact": {
@@ -456,7 +540,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "preserve_artifacts": {
@@ -468,11 +552,11 @@
             "type": "boolean"
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema2"
           }
         },
@@ -496,31 +580,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
-          }
-        }
-      }
-    },
-    "forge_doctor": {
-      "title": "Doctor workspace",
-      "description": "Reconcile Git, processes, and dependency state after reconnect or weird errors. Never throws — reports gitIntegrity and recommendedAction.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          }
-        },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -535,7 +595,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "operation_id": {
@@ -566,7 +626,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "name": {
@@ -595,7 +655,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "snapshot_id": {
@@ -604,7 +664,7 @@
             "maxLength": 200
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           }
         },
@@ -636,7 +696,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "path": {
@@ -682,7 +742,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "path": {
@@ -734,95 +794,35 @@
         }
       }
     },
-    "forge_files_write": {
-      "title": "Write file",
-      "description": "Create or replace one file. Pass expected_sha256 for conflict-safe overwrite.",
-      "sideEffect": "workspace",
+    "forge_edit": {
+      "title": "Edit files",
+      "description": "Edit files. Committed straight to GitHub on your branch — no push, nothing left only in the workspace. Prefer replace: [{old,new}] and send only the fragment you are changing; Forge reads the current file and applies it. Use content for a whole new file, or content:null to delete. Returns the commit URL.",
+      "sideEffect": "external",
       "approval": "none",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
-          "path": {
-            "type": "string",
-            "maxLength": 1000,
-            "pattern": "^\\/workspace\\/repo\\/.*"
+          "files": {
+            "minItems": 1,
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema1"
+            }
           },
-          "content": {
-            "type": "string",
-            "maxLength": 4000000
-          },
-          "expected_sha256": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
-          },
-          "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema1"
-          },
-          "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema2"
-          }
-        },
-        "required": [
-          "path",
-          "content"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
-          }
-        }
-      }
-    },
-    "forge_files_patch": {
-      "title": "Patch file",
-      "description": "Apply a unified-diff patch to one or more files in the workspace. The patch is applied via `git apply` with conflict detection and automatic rollback on failure.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "patch": {
+          "message": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 2000000
-          },
-          "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema1"
-          },
-          "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema2"
+            "maxLength": 500
           }
         },
         "required": [
-          "patch"
+          "files"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -832,71 +832,59 @@
             "description": "Target workspace id (ws_...)."
           },
           "__schema1": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "content": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 500000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "replace": {
+                "minItems": 1,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/__schema2"
+                }
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
           },
           "__schema2": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
-          }
-        }
-      }
-    },
-    "forge_files_upload": {
-      "title": "Upload file",
-      "description": "Upload a binary file to the workspace via base64. Decodes and writes to the target path. For text files, prefer forge_files_write.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "path": {
-            "type": "string",
-            "maxLength": 1000,
-            "pattern": "^\\/workspace\\/repo\\/.*"
-          },
-          "content_base64": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema1"
-          },
-          "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema2"
-          }
-        },
-        "required": [
-          "path",
-          "content_base64"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "type": "object",
+            "properties": {
+              "old": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100000
+              },
+              "new": {
+                "type": "string",
+                "maxLength": 100000
+              },
+              "all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "old",
+              "new"
+            ],
+            "additionalProperties": false
           }
         }
       }
@@ -911,7 +899,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "base": {
@@ -944,7 +932,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "goal": {
@@ -989,7 +977,7 @@
     },
     "forge_shell": {
       "title": "Run command",
-      "description": "Run a command in the workspace. mode:read_only for probes. async:true for long work (returns proc_ id immediately — then forge_process_wait). Risky commands need approval_id.",
+      "description": "Run a command in the workspace. Anything expected to take over ~45s runs in the background and returns a process_id to wait on, because a client will not hold a request open longer. compact defaults true: returns exitCode + short tails; full stdout/stderr spill to output_artifact_id when >20KB (forge_artifact_get). async:true for long work. Risky commands need approval_id.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -997,7 +985,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "command": {
@@ -1011,7 +999,7 @@
             "$ref": "#/$defs/__schema1"
           },
           "timeout_ms": {
-            "default": 300000,
+            "default": 45000,
             "type": "integer",
             "minimum": 100,
             "maximum": 900000
@@ -1054,14 +1042,15 @@
             "type": "boolean"
           },
           "compact": {
+            "default": true,
             "type": "boolean"
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema2"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema3"
           },
           "approval_id": {
@@ -1075,7 +1064,8 @@
           "timeout_ms",
           "environment",
           "network_policy",
-          "output_limit_bytes"
+          "output_limit_bytes",
+          "compact"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1097,7 +1087,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1112,7 +1102,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1140,7 +1130,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1178,7 +1168,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1212,7 +1202,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1224,11 +1214,11 @@
             "type": "boolean"
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema2"
           }
         },
@@ -1252,7 +1242,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1267,7 +1257,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "frozen_lockfile": {
@@ -1296,11 +1286,11 @@
             "maximum": 900000
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema2"
           }
         },
@@ -1326,364 +1316,14 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
     },
-    "forge_git_status": {
-      "title": "Git status",
-      "description": "Working-tree and branch status.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          }
-        },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
-      }
-    },
-    "forge_git_diff": {
-      "title": "Git diff",
-      "description": "Paged diff. scope=worktree (default), staged, or outgoing (vs base). Every call returns the full changed-file list; follow nextCursor for hunks.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "scope": {
-            "default": "worktree",
-            "type": "string",
-            "enum": [
-              "worktree",
-              "staged",
-              "outgoing"
-            ]
-          },
-          "base": {
-            "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          },
-          "cursor": {
-            "description": "Opaque cursor from a prior page's nextCursor. Omit for the first page.",
-            "$ref": "#/$defs/__schema1"
-          },
-          "max_bytes": {
-            "default": 64000,
-            "description": "Approximate byte budget for this page of hunks. Lower it if results are still too large to read comfortably.",
-            "$ref": "#/$defs/__schema2"
-          },
-          "paths": {
-            "description": "Restrict the diff to these exact paths (from `files`). Use this to read one large file's change directly instead of paging to it.",
-            "$ref": "#/$defs/__schema3"
-          },
-          "compact": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "scope",
-          "base",
-          "max_bytes"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "string",
-            "maxLength": 64
-          },
-          "__schema2": {
-            "type": "integer",
-            "minimum": 2000,
-            "maximum": 400000
-          },
-          "__schema3": {
-            "maxItems": 200,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema4"
-            }
-          },
-          "__schema4": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_git_branch": {
-      "title": "Create branch",
-      "description": "Create and check out a local forge/ branch.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "branch": {
-            "type": "string",
-            "maxLength": 107,
-            "pattern": "^forge\\/.*"
-          },
-          "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema1"
-          },
-          "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema2"
-          }
-        },
-        "required": [
-          "branch"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
-          }
-        }
-      }
-    },
-    "forge_git_rebase": {
-      "title": "Rebase branch",
-      "description": "Rebase the current forge/ branch onto the latest upstream base. On conflict, aborts automatically and lists conflicted files.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "base": {
-            "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          }
-        },
-        "required": [
-          "base"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
-      }
-    },
-    "forge_git_commit": {
-      "title": "Commit",
-      "description": "Stage paths and commit as forge-mcp[bot]. Omit message to auto-generate.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "message": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "paths": {
-            "default": [],
-            "maxItems": 100,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema1"
-            }
-          },
-          "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
-            "$ref": "#/$defs/__schema2"
-          },
-          "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
-            "$ref": "#/$defs/__schema3"
-          }
-        },
-        "required": [
-          "paths"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          },
-          "__schema1": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "__schema2": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "__schema3": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
-          }
-        }
-      }
-    },
-    "forge_git_push": {
-      "title": "Push branch",
-      "description": "Push the forge/ branch to the remote. Requires approval. Does NOT create a PR — use forge_pull_request_create for that.",
-      "sideEffect": "external",
-      "approval": "required",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "branch": {
-            "type": "string",
-            "maxLength": 107,
-            "pattern": "^forge\\/.*"
-          },
-          "base": {
-            "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          },
-          "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
-          }
-        },
-        "required": [
-          "branch",
-          "base"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
-      }
-    },
-    "forge_pull_request_create": {
-      "title": "Create PR",
-      "description": "Create a draft pull request from the current forge/ branch. Requires approval. Branch must already be pushed.",
-      "sideEffect": "external",
-      "approval": "required",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "branch": {
-            "type": "string",
-            "maxLength": 107,
-            "pattern": "^forge\\/.*"
-          },
-          "base": {
-            "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256
-          },
-          "body": {
-            "default": "",
-            "type": "string",
-            "maxLength": 60000
-          },
-          "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
-          }
-        },
-        "required": [
-          "branch",
-          "base",
-          "body"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target workspace id (ws_...)."
-          }
-        }
-      }
-    },
-    "forge_submit": {
-      "title": "Submit for review",
-      "description": "One call to finish: auto-commit if needed, stage on a Forge ref, queue draft PR. Human approves later at approval_url. Prefer this over manual push/PR.",
+    "forge_merge": {
+      "title": "Merge for review",
+      "description": "Ask the human to merge your work. Opens a pull request from your branch and returns one approval link — echo the link, do not invent URLs. Your branch is already on GitHub; nothing is pushed here.",
       "sideEffect": "external",
       "approval": "deferred",
       "inputSchema": {
@@ -1691,7 +1331,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "branch": {
@@ -1699,8 +1339,13 @@
             "maxLength": 107,
             "pattern": "^forge\\/.*"
           },
-          "base": {
+          "pr_base": {
             "default": "main",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "base": {
             "type": "string",
             "minLength": 1,
             "maxLength": 255
@@ -1721,13 +1366,12 @@
             "description": "Target task id (task_...)."
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema1"
           }
         },
         "required": [
-          "branch",
-          "base",
+          "pr_base",
           "body"
         ],
         "additionalProperties": false,
@@ -1741,7 +1385,73 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
+          }
+        }
+      }
+    },
+    "forge_cloudflare_deploy": {
+      "title": "Deploy to Cloudflare",
+      "description": "Deploy with wrangler using an attached Cloudflare vault secret (CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID). Returns deploy_receipt; full logs spill to output_artifact_id. Do not claim live without verified_url.",
+      "sideEffect": "external",
+      "approval": "required",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "description": "Workspace id. Omit to use your open one.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "command": {
+            "default": "npx wrangler deploy",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "cwd": {
+            "default": "/workspace/repo",
+            "description": "Working directory inside the workspace; must start with /workspace.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "expected_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "include_output": {
+            "default": false,
+            "type": "boolean"
+          },
+          "approval_id": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          },
+          "idempotency_key": {
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
+            "$ref": "#/$defs/__schema2"
+          }
+        },
+        "required": [
+          "command",
+          "cwd",
+          "include_output"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Target workspace id (ws_...)."
+          },
+          "__schema1": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1881,7 +1591,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1910,11 +1620,11 @@
             "maximum": 86400
           },
           "expected_revision": {
-            "description": "Optimistic-concurrency guard: the revision you expect; the call fails if the workspace or task has moved on.",
+            "description": "Fails if the workspace moved on past this revision.",
             "$ref": "#/$defs/__schema1"
           },
           "idempotency_key": {
-            "description": "Optional. Unique key that makes this mutation safe to retry; supply a stable value to make a retry idempotent, or omit it to always execute.",
+            "description": "Optional. Stable key makes a retry safe; omit to always execute.",
             "$ref": "#/$defs/__schema2"
           }
         },
@@ -1940,7 +1650,7 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Unique key that makes this mutation safe to retry; use a fresh value per distinct call."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         }
       }
@@ -1955,7 +1665,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "preview_id": {
@@ -2135,7 +1845,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "artifact_id": {
@@ -2173,7 +1883,7 @@
         "type": "object",
         "properties": {
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "filename": {
@@ -2370,7 +2080,7 @@
             "description": "Secret id (sec_...)."
           },
           "workspace_id": {
-            "description": "Target workspace id (ws_...). Optional — omit it and Forge uses your open workspace, which is what you want whenever only one is running.",
+            "description": "Workspace id. Omit to use your open one.",
             "$ref": "#/$defs/__schema0"
           },
           "attached": {

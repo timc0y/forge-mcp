@@ -63,10 +63,18 @@ import {
   repositoryAccessDiagnosis,
   markApprovalApproved,
   requestApproval,
-  requireApproval
+  requireApproval,
+  githubRequestForWorkspace
 } from './github';
 import { createDeferredAction, listDeferredActionsForWorkspace } from './deferred-actions';
-import { autoPushForgeBranchesEnabled } from './auto-push-policy';
+import { autoPushForgeBranchesEnabled, isAgentForgeBranch } from './auto-push-policy';
+import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
+import { durabilityNextStep, describeDurability, type DurabilityVerdict } from './durability';
+import { isTextualArtifact } from './artifact-content';
+import { normalizeRepoPath } from './repo-paths';
+import { recordToolCall, recentToolCalls, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
+import { applyReplacements, ReplacementFailed } from './apply-replacements';
+import { summariseCommandOutput } from './command-summary';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
 
@@ -202,6 +210,50 @@ async function recordUrlReviewOwner(
 // Returns the recorded (tenant, project) when a binding exists so the caller can
 // distinguish "verified owner" from "no binding on record". If a binding row
 // exists it is authoritative — a tenant/project mismatch is denied outright.
+/**
+ * Who owns a workspace, straight from D1.
+ *
+ * The artifact read used to answer this by asking the workspace's own Durable
+ * Object. That is a liveness dependency in the one code path that exists for
+ * when the workspace is NOT healthy: a recovery export written precisely
+ * because push was blocked became unreadable the moment the workspace it
+ * described stopped answering. D1 holds the same tenant/project binding and
+ * does not depend on the container, so authorization survives the outage the
+ * recovery path is for.
+ */
+async function lookupWorkspaceOwner(
+  env: Pick<Env, 'METADATA'>,
+  workspaceId: string
+): Promise<{ tenantId: string; projectId: string } | null> {
+  try {
+    const row = await env.METADATA.prepare(
+      'SELECT tenant_id, project_id FROM workspaces WHERE id = ?1'
+    ).bind(workspaceId).first<{ tenant_id: string; project_id: string }>();
+    return row ? { tenantId: row.tenant_id, projectId: row.project_id } : null;
+  } catch (error) {
+    console.warn('forge_workspace_owner_read_failed', {
+      workspaceId,
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+    });
+    return null;
+  }
+}
+
+/** Bound a Durable Object read so an unreachable workspace cannot hang a request. */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work.catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function lookupUrlReviewOwner(
   env: Pick<Env, 'METADATA'>,
   workspaceId: string
@@ -443,6 +495,59 @@ async function outgoingComparisonRef(workspace: DurableObjectStub<WorkspaceCoord
   return state.requestedRef;
 }
 
+/**
+ * Persist the durability verdict from any mutating tool onto the task, and
+ * hand the agent one unambiguous sentence about where the work lives.
+ *
+ * Previously only `forge_git_commit` recorded `remoteBranchSha`. Every file
+ * tool auto-commits and auto-pushes through a different path, so an agent that
+ * did the whole job with `forge_files_write*` — the documented way to edit —
+ * genuinely landed its work on origin but left `remoteBranchSha` unset. Task
+ * completion then refused with "the feature branch is not verified on origin",
+ * about a branch that was on origin. That false blocker is its own source of
+ * flailing, and it hid the true one.
+ */
+async function applyDurability<T extends Record<string, unknown>>(
+  env: Env,
+  workspaceId: WorkspaceId,
+  result: T
+): Promise<T & { next_step?: string }> {
+  const verdict = durabilityOf(result);
+  if (!verdict) return result;
+  if (verdict.on_remote && verdict.remote_sha) {
+    await recordTaskRemoteSha(env, workspaceId, verdict.remote_sha);
+  }
+  const existing = typeof result.next_step === 'string' ? `${result.next_step} ` : '';
+  return { ...result, next_step: `${existing}${durabilityNextStep(verdict)}` };
+}
+
+/** The verdict fields, lifted out of a coordinator result for re-emission. */
+function durabilityFields(value: object): Partial<DurabilityVerdict> {
+  const verdict = durabilityOf(asRecord(value));
+  return verdict ?? {};
+}
+
+/** Read a durability verdict off a coordinator result, if it carries one. */
+function durabilityOf(value: Record<string, unknown>): DurabilityVerdict | undefined {
+  const state = value.durability;
+  if (state !== 'local_only' && state !== 'remote_branch' && state !== 'pull_request' && state !== 'failed_recovered') {
+    return undefined;
+  }
+  const outcome = value.mutationOutcome;
+  return {
+    mutationOutcome:
+      outcome === 'unchanged' || outcome === 'workspace_changed' || outcome === 'committed_local' ||
+      outcome === 'pushed_remote' || outcome === 'unknown'
+        ? outcome
+        : 'unknown',
+    durability: state,
+    on_remote: value.on_remote === true,
+    durability_statement: String(value.durability_statement ?? ''),
+    ...(typeof value.remote_branch === 'string' ? { remote_branch: value.remote_branch } : {}),
+    ...(typeof value.remote_sha === 'string' ? { remote_sha: value.remote_sha } : {})
+  };
+}
+
 async function recordTaskRemoteSha(env: Env, workspaceId: WorkspaceId, remoteSha: string): Promise<void> {
   await new D1TaskStore(env.METADATA).getByWorkspace(workspaceId).then(async (task) => {
     if (!task) return;
@@ -474,23 +579,75 @@ function idempotency(value: unknown): string {
   return value === undefined || value === null || value === '' ? crypto.randomUUID() : String(value);
 }
 
+/** Git's own object id for a blob: sha1("blob <bytes>\0" + content). */
+async function gitBlobSha(content: string): Promise<string> {
+  const body = new TextEncoder().encode(content);
+  const header = new TextEncoder().encode(`blob ${body.length}\0`);
+  const buffer = new Uint8Array(header.length + body.length);
+  buffer.set(header);
+  buffer.set(body, header.length);
+  const digest = await crypto.subtle.digest('SHA-1', buffer);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
+  /**
+   * Commit anything the container wrote outside forge_edit.
+   *
+   * A shell command that edits files — a formatter, a codemod, a generator —
+   * would otherwise leave work in the only place that is not durable, and the
+   * next sync would reset over it. Committing it makes the container's output
+   * as safe as an edit, with no extra step for the agent to remember.
+   */
+  private async ingestContainerWrites(
+    env: Env,
+    identity: SessionProps,
+    workspaceId: string,
+    workspace: Awaited<ReturnType<typeof authorizedCoordinator>>,
+    reason: string
+  ): Promise<{ committed: boolean; commit_sha?: string; paths: string[]; truncated: boolean }> {
+    const collected = await workspace.worktreeChanges({}).catch(() => ({ changes: [], truncated: false, baseBlobs: {} as Record<string, string> }));
+    if (!collected.changes.length) return { committed: false, paths: [], truncated: collected.truncated };
+    const state = (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string };
+    const branch = state.currentBranch;
+    if (!branch || !isAgentForgeBranch(branch)) return { committed: false, paths: [], truncated: collected.truncated };
+    const request = await githubRequestForWorkspace(env, identity, { repository: state.repository });
+    const result = await commitFilesToBranch(request, {
+      owner: state.repository.owner,
+      repo: state.repository.name,
+      branch,
+      message: `chore: ${reason}`.slice(0, 500),
+      files: collected.changes,
+      // The container edited from its own HEAD; if origin moved past that,
+      // this content would revert the difference rather than add to it.
+      expectedBlobs: collected.baseBlobs
+    });
+    if (result.commitSha) await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.commitSha);
+    await workspace.syncToRemoteHead().catch(() => undefined);
+    return {
+      committed: Boolean(result.commitSha),
+      ...(result.commitSha ? { commit_sha: result.commitSha } : {}),
+      paths: result.paths,
+      truncated: collected.truncated
+    };
+  }
+
   server = new McpServer(
     { name: 'Forge MCP', version: '0.1.0' },
     {
       instructions: [
-        'Forge is a remote development computer optimised for small tool budgets. Work ONLY on forge/<task> branches — create auto-checks out forge/<id> from main so you never edit main.',
-        '1. forge_task_create → forge_workspace_create (waits). Check branch_policy / current_branch on the result.',
-        '2. Edit with forge_files_replace (search/replace), forge_files_write_batch (folder/file-by-file), or forge_files_write. Every edit AUTO-COMMITS (and auto-pushes when enabled). No dirty working tree.',
-        '3. Shell is compact by default (tails + output_artifact_id). Diffs compact by default (file list).',
-        '4. Ship with forge_submit — echo submission_receipt only. Deploys: forge_cloudflare_deploy → deploy_receipt.verified_url only.',
-        '5. Never claim work on main. Never invent workers.dev URLs. If push blocked: forge_work_export.',
-        '6. Destroy only after forge/ branch is on origin. On confusion: forge_doctor.'
+        'Forge is a remote development computer. There is no push step and no local-only state: forge_edit commits straight to GitHub on your branch, so an edit either lands on origin or does not happen.',
+        '1. forge_workspace_create — it cuts your branch for you. You never choose, create or switch branches.',
+        '2. Read with forge_context_get / forge_files_read / forge_files_list. Edit with forge_edit (one call, many files; content:null deletes). Each call returns commit_url — that IS the durable record.',
+        '3. Run checks with forge_shell. The container is a cache of what is already on GitHub; if it is ever stale it re-syncs itself.',
+        '4. When the work is good, ask the human, then forge_merge — it opens the pull request and returns one approval link. Echo the link only.',
+        '5. There is nothing to push, sync, rebase or recover. If forge_edit reports a conflict, re-read those paths and edit again.',
+        '6. Deploys: forge_cloudflare_deploy → echo deploy_receipt.verified_url only. Never invent URLs.'
       ].join(' ')
     }
   );
@@ -503,7 +660,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     const tracker = new ToolCallTracker(this.env, {
       waitUntil: (p) => (this.ctx as unknown as { waitUntil?: (p: Promise<unknown>) => void })?.waitUntil?.(p)
     });
-    registerForgeToolsV1(this.server, this.handlers(), (event) => {
+    registerForgeToolsV1(this.server, this.withRepeatDetection(this.handlers()), (event) => {
       void this.onToolCallTelemetry(tracker, event);
     });
     this.registerPrompts();
@@ -542,6 +699,25 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       ? event.input.workspace_id.trim()
       : undefined;
     const waitUntil = (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil;
+    // The payload trail. Written alongside the counter so a failure can be
+    // diagnosed from exactly what the agent sent and exactly what it read
+    // back, without waiting for someone to reproduce it.
+    waitUntil?.(
+      recordToolCall(this.env, {
+        tenantId: identity.tenantId,
+        projectId: identity.projectId,
+        workspaceId: workspaceId ?? null,
+        clientName,
+        tool: event.tool,
+        status: event.status,
+        durationMs: event.durationMs,
+        errorCode: event.errorCode,
+        errorMessage: event.errorMessage,
+        request: event.input,
+        response: event.result,
+        argsHash: await hashArgs(event.input)
+      }).catch(() => undefined)
+    );
     waitUntil?.(
       appendWorkspaceActivity(this.env, {
         tenantId: identity.tenantId,
@@ -603,7 +779,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       ({ repository, task }) =>
         userText(
-          `Start a coding task on ${repository}: ${task}. Prefer forge_task_create, then forge_workspace_create (it waits until ready — do not poll-loop) and reuse workspace_id. Read repository instructions and any parallax/ files before changes. Implement and verify, inspect with forge_git_diff scope:outgoing, then forge_submit. Tell me it is submitted and where to approve it, then destroy the workspace.`
+          `Start a coding task on ${repository}: ${task}. Prefer forge_task_create, then forge_workspace_create (it waits until ready — do not poll-loop) and reuse workspace_id. Read repository instructions and any parallax/ files before changes. Implement and verify, inspect with forge_diff_metadata, then forge_merge. Tell me it is submitted and where to approve it, then destroy the workspace.`
         )
     );
 
@@ -620,7 +796,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         userText(
           `Submit the current work for review${
             workspace_id ? ` in workspace ${workspace_id}` : ''
-          } once tests pass. Run the tests and confirm they are green, inspect the outgoing diff with forge_git_diff, then call forge_submit. It stages the branch and queues the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
+          } once tests pass. Run the tests and confirm they are green, inspect the outgoing change with forge_diff_metadata, then call forge_merge. It opens the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
         )
     );
   }
@@ -776,15 +952,66 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     return task;
   }
 
+  /**
+   * Tell an agent when it is looping, at the moment it loops.
+   *
+   * A strict host retries a failed call, often with identical arguments. The
+   * error is correct each time and says nothing about the repetition, so the
+   * agent has no signal that repeating is futile — which is how one bad call
+   * becomes sixteen. Counting prior identical failures turns the loop itself
+   * into information the agent can act on.
+   *
+   * The lookup runs only on the failing path, so a working session never pays
+   * for it, and it can never turn a success into a failure.
+   */
+  private withRepeatDetection(handlers: ForgeToolHandlers): ForgeToolHandlers {
+    const wrapped = {} as ForgeToolHandlers;
+    for (const name of Object.keys(handlers) as Array<keyof ForgeToolHandlers>) {
+      const original = handlers[name];
+      wrapped[name] = (async (input: Record<string, unknown>) => {
+        try {
+          return await original(input);
+        } catch (error) {
+          const forge = toForgeError(error);
+          try {
+            const identity = this.identity();
+            const argsHash = await hashArgs(input);
+            const prior = await priorIdenticalFailures(this.env, {
+              tenantId: identity.tenantId,
+              tool: String(name),
+              argsHash
+            });
+            if (prior >= 2) {
+              throw new ForgeError({
+                code: forge.code,
+                message: `${forge.message} ${repeatCallGuidance(String(name), prior + 1)}`,
+                retryable: false,
+                ...(forge.operationId ? { operationId: forge.operationId } : {}),
+                details: { ...(forge.details ?? {}), repeatedIdenticalFailures: prior + 1, stopRepeating: true }
+              });
+            }
+          } catch (enrichment) {
+            // Never let the loop detector mask the real failure.
+            if (enrichment instanceof ForgeError && enrichment.details?.stopRepeating) throw enrichment;
+          }
+          throw forge;
+        }
+      }) as ForgeToolHandlers[typeof name];
+    }
+    return wrapped;
+  }
+
   private handlers(): ForgeToolHandlers {
     const env = this.env;
     return {
       forge_capabilities: async () => ({
-        workspace: { explicit_workspace_id_required: true, filesystem_read_after_write: 'verified_by_forge_files_write', durable_checkpoints: true },
+        workspace: { explicit_workspace_id_required: true, filesystem_read_after_write: 'verified_by_forge_edit', durable_checkpoints: true },
         git: {
           immutable_base_commit: true,
           workspace_proof: true,
-          auto_push_forge_branches: 'hard_fail_on_push_error',
+          auto_push_forge_branches: 'reported_via_mutation_outcome',
+          mutation_outcomes: ['unchanged', 'workspace_changed', 'committed_local', 'pushed_remote', 'unknown'],
+          durability_states: ['local_only', 'remote_branch', 'pull_request', 'failed_recovered'],
           branch_push: 'approval_required',
           draft_pull_request: 'approval_required',
           submit_requires_feature_branch_on_origin: true,
@@ -824,6 +1051,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           : await resolveWorkspaceId(env, identity, input.workspace_id);
         const limit = input.limit === undefined ? 40 : Number(input.limit);
         const since = input.since === undefined ? undefined : text(input.since);
+        // payloads:true answers "what were they sending", which is the only
+        // view that explains a failure rather than counting it.
+        if (input.payloads === true || input.errors_only === true) {
+          const calls = await recentToolCalls(env, {
+            tenantId: identity.tenantId,
+            workspaceId,
+            onlyErrors: input.errors_only === true,
+            limit: Number.isFinite(limit) ? limit : 40
+          });
+          return {
+            calls,
+            returned: calls.length,
+            note: 'Secret-shaped keys are redacted and long values previewed; request_bytes/response_bytes are the true sizes.'
+          };
+        }
         const activity = await listWorkspaceActivity(env, identity.tenantId, {
           workspaceId,
           limit: Number.isFinite(limit) ? limit : 40,
@@ -898,38 +1140,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         await vaultService(env).attach(identity.tenantId as TenantId, secretId, workspaceId);
         await completeApproval(env, approvalId, true);
         return { attached: true, secret_id: secretId, workspace_id: workspaceId };
-      },
-      forge_doctor: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
-        const report = await workspace.reconcile();
-        const compact = (await workspace.getState({ compact: true })) as CompactWorkspaceState & {
-          createdAt?: string;
-          updatedAt?: string;
-          pushAuthProbe?: { ok: boolean };
-        };
-        const ageMinutes = compact.createdAt
-          ? Math.round((Date.now() - new Date(compact.createdAt).getTime()) / 60_000)
-          : undefined;
-        return asRecord({
-          ...report,
-          workspace_age_minutes: ageMinutes,
-          branch: compact.currentBranch,
-          has_unpushed_work: compact.hasUnpushedWork,
-          push_auth_probe: compact.pushAuthProbe ?? null
-        });
-      },
-      forge_workspace_prove: async (input) => {
-        const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
-        return asRecord(await workspace.proveWorkspaceState());
-      },
-      forge_git_sync: async (input) => {
-        const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
-        const action = input.action === undefined ? 'detect' : text(input.action) as 'detect' | 'reset_to_remote' | 'keep_local_and_push';
-        return asRecord(await workspace.gitSyncRemote({ action }));
       },
       forge_workspace_snapshot: async (input) => {
         const identity = this.identity();
@@ -1543,7 +1753,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           ...(branch_policy ? { branch_policy } : {}),
           ...(credentialProfileId ? { credential_profile_id: credentialProfileId } : {}),
           next_step: state === 'ready'
-            ? `Ready on ${branch || 'forge/…'}. Edit with forge_files_replace / forge_files_write_batch (auto-commits). Reuse this workspace_id.`
+            ? `Ready on ${branch || 'forge/…'}. Edit with forge_edit — it commits to GitHub, no push needed. Reuse this workspace_id.`
             : state === 'failed'
               ? 'Provisioning failed. Read forge_workspace_get for the reason; do not keep polling.'
               : `Still provisioning after the wait budget. Call forge_workspace_get with this workspace_id to check again — it is usually ready within a minute of creation.`
@@ -1599,7 +1809,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             details: { paths: paths.length, maxBytes: perFileMaxBytes, totalLimit: MAX_TOTAL_READ_BYTES }
           });
         }
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
+        const readWorkspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        const workspace = await authorizedCoordinator(env, identity, readWorkspaceId);
         const readOne = {
           startLine: optionalNumber(input.start_line),
           endLine: optionalNumber(input.end_line),
@@ -1608,12 +1819,24 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // Single path keeps the original flat shape; multiple returns a files
         // array with per-file errors so one missing file does not fail the batch.
         if (paths.length === 1) {
-          return asRecord(await workspace.filesRead({ path: paths[0] as string, ...readOne }));
+          const single = asRecord(await workspace.filesRead({ path: paths[0] as string, ...readOne }));
+          // Only a complete read establishes what the agent saw; a range or a
+          // truncated read must not license a whole-file overwrite.
+          if (typeof single.content === 'string' && !single.truncated && readOne.startLine === undefined && readOne.endLine === undefined) {
+            await workspace.rememberReads({
+              entries: [{ path: normalizeRepoPath(paths[0] as string), sha: await gitBlobSha(single.content) }]
+            });
+          }
+          return single;
         }
         const files = await Promise.all(
           paths.map(async (path) => {
             try {
-              return { ...(await workspace.filesRead({ path, ...readOne })), path };
+              const one = asRecord(await workspace.filesRead({ path, ...readOne }));
+              if (typeof one.content === 'string' && !one.truncated && readOne.startLine === undefined && readOne.endLine === undefined) {
+                await workspace.rememberReads({ entries: [{ path: normalizeRepoPath(path), sha: await gitBlobSha(one.content) }] });
+              }
+              return { ...one, path };
             } catch (error) {
               // Surface a real ForgeErrorCode so an agent keying on codes never
               // meets an undocumented one.
@@ -1623,146 +1846,177 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         );
         return { files };
       },
-      forge_files_write: async (input) => {
-        const identity = this.identity();
-        const result = await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesWrite({
-          path: text(input.path),
-          content: text(input.content),
-          expectedSha256: input.expected_sha256 ? text(input.expected_sha256) : undefined,
-          expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: idempotency(input.idempotency_key)
-        });
-        const record = asRecord(result);
-        // Receipt only — omit checkpoint blob from the model channel.
-        const { checkpoint: _checkpoint, ...receipt } = record;
-        return receipt;
-      },
-      forge_files_write_batch: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const files = (input.files as Array<{ path: string; content: string; expected_sha256?: string }>).map((file) => ({
-          path: text(file.path),
-          content: text(file.content),
-          ...(file.expected_sha256 ? { expectedSha256: text(file.expected_sha256) } : {})
-        }));
-        const totalBytes = files.reduce((sum, file) => sum + utf8Bytes(file.content), 0);
-        if (totalBytes > 2_000_000) {
-          throw new ForgeError({
-            code: 'FORGE_VALIDATION_FAILED',
-            message: `Batch write total content is ${totalBytes} bytes; keep under 2MB per call or split by folder.`,
-            retryable: false
-          });
-        }
-        const result = await (await authorizedCoordinator(env, identity, workspaceId)).filesWriteBatch({
-          files,
-          expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: idempotency(input.idempotency_key)
-        });
-        return {
-          written: result.written,
-          files: result.files,
-          workspaceRevision: result.workspaceRevision,
-          ...('auto_commit' in result && result.auto_commit ? { auto_commit: result.auto_commit } : {}),
-          ...('replay' in result && result.replay ? { replay: true, operationId: result.operationId } : {}),
-          next_step: `Wrote and auto-committed ${result.written} file(s). Continue the next folder or forge_submit.`
-        };
-      },
-      forge_files_replace: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesReplace({
-          path: text(input.path),
-          oldString: text(input.old_string),
-          newString: text(input.new_string),
-          replaceAll: Boolean(input.replace_all),
-          expectedSha256: input.expected_sha256 ? text(input.expected_sha256) : undefined,
-          expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: idempotency(input.idempotency_key)
-        }));
-      },
-      forge_files_patch: async (input) => {
-        const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).filesPatch({
-          patch: text(input.patch),
-          paths: input.paths === undefined ? undefined : (input.paths as string[]),
-          expectedRevision: optionalNumber(input.expected_revision),
-          idempotencyKey: idempotency(input.idempotency_key)
-        }));
-      },
-      forge_files_upload: async (input) => {
+      forge_edit: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
         const workspace = await authorizedCoordinator(env, identity, workspaceId);
-        const path = text(input.path);
-        const contentBase64 = text(input.content_base64);
-        // Validate base64 content before touching the workspace
-        try { atob(contentBase64); } catch {
-          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'content_base64 is not valid base64.', retryable: false });
+        const state = await withDeadline(
+          (async () => (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string; baseCommit?: string; currentCommit?: string })(),
+          15_000
+        );
+        if (!state) {
+          throw new ForgeError({
+            code: 'FORGE_WORKSPACE_NOT_READY',
+            message: 'The workspace did not respond in time, so Forge cannot tell which branch to commit to. Nothing was written. Retry the same call.',
+            retryable: true,
+            details: { workspaceId }
+          });
         }
-        // Write base64 content to a temp file, decode via Node.js (guaranteed on all sandboxes), then remove temp
-        const tmpPath = `/tmp/forge-upload-${Date.now()}`;
+        const branch = state.currentBranch;
+        if (!branch || !isAgentForgeBranch(branch)) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'This workspace has no agent branch to edit. Create the workspace through forge_workspace_create, which cuts one for you.',
+            retryable: false
+          });
+        }
+        const requested = (input.files as Array<{ path: string; content?: string | null; replace?: Array<{ old: string; new: string; all?: boolean }> }>).map((file) => ({
+          path: normalizeRepoPath(text(file.path)),
+          content: file.content === undefined ? undefined : file.content === null ? null : text(file.content),
+          replace: file.replace
+        }));
+        for (const file of requested) {
+          const hasContent = file.content !== undefined;
+          const hasReplace = Array.isArray(file.replace) && file.replace.length > 0;
+          if (hasContent === hasReplace) {
+            throw new ForgeError({
+              code: 'FORGE_VALIDATION_FAILED',
+              message: `${file.path}: send either content (whole file, or null to delete) or replace (fragments), not both and not neither.`,
+              retryable: false
+            });
+          }
+        }
+        const duplicate = requested.map((f) => f.path).find((path, index, all) => all.indexOf(path) !== index);
+        if (duplicate) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `"${duplicate}" appears twice in one edit. Send each path once — the last write would silently win.`,
+            retryable: false
+          });
+        }
+        const message = input.message === undefined
+          ? `edit: ${requested.length} file${requested.length === 1 ? '' : 's'}`
+          : text(input.message);
+
+        const request = await githubRequestForWorkspace(env, identity, { repository: state.repository });
+        // Fragment edits are resolved here, against what the file actually
+        // contains right now. Forge does the reading, so the agent never has
+        // to re-emit a whole file and cannot lose the parts it did not send.
+        const resolvedBlobs: Record<string, string> = {};
+        const files: Array<{ path: string; content: string | null }> = [];
+        for (const file of requested) {
+          if (file.content !== undefined) {
+            files.push({ path: file.path, content: file.content });
+            continue;
+          }
+          const fetched = await request(
+            `/repos/${state.repository.owner}/${state.repository.name}/contents/${file.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`
+          );
+          if (fetched.status !== 200) {
+            throw new ForgeError({
+              code: 'FORGE_FILE_NOT_FOUND',
+              message: `${file.path} does not exist on ${branch}, so there is nothing to replace in it. Send content to create it.`,
+              retryable: false,
+              details: { path: file.path, branch }
+            });
+          }
+          const body = fetched.json as { content?: string; sha?: string; encoding?: string };
+          if (typeof body.content !== 'string' || typeof body.sha !== 'string') {
+            throw new ForgeError({
+              code: 'FORGE_FILE_CONFLICT',
+              message: `${file.path} could not be read as text, so fragment replacement cannot be applied to it.`,
+              retryable: false,
+              details: { path: file.path }
+            });
+          }
+          const currentText = new TextDecoder().decode(
+            Uint8Array.from(atob(body.content.replace(/\n/gu, '')), (character) => character.charCodeAt(0))
+          );
+          try {
+            files.push({ path: file.path, content: applyReplacements(file.path, currentText, file.replace!) });
+          } catch (error) {
+            if (error instanceof ReplacementFailed) {
+              throw new ForgeError({
+                code: 'FORGE_FILE_CONFLICT',
+                message: error.message,
+                retryable: false,
+                details: { path: error.path, reason: error.reason }
+              });
+            }
+            throw error;
+          }
+          // Forge read it, so the read-before-overwrite guard is satisfied by
+          // the blob it actually applied the change to.
+          resolvedBlobs[file.path] = body.sha;
+        }
+        let result;
         try {
-          const writeResult = await workspace.shellExec({
-            command: `printf '%s' '${contentBase64.replace(/'/g, "'\\''")}' > '${tmpPath}'`,
-            cwd: '/workspace/repo',
-            timeoutMs: 30_000,
-            environment: {},
-            networkPolicy: 'deny_all',
-            outputLimitBytes: 4096,
-            approved: true,
-            mode: 'mutating'
+          result = await commitFilesToBranch(request, {
+            owner: state.repository.owner,
+            repo: state.repository.name,
+            branch,
+            message,
+            files,
+            expectedBlobs: { ...(await workspace.seenBlobs({ paths: files.map((file) => file.path) })), ...resolvedBlobs },
+            // The agent branch is cut inside the container, so GitHub has not
+            // seen it until the first edit lands.
+            baseSha: state.baseCommit ?? state.currentCommit,
+            requireKnownBase: true
           });
-          if (writeResult.exitCode !== 0) {
-            throw new ForgeError({
-              code: 'FORGE_FILE_CONFLICT',
-              message: `Failed to write temporary base64 file: ${writeResult.stderr.slice(0, 300)}`,
-              retryable: false,
-              details: { tmpPath, exitCode: writeResult.exitCode }
-            });
-          }
-          const decodeResult = await workspace.shellExec({
-            command: `node -e "require('fs').writeFileSync(process.argv[1],Buffer.from(require('fs').readFileSync(process.argv[2],'utf8').replace(/\\s+\$/,''),'base64'))" '${path.replace(/'/g, "'\\''")}' '${tmpPath}' && rm -f '${tmpPath}'`,
-            cwd: '/workspace/repo',
-            timeoutMs: 30_000,
-            environment: {},
-            networkPolicy: 'deny_all',
-            outputLimitBytes: 4096,
-            approved: true,
-            mode: 'mutating'
-          });
-          if (decodeResult.exitCode !== 0) {
-            throw new ForgeError({
-              code: 'FORGE_FILE_CONFLICT',
-              message: `Failed to decode base64 to binary file: ${decodeResult.stderr.slice(0, 500)}`,
-              retryable: false,
-              details: { path, exitCode: decodeResult.exitCode }
-            });
-          }
-          const stat = await workspace.shellExec({
-            command: `wc -c < '${path.replace(/'/g, "'\\''")}' 2>/dev/null || echo 0`,
-            cwd: '/workspace/repo',
-            timeoutMs: 5_000,
-            environment: {},
-            networkPolicy: 'deny_all',
-            outputLimitBytes: 128,
-            approved: true,
-            mode: 'read_only'
-          });
-          const sizeBytes = parseInt(stat.stdout.trim(), 10) || 0;
-          const auto = await workspace.filesUploadCommit({ path });
-          return { path, size_bytes: sizeBytes, uploaded: true, ...auto };
         } catch (error) {
-          await workspace.shellExec({
-            command: `rm -f '${tmpPath}'`,
-            cwd: '/workspace/repo',
-            timeoutMs: 5_000,
-            environment: {},
-            networkPolicy: 'deny_all',
-            outputLimitBytes: 128,
-            approved: true,
-            mode: 'mutating'
-          }).catch(() => {});
+          if (error instanceof RemoteCommitConflict) {
+            throw new ForgeError({
+              code: 'FORGE_FILE_CONFLICT',
+              message: error.message,
+              retryable: false,
+              details: { conflictingPaths: error.conflictingPaths, branch }
+            });
+          }
           throw error;
         }
+
+        // The commit is on origin before this call returns, so durability is
+        // settled here — there is no later push that could fail and strand it.
+        const verdict = describeDurability({
+          branch,
+          commit: result.commitSha ?? result.parentSha,
+          hasUnpushedWork: false,
+          pushVerified: true,
+          remoteSha: result.commitSha ?? result.parentSha,
+          committed: !result.unchanged
+        });
+        if (result.commitSha) {
+          await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.commitSha);
+        }
+        // What we just wrote is now what is on the branch, so a second edit to
+        // the same path does not need an intervening read.
+        await workspace.forgetReads({ paths: files.filter((file) => file.content === null).map((file) => file.path) });
+        await workspace.rememberReads({
+          entries: await Promise.all(
+            files
+              .filter((file) => file.content !== null)
+              .map(async (file) => ({ path: file.path, sha: await gitBlobSha(file.content as string) }))
+          )
+        });
+        // Best effort: bring the container's checkout in line so forge_run
+        // tests what was just committed. A failure here costs nothing — the
+        // work is already safe on GitHub and the container is a cache.
+        const synced = await workspace.syncToRemoteHead().then(() => true).catch(() => false);
+
+        return {
+          ...verdict,
+          ...(result.commitSha ? { commit_sha: result.commitSha } : {}),
+          ...(result.commitSha
+            ? { commit_url: `https://github.com/${state.repository.owner}/${state.repository.name}/commit/${result.commitSha}` }
+            : {}),
+          branch,
+          paths: result.paths,
+          rebased: result.rebased,
+          workspace_synced: synced,
+          next_step: result.unchanged
+            ? 'Nothing changed — the files already had this content. Continue or call forge_merge.'
+            : `Committed to origin/${branch}. Run checks with forge_shell, then forge_merge when ready.${synced ? '' : ' The container checkout is stale; forge_shell will re-sync.'}`
+        };
       },
       forge_diff_metadata: async (input) => {
         const identity = this.identity();
@@ -1775,12 +2029,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_context_get: async (input) => {
         const identity = this.identity();
         const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
-        const tree = await workspace.filesTree({ path: '/workspace/repo', depth: 20, limit: 10_000 });
-        const entries = (tree as { entries?: Array<{ path?: string; name?: string; type?: string }> }).entries ?? [];
-        const files = entries
-          .filter((e) => e.type !== 'directory' && e.path)
-          .map((e) => e.path!.replace(/^\/workspace\/repo\//, ''))
-          .filter((p) => p && !p.startsWith('.'));
+        // git's file list, not a filesystem walk: node_modules used to consume
+        // the whole bounded result, so the selector never saw a source file.
+        let files = await workspace.listRepositoryFiles({ limit: 10_000 }).catch(() => [] as string[]);
+        if (!files.length) {
+          const tree = await workspace.filesTree({ path: '/workspace/repo', depth: 20, limit: 10_000 });
+          const entries = (tree as { entries?: Array<{ path?: string; name?: string; type?: string }> }).entries ?? [];
+          files = entries
+            .filter((e) => e.type !== 'directory' && e.path)
+            .map((e) => e.path!.replace(/^\/workspace\/repo\//, ''));
+        }
+        files = files.filter((p) => p && !p.startsWith('.'));
         const response = selectContext({
           goal: text(input.goal),
           files,
@@ -1827,8 +2086,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             claimedApproval = true;
           }
         }
+        // A host kills the request long before Forge's own timeout fires:
+        // timeout_ms defaults to 300s while ChatGPT and Claude cut the
+        // transport at around 60. Anything slower than that returned no
+        // process id, no output and no handle — while the command kept
+        // running — which is the worst shape a failure can have. Route it
+        // through the managed-process path instead, so a long command always
+        // comes back as something the agent can wait on.
+        const HOST_SAFE_SYNC_MS = 45_000;
+        const requestedTimeout = number(input.timeout_ms);
+        const escalated = input.async !== true
+          && input.mode !== 'read_only'
+          && Number.isFinite(requestedTimeout)
+          && requestedTimeout > HOST_SAFE_SYNC_MS;
         try {
-          if (input.async === true) {
+          if (input.async === true || escalated) {
             if (input.mode === 'read_only') {
               throw new ForgeError({
                 code: 'FORGE_VALIDATION_FAILED',
@@ -1871,10 +2143,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               operationId: procRecord.operationId,
               workspaceRevision: procRecord.workspaceRevision,
               mutatesFilesystem: value.mutatesFilesystem ?? procRecord.mutatesFilesystem,
-              allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_get'],
-              next_step: `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for dependency installs), or forge_process_logs to inspect output.`
+              allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
+              ...(escalated && input.async !== true
+                ? {
+                    escalated_to_background: true,
+                    escalated_reason: `timeout_ms ${requestedTimeout}ms exceeds the ${HOST_SAFE_SYNC_MS}ms a client will hold a request open, so this runs as a managed process instead of failing the transport.`
+                  }
+                : {}),
+              next_step: `Running in the background as ${processId}. Call forge_process_wait with that process_id (timeout_ms >= 600000 for installs), or forge_process_logs to inspect output. Do not re-run the command.`
             };
           }
+          // Bring the checkout up to the branch before running anything. The
+          // container is a cache of what is on GitHub, and forge_edit's own
+          // sync is best-effort — so without this a command can test code that
+          // is not what was committed, pass, and be reported as proof. That is
+          // the same false assurance as claiming unpushed work was saved.
+          await workspace.syncToRemoteHead().catch(() => undefined);
           const result = await workspace.shellExec({
             command,
             cwd,
@@ -1894,7 +2178,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             stdout = await vaultService(env).redactOutput(stdout, identity.tenantId as TenantId, workspaceId);
             stderr = await vaultService(env).redactOutput(stderr, identity.tenantId as TenantId, workspaceId);
           }
+          const exitCode = 'exitCode' in result ? Number(result.exitCode) : undefined;
           const compact = input.compact !== false;
+          // Replace the log with the answer when the command's output has a
+          // known shape. A 300KB test run becomes a headline plus the failing
+          // test names — the difference between a session that can run tests,
+          // read failures, fix and re-run, and one that dies on the first run.
+          // The full log is still spilled to an artifact below.
+          const summary = summariseCommandOutput({ command, output: `${stdout}\n${stderr}`, exitCode });
           const combinedBytes = utf8Bytes(stdout) + utf8Bytes(stderr);
           let outputArtifactId: string | undefined;
           if (combinedBytes > AGENT_OUTPUT_SPILL_BYTES) {
@@ -1909,15 +2200,36 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
           const base = asRecord(result);
           const { checkpoint: _checkpoint, stdout: _s, stderr: _e, ...rest } = base;
-          const exitCode = 'exitCode' in result ? Number(result.exitCode) : undefined;
+          // Anything this command wrote lives only in the container, which is
+          // the one place that is not durable. Commit it before returning, so
+          // a formatter or codemod cannot leave work to be lost at the next
+          // sync — and so the agent is never holding changes it must remember
+          // to save.
+          const ingested = input.mode === 'read_only'
+            ? { committed: false, paths: [] as string[], truncated: false }
+            : await this.ingestContainerWrites(env, identity, workspaceId, workspace, `${command.slice(0, 80)}`)
+                .catch(() => ({ committed: false, paths: [] as string[], truncated: false, failed: true }));
+          const wrote = ingested.paths.length
+            ? {
+                committed_files: ingested.paths,
+                ...('commit_sha' in ingested && ingested.commit_sha ? { commit_sha: ingested.commit_sha } : {}),
+                ...('failed' in ingested && ingested.failed
+                  ? { committed_files_warning: 'This command changed files that Forge could not commit to GitHub. They exist only in the container. Re-apply them with forge_edit.' }
+                  : {})
+              }
+            : {};
           if (compact) {
             return {
               ...rest,
+              ...wrote,
               exitCode,
               compact: true,
               truncated: Boolean(result.truncated) || Boolean(outputArtifactId),
-              stdout_tail: tailBytes(stdout, AGENT_OUTPUT_TAIL_BYTES),
-              stderr_tail: tailBytes(stderr, AGENT_OUTPUT_TAIL_BYTES),
+              ...(summary ? { result_summary: summary } : {}),
+              // With a summary the tails are noise; without one they are the
+              // only thing the agent has.
+              stdout_tail: tailBytes(stdout, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
+              stderr_tail: tailBytes(stderr, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
               ...(outputArtifactId
                 ? {
                     output_artifact_id: outputArtifactId,
@@ -1928,6 +2240,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
           return {
             ...rest,
+            ...wrote,
             exitCode,
             compact: false,
             stdout,
@@ -1985,244 +2298,29 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         });
         return asRecord(result);
       },
-      forge_git_status: async (input) => {
+      forge_merge: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitStatus());
-      },
-      forge_git_diff: async (input) => {
-        const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
-        const scope = input.scope === undefined ? 'worktree' : text(input.scope);
-        const compact = input.compact !== false;
-        const page = scope === 'outgoing'
-          ? await workspace.gitOutgoingDiff({
-              base: await outgoingComparisonRef(workspace, input.base === undefined ? undefined : text(input.base)),
-              ...diffPaging(input)
-            })
-          : await workspace.gitDiff({
-              staged: scope === 'staged',
-              ...diffPaging(input)
-            });
-        if (!compact) return asRecord(page);
-        // File list + totals only — agents under size limits should request
-        // compact:false + paths for specific hunks.
-        const record = asRecord(page);
-        const { diff: _diff, ...meta } = record;
-        return {
-          ...meta,
-          compact: true,
-          diff: '',
-          next_step: 'File list only. For hunks: forge_git_diff compact:false with paths:[...] or cursor/nextCursor.'
-        };
-      },
-      forge_git_branch: async (input) => {
-        const identity = this.identity();
-        const branch = text(input.branch);
-        assertForgeBranch(branch);
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id))).gitBranchCreate({
-          branch, expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
-        }));
-      },
-      forge_git_rebase: async (input) => {
-        const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
-        const base = text(input.base);
-        const fetchResult = await workspace.shellExec({
-          command: `git fetch origin ${base}`,
-          cwd: '/workspace/repo',
-          timeoutMs: 60_000,
-          environment: {},
-          networkPolicy: 'development',
-          outputLimitBytes: 4096,
-          approved: true,
-          mode: 'mutating'
-        });
-        if (fetchResult.exitCode !== 0) {
+        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
+        // The branch is Forge's, not the agent's, so it does not have to know
+        // or repeat it. If one is supplied it must be the workspace's own —
+        // merging some other branch is never what was meant.
+        const workspaceBranch = ((await (await authorizedCoordinator(env, identity, workspaceId)).getState()) as { currentBranch?: string }).currentBranch;
+        const branch = input.branch === undefined ? (workspaceBranch ?? '') : text(input.branch);
+        if (!branch) {
           throw new ForgeError({
-            code: 'FORGE_GIT_FETCH_FAILED',
-            message: `Failed to fetch upstream '${base}': ${fetchResult.stderr.slice(0, 500)}`,
-            retryable: true,
-            details: { base, exitCode: fetchResult.exitCode }
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'This workspace has no agent branch to merge. Nothing has been edited yet.',
+            retryable: false
           });
         }
-        const rebaseResult = await workspace.shellExec({
-          command: `git rebase origin/${base}`,
-          cwd: '/workspace/repo',
-          timeoutMs: 120_000,
-          environment: {},
-          networkPolicy: 'development',
-          outputLimitBytes: 8192,
-          approved: true,
-          mode: 'mutating'
-        });
-        if (rebaseResult.exitCode === 0) {
-          return { rebased: true, base, conflicts: [], message: `Branch rebased onto ${base}.` };
+        if (workspaceBranch && branch !== workspaceBranch) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: `This workspace is on ${workspaceBranch}, not ${branch}. Omit branch and Forge merges the one you have been editing.`,
+            retryable: false,
+            details: { workspaceBranch, requested: branch }
+          });
         }
-        // Capture conflicted files BEFORE aborting — abort clears the merge state
-        const conflictResult = await workspace.shellExec({
-          command: 'git diff --name-only --diff-filter=U',
-          cwd: '/workspace/repo',
-          timeoutMs: 10_000,
-          environment: {},
-          networkPolicy: 'deny_all',
-          outputLimitBytes: 8192,
-          approved: true,
-          mode: 'read_only'
-        });
-        const conflicts = conflictResult.stdout.split('\n').filter((line) => line.trim());
-        await workspace.shellExec({
-          command: 'git rebase --abort',
-          cwd: '/workspace/repo',
-          timeoutMs: 10_000,
-          environment: {},
-          networkPolicy: 'deny_all',
-          outputLimitBytes: 4096,
-          approved: true,
-          mode: 'mutating'
-        });
-        return {
-          rebased: false,
-          base,
-          conflicts,
-          message: conflicts.length > 0
-            ? `Rebase conflicted on ${conflicts.length} file(s): ${conflicts.join(', ')}. The rebase was aborted. Resolve conflicts manually, then rebase again.`
-            : `Rebase failed on ${base} but no conflicted files were detected. The rebase was aborted. Check git status.`
-        };
-      },
-      forge_git_commit: async (input) => {
-        const identity = this.identity();
-        const coordinator = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, input.workspace_id));
-        let message = input.message === undefined ? '' : text(input.message);
-        // Blank message + AI on: synthesise a commit message from the working
-        // diff. Best-effort — generateCommitMessage never throws, and if the
-        // diff is empty we leave the message blank so gitCommit enforces the
-        // existing required-message contract.
-        if (!message.trim() && aiEnabled(env)) {
-          const diff = await coordinator.gitDiff({ staged: false, maxBytes: 32_000 }).then((r) => r.diff).catch(() => '');
-          if (diff.trim()) message = await generateCommitMessage(env, diff);
-        }
-        const result = await coordinator.gitCommit({
-          message, paths: input.paths as string[], expectedRevision: optionalNumber(input.expected_revision), idempotencyKey: idempotency(input.idempotency_key)
-        });
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        if (result.auto_push?.pushed && result.auto_push.remote_sha) {
-          await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.auto_push.remote_sha);
-        }
-        const record = asRecord(result);
-        const { checkpoint: _checkpoint, ...receipt } = record;
-        return {
-          ...receipt,
-          next_step: result.auto_push?.pushed
-            ? `Committed and pushed ${result.auto_push.remote_sha}. Echo that SHA only — do not paste the diff.`
-            : 'Committed locally. Push via forge_submit or forge_git_push when ready.'
-        };
-      },
-      forge_git_push: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const branch = text(input.branch);
-        assertForgeBranch(branch);
-        const prBase = text(input.base);
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
-        const state = await workspace.getState({ compact: true }) as CompactWorkspaceState;
-        const repo = (await workspace.getState()).repository as RepositoryRef;
-        if (!repo?.owner || !repo?.name) {
-          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Workspace has no repository binding.', retryable: false });
-        }
-        const head = state.currentCommit;
-        if (!head) {
-          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Nothing to push: commit your work first.', retryable: false });
-        }
-        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        const alreadyOnRemote = autoPushForgeBranchesEnabled(env) && !state.hasUnpushedWork;
-        const stagedRef = `forge/staged/${workspaceId}/${branch.replace(/^forge\//, '')}`;
-        const staged = alreadyOnRemote
-          ? { ref: stagedRef, commit: head }
-          : await workspace.stageForReview({ ref: stagedRef });
-        const approvalPayload = { branch, base: prBase, commit: staged.commit, action: 'git.push' };
-        if (!approvalId) {
-          const approval = await requestApproval(env, identity, workspaceId, 'git.push', `Push ${branch} to remote`, approvalPayload);
-          if (approval.already_approved) {
-            approvalId = approval.approval_id;
-            await requireApproval(env, identity, approvalId, workspaceId, 'git.push', approvalPayload);
-          } else {
-            const inline = await this.tryResolveApprovalInline(identity, approval, `Push ${branch} to remote`);
-            if (!inline) {
-              throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Pushing requires human approval. Open the approval URL, approve it, then retry with approval_id.', retryable: false, details: { kind: 'approval', action: 'git.push', ...approval } });
-            }
-            approvalId = inline;
-            await requireApproval(env, identity, approvalId, workspaceId, 'git.push', approvalPayload);
-          }
-        }
-        await requireApproval(env, identity, approvalId, workspaceId, 'git.push', approvalPayload);
-        try {
-          await promoteStagedRef(env, identity, repo, { branch, commitSha: staged.commit });
-        } catch (error) {
-          await completeApproval(env, approvalId, false);
-          throw error;
-        }
-        await completeApproval(env, approvalId, true);
-        return {
-          pushed: true,
-          branch,
-          pr_base: prBase,
-          commit: staged.commit,
-          remote_sha: staged.commit,
-          staged_ref: staged.ref,
-          auto_push_already_applied: alreadyOnRemote
-        };
-      },
-      forge_pull_request_create: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const branch = text(input.branch);
-        assertForgeBranch(branch);
-        const base = text(input.base);
-        const title = input.title === undefined ? `Forge: ${branch}` : text(input.title);
-        const body = input.body === undefined ? '' : text(input.body);
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
-        const state = await workspace.getState();
-        const repo = state.repository as RepositoryRef;
-        if (!repo?.owner || !repo?.name) {
-          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Workspace has no repository binding.', retryable: false });
-        }
-        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        const approvalPayload = { branch, base, title, action: 'pull_request.create' };
-        if (!approvalId) {
-          const approval = await requestApproval(env, identity, workspaceId, 'pull_request.create', `Create draft PR for ${branch}`, approvalPayload);
-          if (approval.already_approved) {
-            approvalId = approval.approval_id;
-            await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', approvalPayload);
-          } else {
-            const inline = await this.tryResolveApprovalInline(identity, approval, `Create draft PR for ${branch}`);
-            if (!inline) {
-              throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'Creating a PR requires human approval. Open the approval URL, approve it, then retry with approval_id.', retryable: false, details: { kind: 'approval', action: 'pull_request.create', ...approval } });
-            }
-            approvalId = inline;
-            await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', approvalPayload);
-          }
-        }
-        await requireApproval(env, identity, approvalId, workspaceId, 'pull_request.create', approvalPayload);
-        let pr;
-        try {
-          pr = await createDraftPullRequest(env, identity, repo, { head: branch, base, title, body });
-        } catch (error) {
-          await completeApproval(env, approvalId, false);
-          throw error;
-        }
-        await completeApproval(env, approvalId, true);
-        return {
-          created: true,
-          pr_number: pr.number,
-          pr_url: pr.url,
-          branch,
-          base
-        };
-      },
-      forge_submit: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const branch = text(input.branch);
         assertForgeBranch(branch);
         const prBase = input.pr_base !== undefined
           ? text(input.pr_base)
@@ -2523,35 +2621,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             : `Deploy succeeded but URL not verified. Do not invent workers.dev.${outputArtifactId ? ` Inspect ${outputArtifactId} via forge_artifact_get.` : ' Pass expected_url.'}`
         };
       },
-      forge_work_export: async (input) => {
-        const identity = this.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id);
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
-        const maxBytes = input.max_bytes === undefined ? 2_000_000 : number(input.max_bytes);
-        const exported = await workspace.exportRecoveryPatch({ maxBytes });
-        const artifactId = ids.artifact() as import('@forge/core').ArtifactId;
-        const bytes = new TextEncoder().encode(exported.content).buffer;
-        const store = new R2ArtifactStore(env.ARTIFACTS);
-        const ref = await store.put({
-          id: artifactId,
-          tenantId: identity.tenantId as import('@forge/core').TenantId,
-          workspaceId: workspaceId as import('@forge/core').WorkspaceId,
-          kind: 'recovery-patch',
-          contentType: 'text/plain; charset=utf-8',
-          bytes,
-          metadata: {
-            kind: 'recovery-patch',
-            workspace_id: workspaceId
-          }
-        });
-        return {
-          artifact_id: ref.id,
-          size_bytes: ref.sizeBytes,
-          sha256: ref.sha256,
-          proof: exported.proof,
-          next_step: `Recovery patch stored as ${ref.id}. Fetch with forge_artifact_get if needed. Prefer fixing push (forge_git_push / forge_submit) so the feature branch is on origin.`
-        };
-      },
       forge_preview_expose: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, input.workspace_id) as WorkspaceId;
@@ -2818,17 +2887,28 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // only when — no coordinator record exists, so real cross-project
         // workspaces still fail the authorization check above.
         let workspaceRevision: number | null = null;
-        let source: 'workspace' | 'url_review' = 'workspace';
-        const state = await coordinator(env, workspaceId).tryGetState();
-        if (state) {
-          if (state.tenantId !== identity.tenantId || state.projectId !== identity.projectId) {
+        let source: 'workspace' | 'url_review' | 'degraded_workspace' = 'workspace';
+        // Bounded: a workspace that has stopped answering must not be able to
+        // block the read of its own recovery artifact. On timeout we fall
+        // through to the D1 binding, which carries the same tenant/project
+        // facts without needing the container.
+        const state = await withDeadline((async () => coordinator(env, workspaceId).tryGetState())(), 5_000);
+        // D1 binding, consulted only when the coordinator did not answer. A
+        // real container-backed workspace still authorizes on tenant AND
+        // project — it just no longer needs to be alive to do it.
+        const degradedOwner = state ? null : await lookupWorkspaceOwner(env, workspaceId);
+        if (state || degradedOwner) {
+          const ownerTenant = state ? state.tenantId : degradedOwner!.tenantId;
+          const ownerProject = state ? state.projectId : degradedOwner!.projectId;
+          if (ownerTenant !== identity.tenantId || ownerProject !== identity.projectId) {
             throw new ForgeError({
               code: 'FORGE_PERMISSION_DENIED',
               message: 'This workspace belongs to a different project. Use a workspace_id from the current project.',
               retryable: false
             });
           }
-          workspaceRevision = state.revision;
+          workspaceRevision = state ? state.revision : null;
+          if (!state) source = 'degraded_workspace';
         } else {
           source = 'url_review';
           // Defense-in-depth: the R2 key below is scoped to the caller's own
@@ -2879,12 +2959,22 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           size_bytes: object.size,
           metadata: object.customMetadata ?? {}
         };
-        if (!mimeType.startsWith('image/')) return value;
-        return forgeToolResponse(value, [{
-          type: 'image',
-          data: base64(await object.arrayBuffer()),
-          mimeType
-        }]);
+        if (mimeType.startsWith('image/')) {
+          return forgeToolResponse(value, [{
+            type: 'image',
+            data: base64(await object.arrayBuffer()),
+            mimeType
+          }]);
+        }
+        // Return the bytes. This used to hand back metadata only for anything
+        // that was not an image, which made forge_work_export write-only: a
+        // recovery patch is stored as text/plain, so the one artifact that
+        // exists to rescue unpushed work could be created and described but
+        // never read back. size_bytes is already bounded by max_bytes above.
+        const bytes = await object.arrayBuffer();
+        return isTextualArtifact(mimeType)
+          ? { ...value, content: new TextDecoder().decode(bytes) }
+          : { ...value, content_base64: base64(bytes) };
       },
       forge_artifact_upload: async (input) => {
         const identity = this.identity();

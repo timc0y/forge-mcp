@@ -146,9 +146,7 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   }
   if (!isAgentForgeBranch(record.workspace.currentBranch)) {
     return [
-      'forge_git_branch',
       'forge_workspace_get',
-      'forge_git_status',
       'forge_files_list'
     ];
   }
@@ -157,16 +155,13 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
     return [
       'forge_deps_install',
       'forge_shell',
-      'forge_git_status',
       'forge_workspace_get'
     ];
   }
   return [
-    'forge_files_write_batch',
-    'forge_files_replace',
+    'forge_edit',
     'forge_shell',
-    'forge_git_status',
-    'forge_submit',
+    'forge_merge',
     'forge_workspace_get'
   ];
 }
@@ -1102,7 +1097,7 @@ export class ForgeApplicationService {
       };
       throw new ForgeError({
         code: 'FORGE_CHECKOUT_DATA_LOSS',
-        message: `The workspace container was recycled and its checkout had to be re-cloned from the remote. Uncommitted or unpushed work on ${lostBranch ?? '(unknown branch)'} was lost — it is not recoverable. The workspace is usable again, but re-check forge_git_status and re-apply any lost changes.`,
+        message: `The workspace container was recycled and its checkout had to be re-cloned from the remote. Uncommitted or unpushed work on ${lostBranch ?? '(unknown branch)'} was lost — it is not recoverable. The workspace is usable again, but re-apply any lost changes with forge_edit.`,
         retryable: false,
         details: { workspaceId: record.workspace.id, lostBranch, recoveredRef: recoverRef }
       });
@@ -1854,15 +1849,15 @@ export class ForgeApplicationService {
       throw new ForgeError({
         code: 'FORGE_PATCH_REJECTED',
         message: rejectedFiles.length
-          ? `The patch did not apply to ${rejectedFiles.join(', ')}. The working tree was left unchanged. Re-read the file (forge_files_read) to get its current content and hash, then retry with a diff built against that content — or use forge_files_write to replace the whole file.`
-          : 'The patch could not be applied cleanly. The working tree was left unchanged. Re-read the file (forge_files_read) for its current content, then rebuild the diff — or use forge_files_write to replace the whole file.',
+          ? `The patch did not apply to ${rejectedFiles.join(', ')}. The working tree was left unchanged. Re-read the file (forge_files_read) to get its current content and hash, then retry — or send the whole file as forge_edit content.`
+          : 'The patch could not be applied cleanly. The working tree was left unchanged. Re-read the file (forge_files_read) for its current content, then retry — or send the whole file as forge_edit content.',
         retryable: false,
         operationId: operation.operationId,
         details: {
           output: value.output.slice(0, 4_000),
           ...(rejectedFiles.length ? { rejectedFiles } : {}),
           rolledBack: value.rolledBack ?? true,
-          hint: 'forge_files_write replaces an entire file and avoids diff-context mismatches.'
+          hint: 'forge_edit with replace:[{old,new}] changes a fragment without re-sending the whole file.'
         }
       });
     }
@@ -3026,7 +3021,7 @@ export class ForgeApplicationService {
       state = 'unknown';
       reason = 'git_lock_file_present';
       recommendedAction = blockingProcessId
-        ? `Wait for or cancel process ${blockingProcessId}, then retry forge_doctor.`
+        ? `Wait for or cancel process ${blockingProcessId}, then retry.`
         : 'A Git lock file exists but no managed process is blocking. Remove stale lock files or retry.';
     } else if (!gitHeadReadable) {
       state = 'corrupted';
@@ -3293,7 +3288,7 @@ export class ForgeApplicationService {
           installCommand,
           lockfileHashAfter,
           processId,
-          allowedNextActions: ['forge_doctor', 'forge_deps_install', 'forge_workspace_get']
+          allowedNextActions: ['forge_deps_install', 'forge_workspace_get']
         }
       });
     }
@@ -3325,8 +3320,8 @@ export class ForgeApplicationService {
       stderr: logs.data.slice(-2_000),
       stdout: logs.data.slice(0, 1_000),
       allowedNextActions: success
-        ? ['forge_shell', 'forge_git_status', 'forge_workspace_get']
-        : ['forge_deps_install', 'forge_doctor', 'forge_workspace_get'],
+        ? ['forge_shell', 'forge_workspace_get']
+        : ['forge_deps_install', 'forge_workspace_get'],
       next_step: success
         ? 'Dependencies are usable. Continue with forge_shell / validation.'
         : 'Dependency install failed. Inspect logs with forge_process_logs, then retry with a new idempotency key only if needed.'
@@ -3528,6 +3523,144 @@ export class ForgeApplicationService {
       });
     }
     return { ...identity, workspaceHash, workspaceHashAlgorithm: 'content-v2' };
+  }
+
+  /**
+   * Everything the container has written that GitHub does not know about.
+   *
+   * Remote-first editing makes GitHub the only durable place, so anything a
+   * shell command changed — a formatter, a codemod, a generator — is local and
+   * would be lost at the next sync. Collecting it lets Forge commit it for
+   * real instead of asking the agent to notice and re-do it.
+   */
+  async collectWorktreeChanges(
+    record: WorkspaceRuntimeRecord,
+    limit = 50
+  ): Promise<{ changes: Array<{ path: string; content: string | null }>; truncated: boolean; baseBlobs: Record<string, string> }> {
+    const handle = await this.handle(record);
+    const status = await handle.exec({
+      command: 'git status --porcelain', cwd: '/workspace/repo', timeoutMs: 30_000,
+      outputLimitBytes: 200_000, sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (status.exitCode !== 0) return { changes: [], truncated: false, baseBlobs: {} };
+    const entries = status.stdout.split('\n').map((line) => line.trimEnd()).filter(Boolean);
+    const changes: Array<{ path: string; content: string | null }> = [];
+    for (const entry of entries.slice(0, limit)) {
+      const code = entry.slice(0, 2);
+      // Rename lines read "R  old -> new"; only the destination matters here.
+      const raw = entry.slice(3).split(' -> ').pop() ?? '';
+      const path = raw.replace(/^"|"$/gu, '');
+      if (!path || path.includes('..')) continue;
+      if (code.includes('D')) {
+        changes.push({ path, content: null });
+        continue;
+      }
+      const file = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 500_000 }).catch(() => undefined);
+      if (file && typeof file.content === 'string') changes.push({ path, content: file.content });
+    }
+    // What each changed file looked like at the commit the container is on.
+    // A shell command edits from that base, so if origin has moved past it,
+    // committing this content would revert whatever moved — the same silent
+    // overwrite the read-check prevents for agent edits.
+    const baseBlobs: Record<string, string> = {};
+    if (changes.length) {
+      const listed = await handle.exec({
+        command: 'git ls-tree -r HEAD', cwd: '/workspace/repo', timeoutMs: 30_000,
+        outputLimitBytes: 1_000_000, sessionId: 'system', networkPolicy: 'deny_all'
+      });
+      if (listed.exitCode === 0) {
+        const wanted = new Set(changes.map((change) => change.path));
+        for (const line of listed.stdout.split('\n')) {
+          const match = /^\d+ blob ([0-9a-f]{40,64})\t(.+)$/u.exec(line.trimEnd());
+          if (match && wanted.has(match[2] as string)) baseBlobs[match[2] as string] = match[1] as string;
+        }
+      }
+    }
+    return { changes, truncated: entries.length > limit, baseBlobs };
+  }
+
+  /**
+   * Bring the workspace checkout in line with the remote branch head.
+   *
+   * Remote-first editing makes the container a cache: the commit already
+   * exists on origin, so this is a fetch and a hard reset onto it, never a
+   * merge and never a source of conflict. Callers treat failure as harmless.
+   */
+  async fastForwardToRemote(
+    record: WorkspaceRuntimeRecord,
+    source: RepositoryCloneSource
+  ): Promise<{ synced: boolean; commit?: string; branch?: string; blockedByLocalChanges?: boolean }> {
+    const branch = record.workspace.currentBranch;
+    if (!branch || !isAgentForgeBranch(branch)) return { synced: false };
+    const handle = await this.handle(record);
+    // Never reset over uncommitted work. This sync is a hard reset onto the
+    // remote head, so a dirty tree here means something wrote to the container
+    // outside forge_edit — a shell command, a formatter, a codemod — and
+    // resetting would destroy it silently. Refuse instead; the caller ingests
+    // those changes as a real commit first.
+    const dirty = await handle.exec({
+      command: 'git status --porcelain', cwd: '/workspace/repo', timeoutMs: 30_000,
+      outputLimitBytes: 100_000, sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    if (dirty.exitCode !== 0 || dirty.stdout.trim()) {
+      return { synced: false, branch, blockedByLocalChanges: true };
+    }
+    const configPath = `/workspace/tmp/gitconfig-sync-${record.workspace.id}`;
+    await handle.writeFile({ path: configPath, content: `[http]\n\textraHeader = ${source.authorizationHeader}\n` });
+    try {
+      const synced = await handle.exec({
+        command: `sh -c ${quoted(
+          `git fetch ${quoted(source.url)} ${quoted(branch)} && git reset --hard FETCH_HEAD && git rev-parse HEAD`
+        )}`,
+        cwd: '/workspace/repo', timeoutMs: 120_000, outputLimitBytes: 50_000,
+        sessionId: 'system', networkPolicy: 'development',
+        environment: { GIT_CONFIG_GLOBAL: configPath, GIT_TERMINAL_PROMPT: '0' }
+      });
+      if (synced.exitCode !== 0) return { synced: false, branch };
+      const head = synced.stdout.split('\n').map((line) => line.trim()).filter((line) => /^[0-9a-f]{40,64}$/u.test(line)).pop();
+      if (!head) return { synced: false, branch };
+      record.workspace.currentCommit = head;
+      record.workspace.lastPushedCommit = head;
+      record.workspace.lastPushedBranch = branch;
+      record.workspace.hasUnpushedWork = false;
+      record.workspace.gitRemoteDivergence = undefined;
+      record.workspace.updatedAt = new Date().toISOString();
+      return { synced: true, commit: head, branch };
+    } finally {
+      await handle.exec({ command: `rm -f ${quoted(configPath)}`, cwd: '/workspace', timeoutMs: 10_000, outputLimitBytes: 1_000, sessionId: 'system', networkPolicy: 'deny_all' }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * The repository's own file list, for context selection.
+   *
+   * A filesystem walk cannot do this job: it is bounded by a file limit, and
+   * `node_modules` alone blows past any sane bound, so the budget was spent
+   * before a single source file was reached and the agent got a "context" of
+   * dependency internals. `git ls-files` is the repository's own view —
+   * `--others --exclude-standard` keeps newly written, not-yet-committed files
+   * while .gitignore keeps build output and dependencies out for free.
+   *
+   * Newline-delimited rather than `-z`: git C-quotes any path containing a
+   * newline, so this stays unambiguous without depending on NUL bytes
+   * surviving the exec transport.
+   */
+  async listRepositoryFiles(record: WorkspaceRuntimeRecord, limit = 10_000): Promise<string[]> {
+    const handle = await this.handle(record);
+    const listed = await handle.exec({
+      command: 'git ls-files --cached --others --exclude-standard',
+      cwd: '/workspace/repo',
+      timeoutMs: 30_000,
+      outputLimitBytes: 1_000_000,
+      sessionId: 'system',
+      networkPolicy: 'deny_all'
+    });
+    if (listed.exitCode !== 0) return [];
+    return listed.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, limit);
   }
 
   async proveWorkspaceState(record: WorkspaceRuntimeRecord, source?: RepositoryCloneSource) {
@@ -3807,7 +3940,26 @@ export class ForgeApplicationService {
         GIT_COMMITTER_EMAIL: 'forge-mcp[bot]@users.noreply.github.com'
       }
     });
-    if (commit.exitCode !== 0) throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
+    if (commit.exitCode !== 0) {
+      // "Nothing to commit" is not a failure — it is the normal result of
+      // re-running a mutation whose content already landed (an agent retrying
+      // after a push error, or a replayed write). Reporting it as
+      // FORGE_GIT_DIRTY sent agents chasing a phantom second fault while the
+      // real problem — an earlier commit still sitting unpushed — went
+      // unmentioned. Return the existing HEAD so the caller can get on with
+      // reconciling durability.
+      if (/nothing (?:added )?to commit|no changes added to commit|working tree clean/iu.test(`${commit.stdout}\n${commit.stderr}`)) {
+        return {
+          committed: false,
+          reason: 'nothing to commit',
+          commit: record.workspace.currentCommit,
+          branch: record.workspace.currentBranch,
+          operationId: operation.operationId,
+          workspaceRevision: record.workspace.revision
+        };
+      }
+      throw new ForgeError({ code: 'FORGE_GIT_DIRTY', message: 'Forge could not create the commit.', retryable: false, details: { stderr: commit.stderr.slice(0, 2_000) } });
+    }
     // Parse HEAD defensively instead of blindly taking the last stdout line: a
     // commit-msg / post-commit hook that echoes to stdout runs DURING `git commit`
     // (before rev-parse), so the genuine object name is the LAST line that is a
@@ -3847,7 +3999,7 @@ export class ForgeApplicationService {
     record.lastGitDivergence = undefined;
     record.workspace.updatedAt = new Date().toISOString();
     record.workspace.hasUnpushedWork = true;
-    return { commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
+    return { committed: true, commit: record.workspace.currentCommit, branch: record.workspace.currentBranch, operationId: operation.operationId, workspaceRevision: record.workspace.revision };
   }
 
   /**
@@ -4124,6 +4276,9 @@ export class ForgeApplicationService {
     action: 'detect' | 'reset_to_remote' | 'keep_local_and_push'
   ): Promise<{
     diverged: boolean;
+    /** Explicit three-state answer. `diverged: false` alone cannot distinguish
+     *  "the remote agrees" from "there is no remote branch". */
+    remoteState?: 'missing' | 'matching' | 'diverged' | 'not_applicable';
     branch?: string;
     localHead?: string;
     remoteSha?: string | null;
@@ -4133,7 +4288,7 @@ export class ForgeApplicationService {
     await this.reconcileGitState(record);
     const branch = record.workspace.currentBranch;
     if (!branch || !isAgentForgeBranchForProve(branch)) {
-      return { diverged: false, message: 'Remote sync applies only to agent forge/ branches.' };
+      return { diverged: false, remoteState: 'not_applicable', message: 'Remote sync applies only to agent forge/ branches.' };
     }
     const handle = await this.handle(record);
     await handle.exec({
@@ -4143,11 +4298,32 @@ export class ForgeApplicationService {
     }).catch(() => undefined);
     const remoteSha = await this.readRemoteBranchSha(record, source, branch);
     const localHead = record.workspace.currentCommit;
-    const diverged = Boolean(remoteSha && localHead && remoteSha !== localHead);
-    if (!diverged) {
+    // Three states, never two. "Not diverged" used to cover both "the remote
+    // agrees" and "there is no remote branch at all", and both reported
+    // "Local HEAD matches the remote feature branch." — so a branch that had
+    // never reached GitHub was described as matching it. That is the same
+    // false assurance that let unpushed work be reported as saved.
+    const remoteState: 'missing' | 'matching' | 'diverged' = !remoteSha
+      ? 'missing'
+      : remoteSha === localHead
+        ? 'matching'
+        : 'diverged';
+    if (remoteState === 'missing') {
       record.workspace.gitRemoteDivergence = undefined;
-      return { diverged: false, branch, localHead, remoteSha, message: 'Local HEAD matches the remote feature branch.' };
+      return {
+        diverged: false,
+        remoteState,
+        branch,
+        localHead,
+        remoteSha: null,
+        message: `origin/${branch} does not exist on GitHub. There is nothing to compare against — this work is LOCAL ONLY and will be lost with the workspace. Push it before relying on it.`
+      };
     }
+    if (remoteState === 'matching') {
+      record.workspace.gitRemoteDivergence = undefined;
+      return { diverged: false, remoteState, branch, localHead, remoteSha, message: `origin/${branch} is at ${localHead} — verified match with workspace HEAD.` };
+    }
+    const diverged = true;
     if (action === 'detect') {
       record.workspace.gitRemoteDivergence = {
         remoteSha: remoteSha!,
@@ -4160,7 +4336,8 @@ export class ForgeApplicationService {
         branch,
         localHead,
         remoteSha,
-        message: `Remote ${branch} diverged from workspace HEAD. Call forge_git_sync with reconcile reset_to_remote or keep_local_and_push.`
+        remoteState,
+        message: `Remote ${branch} diverged from workspace HEAD. Re-read the affected files and edit again; Forge re-applies onto the branch head for you.`
       };
     }
     if (action === 'reset_to_remote' && remoteSha) {
@@ -4226,7 +4403,7 @@ export class ForgeApplicationService {
         details: {
           currentBranch: record.workspace.currentBranch ?? null,
           lastPushedBranch: record.workspace.lastPushedBranch ?? null,
-          next_step: 'forge_git_branch'
+          next_step: 'forge_workspace_create'
         }
       });
     }

@@ -1,3 +1,4 @@
+export * from './remote-commit';
 import { SignJWT, importPKCS8 } from 'jose';
 import { issueCapability } from '@forge/capabilities';
 import type { ActorRef, RepositoryRef } from '@forge/core';

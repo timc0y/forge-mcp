@@ -95,7 +95,7 @@ class FakeProvider implements SandboxProvider {
         return { exitCode: 0, stdout: `${this.head}\n${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.startsWith('git status --porcelain=v2 --branch &&')) {
-        return { exitCode: 0, stdout: `# branch.head main\n${this.head}\nmain\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+        return { exitCode: 0, stdout: `# branch.head ${this.branch}\n${this.head}\n${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command === 'git diff --no-ext-diff --binary && git diff --cached --no-ext-diff --binary') {
         return { exitCode: 0, stdout: this.worktreeDiff, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
@@ -104,10 +104,10 @@ class FakeProvider implements SandboxProvider {
         return { exitCode: this.install.lenient ?? 0, stdout: '', stderr: 'install failed', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command === 'git status --porcelain=v2 --branch') {
-        return { exitCode: 0, stdout: '# branch.head main\n', stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+        return { exitCode: 0, stdout: `# branch.head ${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.startsWith('git ls-remote --exit-code origin ')) {
-        return { exitCode: 0, stdout: `${this.head}\trefs/heads/main\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
+        return { exitCode: 0, stdout: `${this.head}\trefs/heads/${this.branch}\n`, stderr: '', truncated: false, durationMs: 1, artifactRefs: [] };
       }
       if (input.command.startsWith('sha256sum -- ')) {
         const path = input.command.match(/'([^']+)'$/u)?.[1] ?? '';
@@ -306,7 +306,10 @@ describe('Forge application service', () => {
       states.push(next.workspace.state);
     });
     expect(states).toEqual(['provisioning', 'bootstrapping', 'ready']);
-    expect(record.workspace).toMatchObject({ currentCommit: 'abcdef', currentBranch: 'main', state: 'ready' });
+    // Provisioning never leaves an agent on main — it cuts forge/<workspace>
+    // from the immutable base before the workspace goes ready.
+    expect(record.workspace).toMatchObject({ currentCommit: 'abcdef', state: 'ready' });
+    expect(record.workspace.currentBranch).toMatch(/^forge\//u);
     expect(record.workspace.activeSnapshotId).toBeDefined();
     expect(Object.keys(record.snapshots)).toHaveLength(1);
     expect(provider.calls).toContain('npm ci');
@@ -362,7 +365,8 @@ describe('Forge application service', () => {
 
     await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
       .resolves.toMatchObject({ entries: [] });
-    expect(record.snapshots[snapshotId]?.manifest).toMatchObject({ commit: 'abcdef', branch: 'main' });
+    expect(record.snapshots[snapshotId]?.manifest).toMatchObject({ commit: 'abcdef' });
+    expect(record.snapshots[snapshotId]?.manifest?.branch).toMatch(/^forge\//u);
   });
 
   it('never restores when the workspace probe itself is unavailable', async () => {
@@ -412,7 +416,10 @@ describe('Forge application service', () => {
     record.workspace.requestedRef = 'v1.0.0';
 
     await service.provisionWorkspace(record, false);
-    expect(record.workspace.currentBranch).toBeUndefined();
+    // The tag is never mislabelled as a checked-out branch: the probe reports
+    // no branch, and the agent branch cut from it is a forge/ ref, not 'v1.0.0'.
+    expect(record.workspace.currentBranch).toMatch(/^forge\//u);
+    expect(record.workspace.requestedRef).toBe('v1.0.0');
     await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
       .resolves.toMatchObject({ entries: [] });
     expect(provider.calls).not.toContain('restore');
@@ -542,15 +549,18 @@ describe('Forge application service', () => {
   });
 
   it('restores a checkpoint only when newer local work is safe', async () => {
-    const service = new ForgeApplicationService(new FakeProvider());
+    const provider = new FakeProvider();
+    provider.branch = 'forge/base';
+    const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
+    provider.branch = 'forge/base';
     record.workspace.currentCommit = 'abcdef';
-    record.workspace.currentBranch = 'main';
+    record.workspace.currentBranch = 'forge/base';
     record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'main';
+    record.workspace.lastPushedBranch = 'forge/base';
     const checkpoint = await service.checkpoint(record);
-    await expect(service.restoreCheckpoint(record, checkpoint.snapshotId)).resolves.toMatchObject({ restoredSnapshotId: checkpoint.snapshotId, branch: 'main' });
+    await expect(service.restoreCheckpoint(record, checkpoint.snapshotId)).resolves.toMatchObject({ restoredSnapshotId: checkpoint.snapshotId, branch: 'forge/base' });
   });
 
   it('records the selected checkpoint identity only after its filesystem is verified', async () => {
@@ -558,10 +568,11 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
+    provider.branch = 'forge/base';
     record.workspace.currentCommit = 'abcdef';
-    record.workspace.currentBranch = 'main';
+    record.workspace.currentBranch = 'forge/base';
     record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'main';
+    record.workspace.lastPushedBranch = 'forge/base';
     const checkpoint = await service.checkpoint(record, 'before-newer-commit');
     provider.head = 'newer-commit';
     record.workspace.currentCommit = 'newer-commit';
@@ -570,9 +581,9 @@ describe('Forge application service', () => {
     await expect(service.restoreCheckpoint(record, checkpoint.snapshotId)).resolves.toMatchObject({
       restoredSnapshotId: checkpoint.snapshotId,
       commit: 'abcdef',
-      branch: 'main'
+      branch: 'forge/base'
     });
-    expect(record.workspace).toMatchObject({ currentCommit: 'abcdef', currentBranch: 'main' });
+    expect(record.workspace).toMatchObject({ currentCommit: 'abcdef', currentBranch: 'forge/base' });
     expect(record.lastGitDivergence).toBeUndefined();
   });
 
@@ -581,14 +592,15 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
+    provider.branch = 'forge/base';
     record.workspace.currentCommit = 'abcdef';
-    record.workspace.currentBranch = 'main';
+    record.workspace.currentBranch = 'forge/base';
     record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'main';
+    record.workspace.lastPushedBranch = 'forge/base';
     const checkpoint = await service.checkpoint(record);
     provider.head = 'new-local-commit';
     await expect(service.restoreCheckpoint(record, checkpoint.snapshotId)).rejects.toMatchObject({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED' });
-    expect(record.lastGitDivergence).toMatchObject({ observedCommit: 'new-local-commit', observedBranch: 'main' });
+    expect(record.lastGitDivergence).toMatchObject({ observedCommit: 'new-local-commit', observedBranch: 'forge/base' });
   });
 
   it('turns a long-running validation into a durable check with a process handle', async () => {
@@ -885,10 +897,11 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
+    provider.branch = 'forge/base';
     record.workspace.currentCommit = 'abcdef';
-    record.workspace.currentBranch = 'main';
+    record.workspace.currentBranch = 'forge/base';
     record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'main';
+    record.workspace.lastPushedBranch = 'forge/base';
     const request = service.requestDestroy(record, 1, 'destroy-123456');
     expect(request.state).toBe('destroying');
     await service.completeDestroy(record);
@@ -901,10 +914,11 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
+    provider.branch = 'forge/base';
     record.workspace.currentCommit = 'abcdef';
-    record.workspace.currentBranch = 'main';
+    record.workspace.currentBranch = 'forge/base';
     record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'main';
+    record.workspace.lastPushedBranch = 'forge/base';
     service.requestDestroy(record, 1, 'destroy-123456');
     provider.head = '1234567';
     await expect(service.completeDestroy(record)).rejects.toMatchObject({ code: 'FORGE_GIT_PUSH_BLOCKED' });
