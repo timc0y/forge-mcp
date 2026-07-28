@@ -1426,6 +1426,38 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.readWithRecovery((record) => this.app.checkGet(record, input.processId));
   }
 
+  /**
+   * Remember the content an agent was actually shown, so a later whole-file
+   * write can be checked against it.
+   *
+   * This lives in Durable Object storage rather than the MCP session because
+   * the session object does not survive between tool calls. Held there, the
+   * record was empty by the time the next call arrived, so "have you read
+   * this file" was permanently false and no existing file could ever be
+   * edited — a guard that deadlocked instead of protecting.
+   */
+  async rememberReads(input: { entries: Array<{ path: string; sha: string }> }): Promise<void> {
+    if (!input.entries.length) return;
+    await this.ctx.storage.put(
+      Object.fromEntries(input.entries.map((entry) => [`seen:${entry.path}`, entry.sha]))
+    );
+  }
+
+  async seenBlobs(input: { paths: string[] }): Promise<Record<string, string>> {
+    if (!input.paths.length) return {};
+    const stored = await this.ctx.storage.get<string>(input.paths.map((path) => `seen:${path}`));
+    const seen: Record<string, string> = {};
+    for (const [key, value] of stored) {
+      if (typeof value === 'string') seen[key.slice('seen:'.length)] = value;
+    }
+    return seen;
+  }
+
+  async forgetReads(input: { paths: string[] }): Promise<void> {
+    if (!input.paths.length) return;
+    await this.ctx.storage.delete(input.paths.map((path) => `seen:${path}`));
+  }
+
   /** Whatever the container wrote that GitHub does not know about yet. */
   async worktreeChanges(input: { limit?: number } = {}) {
     return this.readRepoWithRecovery((record) => this.app.collectWorktreeChanges(record, input.limit ?? 50));

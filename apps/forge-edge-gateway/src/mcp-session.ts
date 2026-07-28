@@ -594,21 +594,6 @@ async function sha256(value: string): Promise<string> {
 
 export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   /**
-   * Git blob SHA of every file this session has read, keyed `workspace:path`.
-   *
-   * A whole-file write is a blind overwrite. Rather than ask the agent to
-   * carry a revision token — which is one more thing to get wrong — Forge
-   * remembers what it handed over, and refuses an edit that would overwrite a
-   * version the agent never saw. Absent entries mean a new file, which needs
-   * no check.
-   */
-  private readonly seenBlobs = new Map<string, string>();
-
-  private rememberRead(workspaceId: string, path: string, content: string): void {
-    void gitBlobSha(content).then((sha) => this.seenBlobs.set(`${workspaceId}:${normalizeRepoPath(path)}`, sha));
-  }
-
-  /**
    * Commit anything the container wrote outside forge_edit.
    *
    * A shell command that edits files — a formatter, a codemod, a generator —
@@ -647,19 +632,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       paths: result.paths,
       truncated: collected.truncated
     };
-  }
-
-  private forgetRead(workspaceId: string, path: string): void {
-    this.seenBlobs.delete(`${workspaceId}:${path}`);
-  }
-
-  private expectedBlobsFor(workspaceId: string, paths: string[]): Record<string, string> {
-    const expected: Record<string, string> = {};
-    for (const path of paths) {
-      const sha = this.seenBlobs.get(`${workspaceId}:${path}`);
-      if (sha) expected[path] = sha;
-    }
-    return expected;
   }
 
   server = new McpServer(
@@ -1695,7 +1667,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           ...(branch_policy ? { branch_policy } : {}),
           ...(credentialProfileId ? { credential_profile_id: credentialProfileId } : {}),
           next_step: state === 'ready'
-            ? `Ready on ${branch || 'forge/…'}. Edit with forge_files_replace / forge_files_write_batch (auto-commits). Reuse this workspace_id.`
+            ? `Ready on ${branch || 'forge/…'}. Edit with forge_edit — it commits to GitHub, no push needed. Reuse this workspace_id.`
             : state === 'failed'
               ? 'Provisioning failed. Read forge_workspace_get for the reason; do not keep polling.'
               : `Still provisioning after the wait budget. Call forge_workspace_get with this workspace_id to check again — it is usually ready within a minute of creation.`
@@ -1765,7 +1737,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           // Only a complete read establishes what the agent saw; a range or a
           // truncated read must not license a whole-file overwrite.
           if (typeof single.content === 'string' && !single.truncated && readOne.startLine === undefined && readOne.endLine === undefined) {
-            this.rememberRead(readWorkspaceId, paths[0] as string, single.content);
+            await workspace.rememberReads({
+              entries: [{ path: normalizeRepoPath(paths[0] as string), sha: await gitBlobSha(single.content) }]
+            });
           }
           return single;
         }
@@ -1774,7 +1748,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             try {
               const one = asRecord(await workspace.filesRead({ path, ...readOne }));
               if (typeof one.content === 'string' && !one.truncated && readOne.startLine === undefined && readOne.endLine === undefined) {
-                this.rememberRead(readWorkspaceId, path, one.content);
+                await workspace.rememberReads({ entries: [{ path: normalizeRepoPath(path), sha: await gitBlobSha(one.content) }] });
               }
               return { ...one, path };
             } catch (error) {
@@ -1835,7 +1809,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             branch,
             message,
             files,
-            expectedBlobs: this.expectedBlobsFor(workspaceId, files.map((file) => file.path)),
+            expectedBlobs: await workspace.seenBlobs({ paths: files.map((file) => file.path) }),
             // The agent branch is cut inside the container, so GitHub has not
             // seen it until the first edit lands.
             baseSha: state.baseCommit ?? state.currentCommit,
@@ -1868,10 +1842,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
         // What we just wrote is now what is on the branch, so a second edit to
         // the same path does not need an intervening read.
-        for (const file of files) {
-          if (file.content === null) this.forgetRead(workspaceId, file.path);
-          else this.rememberRead(workspaceId, file.path, file.content);
-        }
+        await workspace.forgetReads({ paths: files.filter((file) => file.content === null).map((file) => file.path) });
+        await workspace.rememberReads({
+          entries: await Promise.all(
+            files
+              .filter((file) => file.content !== null)
+              .map(async (file) => ({ path: file.path, sha: await gitBlobSha(file.content as string) }))
+          )
+        });
         // Best effort: bring the container's checkout in line so forge_run
         // tests what was just committed. A failure here costs nothing — the
         // work is already safe on GitHub and the container is a cache.
