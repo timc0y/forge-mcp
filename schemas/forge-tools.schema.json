@@ -977,7 +977,7 @@
     },
     "forge_shell": {
       "title": "Run command",
-      "description": "Run a command in the workspace. compact defaults true: returns exitCode + short tails; full stdout/stderr spill to output_artifact_id when >20KB (forge_artifact_get). async:true for long work. Risky commands need approval_id.",
+      "description": "Run a command in the workspace. Anything expected to take over ~45s runs in the background and returns a process_id to wait on, because a client will not hold a request open longer. compact defaults true: returns exitCode + short tails; full stdout/stderr spill to output_artifact_id when >20KB (forge_artifact_get). async:true for long work. Risky commands need approval_id.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -999,7 +999,7 @@
             "$ref": "#/$defs/__schema1"
           },
           "timeout_ms": {
-            "default": 300000,
+            "default": 45000,
             "type": "integer",
             "minimum": 100,
             "maximum": 900000

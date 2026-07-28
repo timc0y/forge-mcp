@@ -2086,8 +2086,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             claimedApproval = true;
           }
         }
+        // A host kills the request long before Forge's own timeout fires:
+        // timeout_ms defaults to 300s while ChatGPT and Claude cut the
+        // transport at around 60. Anything slower than that returned no
+        // process id, no output and no handle — while the command kept
+        // running — which is the worst shape a failure can have. Route it
+        // through the managed-process path instead, so a long command always
+        // comes back as something the agent can wait on.
+        const HOST_SAFE_SYNC_MS = 45_000;
+        const requestedTimeout = number(input.timeout_ms);
+        const escalated = input.async !== true
+          && input.mode !== 'read_only'
+          && Number.isFinite(requestedTimeout)
+          && requestedTimeout > HOST_SAFE_SYNC_MS;
         try {
-          if (input.async === true) {
+          if (input.async === true || escalated) {
             if (input.mode === 'read_only') {
               throw new ForgeError({
                 code: 'FORGE_VALIDATION_FAILED',
@@ -2131,7 +2144,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               workspaceRevision: procRecord.workspaceRevision,
               mutatesFilesystem: value.mutatesFilesystem ?? procRecord.mutatesFilesystem,
               allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
-              next_step: `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for dependency installs), or forge_process_logs to inspect output.`
+              ...(escalated && input.async !== true
+                ? {
+                    escalated_to_background: true,
+                    escalated_reason: `timeout_ms ${requestedTimeout}ms exceeds the ${HOST_SAFE_SYNC_MS}ms a client will hold a request open, so this runs as a managed process instead of failing the transport.`
+                  }
+                : {}),
+              next_step: `Running in the background as ${processId}. Call forge_process_wait with that process_id (timeout_ms >= 600000 for installs), or forge_process_logs to inspect output. Do not re-run the command.`
             };
           }
           // Bring the checkout up to the branch before running anything. The
