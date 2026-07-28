@@ -61,6 +61,7 @@ import {
   listAuthorizedRepositories,
   promoteStagedRef,
   repositoryAccessDiagnosis,
+  repositoryWriteProof,
   markApprovalApproved,
   requestApproval,
   requireApproval,
@@ -2526,18 +2527,35 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           return { authorized_repositories: authorized, checked, authorized: true, can_read: false, can_write: false, reason: 'Forge could not mint an installation token for this repository.', next_step: `Re-install the Forge GitHub App for ${checked}.` };
         }
         const info = await request(`/repos/${owner}/${repo}`);
-        const permissions = (info.json as { permissions?: { push?: boolean; pull?: boolean }; default_branch?: string }).permissions;
+        // Write capability comes from the permissions GitHub grants the token,
+        // never from the repository object: fetched with an installation token
+        // it carries no `permissions` field at all, so reading `permissions.push`
+        // reported can_write:false for every repository regardless of the truth.
+        // That is what sent agents troubleshooting a permission problem that did
+        // not exist, and told users to grant access they had already granted.
+        const proof = await repositoryWriteProof(env, identity, { provider: 'github' as const, owner, name: repo });
+        const canWrite = proof.authorized === true && proof.can_write;
+        const canRead = info.status === 200;
         return {
           authorized_repositories: authorized,
           checked,
           authorized: true,
-          can_read: info.status === 200,
-          can_write: permissions?.push === true,
-          ...(info.status === 200 ? { default_branch: String((info.json as { default_branch?: string }).default_branch ?? 'main') } : {}),
-          ...(info.status === 200 ? {} : { reason: `GitHub returned HTTP ${info.status} for ${checked}.` }),
-          next_step: info.status === 200
-            ? `Forge can read ${checked}${permissions?.push === true ? ' and write to it' : ' but NOT write to it — grant contents:write'}.`
-            : `Forge cannot read ${checked} (HTTP ${info.status}). Check the App installation before assuming a transport fault.`
+          can_read: canRead,
+          can_write: canWrite,
+          ...(proof.authorized === true && Object.keys(proof.permissions).length > 0
+            ? { granted_permissions: proof.permissions }
+            : {}),
+          ...(canRead ? { default_branch: String((info.json as { default_branch?: string }).default_branch ?? 'main') } : {}),
+          ...(canRead
+            ? proof.authorized === true && proof.reason
+              ? { reason: proof.reason }
+              : {}
+            : { reason: `GitHub returned HTTP ${info.status} for ${checked}.` }),
+          next_step: !canRead
+            ? `Forge cannot read ${checked} (HTTP ${info.status}). Check the App installation before assuming a transport fault.`
+            : canWrite
+              ? `Forge can read and write ${checked}. A failed edit, push or merge here is NOT a permission problem — read that tool's own error instead of re-checking access.`
+              : `Forge can read ${checked} but GitHub refused a write-scoped token. Grant the Forge GitHub App contents:write on ${checked}.`
         };
       },
       forge_history: async (input) => {

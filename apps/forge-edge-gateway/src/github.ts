@@ -198,13 +198,27 @@ async function appJwt(env: Env): Promise<string> {
     .sign(key);
 }
 
-async function installationToken(
+/**
+ * Mint a repository-scoped installation token, and keep what GitHub granted.
+ *
+ * The granted permissions are the only honest answer to "can Forge write
+ * here". A repository object fetched with an installation token has no
+ * `permissions` field — that field is populated for user tokens — so anything
+ * reading `repo.permissions.push` concludes "no write access" for every
+ * repository, forever. forge_access did exactly that and told two agents the
+ * App was read-only while it held contents:write.
+ *
+ * GitHub refuses the mint outright when the installation lacks a requested
+ * permission, so a successful write-scoped mint is itself the proof, and it is
+ * the same proof forge_edit relies on rather than a parallel guess.
+ */
+async function mintInstallationToken(
   env: Env,
   installationId: string,
   repository: string,
   permission: 'read' | 'write'
-): Promise<string> {
-  const result = await githubJson<{ token: string }>(
+): Promise<{ token: string; permissions: Record<string, string> }> {
+  const result = await githubJson<{ token: string; permissions?: Record<string, string> }>(
     `https://api.github.com/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
     {
       method: 'POST',
@@ -212,7 +226,48 @@ async function installationToken(
       body: JSON.stringify({ repositories: [repository], permissions: { contents: permission, pull_requests: permission } })
     }
   );
-  return result.token;
+  return { token: result.token, permissions: result.permissions ?? {} };
+}
+
+async function installationToken(
+  env: Env,
+  installationId: string,
+  repository: string,
+  permission: 'read' | 'write'
+): Promise<string> {
+  return (await mintInstallationToken(env, installationId, repository, permission)).token;
+}
+
+/**
+ * What Forge can actually do to a repository right now, proved by minting the
+ * same token the editing path uses. Never inferred from a repository object.
+ */
+export async function repositoryWriteProof(
+  env: Env,
+  identity: Pick<AuthenticatedContext, 'tenantId' | 'projectId'>,
+  repository: RepositoryRef
+): Promise<
+  | { authorized: false }
+  | { authorized: true; can_write: boolean; permissions: Record<string, string>; reason?: string }
+> {
+  const row = await authorizeRepository(env, identity, repository);
+  if (!row) return { authorized: false };
+  try {
+    const granted = await mintInstallationToken(env, row.installation_id, repository.name, 'write');
+    return {
+      authorized: true,
+      can_write: granted.permissions.contents === 'write',
+      permissions: granted.permissions
+    };
+  } catch (error) {
+    // A refused write-scoped mint is the real "cannot write" signal.
+    return {
+      authorized: true,
+      can_write: false,
+      permissions: {},
+      reason: error instanceof Error ? error.message.slice(0, 300) : 'The installation token request failed.'
+    };
+  }
 }
 
 /**
