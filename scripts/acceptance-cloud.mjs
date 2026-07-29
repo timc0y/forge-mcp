@@ -186,6 +186,15 @@ async function waitFor(call, description, predicate, timeoutMs = 240_000) {
 
 const accessToken = await oauth();
 const mcp = await connect(accessToken);
+if (process.env.FORGE_ACCEPTANCE_READ_ONLY === 'true') {
+  const capabilities = await mcp.call('forge_capabilities', {});
+  const repositories = await mcp.call('forge_repository_list', {});
+  const capabilityValue = capabilities.value && typeof capabilities.value === 'object' ? capabilities.value : {};
+  const repositoryValue = repositories.value && typeof repositories.value === 'object' ? repositories.value : {};
+  const repositoryRows = Array.isArray(repositoryValue.repositories) ? repositoryValue.repositories : [];
+  process.stdout.write(`Forge MCP read-only smoke passed: ${Object.keys(capabilityValue).length} capability fields, ${repositoryRows.length} repositories.\n`);
+  process.exit(0);
+}
 const cleanupWorkspace = process.env.FORGE_CLEANUP_WORKSPACE;
 if (cleanupWorkspace) {
   const inspected = await mcp.call('forge_workspace_get', { workspace_id: cleanupWorkspace });
