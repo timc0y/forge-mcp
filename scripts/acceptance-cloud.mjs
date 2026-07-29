@@ -197,11 +197,10 @@ if (process.env.FORGE_ACCEPTANCE_READ_ONLY === 'true') {
 }
 const cleanupWorkspace = process.env.FORGE_CLEANUP_WORKSPACE;
 if (cleanupWorkspace) {
-  const inspected = await mcp.call('forge_workspace_get', { workspace: cleanupWorkspace });
-  if (!inspected.value || typeof inspected.value !== 'object') {
-    throw new Error('forge_workspace_get did not return structured workspace state.');
-  }
-  console.log(`workspace ${cleanupWorkspace}: current state ${inspected.value.state}${inspected.value.failure ? ` ${JSON.stringify(inspected.value.failure)}` : ''}`);
+  const inspected = await mcp.call('forge_workspace_get', { workspace: cleanupWorkspace }).catch((error) => ({ value: { inspection_error: String(error) } }));
+  console.log(inspected.value.inspection_error
+    ? `workspace ${cleanupWorkspace}: inspection unavailable; proceeding with force cleanup`
+    : `workspace ${cleanupWorkspace}: current state ${inspected.value.state}${inspected.value.failure ? ` ${JSON.stringify(inspected.value.failure)}` : ''}`);
   const cleanup = await mcp.call('forge_workspace_destroy', {
     workspace: cleanupWorkspace,
     preserve_artifacts: true,
