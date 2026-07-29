@@ -271,19 +271,44 @@ export async function reserveWorkspaceSlot(
   const counts = await slotCounts(database, tenantId);
   const scope = counts.tenant >= caps.perTenant ? 'tenant' : 'global';
   console.warn('forge_slot_quota_exceeded', { tenantId, workspaceId, scope, counts, caps });
+  // "Finish or destroy one, then retry" named no tool and listed nothing, so
+  // there was no way to act on it: an agent that cannot see which workspaces
+  // are open cannot choose one to destroy. It retried fifteen times in two
+  // minutes instead, destroying nothing. The occupants are already in hand —
+  // name them, and name the tool that closes one.
+  // The TTL argument only drives the staleness flags, which this call ignores —
+  // it wants the repository and branch names, nothing else — so the default is
+  // fine here rather than threading env through reserveWorkspaceSlot.
+  const occupants = await listSlotOccupants(
+    database,
+    DEFAULT_SLOT_TTL_MINUTES * 60_000,
+    Date.now(),
+    tenantId
+  ).catch(() => [] as SlotOccupant[]);
+  const named = occupants
+    .map((occupant) =>
+      occupant.repository && occupant.currentBranch
+        ? `${occupant.repository.owner}/${occupant.repository.name} on ${occupant.currentBranch}`
+        : occupant.repository
+          ? `${occupant.repository.owner}/${occupant.repository.name}`
+          : undefined
+    )
+    .filter((entry): entry is string => Boolean(entry));
+  const openList = named.length ? ` Open now: ${named.join('; ')}.` : '';
   throw new ForgeError({
     code: 'FORGE_QUOTA_EXCEEDED',
     message:
       scope === 'tenant'
-        ? `This account is already running its maximum of ${caps.perTenant} workspaces. Finish or destroy one, then retry.`
-        : `Forge is at global capacity (${caps.global} workspaces). Retry shortly, or destroy an idle workspace.`,
+        ? `This account is already running its maximum of ${caps.perTenant} workspaces, so a new one cannot start until one closes.${openList} Call forge_workspace_destroy on the one you have finished with, then create again — retrying this call unchanged will keep failing, because nothing about it is transient.`
+        : `Forge is at global capacity (${caps.global} workspaces), which is a shared limit rather than anything about this account.${openList} Wait a minute and retry, or call forge_workspace_destroy on a workspace you have finished with.`,
     retryable: true,
     details: {
       scope,
       maximum_workspaces: caps.global,
       maximum_workspaces_per_tenant: caps.perTenant,
       global_in_use: counts.global,
-      tenant_in_use: counts.tenant
+      tenant_in_use: counts.tenant,
+      ...(named.length ? { open_workspaces: named } : {})
     }
   });
 }
