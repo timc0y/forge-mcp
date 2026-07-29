@@ -18,7 +18,7 @@ import { issueCapability } from '@forge/capabilities';
 import { registerForgeToolsV1, type ToolCallTelemetry } from '@forge/mcp-adapter-v1';
 import { ToolCallTracker, hashArgs } from './telemetry';
 import { forgeToolResponse, type ForgeToolHandlers, AGENT_OUTPUT_SPILL_BYTES, AGENT_OUTPUT_TAIL_BYTES, tailBytes, utf8Bytes } from '@forge/mcp-core';
-import { assertCleanForMerge, verifyFeatureBranchOnOrigin } from './merge-guards';
+import { verifyFeatureBranchOnOrigin } from './merge-guards';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { D1AuditStore } from '@forge/audit';
@@ -79,7 +79,7 @@ import {
   type DurabilityVerdict
 } from './durability';
 import { isTextualArtifact } from './artifact-content';
-import { normalizeRepoPath, readableFile, toContainerPath } from './repo-paths';
+import { normalizeRepoPath, toContainerPath } from './repo-paths';
 import { GitHubReadUnavailable, resolveBranchTree, readBlobFromTree, listEntriesFromTree } from './github-reads';
 import { hoistUniformFields } from './uniform-fields';
 import { recordToolCall, recentToolCalls, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
@@ -411,8 +411,8 @@ async function authorizedCoordinator(
   const value = coordinator(env, workspaceId);
   const key = `${identity.tenantId}:${identity.projectId}:${workspaceId}`;
   if (authorizedBindings.has(key)) return value;
-  const state = await value.getState();
-  if (state.tenantId !== identity.tenantId || state.projectId !== identity.projectId) {
+  const binding = await value.getAuthorizationBinding();
+  if (binding.tenantId !== identity.tenantId || binding.projectId !== identity.projectId) {
     throw new ForgeError({
       code: 'FORGE_PERMISSION_DENIED',
       message: 'This workspace belongs to a different project. Use owner/repo/branch (or none, to use the one you have open) to address a workspace in the current project instead.',
@@ -422,6 +422,69 @@ async function authorizedCoordinator(
   if (authorizedBindings.size >= MAX_AUTHORIZED_BINDINGS) authorizedBindings.clear();
   authorizedBindings.add(key);
   return value;
+}
+
+/**
+ * Resolve an execution-only tool against the optional executor lifecycle.
+ * GitHub CRUD never calls this: only commands, installs, previews and deploys
+ * are allowed to wake the sandbox.
+ */
+async function executorCoordinator(
+  env: Env,
+  identity: SessionProps,
+  workspaceId: string
+): Promise<DurableObjectStub<WorkspaceCoordinator>> {
+  const value = await authorizedCoordinator(env, identity, workspaceId);
+  const binding = await value.getAuthorizationBinding();
+  if (binding.state === 'ready' || binding.state === 'busy') return value;
+
+  if (binding.state === 'requested') {
+    const workflowId = workflowInstanceId('provision', workspaceId as WorkspaceId);
+    try {
+      await env.PROVISION_WORKFLOW.create({
+        id: workflowId,
+        params: { workspaceId: workspaceId as WorkspaceId, bootstrap: binding.bootstrapRequested }
+      });
+    } catch (error) {
+      try {
+        await env.PROVISION_WORKFLOW.get(workflowId);
+      } catch {
+        throw new ForgeError({
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: 'The ephemeral executor could not start because its provisioning workflow was unavailable. No command ran; retry the same execution tool.',
+          retryable: true,
+          details: { workspace_id: workspaceId, operation_id: binding.operationId, cause: error instanceof Error ? error.message.slice(0, 300) : 'workflow_unavailable' }
+        });
+      }
+    }
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_NOT_READY',
+      message: 'The ephemeral executor is starting because this is the first execution tool used for the workspace. No command ran; retry this same tool after forge_workspace_get reports ready.',
+      retryable: true,
+      details: {
+        workspace_id: workspaceId,
+        operation_id: binding.operationId,
+        state: 'provisioning',
+        allowedNextActions: ['forge_workspace_get']
+      }
+    });
+  }
+
+  if (binding.state === 'provisioning' || binding.state === 'bootstrapping') {
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_NOT_READY',
+      message: `The ephemeral executor cannot run this tool because it is still ${binding.state}. No command ran; retry after forge_workspace_get reports ready.`,
+      retryable: true,
+      details: { workspace_id: workspaceId, operation_id: binding.operationId, state: binding.state, allowedNextActions: ['forge_workspace_get'] }
+    });
+  }
+
+  throw new ForgeError({
+    code: 'FORGE_WORKSPACE_NOT_READY',
+    message: `The ephemeral executor cannot run this tool because the workspace is ${binding.state}. No command ran; inspect forge_workspace_get before retrying.`,
+    retryable: binding.state === 'suspended',
+    details: { workspace_id: workspaceId, operation_id: binding.operationId, state: binding.state, allowedNextActions: ['forge_workspace_get'] }
+  });
 }
 
 // Chunked base64 avoids quadratic per-character string building on large buffers.
@@ -513,32 +576,6 @@ function diffPaging(input: Record<string, unknown>): { cursor?: number; maxBytes
     ...(input.max_bytes === undefined ? {} : { maxBytes: Number(input.max_bytes) }),
     ...(paths?.length ? { paths } : {})
   };
-}
-
-type CompactWorkspaceState = {
-  requestedRef: string;
-  currentCommit?: string;
-  baseCommit?: string;
-  hasUnpushedWork?: boolean;
-  currentBranch?: string;
-};
-
-async function outgoingComparisonRef(workspace: DurableObjectStub<WorkspaceCoordinator>, providedBase?: string): Promise<string> {
-  const state = (await workspace.getState({ compact: true })) as CompactWorkspaceState;
-  if (providedBase && providedBase !== state.requestedRef && providedBase !== 'main') {
-    throw new ForgeError({
-      code: 'FORGE_GIT_PUSH_BLOCKED',
-      message: `Outgoing diffs must compare against '${state.requestedRef}', the ref this workspace was created from, not '${providedBase}'. Pass base:'${state.requestedRef}', or omit base to use it automatically.`,
-      retryable: false,
-      details: {
-        requestedRef: state.requestedRef,
-        providedBase,
-        head: state.currentCommit ?? null,
-        baseCommit: state.baseCommit ?? null
-      }
-    });
-  }
-  return state.requestedRef;
 }
 
 /**
@@ -642,60 +679,16 @@ async function sha256(value: string): Promise<string> {
 }
 
 export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
-  /**
-   * Commit anything the container wrote outside forge_edit.
-   *
-   * A shell command that edits files — a formatter, a codemod, a generator —
-   * would otherwise leave work in the only place that is not durable, and the
-   * next sync would reset over it. Committing it makes the container's output
-   * as safe as an edit, with no extra step for the agent to remember.
-   */
-  private async ingestContainerWrites(
-    env: Env,
-    identity: SessionProps,
-    workspaceId: string,
-    workspace: Awaited<ReturnType<typeof authorizedCoordinator>>,
-    reason: string
-  ): Promise<{ committed: boolean; commit_sha?: string; paths: string[]; truncated: boolean }> {
-    // A failed collection is not the same as a clean tree. Let the caller
-    // return an explicit durability warning instead of falsely claiming there
-    // was nothing to persist.
-    const collected = await workspace.worktreeChanges({});
-    if (!collected.changes.length) return { committed: false, paths: [], truncated: collected.truncated };
-    const state = (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string };
-    const branch = state.currentBranch;
-    if (!branch || !isAgentForgeBranch(branch)) return { committed: false, paths: [], truncated: collected.truncated };
-    const request = await githubRequestForWorkspace(env, identity, { repository: state.repository });
-    const result = await commitFilesToBranch(request, {
-      owner: state.repository.owner,
-      repo: state.repository.name,
-      branch,
-      message: `chore: ${reason}`.slice(0, 500),
-      files: collected.changes,
-      // The container edited from its own HEAD; if origin moved past that,
-      // this content would revert the difference rather than add to it.
-      expectedBlobs: collected.baseBlobs
-    });
-    if (result.commitSha) await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.commitSha);
-    await workspace.syncToRemoteHead().catch(() => undefined);
-    return {
-      committed: Boolean(result.commitSha),
-      ...(result.commitSha ? { commit_sha: result.commitSha } : {}),
-      paths: result.paths,
-      truncated: collected.truncated
-    };
-  }
-
   server = new McpServer(
     { name: 'Forge MCP', version: '0.1.0' },
     {
       instructions: [
-        'Forge is a remote development computer. There is no push step and no local-only state: forge_edit commits straight to GitHub on your branch, so an edit either lands on origin or does not happen.',
+        'Forge has two planes. GitHub is the durable repository: forge_edit commits straight to your branch. The optional executor runs commands; files those commands change are local-only and disposable until you deliberately recreate them with forge_edit.',
         '1. forge_workspace_create — it cuts your branch for you. You never choose, create or switch branches. Optional: call forge_start first and pass its branch as ref — it creates the branch on GitHub before any workspace exists, so it is real on origin from the moment it exists at all.',
         '2. Read with forge_context_get / forge_files_read / forge_files_list. Edit with forge_edit (one call, many files; content:null deletes). Each call returns commit_url — that IS the durable record.',
-        '3. Run checks with forge_shell. The container is a cache of what is already on GitHub; if it is ever stale it re-syncs itself.',
+        '3. Run checks with forge_shell. The first execution call starts the ephemeral executor. Later commands share its local files, but those files never save themselves to GitHub.',
         '4. When the work is good, ask the human, then forge_merge — it opens the pull request and returns one approval link. Echo the link only.',
-        '5. There is nothing to push, sync, rebase or recover. If forge_edit reports a conflict, re-read those paths and edit again.',
+        '5. Never run git push in the executor. If a command produced a wanted file change, apply it with forge_edit. If forge_edit reports a conflict, re-read those paths and edit again.',
         '6. Deploys: forge_cloudflare_deploy → echo deploy_receipt.verified_url only. Never invent URLs.'
       ].join(' ')
     }
@@ -842,7 +835,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       ({ repository, task }) =>
         userText(
-          `Start a coding task on ${repository}: ${task}. Prefer forge_task_create, then forge_workspace_create (it waits until ready — do not poll-loop) and reuse workspace_id. Read repository instructions and any parallax/ files before changes. Implement and verify, inspect with forge_diff_metadata, then forge_merge. Tell me it is submitted and where to approve it, then destroy the workspace.`
+          `Start a coding task on ${repository}: ${task}. Prefer forge_task_create, then forge_workspace_create and reuse workspace_id. Read and edit through GitHub immediately. The first execution tool starts the ephemeral executor; if it reports provisioning, check forge_workspace_get once before retrying the command. Read repository instructions and any parallax/ files before changes. Implement and verify, inspect with forge_diff_metadata, then forge_merge. Tell me it is submitted and where to approve it, then destroy the workspace.`
         )
     );
 
@@ -983,7 +976,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           await coordinator(env, reapedId).requestDestroy({ idempotencyKey: `reap-${destroyId}`, force: true });
           await env.DESTROY_WORKFLOW.create({
             id: destroyId,
-            params: { workspaceId: reapedId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true }
+            params: { workspaceId: reapedId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true, force: true }
           });
         } catch (reapError) {
           // Slot is already freed; teardown of the orphan can lag safely.
@@ -1208,19 +1201,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         await vaultService(env).attach(identity.tenantId as TenantId, secretId, workspaceId);
         await completeApproval(env, approvalId, true);
         return { attached: true, secret_id: secretId, workspace_id: workspaceId };
-      },
-      forge_workspace_snapshot: async (input) => {
-        const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
-        return asRecord(await workspace.checkpoint({ name: input.name ? text(input.name) : undefined }));
-      },
-      forge_workspace_restore: async (input) => {
-        const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
-        return asRecord(await workspace.restoreCheckpoint({
-          snapshotId: text(input.snapshot_id),
-          expectedRevision: optionalNumber(input.expected_revision)
-        }));
       },
       forge_repository_list: async () => {
         const identity = this.identity();
@@ -1779,7 +1759,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const identity = this.identity();
         const credentialProfileId = await this.selectedCredentialProfileId(identity);
         const repository = input.repository as { provider: 'github'; owner: string; name: string };
-        await authorizeRepository(env, identity, repository);
         const idempotencyKey = idempotency(input.idempotency_key);
         const workspaceId = await workspaceIdFromIdempotency(
           `${identity.tenantId}:${identity.projectId}`,
@@ -1801,12 +1780,54 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             throw reserveError;
           }
         }
+        let workspaceRef = text(input.ref);
+        try {
+          // Establish the durable branch before any executor exists. A
+          // workspace is now a GitHub control-plane session first; its
+          // container is optional and provisioned only by an execution tool.
+          if (!workspaceRef.startsWith('forge/')) {
+            const request = await githubRequestForWorkspace(env, identity, { repository });
+            const encodedRef = workspaceRef.split('/').map(encodeURIComponent).join('/');
+            const base = await request(
+              `/repos/${repository.owner}/${repository.name}/git/ref/heads/${encodedRef}`
+            );
+            const baseSha = base.status === 200
+              ? (base.json as { object?: { sha?: string } }).object?.sha
+              : undefined;
+            if (!baseSha) {
+              throw new ForgeError({
+                code: base.status === 404 ? 'FORGE_FILE_NOT_FOUND' : 'FORGE_PROVIDER_UNAVAILABLE',
+                message: `GitHub could not resolve branch ${workspaceRef} on ${repository.owner}/${repository.name} because GitHub returned HTTP ${base.status}. Nothing was provisioned; check the branch with forge_branches before retrying.`,
+                retryable: base.status >= 500,
+                details: { repository, ref: workspaceRef, status: base.status }
+              });
+            }
+            const branch = `forge/${workspaceId.replace(/^ws_/u, '').slice(0, 16)}`;
+            assertForgeBranch(branch);
+            await createBranchRef(request, {
+              owner: repository.owner,
+              repo: repository.name,
+              branch,
+              baseSha
+            });
+            workspaceRef = branch;
+          } else {
+            assertForgeBranch(workspaceRef);
+            // This also proves the App is installed: all durable repository
+            // CRUD runs through its scoped GitHub installation token.
+            await githubRequestForWorkspace(env, identity, { repository });
+          }
+        } catch (error) {
+          await releaseWorkspaceSlot(env.METADATA, workspaceId).catch(() => undefined);
+          throw error;
+        }
         const initializeWorkspace = coordinator(env, workspaceId).initialize({
             workspaceId,
             operationId,
             tenantId: identity.tenantId as TenantId,
             projectId: identity.projectId as ProjectId,
             repository,
+            agentBranch: workspaceRef,
             ref: text(input.ref),
             ...(credentialProfileId ? { credentialProfileId: credentialProfileId as CredentialProfileId } : {}),
             runtimeProfile: text(input.runtime) as
@@ -1827,22 +1848,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           new Promise<{ status: 'pending' }>((resolve) => setTimeout(() => resolve({ status: 'pending' }), 2_000))
         ]);
         if (quickInitialize.status === 'pending') {
-          const finishInitialization = initializeWorkspace.then(async (initialized) => {
-            if (!initialized.replay || initialized.state === 'requested') {
-              const workflowId = workflowInstanceId('provision', workspaceId);
-              try {
-                await env.PROVISION_WORKFLOW.create({
-                  id: workflowId,
-                  params: { workspaceId, bootstrap: Boolean(input.bootstrap) }
-                });
-              } catch {
-                // A retry of workspace_create runs the full existing-instance /
-                // terminal-redrive logic below. This continuation only ensures
-                // the accepted initialize is followed by a first dispatch.
-                await env.PROVISION_WORKFLOW.get(workflowId);
-              }
-            }
-          }).catch(async (error) => {
+          const finishInitialization = initializeWorkspace.catch(async (error) => {
             await releaseWorkspaceSlot(env.METADATA, workspaceId).catch(() => undefined);
             console.warn('forge_workspace_initialize_failed_after_receipt', {
               workspaceId,
@@ -1855,7 +1861,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             state: 'requested',
             operation_id: operationId,
             workspace_revision: 1,
-            next_step: `Workspace initialization was accepted but its coordinator is busy. Keep workspace_id ${workspaceId} and operation_id ${operationId}; call forge_workspace_get with workspace:'${workspaceId}' once later. Retrying with the same idempotency_key is safe.`
+            current_branch: workspaceRef,
+            next_step: `GitHub branch ${workspaceRef} is ready. Use forge_files_read and forge_edit now without a container. The first forge_shell or other execution tool will start the ephemeral executor.`
           };
         }
         if (quickInitialize.status === 'failed') {
@@ -1872,76 +1879,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (['failed', 'destroyed'].includes(result.state)) {
           await releaseWorkspaceSlot(env.METADATA, workspaceId);
         }
-        if (!result.replay || result.state === 'requested') {
-          const workflowId = workflowInstanceId('provision', workspaceId);
-          const provisionParams = { workspaceId, bootstrap: Boolean(input.bootstrap) };
-          const dispatchProvision = async () => {
-            try {
-              await env.PROVISION_WORKFLOW.create({ id: workflowId, params: provisionParams });
-            } catch (createError) {
-              let instance;
-              try {
-                instance = await env.PROVISION_WORKFLOW.get(workflowId);
-              } catch {
-                // The instance genuinely could not be reached: nothing is
-                // driving provisioning, so release the slot and surface the
-                // failure if it is immediate. A later failure is still visible
-                // to an idempotent retry of workspace_create.
-                await releaseWorkspaceSlot(env.METADATA, workspaceId);
-                throw createError;
-              }
-              // .get() succeeds even for a DEAD instance. Re-drive a terminal
-              // workflow under a deterministic id so retries remain safe.
-              const status = await instance.status().catch(() => undefined);
-              const phase = status?.status;
-              const terminal = phase === 'complete' || phase === 'errored' || phase === 'terminated';
-              const workspaceLive = !['requested', 'provisioning', 'bootstrapping'].includes(result.state);
-              if (terminal && !workspaceLive) {
-                const nonce = (await sha256(`${idempotencyKey}:provision-redrive`)).slice(0, 12);
-                const redriveId = `${workflowId}-r${nonce}`;
-                try {
-                  await env.PROVISION_WORKFLOW.create({ id: redriveId, params: provisionParams });
-                } catch (redriveError) {
-                  try {
-                    await env.PROVISION_WORKFLOW.get(redriveId);
-                  } catch {
-                    await releaseWorkspaceSlot(env.METADATA, workspaceId);
-                    throw redriveError;
-                  }
-                }
-              }
-              // Otherwise the existing instance is still running.
-            }
-          };
-          const provisionDispatch = dispatchProvision();
-          (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil?.(
-            provisionDispatch.catch((error) => {
-              console.warn('forge_workspace_provision_dispatch_failed', {
-                workspaceId,
-                reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
-              });
-            })
-          );
-          // Preserve honest, immediately observable dispatch failures without
-          // making the caller wait behind a slow Workflow or Durable Object.
-          const quickDispatch = await Promise.race([
-            provisionDispatch.then(
-              () => ({ failed: false as const }),
-              (error) => ({ failed: true as const, error })
-            ),
-            new Promise<{ failed: false }>((resolve) => setTimeout(() => resolve({ failed: false }), 250))
-          ]);
-          if (quickDispatch.failed) throw quickDispatch.error;
-        }
-        // The accepted receipt is the recovery handle. Never poll state here:
-        // getState can queue behind provisionInitialized's several-minute DO
-        // lock, outliving the host transport and losing both ids.
         const state = result.state;
-        if (state === 'ready') {
-          (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil?.(
-            coordinator(env, workspaceId).recordPushAuthProbe().catch(() => undefined)
-          );
-        }
         // A failed workspace inside a successful tool result is the same lie as
         // an unpushed commit reported as saved: the field says failed, the
         // envelope says it worked, and agents read the envelope. One did exactly
@@ -1978,30 +1916,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             }
           });
         }
-        const readyState = state === 'ready'
-          ? await withDeadline(
-              coordinator(env, workspaceId).getState({ compact: true }) as unknown as Promise<unknown>,
-              1_000
-            )
-          : undefined;
-        const branch = readyState && typeof readyState === 'object' && 'currentBranch' in readyState
-          ? String((readyState as { currentBranch?: string }).currentBranch ?? '')
-          : undefined;
-        const branch_policy = readyState && typeof readyState === 'object' && 'branch_policy' in readyState
-          ? (readyState as { branch_policy?: unknown }).branch_policy
-          : undefined;
         return {
           workspace_id: workspaceId,
           state,
           operation_id: result.operationId,
           workspace_revision: result.revision,
-          ...(branch ? { current_branch: branch } : {}),
-          ...(branch_policy ? { branch_policy } : {}),
-          // `failed` never reaches here — it throws above, so this branch only
-          // distinguishes ready from an accepted asynchronous provision.
+          current_branch: workspaceRef,
+          executor_state: state === 'ready' ? 'ready' : 'not_loaded',
           next_step: state === 'ready'
-            ? `Ready on ${branch || 'forge/…'}. Edit with forge_edit — it commits to GitHub, no push needed. Reuse this workspace_id.`
-            : `Provisioning was accepted. Keep workspace_id ${workspaceId} and operation_id ${result.operationId}; call forge_workspace_get with workspace:'${workspaceId}' once later to observe readiness. Retrying this create with the same idempotency_key is safe.`
+            ? `GitHub branch ${workspaceRef} and the existing executor are ready. forge_edit saves directly to GitHub.`
+            : `GitHub branch ${workspaceRef} is ready. Read and edit through GitHub now; the first execution tool will lazily start the ephemeral executor.`
         };
       },
       forge_workspace_get: async (input) => {
@@ -2039,35 +1963,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           return asRecord({ root: containerRoot, entries, truncated, source: 'github', ...(hint ? { hint } : {}) });
         } catch (error) {
           if (!(error instanceof GitHubReadUnavailable)) throw error;
-          // GitHub itself is unreachable or erroring — fall back to the
-          // container's cached tree rather than failing the call outright,
-          // but say so: an agent must never mistake a cached answer for an
-          // authoritative one.
-          const tree = await workspace.filesTree({ path: containerRoot, depth, limit });
-          const hint = (tree as { truncated?: boolean }).truncated
-            ? 'Listing truncated at the limit. Narrow with a deeper path or raise limit.'
-            : undefined;
-          // Every entry repeated the same directory prefix — at the default
-          // limit of 1000 that is ~16KB of the response saying "/workspace/repo"
-          // over and over. State it once. The relative form is what forge_edit
-          // reports and what forge_files_read now accepts, so these paths can be
-          // passed straight on.
-          const prefix = `${containerRoot.replace(/\/+$/u, '')}/`;
-          const entries = Array.isArray((tree as { entries?: unknown }).entries)
-            ? ((tree as { entries: unknown[] }).entries).map((entry) => {
-                const record = entry as { path?: unknown };
-                return typeof record.path === 'string' && record.path.startsWith(prefix)
-                  ? { ...record, path: record.path.slice(prefix.length) }
-                  : record;
-              })
-            : (tree as { entries?: unknown }).entries;
-          return asRecord({
-            ...tree,
-            root: containerRoot,
-            entries,
-            source: 'container',
-            ...(hint ? { hint } : {}),
-            next_step: `GitHub was unreachable (${error.message}), so this listing came from the workspace's cached checkout instead and may be stale relative to GitHub. Retry shortly for the authoritative listing.`
+          throw new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: 'GitHub is temporarily unavailable, so Forge cannot return an authoritative repository listing. The executor checkout is deliberately not used as a fallback. Retry the same call.',
+            retryable: true,
+            details: { reason: error.message, source: 'github' }
           });
         }
       },
@@ -2079,7 +1979,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             : input.path !== undefined
               ? [text(input.path)]
               : []
-        ).map((value) => toContainerPath(value));
+        ).map((value) => normalizeRepoPath(value));
         if (paths.length === 0) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
@@ -2108,41 +2008,25 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           endLine: optionalNumber(input.end_line),
           maxBytes: perFileMaxBytes
         };
-        const relativePaths = paths.map((path) => normalizeRepoPath(path));
+        const relativePaths = paths;
         // Only a complete read establishes what the agent saw; a range or a
         // truncated read must not license a whole-file overwrite.
         const isCompleteRead = readOne.startLine === undefined && readOne.endLine === undefined;
 
-        // The container fallback, used only when GitHub itself could not be
-        // read — never as the primary source. It still re-hashes decoded
-        // content for rememberReads, because the container has no tree entry
-        // to hand back a real git blob sha from; that is exactly the
-        // divergence-on-CRLF/binary risk the GitHub path exists to remove.
-        const readFromContainer = async (path: string, reason: string): Promise<Record<string, unknown>> => {
-          const one = asRecord(await workspace.filesRead({ path, ...readOne }));
-          if (isCompleteRead && typeof one.content === 'string' && !one.truncated) {
-            await workspace.rememberReads({
-              entries: [{ path: normalizeRepoPath(path), sha: await gitBlobSha(one.content) }]
-            });
-          }
-          return {
-            ...readableFile({ ...one, path }),
-            source: 'container' as const,
-            next_step: `GitHub was unreachable (${reason}), so this came from the workspace's cached checkout instead and may be stale relative to GitHub. Retry shortly for the authoritative read.`
-          };
-        };
-
-        let treeContext: Awaited<ReturnType<typeof resolveBranchTree>> | undefined;
-        let treeUnavailableReason: string | undefined;
+        let treeContext: Awaited<ReturnType<typeof resolveBranchTree>>;
         try {
           treeContext = await resolveBranchTree(env, identity, workspace);
         } catch (error) {
           if (!(error instanceof GitHubReadUnavailable)) throw error;
-          treeUnavailableReason = error.message;
+          throw new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: 'GitHub is temporarily unavailable, so Forge cannot return authoritative file content. The executor checkout is deliberately not used as a fallback. Retry the same call.',
+            retryable: true,
+            details: { reason: error.message, source: 'github' }
+          });
         }
 
-        const readOnePath = async (containerPath: string, relativePath: string): Promise<Record<string, unknown>> => {
-          if (!treeContext) return readFromContainer(containerPath, treeUnavailableReason as string);
+        const readOnePath = async (relativePath: string): Promise<Record<string, unknown>> => {
           try {
             const result = await readBlobFromTree(
               treeContext.request,
@@ -2160,7 +2044,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             }
             return { path: relativePath, content: result.content, sizeBytes: result.sizeBytes, truncated: result.truncated, source: 'github' as const };
           } catch (error) {
-            if (error instanceof GitHubReadUnavailable) return readFromContainer(containerPath, error.message);
+            if (error instanceof GitHubReadUnavailable) {
+              throw new ForgeError({
+                code: 'FORGE_PROVIDER_UNAVAILABLE',
+                message: `GitHub is temporarily unavailable, so Forge cannot return authoritative content for ${relativePath}. The executor checkout is deliberately not used as a fallback. Retry the same call.`,
+                retryable: true,
+                details: { path: relativePath, reason: error.message, source: 'github' }
+              });
+            }
             throw error;
           }
         };
@@ -2168,12 +2059,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // Single path keeps the original flat shape; multiple returns a files
         // array with per-file errors so one missing file does not fail the batch.
         if (paths.length === 1) {
-          return readOnePath(paths[0] as string, relativePaths[0] as string);
+          return readOnePath(relativePaths[0] as string);
         }
         const files = await Promise.all(
-          paths.map(async (path, index) => {
+          relativePaths.map(async (path) => {
             try {
-              return await readOnePath(path, relativePaths[index] as string);
+              return await readOnePath(path);
             } catch (error) {
               // Surface a real ForgeErrorCode so an agent keying on codes never
               // meets an undocumented one.
@@ -2188,7 +2079,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
         const workspace = await authorizedCoordinator(env, identity, workspaceId);
         const state = await withDeadline(
-          (async () => (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string; baseCommit?: string; currentCommit?: string })(),
+          (async () => (await workspace.getAuthorizationBinding()) as { repository: RepositoryRef; requestedRef: string; currentBranch?: string; baseCommit?: string; currentCommit?: string })(),
           15_000
         );
         if (!state) {
@@ -2199,7 +2090,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             details: { workspaceId }
           });
         }
-        const branch = state.currentBranch;
+        const branch = state.currentBranch ?? state.requestedRef;
         if (!branch || !isAgentForgeBranch(branch)) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
@@ -2374,11 +2265,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               .map(async (file) => ({ path: file.path, sha: await gitBlobSha(file.content as string) }))
           )
         });
-        // Best effort: bring the container's checkout in line so forge_run
-        // tests what was just committed. A failure here costs nothing — the
-        // work is already safe on GitHub and the container is a cache.
-        const synced = await workspace.syncToRemoteHead().then(() => true).catch(() => false);
-
         const receipt = {
           ...verdict,
           ...(result.commitSha ? { commit_sha: result.commitSha } : {}),
@@ -2388,10 +2274,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           branch,
           paths: result.paths,
           rebased: result.rebased,
-          workspace_synced: synced,
           next_step: result.unchanged
             ? 'Nothing changed — the files already had this content. Continue or call forge_merge.'
-            : `Committed to origin/${branch}. Run checks with forge_shell, then forge_merge when ready.${synced ? '' : ' The container checkout is stale; forge_shell will re-sync.'}`
+            : `Committed to origin/${branch}. Run checks with forge_shell, then forge_merge when ready. The executor, if loaded, is not mutated by this edit.`
         };
         if (editIdempotencyKey && editIntentHash) {
           await workspace.recordRemoteMutation({
@@ -2406,25 +2291,64 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_diff_metadata: async (input) => {
         const identity = this.identity();
         const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
-        const base = text(input.base);
-        const outgoing = await workspace.gitOutgoingDiff({ base: await outgoingComparisonRef(workspace, base), maxBytes: 256_000 });
-        const compact = analyzeDiff(outgoing.diff);
-        return asRecord(compact);
+        const binding = await workspace.getAuthorizationBinding();
+        const branch = binding.currentBranch ?? binding.requestedRef;
+        const base = input.base === undefined ? binding.requestedRef : text(input.base);
+        const request = await githubRequestForWorkspace(env, identity, { repository: binding.repository });
+        const comparison = await request(
+          `/repos/${binding.repository.owner}/${binding.repository.name}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`
+        );
+        if (comparison.status !== 200) {
+          throw new ForgeError({
+            code: comparison.status === 404 ? 'FORGE_FILE_NOT_FOUND' : 'FORGE_PROVIDER_UNAVAILABLE',
+            message: `GitHub could not compare ${base}...${branch} because GitHub returned HTTP ${comparison.status}. No executor fallback was used; check both branches with forge_branches before retrying.`,
+            retryable: comparison.status >= 500,
+            details: { base, branch, status: comparison.status, source: 'github' }
+          });
+        }
+        const body = comparison.json as {
+          status?: string;
+          ahead_by?: number;
+          behind_by?: number;
+          total_commits?: number;
+          files?: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>;
+        };
+        const diff = (body.files ?? []).map((file) => [
+          `diff --git a/${file.filename} b/${file.filename}`,
+          `--- a/${file.filename}`,
+          `+++ b/${file.filename}`,
+          file.patch ?? `Binary or oversized ${file.status} file (${file.additions} additions, ${file.deletions} deletions)`
+        ].join('\n')).join('\n');
+        return asRecord({
+          ...analyzeDiff(diff),
+          source: 'github',
+          base,
+          head: branch,
+          status: body.status ?? 'unknown',
+          ahead_by: body.ahead_by ?? 0,
+          behind_by: body.behind_by ?? 0,
+          commits: body.total_commits ?? 0
+        });
       },
       forge_context_get: async (input) => {
         const identity = this.identity();
         const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
-        // git's file list, not a filesystem walk: node_modules used to consume
-        // the whole bounded result, so the selector never saw a source file.
-        let files = await workspace.listRepositoryFiles({ limit: 10_000 }).catch(() => [] as string[]);
-        if (!files.length) {
-          const tree = await workspace.filesTree({ path: '/workspace/repo', depth: 20, limit: 10_000 });
-          const entries = (tree as { entries?: Array<{ path?: string; name?: string; type?: string }> }).entries ?? [];
-          files = entries
-            .filter((e) => e.type !== 'directory' && e.path)
-            .map((e) => e.path!.replace(/^\/workspace\/repo\//, ''));
+        let files: string[];
+        try {
+          const { tree } = await resolveBranchTree(env, identity, workspace);
+          files = tree.entries
+            .filter((entry) => entry.type === 'blob' && entry.path && !entry.path.startsWith('.'))
+            .slice(0, 10_000)
+            .map((entry) => entry.path);
+        } catch (error) {
+          if (!(error instanceof GitHubReadUnavailable)) throw error;
+          throw new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: 'GitHub is temporarily unavailable, so Forge cannot select authoritative repository context. The executor checkout is deliberately not used as a fallback. Retry the same call.',
+            retryable: true,
+            details: { reason: error.message, source: 'github' }
+          });
         }
-        files = files.filter((p) => p && !p.startsWith('.'));
         const response = selectContext({
           goal: text(input.goal),
           files,
@@ -2439,7 +2363,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const command = text(input.command);
         const cwd = text(input.cwd);
         const networkPolicy = text(input.network_policy) as never;
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const workspace = await executorCoordinator(env, identity, workspaceId);
         const decision = classifyCommand(command, networkPolicy);
         let approvalId = input.approval_id ? text(input.approval_id) : undefined;
         const userEnv = input.environment as Record<string, string>;
@@ -2488,6 +2412,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         try {
           const normalizedCwd = cwd.replace(/\/+$/u, '') || '/workspace';
           const repoScoped = normalizedCwd === '/workspace/repo' || normalizedCwd.startsWith('/workspace/repo/');
+          let preservedExecutorChanges = false;
           if (repoScoped) {
             // Both foreground and managed commands must start from the remote
             // branch they claim to verify. Time-box the prerequisite so a busy
@@ -2496,19 +2421,19 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             const synced = await withDeadline(workspace.syncToRemoteHead(), CHECKOUT_SYNC_DEADLINE_MS);
             if (!synced?.synced) {
               if (synced?.blockedByLocalChanges) {
+                // The executor is a coherent, ephemeral command session. Its
+                // local writes must remain visible to later commands, but they
+                // never acquire authority over GitHub and are never published.
+                // syncToRemoteHead already proved it did not reset over them.
+                preservedExecutorChanges = true;
+              } else {
                 throw new ForgeError({
-                  code: 'FORGE_GIT_DIRTY',
-                  message: 'Forge found uncommitted container writes and refused to reset over them before running this command. The files are preserved. Re-apply or commit them with forge_edit, then retry forge_shell.',
-                  retryable: false,
-                  details: { cwd, preserved: true, allowedNextActions: ['forge_edit', 'forge_workspace_get'] }
+                  code: 'FORGE_GIT_FETCH_FAILED',
+                  message: 'Forge could not prove that the repository checkout matches the GitHub branch before running this command, so nothing ran. Retry forge_shell after checking forge_workspace_get; commands outside /workspace/repo are unaffected.',
+                  retryable: true,
+                  details: { cwd, syncDeadlineMs: CHECKOUT_SYNC_DEADLINE_MS, allowedNextActions: ['forge_workspace_get', 'forge_shell'] }
                 });
               }
-              throw new ForgeError({
-                code: 'FORGE_GIT_FETCH_FAILED',
-                message: 'Forge could not prove that the repository checkout matches the GitHub branch before running this command, so nothing ran. Retry forge_shell after checking forge_workspace_get; commands outside /workspace/repo are unaffected.',
-                retryable: true,
-                details: { cwd, syncDeadlineMs: CHECKOUT_SYNC_DEADLINE_MS, allowedNextActions: ['forge_workspace_get', 'forge_shell'] }
-              });
             }
           }
           if (input.async === true || escalated) {
@@ -2554,6 +2479,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               operationId: procRecord.operationId,
               workspaceRevision: procRecord.workspaceRevision,
               mutatesFilesystem: value.mutatesFilesystem ?? procRecord.mutatesFilesystem,
+              remote_persisted: false,
+              executor_filesystem: 'ephemeral',
+              ...(preservedExecutorChanges ? { preserved_executor_changes: true } : {}),
               allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
               ...(escalated && input.async !== true
                 ? {
@@ -2612,38 +2540,19 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             outputArtifactId = spilled.artifact_id;
           }
           const base = asRecord(result);
-          const { checkpoint: _checkpoint, stdout: _s, stderr: _e, ...rest } = base;
-          // Anything this command wrote lives only in the container, which is
-          // the one place that is not durable. Commit it before returning, so
-          // a formatter or codemod cannot leave work to be lost at the next
-          // sync — and so the agent is never holding changes it must remember
-          // to save.
-          let ingested: { committed: boolean; commit_sha?: string; paths: string[]; truncated: boolean; failed?: boolean };
-          if (input.mode === 'read_only') {
-            ingested = { committed: false, paths: [], truncated: false };
-          } else {
-            const ingestion = this.ingestContainerWrites(env, identity, workspaceId, workspace, `${command.slice(0, 80)}`);
-            (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil?.(
-              ingestion.catch(() => undefined)
-            );
-            ingested = await withDeadline(ingestion, 10_000)
-              ?? { committed: false, paths: [], truncated: false, failed: true };
-          }
-          const wrote = ingested.paths.length || ingested.failed || ingested.truncated
-            ? {
-                ...(ingested.paths.length ? { committed_files: ingested.paths } : {}),
-                ...('commit_sha' in ingested && ingested.commit_sha ? { commit_sha: ingested.commit_sha } : {}),
-                ...(ingested.failed || ingested.truncated
-                  ? { committed_files_warning: ingested.truncated
-                      ? 'Forge found too many changed files, truncated status output, or a changed file over the ingestion limit. It published none of this incomplete set and preserved every container write; publish the wanted files with forge_edit before another repo-scoped shell command.'
-                      : 'Forge could not confirm this command’s repository writes on GitHub within the request. The container is preserved; use forge_edit to publish wanted changes before another repo-scoped shell command.' }
-                  : {})
-              }
-            : {};
+          const { stdout: _s, stderr: _e, ...rest } = base;
+          const executionPersistence = {
+            remote_persisted: false,
+            executor_filesystem: 'ephemeral',
+            ...(preservedExecutorChanges ? { preserved_executor_changes: true } : {}),
+            persistence_notice: input.mode === 'read_only'
+              ? 'The command did not save repository content. GitHub remains the source of truth.'
+              : 'Any files this command changed exist only in this executor session. Re-apply deliberate code changes with forge_edit to save them to GitHub.'
+          };
           if (compact) {
             return {
               ...rest,
-              ...wrote,
+              ...executionPersistence,
               exitCode,
               compact: true,
               truncated: Boolean(result.truncated) || Boolean(outputArtifactId),
@@ -2662,7 +2571,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
           return {
             ...rest,
-            ...wrote,
+            ...executionPersistence,
             exitCode,
             compact: false,
             stdout,
@@ -2676,14 +2585,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_logs: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)))).processLogs({
+        return asRecord(await (await executorCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)))).processLogs({
           processId: text(input.process_id) as ProcessId,
           cursor: input.cursor ? text(input.cursor) : undefined
         }));
       },
       forge_process_list: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
+        const workspace = await executorCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         if (input.process_id) {
           return asRecord(await workspace.processGet({ processId: text(input.process_id) as ProcessId }));
         }
@@ -2691,7 +2600,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_stop: async (input) => {
         const identity = this.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
+        const workspace = await executorCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         const args = {
           processId: text(input.process_id) as ProcessId,
           expectedRevision: optionalNumber(input.expected_revision),
@@ -2702,12 +2611,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_process_wait: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const workspace = await executorCoordinator(env, identity, workspaceId);
         const waited = asRecord(await workspace.processWait({
           processId: text(input.process_id) as ProcessId,
           timeoutMs: Math.min(optionalNumber(input.timeout_ms) ?? 30_000, 30_000)
         }));
-        if (waited.timedOut === true) return waited;
+        if (waited.timedOut === true) {
+          return { ...waited, remote_persisted: false, executor_filesystem: 'ephemeral' };
+        }
 
         const process = waited.process && typeof waited.process === 'object'
           ? waited.process as Record<string, unknown>
@@ -2717,64 +2628,25 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (!mutatesFilesystem) {
           return {
             ...waited,
-            remote_persisted: true,
-            next_step: 'Process finished without repository mutations. Continue with forge_shell or forge_workspace_get.'
-          };
-        }
-        if (exitCode !== 0) {
-          return {
-            ...waited,
             remote_persisted: false,
-            committed_files_warning: 'The mutating process did not exit successfully, so Forge did not publish its partial container writes to GitHub. Inspect the logs and re-apply any wanted changes with forge_edit.',
-            next_step: 'Inspect forge_process_logs. Any partial repository writes remain only in the preserved container until you re-apply them with forge_edit.'
+            executor_filesystem: 'ephemeral',
+            next_step: 'Process finished without saving repository content. Continue with forge_shell or forge_workspace_get.'
           };
         }
-
-        // Application finalization proves provider visibility and may create a
-        // recovery checkpoint; neither is a remote commit. Reconcile through
-        // the same GitHub commit path foreground forge_shell uses before this
-        // successful mutation is described as durable.
-        const ingestion = this.ingestContainerWrites(
-          env,
-          identity,
-          workspaceId,
-          workspace,
-          `${String(process.command ?? 'background command').slice(0, 80)}`
-        );
-        (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil?.(
-          ingestion.catch(() => undefined)
-        );
-        const ingested = await withDeadline(ingestion, 10_000);
-        const remotePersisted = Boolean(
-          ingested &&
-          !ingested.truncated &&
-          (ingested.committed || ingested.paths.length === 0)
-        );
         return {
           ...waited,
-          remote_persisted: remotePersisted,
-          ...(ingested?.paths.length ? { committed_files: ingested.paths } : {}),
-          ...(ingested?.commit_sha ? { commit_sha: ingested.commit_sha } : {}),
-          ...(!remotePersisted
-            ? {
-                committed_files_warning: ingested?.truncated
-                  ? 'The process succeeded, but the changed-file set was too large to ingest completely. Forge published none of the incomplete set and preserved every container write; publish the wanted files with forge_edit.'
-                  : 'The process succeeded, but Forge could not confirm its repository writes on GitHub within this request. The container writes are preserved; call forge_process_wait again with the same process_id to retry reconciliation.',
-                next_step: ingested?.truncated
-                  ? 'Use forge_edit to publish the wanted preserved files. Do not re-run the command or start another repo-scoped shell command first.'
-                  : 'Call forge_process_wait again with the same process_id. Do not re-run the command; Forge will retry publishing its preserved writes.'
-              }
-            : {
-                next_step: ingested?.commit_sha
-                  ? `Process finished and its repository writes were committed to GitHub as ${ingested.commit_sha}. Continue with forge_shell or forge_workspace_get.`
-                  : 'Process finished and Forge confirmed there were no repository writes to publish. Continue with forge_shell or forge_workspace_get.'
-              })
+          remote_persisted: false,
+          executor_filesystem: 'ephemeral',
+          persistence_notice: 'Process filesystem changes remain only in this executor session. Forge never converts them into GitHub edits.',
+          next_step: exitCode === 0
+            ? 'Re-apply any deliberate repository changes with forge_edit to save them. Otherwise continue with forge_shell; the same executor session retains its ephemeral files.'
+            : 'Inspect forge_process_logs. Any partial filesystem changes remain ephemeral; use forge_edit only for changes you deliberately want to save.'
         };
       },
       forge_deps_install: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
-        const coordinator = await authorizedCoordinator(env, identity, workspaceId);
+        const coordinator = await executorCoordinator(env, identity, workspaceId);
         const result = await coordinator.dependenciesInstall({
           frozenLockfile: Boolean(input.frozen_lockfile),
           allowLockfileUpdate: Boolean(input.allow_lockfile_update),
@@ -2783,7 +2655,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           expectedRevision: optionalNumber(input.expected_revision),
           idempotencyKey: idempotency(input.idempotency_key)
         });
-        return asRecord(result);
+        return asRecord({ ...result, remote_persisted: false, executor_filesystem: 'ephemeral' });
       },
       forge_pr: async (input) => {
         const identity = this.identity();
@@ -2893,6 +2765,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             if (closed.status !== 200) {
               throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: `GitHub returned HTTP ${closed.status} closing #${number}; retry the same call because Forge did not receive a closing receipt.`, retryable: true });
             }
+            const closedReadBack = await request(`${base}/pulls/${number}`);
+            const closedState = closedReadBack.status === 200
+              ? String((closedReadBack.json as { state?: string }).state ?? '')
+              : '';
+            if (closedState !== 'closed') {
+              throw new ForgeError({
+                code: 'FORGE_PROVIDER_UNAVAILABLE',
+                message: `GitHub accepted closing #${number}, but the provider read-back did not report closed (HTTP ${closedReadBack.status}). Retry the same idempotent call before claiming success.`,
+                retryable: true
+              });
+            }
             const receipt = { repository: `${owner}/${repo}`, closed: true, next_step: `Closed #${number} without merging.` };
             if (mutationKey && claim?.kind === 'claimed') {
               await recordExternalMutationReceipt(env, { tenantId: identity.tenantId, scope: mutationScope, idempotencyKey: mutationKey, ownerToken: claim.ownerToken, receipt });
@@ -2990,10 +2873,19 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               details: { number, head_sha: status.head_sha }
             });
           }
+          const mergedReadBack = await readStatus();
+          if (!mergedReadBack.already_merged) {
+            throw new ForgeError({
+              code: 'FORGE_PROVIDER_UNAVAILABLE',
+              message: `GitHub accepted merging #${number}, but the provider read-back did not report it merged. Retry the same idempotent call before claiming success.`,
+              retryable: true,
+              details: { number, head_sha: status.head_sha }
+            });
+          }
           const receipt = {
             repository: `${owner}/${repo}`,
             merged: true,
-            merge_sha: String((merged.json as { sha?: string }).sha ?? ''),
+            merge_sha: mergedReadBack.merge_commit_sha ?? String((merged.json as { sha?: string }).sha ?? ''),
             next_step: `Merged #${number}. Delete the branch with forge_branches if it is no longer needed.`
           };
           if (mutationKey && claim?.kind === 'claimed') {
@@ -3316,10 +3208,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_merge: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
+        const coordinator = await authorizedCoordinator(env, identity, workspaceId);
+        const state = await coordinator.getAuthorizationBinding();
         // The branch is Forge's, not the agent's, so it does not have to know
         // or repeat it. If one is supplied it must be the workspace's own —
         // merging some other branch is never what was meant.
-        const workspaceBranch = ((await (await authorizedCoordinator(env, identity, workspaceId)).getState()) as { currentBranch?: string }).currentBranch;
+        const workspaceBranch = state.currentBranch ?? undefined;
         // `workspace` already resolved the workspace above; re-read just the
         // branch half of it (if the caller pinned one) to cross-check against
         // the workspace's actual branch — malformed input would already have
@@ -3352,28 +3246,41 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         let title = input.title === undefined ? '' : text(input.title);
         let body = input.body === undefined ? '' : text(input.body);
 
-        const coordinator = await authorizedCoordinator(env, identity, workspaceId);
-        const state = await coordinator.getState();
-        const comparisonRef = await outgoingComparisonRef(coordinator, input.base !== undefined ? text(input.base) : undefined);
-
-        // Uncommitted changes in the working tree are not the same as
-        // unpushed commits: forge_edit and forge_shell's own auto-commit both
-        // already push what they do straight to origin, so a dirty tree here
-        // means a raw write bypassed both of those and forge_merge has never
-        // seen it. It used to commit and push that silently, which is the
-        // other push this design removes — report it instead, naming the
-        // files, and send the agent back to forge_edit to re-apply them
-        // through the path that actually commits them.
-        const status = await coordinator.gitStatus().catch(() => undefined);
-        assertCleanForMerge(status);
-
-        // A bounded first page: enough diff for the summariser to work from,
-        // while `totalFiles` still counts the whole change. Counting
-        // `diff --git` lines here would only ever see this page and could call
-        // a large submission empty.
-        const outgoing = await coordinator.gitOutgoingDiff({ base: comparisonRef, maxBytes: 48_000 }).catch(() => undefined);
-        const diff = outgoing?.diff ?? '';
-        const filesChanged = outgoing?.totalFiles ?? 0;
+        const comparisonRef = input.base !== undefined
+          ? text(input.base)
+          : state.requestedRef.startsWith('forge/')
+            ? prBase
+            : state.requestedRef;
+        const repository = state.repository as RepositoryRef;
+        const request = await githubRequestForWorkspace(env, identity, { repository });
+        const compared = await request(
+          `/repos/${repository.owner}/${repository.name}/compare/${encodeURIComponent(comparisonRef)}...${encodeURIComponent(branch)}`
+        );
+        if (compared.status !== 200) {
+          throw new ForgeError({
+            code: compared.status === 404 ? 'FORGE_FILE_NOT_FOUND' : 'FORGE_PROVIDER_UNAVAILABLE',
+            message: `GitHub could not prepare the submission because GitHub returned HTTP ${compared.status} comparing ${comparisonRef}...${branch}. The executor checkout was not consulted; check both branches with forge_branches before retrying.`,
+            retryable: compared.status >= 500,
+            details: { comparisonRef, branch, status: compared.status, source: 'github' }
+          });
+        }
+        const comparison = compared.json as {
+          ahead_by?: number;
+          files?: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>;
+        };
+        const changedFiles = comparison.files ?? [];
+        const diff = changedFiles.map((file) => [
+          `diff --git a/${file.filename} b/${file.filename}`,
+          `--- a/${file.filename}`,
+          `+++ b/${file.filename}`,
+          file.patch ?? `Binary or oversized ${file.status} file (${file.additions} additions, ${file.deletions} deletions)`
+        ].join('\n')).join('\n').slice(0, 48_000);
+        const filesChanged = changedFiles.length;
+        const outgoing = {
+          totalFiles: filesChanged,
+          totalAdditions: changedFiles.reduce((sum, file) => sum + file.additions, 0),
+          totalDeletions: changedFiles.reduce((sum, file) => sum + file.deletions, 0)
+        };
         // Nothing to review is a mistake worth naming, not an empty pull request
         // for someone to puzzle over later.
         if (filesChanged === 0) {
@@ -3385,8 +3292,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               comparisonRef,
               prBase,
               requestedRef: comparisonRef,
-              baseCommit: state.baseCommit ?? null,
-              head: state.currentCommit ?? null
+              head: branch
             }
           });
         }
@@ -3411,8 +3317,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // 403'd in the wild: an agent's commit was already on origin,
         // forge_merge pushed it again, and the whole merge was reported
         // broken while the work sat safely on the branch the whole time.
-        const repository = state.repository as RepositoryRef;
-        const request = await githubRequestForWorkspace(env, identity, { repository });
         const remoteHead = await verifyFeatureBranchOnOrigin(request, repository, branch);
         const staged = { ref: branch, commit: remoteHead, remote_sha: remoteHead };
 
@@ -3570,7 +3474,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         } else {
           await requireApproval(env, identity, approvalId, workspaceId, 'cloudflare.deploy', approvalPayload);
         }
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const workspace = await executorCoordinator(env, identity, workspaceId);
         const synced = await withDeadline(workspace.syncToRemoteHead(), 10_000);
         if (!synced?.synced) {
           throw new ForgeError({
@@ -3687,7 +3591,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       forge_preview_expose: async (input) => {
         const identity = this.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input)) as WorkspaceId;
-        const value = await (await authorizedCoordinator(env, identity, workspaceId)).previewExpose({
+        const value = await (await executorCoordinator(env, identity, workspaceId)).previewExpose({
           processId: text(input.process_id) as ProcessId,
           port: number(input.port),
           hostname: env.FORGE_PREVIEW_HOSTNAME,
@@ -3731,7 +3635,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // shape a chat session is worst at. With no preview_id, Forge does it —
         // detect the dev command, start it, wait for it to answer, expose it —
         // so screenshotting your own app is one call, same as a live URL.
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const workspace = await executorCoordinator(env, identity, workspaceId);
         let previewId = input.preview_id ? text(input.preview_id) : '';
         if (!previewId) {
           const deadline = Math.min(toolDeadlineAt - 10_000, Date.now() + number(input.preview_wait_ms));
@@ -4087,7 +3991,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               params: {
                 workspaceId,
                 idempotencyKey,
-                preserveArtifacts: Boolean(input.preserve_artifacts)
+                preserveArtifacts: Boolean(input.preserve_artifacts),
+                force: Boolean(input.force)
               }
             });
           } catch {

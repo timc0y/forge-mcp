@@ -362,7 +362,9 @@ describe('createBranchRef', () => {
     const calls: string[] = [];
     const request: GitHubRequest = async (path, init) => {
       calls.push(`${init?.method ?? 'GET'} ${path}`);
-      return { status: 201, json: {} };
+      return init?.method === 'POST'
+        ? { status: 201, json: {} }
+        : { status: 200, json: { object: { sha: 'base-sha' } } };
     };
 
     const result = await createBranchRef(request, {
@@ -370,7 +372,10 @@ describe('createBranchRef', () => {
     });
 
     expect(result.created).toBe(true);
-    expect(calls).toEqual(['POST /repos/acme/app/git/refs']);
+    expect(calls).toEqual([
+      'POST /repos/acme/app/git/refs',
+      'GET /repos/acme/app/git/ref/heads/forge/new-task'
+    ]);
   });
 
   it('tolerates a concurrent creation only when the ref matches the requested base', async () => {

@@ -62,15 +62,17 @@ describe('GitHub branch safety transport', () => {
     const calls: string[] = [];
     const request: GitHubRequest = async (path, init) => {
       calls.push(`${init?.method ?? 'GET'} ${path}`);
-      return init?.method === 'DELETE'
-        ? { status: 204, json: {} }
+      if (init?.method === 'DELETE') return { status: 204, json: {} };
+      return calls.length === 3
+        ? { status: 404, json: {} }
         : { status: 200, json: { name: 'forge/task', commit: { sha: 'tip' }, protected: false } };
     };
     const result = await deleteGitHubBranchIfUnchanged(request, '/repos/acme/app', 'forge/task', 'tip');
     expect(result).toEqual({ outcome: 'deleted' });
     expect(calls).toEqual([
       'GET /repos/acme/app/branches/forge%2Ftask',
-      'DELETE /repos/acme/app/git/refs/heads/forge/task'
+      'DELETE /repos/acme/app/git/refs/heads/forge/task',
+      'GET /repos/acme/app/branches/forge%2Ftask'
     ]);
   });
 });

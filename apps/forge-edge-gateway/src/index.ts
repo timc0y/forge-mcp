@@ -533,7 +533,7 @@ async function reapAbandonedSlots(env: Env): Promise<void> {
       await stub.requestDestroy({ idempotencyKey: `reap-${destroyId}`, force: true });
       await env.DESTROY_WORKFLOW.create({
         id: destroyId,
-        params: { workspaceId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true }
+        params: { workspaceId, idempotencyKey: `reap-${destroyId}`, preserveArtifacts: true, force: true }
       });
     } catch (error) {
       console.warn('forge_slot_scheduled_teardown_failed', {
@@ -654,13 +654,21 @@ export default {
           recoveryEvidence.snapshotId &&
           recoveryEvidence.recoveryVersion === env.CF_VERSION_METADATA.id
         );
-        const ready = configured && recoveryVerified;
+        // Control-plane readiness is independent of the optional, lazy
+        // executor. GitHub CRUD remains available even when no live sandbox
+        // recovery round trip has run for this Worker version.
+        const ready = configured;
         return json({
           ok: ready,
           service: 'forge-edge-gateway',
           environment: env.FORGE_ENVIRONMENT,
           bindings: { metadata: 'ready', artifacts: 'ready', backups: 'ready', browser: 'configured', sandbox: 'configured' },
-          recovery: ready
+          executor: {
+            mode: 'lazy_ephemeral',
+            configured: true,
+            requiredForGitHubCrud: false
+          },
+          recovery: recoveryVerified
             ? {
                 state: 'verified',
                 verified: true,
@@ -670,7 +678,7 @@ export default {
                 verificationVersion: recoveryEvidence?.recoveryVersion
               }
             : configured
-              ? { state: 'awaiting_live_round_trip', verified: false }
+              ? { state: 'awaiting_live_round_trip', verified: false, requiredForReadiness: false }
               : {
                 state: 'blocked',
                 missing: [

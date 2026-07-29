@@ -454,7 +454,7 @@
     },
     "forge_workspace_create": {
       "title": "Create workspace",
-      "description": "Start an isolated workspace. Returns workspace_id + operation_id immediately; provisioning continues asynchronously, observed with forge_workspace_get.",
+      "description": "Create a lightweight control-plane coding session and return workspace_id + operation_id immediately. No executor is provisioned here; the first shell, install, build, test, dev, preview, or deploy call allocates an ephemeral executor using the requested runtime/bootstrap settings.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -488,13 +488,8 @@
           },
           "runtime": {
             "default": "node-24",
-            "type": "string",
-            "enum": [
-              "node-22",
-              "node-24",
-              "python-3.13",
-              "general-purpose"
-            ]
+            "description": "Executor runtime to allocate lazily on the first execution call.",
+            "$ref": "#/$defs/__schema3"
           },
           "persistence": {
             "default": "ephemeral",
@@ -503,7 +498,8 @@
           },
           "bootstrap": {
             "default": true,
-            "type": "boolean"
+            "description": "Run bootstrap when the executor is first allocated, not during workspace creation.",
+            "$ref": "#/$defs/__schema4"
           },
           "idempotency_key": {
             "type": "string",
@@ -534,6 +530,18 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 100
+          },
+          "__schema3": {
+            "type": "string",
+            "enum": [
+              "node-22",
+              "node-24",
+              "python-3.13",
+              "general-purpose"
+            ]
+          },
+          "__schema4": {
+            "type": "boolean"
           }
         }
       }
@@ -567,7 +575,7 @@
     },
     "forge_workspace_destroy": {
       "title": "Destroy workspace",
-      "description": "Tear down the workspace. Refused if unpushed forge/ commits exist unless force:true.",
+      "description": "End the control-plane session and discard any ephemeral executor state. GitHub branches and forge_edit commits are unaffected; command-created files that were not recreated with forge_edit are intentionally lost.",
       "sideEffect": "destructive",
       "approval": "policy",
       "inputSchema": {
@@ -644,76 +652,9 @@
         }
       }
     },
-    "forge_workspace_snapshot": {
-      "title": "Snapshot workspace",
-      "description": "Capture a named checkpoint of the workspace filesystem. Use before risky operations to enable rollback.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          }
-        },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_workspace_restore": {
-      "title": "Restore snapshot",
-      "description": "Roll back the workspace to a previous checkpoint. Destroys uncommitted work. Returns the restored state.",
-      "sideEffect": "destructive",
-      "approval": "policy",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "snapshot_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Fails if the workspace moved on past this revision."
-          }
-        },
-        "required": [
-          "snapshot_id"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
     "forge_files_list": {
       "title": "List files",
-      "description": "List a bounded file tree, read from the branch tip on GitHub (falls back to the workspace’s cached checkout only if GitHub is unreachable — see `source`). Paths come back relative to root, which is the form forge_edit and forge_files_read take.",
+      "description": "List a bounded file tree from the selected GitHub branch. No executor is allocated and no executor filesystem is consulted. Paths come back repo-relative, which is the form forge_edit and forge_files_read take.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -761,7 +702,7 @@
     },
     "forge_files_read": {
       "title": "Read files",
-      "description": "Read one file (path) or several (paths), from the branch tip on GitHub (falls back to the workspace’s cached checkout only if GitHub is unreachable — see `source`). The read guard that protects forge_edit is server-side; no input takes a hash back.",
+      "description": "Read one file or several directly from the selected GitHub branch without allocating an executor. The read guard that protects forge_edit is server-side; no input takes a hash back.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -928,7 +869,7 @@
     },
     "forge_diff_metadata": {
       "title": "Diff metadata",
-      "description": "Syntax-only metadata over the outgoing diff: changed symbols, secret risk, file classification, and suggested hunks. No model, no semantics — an index into the diff, not a substitute.",
+      "description": "Syntax-only metadata over the GitHub branch comparison: changed symbols, secret risk, file classification, and suggested hunks. No executor is allocated.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1014,7 +955,7 @@
     },
     "forge_shell": {
       "title": "Run command",
-      "description": "Run a synced workspace command. Use async:true or work over 30s returns process_id. compact returns short tails; full logs spill to forge_artifact_get. Risky commands need approval_id.",
+      "description": "Allocate an ephemeral executor on first use and run a command for up to 30 seconds. Set async:true for known-long work; otherwise a long-running command returns process_id. Command-created or modified files remain executor-only, are never auto-committed, and report remote_persisted:false. Use forge_edit separately for wanted repository changes.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -1124,7 +1065,7 @@
     },
     "forge_process_list": {
       "title": "List processes",
-      "description": "List managed processes. Pass process_id to get one process in detail.",
+      "description": "List managed executor processes. Pass process_id to get one process in detail. Process filesystem effects are ephemeral and never imply a GitHub change.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1152,7 +1093,7 @@
     },
     "forge_process_wait": {
       "title": "Wait for process",
-      "description": "Observe a managed process for at most 30 seconds. timedOut:true is observational: the process continues, so call this again with the same process_id instead of restarting it. Successful repository mutations report their GitHub durability separately from the filesystem checkpoint.",
+      "description": "Observe a managed executor process for at most 30 seconds. timedOut:true is observational: call again with the same process_id instead of restarting it. Process filesystem effects remain executor-only and are never auto-committed to GitHub.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1272,7 +1213,7 @@
     },
     "forge_deps_install": {
       "title": "Install dependencies",
-      "description": "Start one managed dependency install. Reuse its processId with bounded forge_process_wait calls. Do not start a second install.",
+      "description": "Allocate the ephemeral executor if needed and start one managed dependency install. Reuse its processId with bounded forge_process_wait calls; do not start a second install. Lockfile changes remain executor-only until explicitly recreated with forge_edit.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {

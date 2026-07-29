@@ -79,7 +79,7 @@ export class DestroyWorkspaceWorkflow extends WorkflowEntrypoint<
         const remote = await coordinator(
           this.env,
           event.payload.workspaceId
-        ).completeDestroy();
+        ).completeDestroy({ force: event.payload.force });
         return {
           workspaceRevision: Number(remote.workspaceRevision)
         };

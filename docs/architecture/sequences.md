@@ -1,56 +1,39 @@
 # Forge sequence diagrams
 
-## Workspace provisioning
+## Control-plane workspace creation
 
 ```mermaid
 sequenceDiagram
   participant C as MCP client
   participant M as MCP Session Agent
-  participant W as Provision Workflow
-  participant D as Workspace Coordinator DO
-  participant A as Forge Application Service
-  participant S as SandboxProvider
+  participant D as Workspace Coordinator
+  participant DB as D1 metadata
 
-  C->>M: forge_workspace_create(idempotency_key)
-  M->>D: initialize(deterministic workspace_id)
-  D-->>M: requested + operation_id + revision
-  M->>W: create(workflow_id, workspace_id)
-  M-->>C: workspace_id + operation_id + provisioning state
-  W->>D: provisionInitialized()
-  D->>A: provisionWorkspace()
-  A->>S: create + clone + detect + bootstrap
-  S-->>A: repository runtime
-  A->>D: persist state transitions
-  D-->>W: ready / failed
+  C->>M: forge_workspace_create(repository, ref, idempotency_key)
+  M->>DB: authorize repository + reserve session
+  M->>D: initialize control-plane workspace
+  D-->>M: workspace_id + operation_id + branch state
+  M-->>C: accepted session handle (no executor)
 ```
 
-## Private preview and browser evidence
+## Lazy executor command
 
 ```mermaid
 sequenceDiagram
   participant C as MCP client
-  participant M as MCP Session Agent
-  participant D as Workspace Coordinator DO
-  participant S as SandboxProvider
-  participant P as Forge Preview Gateway
-  participant B as BrowserProvider
-  participant R as R2 ArtifactStore
+  participant D as Workspace Coordinator
+  participant GH as GitHub API
+  participant E as Ephemeral executor
 
-  C->>M: forge_preview_expose(process, port)
-  M->>D: previewExpose()
-  D->>S: exposePort()
-  S-->>D: provider endpoint
-  D-->>M: preview_id + expiry
-  M-->>C: Forge URL + scoped capability
-  C->>M: forge_preview(preview_id)
-  M->>B: screenshot(Forge private URL)
-  B->>P: authenticated internal request
-  P->>S: proxy request
-  B->>R: store PNG + evidence metadata
-  B-->>M: artifact reference + hash
+  C->>D: forge_shell / install / build / test / dev
+  D->>GH: resolve selected branch commit
+  D->>E: allocate lazily + materialize commit
+  E-->>D: output / managed process id
+  D-->>C: result + remote_persisted:false
+  Note over E: Command filesystem writes remain executor-only
 ```
 
-## Remote edit and review path
+## Remote edit and review
 
 ```mermaid
 sequenceDiagram
@@ -60,14 +43,33 @@ sequenceDiagram
   participant U as User approval
 
   A->>F: forge_edit(workspace, files, idempotency_key)
-  F->>GH: read feature ref + required blobs
+  F->>GH: read ref + blobs
   F->>F: apply replacements and build commit
-  F->>GH: create objects + update expected feature ref
-  F->>GH: read feature ref back
-  GH-->>F: observed commit SHA
-  F-->>A: remote commit URL + verified SHA
+  F->>GH: create objects + guarded ref update
+  F->>GH: read ref back
+  GH-->>F: verified commit SHA
+  F-->>A: remote commit URL + SHA
   A->>F: forge_merge(workspace)
-  F->>GH: open/update review request
-  F-->>U: one approval URL
-  U-->>F: approve review/merge path
+  F->>GH: open review request
+  F-->>U: approval URL
+```
+
+## Private preview and evidence
+
+```mermaid
+sequenceDiagram
+  participant C as MCP client
+  participant D as Workspace Coordinator
+  participant E as Ephemeral executor
+  participant P as Forge Preview Gateway
+  participant B as BrowserProvider
+  participant R as R2 ArtifactStore
+
+  C->>D: forge_preview
+  D->>E: allocate if absent + start dev server
+  D->>P: expose scoped preview
+  B->>P: authenticated capture
+  P->>E: proxy request
+  B->>R: store evidence
+  B-->>C: artifact references
 ```

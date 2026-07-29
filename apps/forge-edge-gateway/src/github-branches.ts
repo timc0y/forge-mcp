@@ -97,7 +97,11 @@ export async function deleteGitHubBranchIfUnchanged(
     };
   }
   const removed = await request(`${base}/git/refs/heads/${branch.split('/').map(encodeURIComponent).join('/')}`, { method: 'DELETE' });
-  return removed.status === 204
+  if (removed.status !== 204) {
+    return { outcome: 'refused', reason: `GitHub returned HTTP ${removed.status}.` };
+  }
+  const readBack = await readGitHubBranch(request, base, branch);
+  return readBack.status === 404
     ? { outcome: 'deleted' }
-    : { outcome: 'refused', reason: `GitHub returned HTTP ${removed.status}.` };
+    : { outcome: 'refused', reason: `GitHub accepted deletion, but the branch read-back returned HTTP ${readBack.status}; Forge will not claim it is gone.` };
 }

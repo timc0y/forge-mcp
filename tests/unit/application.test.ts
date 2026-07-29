@@ -702,10 +702,10 @@ describe('Forge application service', () => {
     const waited = await service.processWait(record, processId, 1_000);
     expect(waited.process).toMatchObject({ status: 'exited', exitCode: 0, mutatesFilesystem: true });
     expect(waited.dependencyState).toMatchObject({ status: 'ready', usable: true, lockfileHash: 'b'.repeat(64) });
-    expect(waited.filesystemCheckpointed).toBe(true);
+    expect(waited).not.toHaveProperty('filesystemCheckpointed');
     expect(record.dependencyState).toMatchObject({ usable: true, lockfileHash: 'b'.repeat(64) });
     expect(record.processes[processId]?.completedAt).toBeTruthy();
-    expect(record.processes[processId]?.checkpointAfter).toBeTruthy();
+    expect(record.processes[processId]?.finalizedAt).toBeTruthy();
     expect(provider.calls.some((command) => command.includes('FORGE_NODE_MODULES='))).toBe(true);
   });
 
@@ -739,7 +739,7 @@ describe('Forge application service', () => {
     expect(record.dependencyState).toMatchObject({ usable: false });
   });
 
-  it('enables keepAlive for mutating managed processes and releases it after finalize', async () => {
+  it('keeps the ephemeral executor alive after mutations so later commands see its files', async () => {
     const provider = new FakeProvider();
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
@@ -763,12 +763,12 @@ describe('Forge application service', () => {
       exitCode: 0
     });
     await service.processWait(record, processId, 1_000);
-    expect(provider.keepAlive).toBe(false);
+    expect(provider.keepAlive).toBe(true);
     expect(provider.calls).toContain('keepAlive:true');
-    expect(provider.calls).toContain('keepAlive:false');
+    expect(provider.calls).not.toContain('keepAlive:false');
   });
 
-  it('refuses checkpoint restore while a mutating process has uncheckpointed writes', async () => {
+  it('refuses executor replacement while a mutating process is active', async () => {
     const provider = new FakeProvider();
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
@@ -792,7 +792,7 @@ describe('Forge application service', () => {
     await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
       .rejects.toMatchObject({
         code: 'FORGE_PROVIDER_UNAVAILABLE',
-        message: expect.stringContaining('will not restore a checkpoint')
+        message: expect.stringContaining('will not replace the executor')
       });
     expect(provider.calls).not.toContain('restore');
   });
@@ -825,7 +825,7 @@ describe('Forge application service', () => {
     expect(synced.completed).toBe(1);
     expect(synced.running).toBe(0);
     expect(record.processes[processId]?.completedAt).toBeTruthy();
-    expect(record.processes[processId]?.checkpointAfter).toBeTruthy();
+    expect(record.processes[processId]?.finalizedAt).toBeTruthy();
   });
 
   it('replays managed process starts with the original process id', async () => {
@@ -943,6 +943,47 @@ describe('Forge application service', () => {
     provider.head = '1234567';
     await expect(service.completeDestroy(record)).rejects.toMatchObject({ code: 'FORGE_GIT_PUSH_BLOCKED' });
     expect(record.workspace.state).toBe('destroying');
+  });
+
+  it('force-completes teardown without inspecting a missing mount or requiring provider cleanup to succeed', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    service.requestDestroy(record, 1, 'destroy-force-missing-mount', true);
+    provider.handle.exec = async () => {
+      throw new Error('workspace mount is unavailable');
+    };
+    provider.destroy = async () => {
+      throw new Error('sandbox already absent');
+    };
+
+    await expect(service.completeDestroy(record, undefined, true)).resolves.toMatchObject({ replay: false });
+    expect(record.workspace.state).toBe('destroyed');
+    expect(record.processes).toEqual({});
+    expect(record.previews).toEqual({});
+  });
+
+  it('preserves the concrete setup failure when provisioning retries are exhausted', () => {
+    const service = new ForgeApplicationService(new FakeProvider());
+    const record = initialized(service);
+    service.recordProvisioningFailure(record, new ForgeError({
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      message: 'GitHub installation 42 could not mint a clone capability.',
+      retryable: true,
+      details: { stage: 'clone_source', cause: 'installation revoked' }
+    }));
+
+    service.markProvisioningExhausted(record);
+
+    expect(record.workspace.state).toBe('failed');
+    expect(record.workspace.failure).toMatchObject({
+      stage: 'clone_source',
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      message: 'GitHub installation 42 could not mint a clone capability.',
+      retryable: false,
+      details: { cause: 'installation revoked' }
+    });
   });
 
   it('returns incremental process logs with status and null nextCursor when done', async () => {
@@ -1072,7 +1113,8 @@ describe('Forge application service', () => {
     expect(result).toMatchObject({
       success: true,
       managedProcess: true,
-      filesystemCommitted: true,
+      remotePersisted: false,
+      executorFilesystem: 'ephemeral',
       dependencyState: { status: 'ready', usable: true }
     });
     expect(result.processId).toMatch(/^proc_/);
@@ -1100,7 +1142,7 @@ describe('Forge application service', () => {
     expect(waited.timedOut).toBe(true);
     expect(provider.lastProcessWaitTimeoutMs).toBe(30_000);
     expect(waited.suggestedTimeoutMs).toBe(30_000);
-    expect(waited.filesystemCheckpointed).toBe(false);
+    expect(waited).not.toHaveProperty('filesystemCheckpointed');
     expect(waited.allowedNextActions).toContain('forge_process_wait');
     expect(waited.next_step).toMatch(/each call observes for at most 30000ms/i);
     expect(waited.next_step).not.toMatch(/600000/);

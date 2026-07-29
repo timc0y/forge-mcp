@@ -1,7 +1,8 @@
 # Tool catalog
 
-Forge exposes 43 remote-first MCP tools from `forgeTools` in
-`@forge/mcp-core`. Generated input/output schemas live in
+Forge exposes 43 MCP tools from `forgeTools` in `@forge/mcp-core`. GitHub's API
+is the sole durable file/branch/diff/commit/history/PR plane; executor compute
+is lazy and ephemeral. Generated schemas live in
 `schemas/forge-tools.schema.json`.
 
 ## Discover and observe
@@ -22,47 +23,44 @@ Forge exposes 43 remote-first MCP tools from `forgeTools` in
 ## Branch and workspace
 
 - `forge_start` — idempotently create a guarded remote `forge/*` branch
-- `forge_workspace_create` — return accepted `workspace_id` + `operation_id`;
-  state may still be provisioning
+- `forge_workspace_create` — create a lightweight control-plane session and
+  return `workspace_id` + `operation_id`; allocate no executor
 - `forge_workspace_get` — observe compact workspace and branch state
-- `forge_workspace_destroy` — guarded destructive teardown
+- `forge_workspace_destroy` — end the session and discard executor state;
+  GitHub is unchanged
 - `forge_operation_get` — resolve an uncertain `op_...` mutation
-- `forge_workspace_snapshot` — named provider checkpoint
-- `forge_workspace_restore` — guarded destructive rollback
 
 The `workspace` field accepts the fresh `workspace_id` returned by create, as
-well as `owner/repo#branch` or a bare branch. Use the id while provisioning has
-not produced a branch yet; use the semantic branch address afterwards.
-
-Workspace creation never waits behind provisioning long enough to lose its
-recovery handles at the MCP transport boundary.
+well as `owner/repo#branch` or a bare branch. The first shell/install/build/test/
+dev/preview/deploy call allocates the executor using the session's runtime
+preferences.
 
 ## Read and edit
 
-- `forge_files_list` — bounded GitHub branch tree, with explicit transient
-  container fallback
-- `forge_files_read` — bounded GitHub branch file reads, with the same fallback
+- `forge_files_list` — bounded GitHub branch tree; no executor
+- `forge_files_read` — bounded GitHub branch file reads; no executor
 - `forge_edit` — fragment/full-file edit committed directly to GitHub
 - `forge_diff_metadata` — syntax-only outgoing-diff metadata
 - `forge_context_get` — ranked paths, adjacent tests, and governing instructions
 
 Paths are repo-relative or absolute at/below `/workspace/repo`. Other absolute
 workspace paths, sibling-prefix tricks, traversal, empty input, and NUL bytes
-are refused by the shared helper used by both read backends.
+are refused before GitHub access or executor materialization.
 
 ## Shell and processes
 
-- `forge_shell` — 30-second foreground budget, then managed background process
+- `forge_shell` — lazily allocate an executor; 30-second foreground budget,
+  then managed background process
 - `forge_process_list` — list all processes or inspect one
 - `forge_process_wait` — observe for at most 30 seconds; repeat with the same
   process id after `timedOut:true`
 - `forge_process_logs` — incremental log reads by cursor
 - `forge_process_stop` — graceful or forced stop
-- `forge_deps_install` — one managed install, returning its process handle
+- `forge_deps_install` — lazily allocate the executor and run one managed install
 
-Successful background repository mutations distinguish
-`filesystemCheckpointed` from `remote_persisted` and report
-`committed_files`, `commit_sha`, and any `committed_files_warning`.
+Command filesystem effects are executor-only and are never auto-committed.
+Process completion reports `remote_persisted:false`; use `forge_edit` to
+recreate any wanted repository change on GitHub.
 
 Raw `git push`, including common wrapper/global-option forms, is refused by
 `forge_shell`. Use `forge_edit` for guarded remote commits and `forge_merge`

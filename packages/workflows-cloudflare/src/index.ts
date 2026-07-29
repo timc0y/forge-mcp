@@ -20,6 +20,7 @@ export interface DestroyWorkspaceParams {
   workspaceId: WorkspaceId;
   idempotencyKey: string;
   preserveArtifacts: boolean;
+  force: boolean;
 }
 
 export interface CreatePullRequestParams {

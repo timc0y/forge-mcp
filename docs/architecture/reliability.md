@@ -1,79 +1,66 @@
 # Workspace reliability contract
 
-Forge treats the GitHub feature branch as the authority for repository state.
-The workspace checkout is a rebuildable execution cache. Durable Object and D1
-fields record coordination state and receipts; they never substitute for the
-remote ref.
+Forge has two deliberately separate planes:
 
-## Remote-first mutation
+- **GitHub control plane:** the sole durable authority for repository file
+  CRUD, diffs, commits, branches, history, and pull requests.
+- **Executor plane:** lazy, isolated, ephemeral compute for shell commands,
+  dependency installs, builds, tests, dev servers, previews, and deploys.
 
-`forge_edit` is the public repository-mutation primitive. It reads the current
-branch tip, applies fragment or whole-file changes, creates Git objects through
-the GitHub API, updates the guarded `forge/*` ref, and reads that ref back. It
-reports success only when the observed remote SHA matches the expected commit.
-An HTTP ref-update response by itself is not proof of durability.
+The executor is never a repository durability boundary.
 
-Mutation retries carry an idempotency key, and concurrent calls carry an
-expected revision or ref SHA where applicable. A branch collision is adopted
-only when GitHub's existing ref points at the requested base SHA. Branch
-deletion checks live workspace occupants and verifies the tip again immediately
-before deleting.
+## Repository mutation
 
-Raw `git push` is refused by `forge_shell`, including common wrapper and Git
-global-option forms. It would bypass authorization, expected-tip checks,
-idempotency, remote read-back, and receipts.
+`forge_edit` is the only public tool that writes or deletes repository files.
+It reads the selected GitHub branch, applies fragment or whole-file changes,
+creates Git objects through the GitHub API, updates the guarded `forge/*` ref,
+and reads that ref back. It reports success only when the observed remote SHA
+matches the expected commit.
 
-## Reads and path isolation
+Mutation retries carry an idempotency key. Concurrent operations use content,
+revision, head-SHA, or ref-SHA guards as appropriate. Branch collisions are
+adopted only when the existing ref points at the requested base SHA. Branch
+deletion refuses live-workspace refs and re-reads the target SHA immediately
+before deletion.
 
-`forge_files_list` and `forge_files_read` use the GitHub branch tip. They fall
-back to the cached checkout only for a transient GitHub failure and label the
-source explicitly. Both paths pass through the same helper: inputs must be
-repo-relative or absolute at/below `/workspace/repo`. Forge rejects metadata,
-temporary, sibling-prefix, traversal, empty, and NUL-containing paths before
-either backend is called.
+Raw `git push` is refused by `forge_shell`. Commands cannot promote their
+filesystem effects into GitHub implicitly.
 
-Fragment edits against a newly created workspace branch resolve against its
-recorded base commit when the feature ref has not yet been published. The first
-successful edit creates that exact feature ref; it never instructs callers to
-invent a second branch or overwrite a whole file to recover.
+## Repository reads and diffs
 
-## Transport and process completion
+`forge_files_list`, `forge_files_read`, `forge_context_get`,
+`forge_diff_metadata`, `forge_history`, `forge_branches`, and `forge_pr` read
+GitHub directly. They allocate no executor and never substitute an executor
+checkout for repository truth.
 
-Workspace creation returns its accepted `workspace_id` and `operation_id`
-within the host request budget. Provisioning may continue after the response;
-call `forge_workspace_get` for the same workspace. A registry outage returns a
-stable retryable provider error with its bounded cause and tells the caller not
-to create a duplicate workspace.
+Public paths are repo-relative or absolute at/below `/workspace/repo`. Forge
+rejects metadata, temporary, sibling-prefix, traversal, empty, and
+NUL-containing paths before GitHub access or executor materialization.
 
-Foreground shell work is bounded. Longer work returns a managed `process_id`.
-Each `forge_process_wait` call observes for one host-safe interval; a timeout
-does not terminate the process. When a successful background mutation is
-finalized, the result distinguishes filesystem checkpointing from GitHub
-durability and reports `committed_files`, `commit_sha`, and
-`remote_persisted`. Callers must not claim remote persistence unless that last
-field is true.
+## Control-plane workspaces and lazy execution
 
-## Checkpoints and restore
+`forge_workspace_create` creates a lightweight coding session, records the
+repository/branch and desired runtime/bootstrap settings, and immediately
+returns `workspace_id` plus `operation_id`. It does not provision an executor.
 
-- `forge_workspace_snapshot` captures a named provider snapshot including Git
-  and ignored execution state needed for rollback.
-- Checkpoints carry a normalized archive hash over paths, modes, and symlinks;
-  capture and restore verify it before acknowledging success.
-- Automatic recovery overwrites only a proven-empty restore target. A missing
-  marker, partial mount, Git mismatch, or provider-probe failure fails closed.
-- `forge_workspace_restore` is destructive and revision guarded. It never
-  changes the GitHub feature branch implicitly.
-- Workspace teardown refuses unsafe local-only state unless the caller uses the
-  explicit destructive override.
+The first shell, install, build, test, dev, preview, or deploy call allocates an
+ephemeral executor and materializes the selected GitHub commit. Managed process
+waits are bounded observations; `timedOut:true` never stops or restarts the
+process.
 
-## Runtime and capability truth
+Files created or modified by executor commands remain executor-only. Forge
+never auto-commits them, and process results report `remote_persisted:false`.
+If a command produced a wanted repository change, read or inspect it in the
+executor and explicitly recreate it with `forge_edit`.
 
-The container image installs Node 24 and Corepack. Provisioning verifies the
-requested runtime from inside the sandbox before reporting ready. A mismatch is
-a provisioning failure. `forge_capabilities` reports the session's current
-tool and approval surface; observer tools expose live coordination state without
-mutating it.
+Destroying a workspace ends the control-plane session and discards executor
+state. GitHub branches and `forge_edit` commits remain. Executor-only files are
+intentionally lost, which is why tools must never describe them as remote or
+durable.
 
-`/ready` is stricter than `/health`: it remains unavailable until required R2
-credentials are configured and a workspace has completed a verified
-backup/restore round trip.
+## Capability truth
+
+`forge_capabilities` reports the current tool and approval surface. Observer
+tools expose control-plane and executor state without mutating either. Secret
+values enter only the approved executor process that needs them and never
+become GitHub content automatically.

@@ -42,13 +42,6 @@ describe('new tool definitions', () => {
 
 
 
-  it('forge_workspace_restore is destructive with policy approval', () => {
-    const t = tool('forge_workspace_restore');
-    expect(t.sideEffect).toBe('destructive');
-    expect(t.approval).toBe('policy');
-  });
-
-
   it('forge_artifact_upload has no revision or idempotency key', () => {
     const t = tool('forge_artifact_upload');
     const schema = t.inputSchema as Record<string, { safeParse(v: unknown): { success: boolean } }>;

@@ -47,7 +47,9 @@ describe('forge_merge receipt', () => {
     expect(merge).not.toContain('gitCommit(');
     // It still verifies the branch is on origin — just never by pushing.
     expect(merge).toContain('verifyFeatureBranchOnOrigin');
-    expect(merge).toContain('assertCleanForMerge');
+    expect(merge).toContain('/compare/');
+    expect(merge).not.toContain('gitStatus');
+    expect(merge).not.toContain('gitOutgoingDiff');
   });
 });
 

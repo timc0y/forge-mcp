@@ -24,8 +24,7 @@ import { githubRequestForWorkspace } from './github';
 /**
  * Thrown only for a GitHub failure that looks transient — a network error, a
  * 5xx, a rate limit. Never for a real answer like "this branch/file does not
- * exist", which is signal, not noise, and must reach the agent as-is. This is
- * the one error type callers should catch to fall back to the container.
+ * exist", which is signal, not noise, and must reach the agent as-is.
  */
 export class GitHubReadUnavailable extends Error {
   constructor(message: string) {
@@ -68,9 +67,8 @@ export interface GitHubBranchTree {
 /**
  * Resolve `branch`'s tip commit and its full recursive tree — the single
  * source of truth `forge_files_read` and `forge_files_list` now read from.
- * Throws {@link GitHubReadUnavailable} for a transient GitHub failure (the
- * caller should fall back to the container), or a {@link ForgeError} for a
- * real answer (the branch genuinely is not on GitHub).
+ * Throws {@link GitHubReadUnavailable} for a transient GitHub failure or a
+ * {@link ForgeError} for a real answer (the branch genuinely is not on GitHub).
  */
 export async function fetchBranchTree(
   request: GitHubRequest,
@@ -170,10 +168,10 @@ export interface BranchTreeContext {
 export async function resolveBranchTree(
   env: Env,
   identity: Parameters<typeof githubRequestForWorkspace>[1],
-  workspace: { getState(): Promise<unknown> }
+  workspace: { getAuthorizationBinding(): Promise<unknown> }
 ): Promise<BranchTreeContext> {
   const state = await withTimeout(
-    workspace.getState() as Promise<{ repository: RepositoryRef; currentBranch?: string }>,
+    workspace.getAuthorizationBinding() as Promise<{ repository: RepositoryRef; requestedRef: string; currentBranch?: string }>,
     15_000
   );
   if (!state) {
@@ -183,7 +181,7 @@ export async function resolveBranchTree(
       retryable: true
     });
   }
-  const branch = state.currentBranch;
+  const branch = state.currentBranch ?? state.requestedRef;
   if (!branch) {
     throw new ForgeError({
       code: 'FORGE_WORKSPACE_NOT_READY',

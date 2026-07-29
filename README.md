@@ -2,10 +2,10 @@
 
 **A remote development computer for AI coding agents — over MCP.**
 
-Forge gives ChatGPT, Claude, and any MCP-compatible client a real, isolated
-Linux computer: a cloned repository, a terminal, a browser, Git, and
-approval-gated draft PRs. The model brings the reasoning; Forge brings the
-machine. It runs on Cloudflare's edge, so the compute is cheap and always on.
+Forge gives ChatGPT, Claude, and any MCP-compatible client a GitHub-native
+coding control plane plus an isolated Linux executor when code actually needs
+to run. The model brings the reasoning; Forge brings guarded repository tools
+and ephemeral compute on demand.
 
 ## Why it exists
 
@@ -45,24 +45,25 @@ ever starting a workspace. Full reference: [`docs/tools.md`](docs/tools.md).
 | --- | --- | --- |
 | Discover & observe | `forge_capabilities`, `forge_observer_*`, `forge_repository_list` | no |
 | Durable tasks | `forge_task_create` / `_get` / `_list` / `_update` | no |
-| Branch & workspace | `forge_start`, `forge_workspace_*`, `forge_operation_get` | create only |
-| Read & edit | `forge_files_list`, `forge_files_read`, `forge_edit`, context/diff tools | reads: no; shell fallback: yes |
+| Branch & workspace | `forge_start`, `forge_workspace_*`, `forge_operation_get` | no; executor is lazy |
+| Read & edit | `forge_files_list`, `forge_files_read`, `forge_edit`, context/diff tools | no |
 | Shell & processes | `forge_shell`, `forge_process_*`, `forge_deps_install` | yes |
 | GitHub review | `forge_pr`, `forge_access`, `forge_history`, `forge_branches`, `forge_merge` | no |
 | Preview & artifacts | `forge_review`, `forge_preview*`, `forge_artifact_*` | mixed |
 | Deployment & secrets | `forge_cloudflare_deploy`, `forge_secret_*` | mixed |
 
-Forge is remote-first. `forge_edit` commits directly to the selected
-`forge/*` branch through the GitHub API and returns the remote commit URL; there
-is no separate push step. Raw `git push` through `forge_shell` is refused
-because it bypasses Forge's branch, concurrency, and durability checks. Use
+GitHub's API is the sole durable repository plane: file CRUD, branch reads and
+writes, diffs, commits, history, and pull requests all operate on GitHub.
+`forge_edit` is the only file-writing/deleting tool and commits directly to the
+selected `forge/*` branch. Raw `git push` through `forge_shell` is refused. Use
 `forge_merge` to open the review path and return the human approval link.
 
-Workspace creation returns its `workspace_id` and operation handle within the
-host request budget; readiness may still be `provisioning`. Pass that id as the
-`workspace` value to `forge_workspace_get` instead of starting another one. Managed
-process waits are likewise bounded to one host-safe observation; a timeout does
-not stop the process.
+Workspace creation returns a lightweight control-plane session immediately; it
+does not provision a container. The first shell, install, build, test, dev,
+preview, or deploy call allocates an ephemeral executor. Files created or
+modified by commands remain executor-only, report `remote_persisted:false`, and
+are discarded with that executor unless the wanted change is explicitly
+recreated through `forge_edit`.
 
 ## Parallax
 
@@ -83,9 +84,9 @@ Start at [`docs/README.md`](docs/README.md). The essentials:
 - [Security](docs/security/README.md) — approvals, capabilities, tenancy
 - [Self-hosting](docs/self-host.md)
 
-Credential profiles are tenant-scoped, encrypted at rest, and provider-backed. See [credential profiles](docs/architecture/credentials.md) before configuring `FORGE_CREDENTIAL_ENCRYPTION_KEY` or migrating an installation.
+Vault secrets are tenant-scoped and encrypted at rest. See [credentials and secrets](docs/architecture/credentials.md) before configuring `FORGE_CREDENTIAL_ENCRYPTION_KEY` or migrating an installation.
 
-For the filesystem, Git, checkpoint, export, and runtime guarantees required for long-lived agent work, see the [workspace reliability contract](docs/architecture/reliability.md).
+For the GitHub durability and ephemeral-executor guarantees, see the [workspace reliability contract](docs/architecture/reliability.md).
 
 ## Repository layout
 
@@ -116,7 +117,8 @@ The Forge Cloud private pilot is deployed at `https://forge.timcoy.uk` with D1,
 R2, Durable Objects, Workflows, Browser Run, the smallest `basic` Sandbox
 profile, GitHub-backed OAuth and remote MCP. The workers.dev hostname remains
 available for existing tokens and preview capabilities. The `forge-mcp-cloud`
-GitHub App authorizes selected repositories. Private clone uses a short-lived
-Forge credential-proxy capability; branch pushes and draft PR creation require
-a separate browser approval. `pnpm run deploy` applies pending D1 migrations,
-then deploys the production Worker from `infra/wrangler/forge.jsonc`.
+GitHub App authorizes selected repositories. Repository CRUD, diffs, commits,
+branches, and PRs use the GitHub API; executors are allocated only for runtime
+work. Approval-gated PR mutations and deployments use the hosted approval
+flow. `pnpm run deploy` applies pending D1 migrations, then deploys the
+production Worker from `infra/wrangler/forge.jsonc`.

@@ -1,132 +1,106 @@
 # Failure contracts
 
-These are the current recovery contracts for Forge's remote-first workflow.
-They describe what a caller may infer from a result and the one safe next
-action when a provider or transport fails.
+These are the recovery contracts for Forge's GitHub control plane and ephemeral
+executor plane.
 
-## Governing rule
+## Governing rules
 
-**GitHub's observed feature ref is repository durability truth.**
-
-The workspace filesystem is an execution cache. A GitHub API call returning 2xx
-is not enough: Forge reports a remote mutation successful only after reading the
-ref back and matching the expected commit SHA.
+1. **GitHub's observed ref is repository durability truth.** A 2xx write is not
+   sufficient; Forge reads the ref back and requires the expected SHA.
+2. **Executor files are never repository files.** Command-created or modified
+   files remain executor-only, are never auto-committed, and always have
+   `remote_persisted:false`.
+3. **Only `forge_edit` writes or deletes repository files.** Use it explicitly
+   for every wanted durable file change.
 
 ## Contracts
 
-### 1. Workspace creation cannot lose its recovery handle
+### 1. Workspace creation returns a control-plane handle
 
-Creation returns the accepted `workspace_id` and `operation_id` within the MCP
-host request budget. The returned state may be `provisioning`; that is a valid
-accepted result. Observe the same workspace with `forge_workspace_get` or the
-operation with `forge_operation_get`, passing the returned id in the
-`workspace` field until a semantic branch address exists. Never start a duplicate merely because
-provisioning outlived one response.
+`forge_workspace_create` returns `workspace_id` and `operation_id` within the
+MCP host budget. It creates a lightweight session and allocates no executor.
+Pass the returned ID as `workspace` on later calls. The first execution tool
+allocates compute; do not create a duplicate session while that happens.
 
-If the workspace registry itself is unavailable, resolution returns
-`FORGE_PROVIDER_UNAVAILABLE`, `retryable:true`, a bounded `cause`, and a next
-action that explicitly says to retry the same call rather than create another
+Registry failure returns `FORGE_PROVIDER_UNAVAILABLE`, `retryable:true`, a
+bounded cause, and a next action that says to retry rather than create another
 workspace.
 
-### 2. Repository paths never escape the checkout
+### 2. Repository paths remain bounded
 
-Public paths are repo-relative or absolute at/below `/workspace/repo`. The
-shared helper rejects `/workspace`, Forge metadata, temporary directories,
-sibling-prefix tricks, `..`, empty input, and NUL bytes. Both GitHub reads and
-container fallbacks use the validated normalized path.
+GitHub-facing paths are repo-relative or absolute at/below
+`/workspace/repo`. Forge rejects `/workspace`, metadata, temporary directories,
+sibling-prefix tricks, `..`, empty input, and NUL bytes before access.
 
-### 3. An edit is remote or it is not successful
+### 3. An edit is remote or unsuccessful
 
-`forge_edit` reads the selected branch, applies the requested change, builds a
-commit, updates the guarded `forge/*` ref, then reads it back. A successful
-receipt contains the remote commit identity. If read-back does not match,
-Forge returns a retryable push/provider failure and does not claim durability.
+`forge_edit` reads GitHub, applies the requested change, creates a commit,
+updates the guarded feature ref, and reads the ref back. A successful receipt
+contains the verified remote commit identity. Reuse the same idempotency key
+only when retrying the same intended edit.
 
-Retry the same intended edit with the same idempotency key. Do not vary the
-content speculatively: the key exists to resolve an uncertain response without
-creating a second commit.
+### 4. Executor writes are local by design
 
-### 4. Branch creation collisions are verified
+`forge_shell`, managed processes, dependency installs, builds, tests, dev
+servers, previews, and deploy commands run in a lazy ephemeral executor.
+Their filesystem effects are useful for that execution session but are never
+auto-committed or pushed. Process results report `remote_persisted:false`.
 
-GitHub HTTP 422 is not automatically treated as "already created." Forge reads
-the colliding ref and adopts it only when its SHA equals the requested base SHA.
-Other validation failures, or a different existing tip, are surfaced as stable
-errors rather than a false creation receipt.
+A successful command proves only its exit status and captured evidence. It does
+not prove that files it generated are on GitHub. Recreate wanted changes with
+`forge_edit` before destroying the workspace. Executor snapshots can roll back
+local experiments but do not strengthen repository durability.
 
-### 5. Raw push cannot bypass remote-first guards
+### 5. Raw push cannot bypass the control plane
 
 `forge_shell` refuses visible `git push` commands, including common shell/env
 wrappers and Git global options. Approval does not make them runnable. Use
-`forge_edit` for remote commits and `forge_merge` for the review path.
+`forge_edit` for file commits and `forge_merge` for review.
 
-This classifier is one policy layer, not the sandbox boundary; command
-obfuscation is still bounded by sandbox credentials and egress controls.
+### 6. Branch creation collisions are verified
 
-### 6. Shell verification runs the intended code
+GitHub HTTP 422 is not automatically treated as “already created.” Forge reads
+the colliding ref and adopts it only when its SHA equals the requested base SHA.
 
-Before foreground or background verification starts, Forge synchronizes the
-checkout to the selected remote feature branch. A synchronization failure is
-returned before the command starts, so a green test cannot describe stale code.
+### 7. Process waits are observational
 
-### 7. Background completion reports two durability layers
+Each `forge_process_wait` call observes for one host-safe interval.
+`timedOut:true` means the process continues; call wait again with the same
+`process_id` and do not restart the command. Completion never promotes executor
+files into GitHub.
 
-`forge_process_wait` is observational and bounded to one host-safe interval.
-`timedOut:true` means the process continues; retry the wait and do not restart
-the command.
+### 8. PR readiness includes enforced gates
 
-When a successful background process changed repository files, finalization
-reports:
-
-| Field | Meaning |
-| --- | --- |
-| `filesystemCheckpointed` | local execution state was checkpointed |
-| `committed_files` | repository paths included in the remote commit attempt |
-| `commit_sha` | resulting Git commit, when one was created |
-| `remote_persisted` | GitHub ref read-back matched that commit |
-| `committed_files_warning` | why changed files were not safely committed, when applicable |
-
-Only `remote_persisted:true` supports a claim that background repository
-changes survived the workspace.
-
-### 8. PR readiness includes every enforced GitHub gate
-
-`forge_pr` status reads the current head, check runs, classic commit statuses,
-required review decision, draft/state, and mergeability. A blocked merge state
-is not safe merely because no textual conflict was found. Merge and close
-repeat the live read, bind idempotency keys to one exact intent, and require
-human approval, so an earlier green status cannot authorize newer commits.
+`forge_pr` status reads the current head, check runs, classic statuses,
+required review decision, draft/state, and mergeability. Merge and close repeat
+the live read, bind idempotency keys to one exact intent, and require human
+approval.
 
 ### 9. Branch deletion is ownership- and SHA-safe
 
-Deletion refuses a branch used by a live workspace. It checks merge policy,
-then immediately re-reads the ref and requires the expected SHA before deleting
-by name. A tip that moved after listing is refused rather than lost. Batched
-merged-branch cleanup paginates the whole branch set or reports truncation.
+Deletion refuses a branch used by a live workspace, checks merge policy, and
+re-reads the ref SHA immediately before deletion. Large branch collections are
+bounded and report truncation instead of guessing.
 
 ### 10. Provider errors retain cause and recovery
 
-Failures crossing Durable Object or provider boundaries preserve stable Forge
-codes. Retryable infrastructure faults include a bounded cause and explicit
-next action. They are never translated into user-validation states such as “no
-workspace” or “file missing,” which would encourage a harmful alternative
-action.
+Provider and Durable Object failures preserve stable Forge codes. Retryable
+infrastructure faults include a bounded cause and explicit next action; they
+are never translated into misleading user-validation states.
 
 ### 11. Artifact recovery is independent and bounded
 
-`forge_artifact_get` returns image content directly, bounded text content, or
-bounded base64 for other binary artifacts. Artifact authorization is scoped to
-the owning tenant and exact project/workspace; a live container response is not
-required to authorize recovery data.
+`forge_artifact_get` returns image content, bounded text, or bounded base64 for
+binary artifacts. Artifacts and logs may outlive an executor, but they do not
+turn executor filesystem changes into repository changes.
 
 ## Operator checks
 
-When investigating an uncertain mutation:
+When investigating an uncertain result:
 
-1. Read `forge_observer_activity` with `errors_only:true` for the stable Forge
-   code and bounded cause.
+1. Read `forge_observer_activity` with `errors_only:true`.
 2. Use `forge_operation_get` when an `operation_id` exists.
-3. Read the GitHub feature ref or the tool's verified remote receipt before
-   claiming repository durability.
-4. Reuse the original idempotency key only for the same intended change.
-5. Do not create a second workspace, restart a managed process, or issue a raw
-   push as a generic recovery step.
+3. Trust repository durability only from a verified GitHub receipt/ref.
+4. Reuse an idempotency key only for the identical intended mutation.
+5. Do not create a duplicate workspace, restart a managed process, or issue a
+   raw push as a generic recovery step.

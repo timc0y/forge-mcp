@@ -146,7 +146,18 @@ export async function createBranchRef(
     method: 'POST',
     body: { ref: `refs/heads/${input.branch}`, sha: input.baseSha }
   });
-  if (created.status === 201) return { created: true };
+  if (created.status === 201) {
+    const readBack = await request(
+      `/repos/${input.owner}/${input.repo}/git/ref/heads/${encodePath(input.branch)}`
+    );
+    const readBackSha = readBack.status === 200
+      ? (readBack.json as { object?: { sha?: string } }).object?.sha
+      : undefined;
+    if (readBackSha !== input.baseSha) {
+      throw new Error(`GitHub created ${input.branch}, but its read-back did not match requested base ${input.baseSha} (HTTP ${readBack.status}).`);
+    }
+    return { created: true };
+  }
   if (created.status !== 422) {
     throw new Error(`GitHub branch create failed with HTTP ${created.status}.`);
   }

@@ -35,6 +35,8 @@ import type {
 
 export interface WorkspaceRuntimeRecord {
   workspace: Workspace;
+  /** Whether the first lazy executor provision should bootstrap dependencies. */
+  bootstrapRequested?: boolean;
   providerId: string;
   detection?: ProjectDetection;
   processes: Record<string, ManagedProcessEntry>;
@@ -83,8 +85,8 @@ export interface ManagedProcessEntry {
   exitCode?: number;
   /** Whether the command was classified as mutating the filesystem. */
   mutatesFilesystem: boolean;
-  /** Snapshot id of the checkpoint captured after a successful mutating process. */
-  checkpointAfter?: SnapshotId;
+  /** Internal lifecycle receipt; says finalization ran, never that files are durable. */
+  finalizedAt?: string;
   /** Artifact id of the persisted log output. */
   logArtifact?: ArtifactId;
 }
@@ -187,6 +189,8 @@ export interface CreateWorkspaceInput {
   tenantId: TenantId;
   projectId: ProjectId;
   repository: RepositoryRef;
+  /** Durable GitHub branch created before the optional executor is loaded. */
+  agentBranch?: string;
   ref: string;
   credentialProfileId?: CredentialProfileId;
   runtimeProfile: 'node-22' | 'node-24' | 'python-3.13' | 'general-purpose';
@@ -844,6 +848,7 @@ export class ForgeApplicationService {
         projectId: input.projectId,
         repository: input.repository,
         requestedRef: input.ref,
+        ...(input.agentBranch ? { currentBranch: input.agentBranch } : {}),
         ...(input.credentialProfileId ? { credentialProfileId: input.credentialProfileId } : {}),
         state: 'requested',
         persistenceMode: input.persistence,
@@ -859,6 +864,7 @@ export class ForgeApplicationService {
         createdAt: now,
         updatedAt: now
       },
+      bootstrapRequested: input.bootstrap,
       providerId: sandboxProviderId(id),
       processes: {},
       checks: {},
@@ -910,7 +916,7 @@ export class ForgeApplicationService {
       });
     }
     const clone = await handle.exec({
-      command: `git clone --depth 1 --no-tags --branch ${quoted(ref ?? record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
+      command: `git clone --depth 1 --no-tags --branch ${quoted(ref ?? record.workspace.currentBranch ?? record.workspace.requestedRef)} ${quoted(source.url)} /workspace/repo`,
       cwd: '/workspace',
       timeoutMs: 180_000,
       outputLimitBytes: 200_000,
@@ -969,7 +975,7 @@ export class ForgeApplicationService {
         networkPolicy: 'deny_all'
       });
       if (!probe.stdout.includes('forge_checkout_present')) return false;
-      const ref = record.workspace.requestedRef;
+      const ref = record.workspace.currentBranch ?? record.workspace.requestedRef;
       const gitConfigPath = `/workspace/tmp/gitconfig-${record.workspace.id}`;
       if (source.authorizationHeader) {
         await handle.writeFile({
@@ -1353,19 +1359,36 @@ export class ForgeApplicationService {
               cause: error instanceof Error ? error.name : 'unknown'
             }
           });
-      record.workspace.state = forgeError.retryable ? 'provisioning' : 'failed';
-      record.workspace.failure = {
-        stage: String(forgeError.details?.stage ?? 'provision'),
-        code: forgeError.code,
-        message: forgeError.message,
-        retryable: forgeError.retryable,
-        ...(forgeError.details ? { details: forgeError.details as WorkspaceFailureDetails } : {})
-      };
-      record.workspace.revision = nextRevision(record.workspace.revision);
-      record.workspace.updatedAt = new Date().toISOString();
+      this.recordProvisioningFailure(record, forgeError);
       await onStateChange(record);
       throw forgeError;
     }
+  }
+
+  /** Persist the concrete setup failure before workflow retry/exhaustion. */
+  recordProvisioningFailure(record: WorkspaceRuntimeRecord, error: unknown): ForgeError {
+    const forgeError = error instanceof ForgeError
+      ? error
+      : new ForgeError({
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: error instanceof Error ? error.message : 'Workspace provisioning setup failed for an unknown reason. Retry the first execution tool; no command ran.',
+          retryable: true,
+          details: {
+            stage: 'provision_setup',
+            cause: error instanceof Error ? error.name : 'unknown'
+          }
+        });
+    record.workspace.state = forgeError.retryable ? 'provisioning' : 'failed';
+    record.workspace.failure = {
+      stage: String(forgeError.details?.stage ?? 'provision'),
+      code: forgeError.code,
+      message: forgeError.message,
+      retryable: forgeError.retryable,
+      ...(forgeError.details ? { details: forgeError.details as WorkspaceFailureDetails } : {})
+    };
+    record.workspace.revision = nextRevision(record.workspace.revision);
+    record.workspace.updatedAt = new Date().toISOString();
+    return forgeError;
   }
 
   markProvisioningExhausted(record: WorkspaceRuntimeRecord): WorkspaceRuntimeRecord {
@@ -1397,16 +1420,12 @@ export class ForgeApplicationService {
     return this.provisionWorkspace(record, input.bootstrap);
   }
 
-  /**
-   * True when restoring a checkpoint would discard filesystem writes that have
-   * not yet been captured (live or successfully completed mutating processes).
-   */
-  private hasUncheckpointedMutators(record: WorkspaceRuntimeRecord): boolean {
+  /** Active mutations cannot be interrupted by executor recovery. */
+  private hasActiveMutators(record: WorkspaceRuntimeRecord): boolean {
     return Object.values(record.processes).some(
       (entry) =>
         entry.mutatesFilesystem &&
-        !entry.checkpointAfter &&
-        (!entry.completedAt || entry.exitCode === 0)
+        !entry.completedAt
     );
   }
 
@@ -1479,19 +1498,19 @@ export class ForgeApplicationService {
       });
     }
     if (inspection.state === 'mount_missing') {
-      // Restoring a pre-process checkpoint while a managed install/mutation is
-      // still live (or finished but not yet checkpointed) discards its writes —
-      // the observed "pnpm install succeeded but node_modules is gone" failure.
-      if (!allowRestore || this.hasUncheckpointedMutators(record)) {
+      // Never replace an executor underneath a running mutating command.
+      // Completed command files are intentionally ephemeral and do not block
+      // recovery from the GitHub-backed base checkout.
+      if (!allowRestore || this.hasActiveMutators(record)) {
         throw new ForgeError({
           code: 'FORGE_PROVIDER_UNAVAILABLE',
-          message: 'Workspace mount is missing, but Forge will not restore a checkpoint while managed mutating processes still have uncheckpointed filesystem writes.',
+          message: 'Workspace mount is missing, but Forge will not replace the executor while a managed mutating process is active. Wait for or stop the process, then retry.',
           retryable: true,
           details: {
             workspaceId: record.workspace.id,
             allowRestore,
-            uncheckpointedMutators: Object.entries(record.processes)
-              .filter(([, entry]) => entry.mutatesFilesystem && !entry.checkpointAfter)
+            activeMutators: Object.entries(record.processes)
+              .filter(([, entry]) => entry.mutatesFilesystem && !entry.completedAt)
               .map(([id, entry]) => ({ id, command: entry.command, completedAt: entry.completedAt ?? null }))
           }
         });
@@ -1529,7 +1548,7 @@ export class ForgeApplicationService {
           finalize &&
           entry.mutatesFilesystem &&
           (entry.exitCode ?? 1) === 0 &&
-          !entry.checkpointAfter
+          !entry.finalizedAt
         ) {
           await this.finalizeManagedProcess(record, handle, id as ProcessId, {
             id: id as ProcessId,
@@ -1563,12 +1582,9 @@ export class ForgeApplicationService {
       entry.completedAt = live.completedAt ?? new Date().toISOString();
       entry.exitCode = live.exitCode ?? entry.exitCode;
       completed += 1;
-      if (finalize && entry.mutatesFilesystem && (entry.exitCode ?? 1) === 0 && !entry.checkpointAfter) {
+      if (finalize && entry.mutatesFilesystem && (entry.exitCode ?? 1) === 0 && !entry.finalizedAt) {
         await this.finalizeManagedProcess(record, handle, id as ProcessId, live).catch(() => undefined);
       }
-    }
-    if (finalize && !this.hasUncheckpointedMutators(record)) {
-      await this.setWorkspaceKeepAlive(record, false);
     }
     record.workspace.updatedAt = new Date().toISOString();
     return { running, completed };
@@ -2272,7 +2288,6 @@ export class ForgeApplicationService {
       exitCode: process?.exitCode ?? entry?.exitCode,
       completedAt: process?.completedAt ?? entry?.completedAt ?? null,
       mutatesFilesystem: entry?.mutatesFilesystem ?? process?.mutatesFilesystem ?? false,
-      filesystemCheckpointed: Boolean(entry?.checkpointAfter),
       workspaceRevision: record.workspace.revision,
       allowedNextActions: status === 'running' || status === 'starting'
         ? ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
@@ -2294,8 +2309,6 @@ export class ForgeApplicationService {
       ...process,
       command: entry?.command || process.command,
       mutatesFilesystem: entry?.mutatesFilesystem ?? process.mutatesFilesystem,
-      checkpointAfter: entry?.checkpointAfter,
-      filesystemCheckpointed: Boolean(entry?.checkpointAfter),
       ...(entry?.completedAt
         ? { completedAt: entry.completedAt, exitCode: entry.exitCode ?? process.exitCode }
         : {})
@@ -2321,9 +2334,7 @@ export class ForgeApplicationService {
       exitCode: entry.exitCode,
       startedAt: entry.startedAt,
       completedAt: entry.completedAt,
-      mutatesFilesystem: entry.mutatesFilesystem,
-      checkpointAfter: entry.checkpointAfter,
-      filesystemCheckpointed: Boolean(entry.checkpointAfter)
+      mutatesFilesystem: entry.mutatesFilesystem
     }));
     return {
       workspaceId: record.workspace.id,
@@ -2376,8 +2387,7 @@ export class ForgeApplicationService {
             status: managedProcessStatus(processEntry),
             exitCode: processEntry.exitCode,
             completedAt: processEntry.completedAt,
-            mutatesFilesystem: processEntry.mutatesFilesystem,
-            filesystemCheckpointed: Boolean(processEntry.checkpointAfter)
+            mutatesFilesystem: processEntry.mutatesFilesystem
           }
         : null,
       dependencyState: dependencyStateView(record.dependencyState),
@@ -2421,9 +2431,6 @@ export class ForgeApplicationService {
       return this.processWaitTimedOut(record, handle, processId, requestedTimeoutMs, process);
     }
     await this.finalizeManagedProcess(record, handle, processId, process);
-    if (!this.hasUncheckpointedMutators(record)) {
-      await this.setWorkspaceKeepAlive(record, false);
-    }
     const entry = record.processes[processId];
     return {
       timedOut: false as const,
@@ -2431,21 +2438,16 @@ export class ForgeApplicationService {
       process: {
         ...process,
         mutatesFilesystem: entry?.mutatesFilesystem ?? process.mutatesFilesystem,
-        checkpointAfter: entry?.checkpointAfter,
         ...(entry?.completedAt
           ? { completedAt: entry.completedAt, exitCode: entry.exitCode }
           : {})
       },
       dependencyState: dependencyStateView(record.dependencyState),
-      // A provider checkpoint protects the container filesystem, but it is not
-      // a GitHub commit. The MCP session separately ingests repository writes
-      // before advertising remote durability.
-      filesystemCheckpointed: Boolean(entry?.checkpointAfter),
       finalLogCursor: null,
       workspaceRevision: record.workspace.revision,
       allowedNextActions: ['forge_shell', 'forge_workspace_get', 'forge_process_logs'],
-      next_step: entry?.mutatesFilesystem && (entry.exitCode ?? process.exitCode ?? 1) === 0
-        ? 'Process finished. Forge is reconciling any repository writes to GitHub before reporting remote durability.'
+      next_step: entry?.mutatesFilesystem
+        ? 'Process finished. Its filesystem changes remain only in this ephemeral executor session; use forge_edit to save deliberate changes to GitHub.'
         : 'Process finished. Continue with shell commands or forge_workspace_get.'
     };
   }
@@ -2477,7 +2479,6 @@ export class ForgeApplicationService {
           : {})
       },
       dependencyState: dependencyStateView(record.dependencyState),
-      filesystemCheckpointed: Boolean(entry?.checkpointAfter),
       finalLogCursor: null,
       suggestedTimeoutMs,
       workspaceRevision: record.workspace.revision,
@@ -2632,10 +2633,10 @@ export class ForgeApplicationService {
       inspection = await this.recoverUnavailableInspection(record, handle, inspection);
     }
     if (inspection.state === 'mount_missing') {
-      if (this.hasUncheckpointedMutators(record)) {
+      if (this.hasActiveMutators(record)) {
         throw new ForgeError({
           code: 'FORGE_PROVIDER_UNAVAILABLE',
-          message: 'Workspace mount is missing, but Forge will not restore a checkpoint while managed mutating processes still have uncheckpointed filesystem writes.',
+          message: 'Workspace mount is missing, but Forge will not replace the executor while a managed mutating process is still active. Wait for or stop that process, then retry.',
           retryable: true,
           details: { workspaceId: record.workspace.id }
         });
@@ -2717,7 +2718,7 @@ export class ForgeApplicationService {
 
   private async adoptOrReapProcesses(record: WorkspaceRuntimeRecord, handle: SandboxHandle): Promise<void> {
     for (const [id, entry] of Object.entries(record.processes)) {
-      if (entry.completedAt && entry.checkpointAfter) continue;
+      if (entry.completedAt && entry.finalizedAt) continue;
       const { process: live, lookupFailed } = await this.lookupProcessWithRetry(handle, id as ProcessId);
       if (lookupFailed) {
         // Provider blip — keep the process live so checkpoints stay blocked.
@@ -2742,7 +2743,7 @@ export class ForgeApplicationService {
           exitCode: entry.exitCode
         };
       }
-      if (entry.mutatesFilesystem && (entry.exitCode ?? 1) === 0 && !entry.checkpointAfter) {
+      if (entry.mutatesFilesystem && (entry.exitCode ?? 1) === 0 && !entry.finalizedAt) {
         await this.finalizeManagedProcess(record, handle, id as ProcessId, live).catch(() => undefined);
       }
     }
@@ -2750,8 +2751,9 @@ export class ForgeApplicationService {
   }
 
   /**
-   * After a managed process exits, make its filesystem effects durable and
-   * visible to subsequent shell commands on the shared agent session.
+   * After a managed process exits, prove dependency visibility inside the
+   * same executor session. This never checkpoints or publishes repository
+   * files; only forge_edit makes durable GitHub changes.
    */
   private async finalizeManagedProcess(
     record: WorkspaceRuntimeRecord,
@@ -2778,9 +2780,7 @@ export class ForgeApplicationService {
       record.workspace.updatedAt = new Date().toISOString();
       return;
     }
-    // Idempotent: a prior successful finalize already proved visibility and
-    // captured a checkpoint for this process.
-    if (entry.checkpointAfter && record.dependencyState?.usable !== false) {
+    if (entry.finalizedAt && record.dependencyState?.usable !== false) {
       record.workspace.updatedAt = new Date().toISOString();
       return;
     }
@@ -2856,14 +2856,7 @@ export class ForgeApplicationService {
       }
     }
 
-    if (!entry.checkpointAfter) {
-      try {
-        const checkpoint = await this.checkpoint(record, `process-${processId}`, handle);
-        entry.checkpointAfter = checkpoint.snapshotId as SnapshotId;
-      } catch {
-        // Non-fatal: the process succeeded; recovery may need a later checkpoint.
-      }
-    }
+    entry.finalizedAt = new Date().toISOString();
     record.workspace.updatedAt = new Date().toISOString();
   }
 
@@ -2934,7 +2927,7 @@ export class ForgeApplicationService {
           entry.completedAt = live.completedAt ?? new Date().toISOString();
           entry.exitCode = live.exitCode ?? entry.exitCode;
         }
-        if (entry.mutatesFilesystem && (entry.exitCode ?? 1) === 0 && !entry.checkpointAfter) {
+        if (entry.mutatesFilesystem && (entry.exitCode ?? 1) === 0 && !entry.finalizedAt) {
           await this.finalizeManagedProcess(record, handle, id as ProcessId, live).catch(() => undefined);
         }
         continue;
@@ -3314,13 +3307,8 @@ export class ForgeApplicationService {
       dependencyState,
       processId,
       managedProcess: true,
-      // Backwards-compatible deps_install field; its checkpoint receipt remains
-      // separately identified below and process_wait uses the honest
-      // filesystemCheckpointed name.
-      filesystemCommitted: Boolean(waited.filesystemCheckpointed),
-      checkpoint: entry?.checkpointAfter
-        ? { snapshotId: entry.checkpointAfter, createdAt: entry.completedAt ?? new Date().toISOString(), providerVersion: 'process' }
-        : undefined,
+      remotePersisted: false,
+      executorFilesystem: 'ephemeral',
       replayed: 'replay' in started && started.replay === true,
       idempotencyKey: input.idempotencyKey,
       originalOperationId: started.operationId,
@@ -3535,112 +3523,6 @@ export class ForgeApplicationService {
   }
 
   /**
-   * Everything the container has written that GitHub does not know about.
-   *
-   * Remote-first editing makes GitHub the only durable place, so anything a
-   * shell command changed — a formatter, a codemod, a generator — is local and
-   * would be lost at the next sync. Collecting it lets Forge commit it for
-   * real instead of asking the agent to notice and re-do it.
-   */
-  async collectWorktreeChanges(
-    record: WorkspaceRuntimeRecord,
-    limit = 50
-  ): Promise<{ changes: Array<{ path: string; content: string | null }>; truncated: boolean; baseBlobs: Record<string, string> }> {
-    const handle = await this.handle(record);
-    const status = await handle.exec({
-      command: 'git status --porcelain', cwd: '/workspace/repo', timeoutMs: 30_000,
-      outputLimitBytes: 200_000, sessionId: 'system', networkPolicy: 'deny_all'
-    });
-    if (status.exitCode !== 0) return { changes: [], truncated: true, baseBlobs: {} };
-    const entries = status.stdout.split('\n').map((line) => line.trimEnd()).filter(Boolean);
-    // Never publish a partial view and then reset the checkout. If status itself
-    // was cut off, or the bounded file count was exceeded, preserving every
-    // local write is safer than committing a prefix and erasing the remainder.
-    if (status.truncated || entries.length > limit) {
-      return { changes: [], truncated: true, baseBlobs: {} };
-    }
-    const structural = await handle.exec({
-      command: 'git diff HEAD --summary', cwd: '/workspace/repo', timeoutMs: 30_000,
-      outputLimitBytes: 200_000, sessionId: 'system', networkPolicy: 'deny_all'
-    });
-    // The GitHub blob writer cannot faithfully encode renames, copies, type
-    // changes, or executable-bit changes. Refuse the whole collection instead
-    // of publishing only destination bytes and calling the tree durable.
-    if (
-      structural.exitCode !== 0 ||
-      structural.truncated ||
-      /\b(rename|copy|mode change)\b|create mode 100755/iu.test(structural.stdout)
-    ) {
-      return { changes: [], truncated: true, baseBlobs: {} };
-    }
-    const changes: Array<{ path: string; content: string | null }> = [];
-    const newPaths = new Set<string>();
-    let contentTruncated = false;
-    for (const entry of entries) {
-      const code = entry.slice(0, 2);
-      // Rename lines read "R  old -> new"; only the destination matters here.
-      const raw = entry.slice(3).split(' -> ').pop() ?? '';
-      const path = raw.replace(/^"|"$/gu, '');
-      if (!path || path.includes('..')) {
-        contentTruncated = true;
-        continue;
-      }
-      if (code.includes('D')) {
-        changes.push({ path, content: null });
-        continue;
-      }
-      if (code.includes('?') || code.includes('A')) newPaths.add(path);
-      const representable = await handle.exec({
-        command: 'test -f "$FORGE_INGEST_PATH" && test ! -L "$FORGE_INGEST_PATH" && test ! -x "$FORGE_INGEST_PATH"',
-        cwd: '/workspace/repo', timeoutMs: 5_000, outputLimitBytes: 1_000,
-        environment: { FORGE_INGEST_PATH: `/workspace/repo/${path}` },
-        sessionId: 'system', networkPolicy: 'deny_all'
-      });
-      if (representable.exitCode !== 0 || representable.truncated) {
-        contentTruncated = true;
-        continue;
-      }
-      const file = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 500_000 }).catch(() => undefined);
-      if (!file || file.truncated || typeof file.content !== 'string') {
-        contentTruncated = true;
-        continue;
-      }
-      changes.push({ path, content: file.content });
-    }
-    if (contentTruncated) return { changes: [], truncated: true, baseBlobs: {} };
-    // What each changed file looked like at the commit the container is on.
-    // A shell command edits from that base, so if origin has moved past it,
-    // committing this content would revert whatever moved — the same silent
-    // overwrite the read-check prevents for agent edits.
-    const baseBlobs: Record<string, string> = {};
-    for (const change of changes) {
-      const listed = await handle.exec({
-        command: 'git ls-tree -z HEAD -- ":(literal)$FORGE_INGEST_PATH"',
-        cwd: '/workspace/repo', timeoutMs: 5_000, outputLimitBytes: 1_000,
-        environment: { FORGE_INGEST_PATH: change.path },
-        sessionId: 'system', networkPolicy: 'deny_all'
-      });
-      if (listed.exitCode !== 0 || listed.truncated) {
-        return { changes: [], truncated: true, baseBlobs: {} };
-      }
-      if (!listed.stdout) {
-        if (!newPaths.has(change.path)) return { changes: [], truncated: true, baseBlobs: {} };
-        continue;
-      }
-      const match = /^(\d+) blob ([0-9a-f]{40,64})\t([\s\S]*)\0$/u.exec(listed.stdout);
-      if (!match || match[3] !== change.path) return { changes: [], truncated: true, baseBlobs: {} };
-      // Deleting any Git blob mode is representable. Writes are restricted to
-      // regular non-executable files because the remote tree writer emits
-      // 100644 for every non-null blob.
-      if (change.content !== null && match[1] !== '100644') {
-        return { changes: [], truncated: true, baseBlobs: {} };
-      }
-      baseBlobs[change.path] = match[2] as string;
-    }
-    return { changes, truncated: false, baseBlobs };
-  }
-
-  /**
    * Bring the workspace checkout in line with the remote branch head.
    *
    * Remote-first editing makes the container a cache: the commit already
@@ -3657,8 +3539,8 @@ export class ForgeApplicationService {
     // Never reset over uncommitted work. This sync is a hard reset onto the
     // remote head, so a dirty tree here means something wrote to the container
     // outside forge_edit — a shell command, a formatter, a codemod — and
-    // resetting would destroy it silently. Refuse instead; the caller ingests
-    // those changes as a real commit first.
+    // resetting would destroy it silently. Refuse and preserve the executor
+    // session; only forge_edit may create the corresponding GitHub change.
     const dirty = await handle.exec({
       command: 'git status --porcelain', cwd: '/workspace/repo', timeoutMs: 30_000,
       outputLimitBytes: 100_000, sessionId: 'system', networkPolicy: 'deny_all'
@@ -4427,31 +4309,25 @@ export class ForgeApplicationService {
   }
 
   /**
-   * Commit any dirty tree (WIP) then push the agent `forge/` branch. Best-effort
-   * before idle reap or destroy when auto-push is enabled.
+   * Legacy teardown hook retained for old coordinators. Executor files are
+   * never committed or pushed: forge_edit is the only durable write path.
    */
   async persistAgentBranchToRemote(
     record: WorkspaceRuntimeRecord,
-    source: RepositoryCloneSource,
-    input?: { wipMessage?: string; idempotencyKey?: string }
+    _source: RepositoryCloneSource,
+    _input?: { wipMessage?: string; idempotencyKey?: string }
   ): Promise<{ pushed: boolean; branch?: string; commit?: string; reason?: string; autoCommitted?: boolean }> {
-    await this.reconcileGitState(record);
     const branch = record.workspace.currentBranch;
     if (!branch?.startsWith('forge/') || branch.startsWith('forge/backup/') || branch.startsWith('forge/staged/')) {
       return { pushed: false, reason: 'not an agent forge branch' };
     }
-    let autoCommitted = false;
-    const status = await this.gitStatus(record);
-    if (!status.clean) {
-      await this.gitCommit(record, {
-        message: input?.wipMessage?.trim() || 'wip: forge auto-save',
-        paths: [],
-        idempotencyKey: input?.idempotencyKey ?? `auto-save-${record.workspace.id}-${record.workspace.revision}`
-      });
-      autoCommitted = true;
-    }
-    const push = await this.autoPushForgeBranch(record, source);
-    return { ...push, autoCommitted };
+    return {
+      pushed: false,
+      branch,
+      commit: record.workspace.currentCommit,
+      autoCommitted: false,
+      reason: 'Executor files are ephemeral and are never auto-committed or pushed. Use forge_edit for durable GitHub changes.'
+    };
   }
 
   async assertDestroySafe(record: WorkspaceRuntimeRecord, cloneSource?: RepositoryCloneSource): Promise<void> {
@@ -4598,7 +4474,7 @@ export class ForgeApplicationService {
     };
   }
 
-  async completeDestroy(record: WorkspaceRuntimeRecord, cloneSource?: RepositoryCloneSource) {
+  async completeDestroy(record: WorkspaceRuntimeRecord, cloneSource?: RepositoryCloneSource, force = false) {
     if (record.workspace.state === 'destroyed') {
       return { workspaceRevision: record.workspace.revision, replay: true };
     }
@@ -4608,6 +4484,19 @@ export class ForgeApplicationService {
         message: `Workspace cannot complete destruction from ${record.workspace.state}.`,
         retryable: false
       });
+    }
+    if (force) {
+      // Force means the caller explicitly accepts loss. The workspace may be
+      // failed precisely because its mount/container no longer exists, so no
+      // checkout, process, preview, or remote-ref proof can be a prerequisite.
+      await this.provider.destroy(record.providerId).catch(() => undefined);
+      record.workspace.state = 'destroyed';
+      record.workspace.revision = nextRevision(record.workspace.revision);
+      record.workspace.updatedAt = new Date().toISOString();
+      record.processes = {};
+      record.checks = {};
+      record.previews = {};
+      return { workspaceRevision: record.workspace.revision, replay: false };
     }
     const handle = await this.provider.get(record.providerId);
     const git = await handle.exec({

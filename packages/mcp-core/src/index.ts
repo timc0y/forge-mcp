@@ -112,11 +112,9 @@ const workspaceGetOutput = {
   projectId: z.string().optional(),
   repository: repositoryRefOut,
   requestedRef: z.string(),
-  currentCommit: z.string().optional(),
+  currentCommit: z.string().optional().describe('Current GitHub branch commit observed by the control plane.'),
   currentBranch: z.string().optional(),
-  hasUnpushedWork: z.boolean().optional().describe('True once local work exists that has not been pushed.'),
-  dataLoss: z.object({ at: z.string(), detail: z.string() }).optional().describe('Set when a checkout recovery could only re-clone from the remote and had to discard local-only commits or edits that were never pushed.'),
-  state: z.string().describe('Lifecycle state: requested, provisioning, ready, failed or destroyed.'),
+  state: z.string().describe('Control-plane session state. Executor allocation is lazy and may be absent until an execution tool is called.'),
   persistenceMode: z.string(),
   runtimeProfile: z.string(),
   revision: z.number(),
@@ -132,19 +130,8 @@ const workspaceGetOutput = {
     startedAt: z.string().optional().describe('ISO timestamp when the process was started.'),
     completedAt: z.string().optional().describe('ISO timestamp when the process reached a terminal state.'),
     mutatesFilesystem: z.boolean().optional().describe('Whether the command was classified as mutating the filesystem.'),
-    checkpointAfter: z.string().optional().describe('Snapshot id of the checkpoint captured after a successful mutating process.'),
     logArtifact: z.string().optional().describe('Artifact id of the persisted log output.')
   })).describe('Tracked workspace processes with full status.'),
-  gitIntegrity: z.object({
-    state: z.enum(['consistent', 'unknown', 'diverged', 'corrupted']).describe('Git integrity state.'),
-    reason: z.string().describe('Why the integrity state is what it is.'),
-    blockingProcessId: z.string().optional().describe('Process id blocking Git inspection, if any.'),
-    gitHeadReadable: z.boolean().optional().describe('Whether .git/HEAD is readable.'),
-    gitIndexReadable: z.boolean().optional().describe('Whether the Git index is readable.'),
-    workingTreeReadable: z.boolean().optional().describe('Whether the working tree is readable.'),
-    recommendedAction: z.string().describe('What to do next.'),
-    destructiveRecoveryRequired: z.boolean().optional().describe('Whether a destructive checkpoint restore is needed.')
-  }).describe('Detailed Git integrity report with reason and remediation.'),
   dependencyState: z.object({
     status: z.enum(['unknown', 'ready', 'missing', 'unusable']).describe('Compact dependency readiness. Prefer this over inferring from null.'),
     reason: z.string().describe('Why dependencyState has this status (e.g. not_observed, installed, install_not_visible).'),
@@ -183,26 +170,8 @@ const processLogsOutput = {
   exitCode: z.number().optional().describe('Exit code when the process has terminated.'),
   completedAt: z.string().nullable().optional(),
   mutatesFilesystem: z.boolean().optional(),
-  filesystemCheckpointed: z.boolean().optional().describe('True when a post-process checkpoint captured local filesystem effects; this does not imply GitHub persistence.'),
   workspaceRevision: z.number(),
   allowedNextActions: z.array(z.string()).optional()
-} satisfies ZodRawShape;
-
-const execResultOutput = {
-  exitCode: z.number(),
-  stdout: z.string(),
-  stderr: z.string(),
-  truncated: z.boolean(),
-  durationMs: z.number(),
-  artifactRefs: z.array(z.string())
-} satisfies ZodRawShape;
-
-const gitStatusOutput = {
-  raw: z.string().describe('Raw `git status --porcelain=v2 --branch` output.'),
-  clean: z.boolean().describe('True when the working tree has no changes.'),
-  branch: z.string().describe('Currently checked-out branch.'),
-  hasUnpushedWork: z.boolean().describe('True once local commits/edits exist that have not been pushed.'),
-  dataLoss: z.object({ at: z.string(), detail: z.string() }).optional().describe('Set when a checkout recovery could only re-clone from the remote and had to discard local-only work.')
 } satisfies ZodRawShape;
 
 const diffMetadataOutput = {
@@ -247,43 +216,6 @@ const contextGetOutput = {
   consideredFiles: z.number()
 } satisfies ZodRawShape;
 
-// Shared by both diff tools. A diff is the one Forge result whose size is set
-// by the user's repository rather than by anything Forge controls, so it is
-// returned a page of FILES at a time: `files` always lists every changed file
-// (it comes from --numstat, which stays small no matter how large the content
-// is), while `diff` carries the hunks for just this page.
-const diffPageFields = {
-  diff: z.string().describe('Unified diff for the files in `pageFiles` only — not the whole change.'),
-  files: z.array(z.object({
-    path: z.string(),
-    additions: z.number(),
-    deletions: z.number(),
-    binary: z.boolean()
-  })).describe('Every changed file with its line counts. Always complete, on every page.'),
-  totalFiles: z.number(),
-  totalAdditions: z.number(),
-  totalDeletions: z.number(),
-  pageFiles: z.array(z.string()).describe('Paths whose hunks are included in `diff`.'),
-  cursor: z.string().optional().describe('Cursor this page started at; absent on the first page.'),
-  nextCursor: z.string().nullable().describe('Pass back as `cursor` to fetch the next page. Null when this is the last page.'),
-  hasMore: z.boolean().describe('True when more files remain; fetch them with `cursor: nextCursor`.'),
-  truncated: z.boolean().describe('True when a single file was too large to include whole. Its remaining content is not reachable by paging — read the file with forge_files_read instead.'),
-  fileListTruncated: z.boolean().optional().describe('True when even the file list had to be cut, so `files` is incomplete. Narrow with `paths`.'),
-  note: z.string()
-} satisfies ZodRawShape;
-
-const outgoingDiffOutput = {
-  ...diffPageFields,
-  diffHash: z.string().optional().describe('Stable hash of the COMPLETE outgoing diff, not just this page; pass it back as expected_diff_hash on push. Identical on every page. Only present when scope is outgoing.'),
-  branch: z.string().optional(),
-  base: z.string().optional().describe('The base branch the diff was compared against. Only present when scope is outgoing.')
-} satisfies ZodRawShape;
-
-// Paging inputs shared by both diff tools.
-const diffCursor = z.string().max(64).optional().describe('Opaque cursor from a prior page\'s nextCursor. Omit for the first page.');
-const diffMaxBytes = z.number().int().min(2_000).max(400_000).default(64_000).describe('Approximate byte budget for this page of hunks. Lower it if results are still too large to read comfortably.');
-const diffPaths = z.array(z.string().min(1).max(400)).max(200).optional().describe('Restrict the diff to these exact paths (from `files`). Use this to read one large file\'s change directly instead of paging to it.');
-
 // No sha256 here on purpose. It was returned per file and described as being
 // "for a conflict-safe later edit", but no tool input has ever accepted a hash
 // — the read guard is server-side, recorded when the file is read. So it cost
@@ -293,15 +225,13 @@ const filesReadOutput = {
   content: z.string().optional(),
   sizeBytes: z.number().optional().describe('Bytes actually held by `content` beside it — a ranged or max_bytes-clipped read reports the slice\'s size, never the whole file\'s.'),
   truncated: z.boolean().optional(),
-  source: z.enum(['github', 'container']).optional().describe('Where this content came from. "container" only when GitHub itself could not be read just now — treat that content as possibly stale until a later read reports "github" again.'),
-  next_step: z.string().optional().describe('Present only when source is "container": why GitHub was unreachable, and that retrying may get the authoritative answer.'),
+  source: z.literal('github').optional().describe('Repository content always comes from the selected GitHub branch.'),
   files: z.array(z.object({
     path: z.string(),
     content: z.string().optional(),
     sizeBytes: z.number().optional(),
     truncated: z.boolean().optional(),
-    source: z.enum(['github', 'container']).optional(),
-    next_step: z.string().optional(),
+    source: z.literal('github').optional(),
     error: z.string().optional(),
     message: z.string().optional()
   })).optional().describe('Per-file results when several paths were requested; one failed file does not fail the batch.')
@@ -414,27 +344,24 @@ export const forgeTools = [
 
   // Workspace
   { name: 'forge_start', title: 'Start a branch', description: 'Create forge/<slug> on GitHub from base_ref (default: the repository’s own default branch) — before any workspace exists, no container. Pass the returned branch as ref to forge_workspace_create: it adopts an already-existing forge/ branch instead of cutting a new one, so the branch is on origin from the moment it exists at all.', inputSchema: { owner: z.string().min(1).max(100), repo: z.string().min(1).max(100), base_ref: z.string().min(1).max(255).optional().describe('Branch to fork from. Omit to use the repository’s actual default branch, resolved from GitHub rather than assumed to be main.'), slug: z.string().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u).optional().describe('Branch becomes forge/<slug>. Omit for a generated one.'), idempotency_key: idempotencyOptional() }, outputSchema: { owner: z.string(), repo: z.string(), branch: z.string(), base_ref: z.string(), base_sha: z.string(), created: z.boolean(), next_step: z.string() }, sideEffect: 'external', approval: 'none' },
-  { name: 'forge_workspace_create', title: 'Create workspace', description: 'Start an isolated workspace. Returns workspace_id + operation_id immediately; provisioning continues asynchronously, observed with forge_workspace_get.', inputSchema: { repository, ref: z.string().default('main'), runtime: z.enum(['node-22','node-24','python-3.13','general-purpose']).default('node-24'), persistence: z.literal('ephemeral').default('ephemeral'), bootstrap: z.boolean().default(true), idempotency_key: idempotencyOptional() }, outputSchema: { workspace_id: z.string(), state: z.string(), operation_id: z.string(), workspace_revision: z.number(), current_branch: z.string().optional(), branch_policy: z.unknown().optional(), next_step: z.string() }, sideEffect: 'workspace', approval: 'none' },
+  { name: 'forge_workspace_create', title: 'Create workspace', description: 'Create a lightweight control-plane coding session and return workspace_id + operation_id immediately. No executor is provisioned here; the first shell, install, build, test, dev, preview, or deploy call allocates an ephemeral executor using the requested runtime/bootstrap settings.', inputSchema: { repository, ref: z.string().default('main'), runtime: z.enum(['node-22','node-24','python-3.13','general-purpose']).default('node-24').describe('Executor runtime to allocate lazily on the first execution call.'), persistence: z.literal('ephemeral').default('ephemeral'), bootstrap: z.boolean().default(true).describe('Run bootstrap when the executor is first allocated, not during workspace creation.'), idempotency_key: idempotencyOptional() }, outputSchema: { workspace_id: z.string(), state: z.string(), operation_id: z.string(), workspace_revision: z.number(), current_branch: z.string().optional(), branch_policy: z.unknown().optional(), next_step: z.string() }, sideEffect: 'workspace', approval: 'none' },
   { name: 'forge_workspace_get', title: 'Get workspace', description: 'Compact workspace summary including branch_policy (must be on forge/). Prefer compact:true in ChatGPT.', inputSchema: { workspace: addrWorkspace(), compact: z.boolean().optional() }, outputSchema: workspaceGetOutput, sideEffect: 'none', approval: 'none' },
-  { name: 'forge_workspace_destroy', title: 'Destroy workspace', description: 'Tear down the workspace. Refused if unpushed forge/ commits exist unless force:true.', inputSchema: { workspace: addrWorkspace(), preserve_artifacts: z.boolean().default(true), force: z.boolean().default(false), expected_revision: revision(), idempotency_key: idempotencyOptional() }, sideEffect: 'destructive', approval: 'policy' },
+  { name: 'forge_workspace_destroy', title: 'Destroy workspace', description: 'End the control-plane session and discard any ephemeral executor state. GitHub branches and forge_edit commits are unaffected; command-created files that were not recreated with forge_edit are intentionally lost.', inputSchema: { workspace: addrWorkspace(), preserve_artifacts: z.boolean().default(true), force: z.boolean().default(false), expected_revision: revision(), idempotency_key: idempotencyOptional() }, sideEffect: 'destructive', approval: 'policy' },
   { name: 'forge_operation_get', title: 'Get operation', description: 'After a disconnect or unknown tool outcome, check whether operation op_... finished, failed, or is still active.', inputSchema: { workspace: addrWorkspace(), operation_id: z.string().startsWith('op_') }, outputSchema: { workspaceId: z.string(), operationId: z.string(), idempotencyKey: z.string(), replayed: z.boolean(), originalOperationId: z.string(), status: z.enum(['accepted', 'active', 'completed', 'failed', 'cancelled']), processId: z.string().nullable(), process: z.unknown().nullable(), dependencyState: dependencyStateOut, workspaceRevision: z.number(), allowedNextActions: z.array(z.string()).optional() }, sideEffect: 'none', approval: 'none' },
-  { name: 'forge_workspace_snapshot', title: 'Snapshot workspace', description: 'Capture a named checkpoint of the workspace filesystem. Use before risky operations to enable rollback.', inputSchema: { workspace: addrWorkspace(), name: z.string().min(1).max(200).optional() }, sideEffect: 'workspace', approval: 'none' },
-  { name: 'forge_workspace_restore', title: 'Restore snapshot', description: 'Roll back the workspace to a previous checkpoint. Destroys uncommitted work. Returns the restored state.', inputSchema: { workspace: addrWorkspace(), snapshot_id: z.string().min(1).max(200), expected_revision: revision() }, sideEffect: 'destructive', approval: 'policy' },
-
   // Files
-  { name: 'forge_files_list', title: 'List files', description: 'List a bounded file tree, read from the branch tip on GitHub (falls back to the workspace’s cached checkout only if GitHub is unreachable — see `source`). Paths come back relative to root, which is the form forge_edit and forge_files_read take.', inputSchema: { workspace: addrWorkspace(), path: repoPath().default('/workspace/repo'), depth: z.number().int().min(1).max(20).default(4), limit: z.number().int().min(1).max(10000).default(1000) }, outputSchema: { root: z.string(), entries: z.array(z.unknown()), truncated: z.boolean(), source: z.enum(['github', 'container']).optional(), hint: z.string().optional(), next_step: z.string().optional() }, sideEffect: 'none', approval: 'none' },
-  { name: 'forge_files_read', title: 'Read files', description: 'Read one file (path) or several (paths), from the branch tip on GitHub (falls back to the workspace’s cached checkout only if GitHub is unreachable — see `source`). The read guard that protects forge_edit is server-side; no input takes a hash back.', inputSchema: { workspace: addrWorkspace(), path: repoPath().optional(), paths: z.array(repoPath()).min(1).max(20).optional(), start_line: z.number().int().positive().optional(), end_line: z.number().int().positive().optional(), max_bytes: z.number().int().min(1).max(500000).default(200000), compact: z.boolean().optional() }, outputSchema: filesReadOutput, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_files_list', title: 'List files', description: 'List a bounded file tree from the selected GitHub branch. No executor is allocated and no executor filesystem is consulted. Paths come back repo-relative, which is the form forge_edit and forge_files_read take.', inputSchema: { workspace: addrWorkspace(), path: repoPath().default('/workspace/repo'), depth: z.number().int().min(1).max(20).default(4), limit: z.number().int().min(1).max(10000).default(1000) }, outputSchema: { root: z.string(), entries: z.array(z.unknown()), truncated: z.boolean(), source: z.literal('github').optional(), hint: z.string().optional(), next_step: z.string().optional() }, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_files_read', title: 'Read files', description: 'Read one file or several directly from the selected GitHub branch without allocating an executor. The read guard that protects forge_edit is server-side; no input takes a hash back.', inputSchema: { workspace: addrWorkspace(), path: repoPath().optional(), paths: z.array(repoPath()).min(1).max(20).optional(), start_line: z.number().int().positive().optional(), end_line: z.number().int().positive().optional(), max_bytes: z.number().int().min(1).max(500000).default(200000), compact: z.boolean().optional() }, outputSchema: filesReadOutput, sideEffect: 'none', approval: 'none' },
   { name: 'forge_edit', title: 'Edit files', description: 'Edit files. Committed straight to GitHub on your branch — no push, nothing left only in the workspace. Prefer replace: [{old,new}] and send only the fragment you are changing; Forge reads the current file and applies it. Use content for a whole new file, or content:null to delete. Returns the commit URL.', inputSchema: { workspace: addrWorkspace(), files: z.array(z.object({ path: z.string().min(1).max(1000), content: z.string().max(500000).nullable().optional(), replace: z.array(z.object({ old: z.string().min(1).max(100000), new: z.string().max(100000), all: z.boolean().optional() })).min(1).max(20).optional() })).min(1).max(50), message: z.string().min(1).max(500).optional(), idempotency_key: idempotencyOptional() }, outputSchema: { mutationOutcome: z.string(), durability: z.string(), on_remote: z.boolean(), durability_statement: z.string(), commit_sha: z.string().optional(), commit_url: z.string().optional(), branch: z.string(), paths: z.array(z.string()), rebased: z.boolean(), replayed: z.boolean().optional(), next_step: z.string() }, sideEffect: 'external', approval: 'none' },
-  { name: 'forge_diff_metadata', title: 'Diff metadata', description: 'Syntax-only metadata over the outgoing diff: changed symbols, secret risk, file classification, and suggested hunks. No model, no semantics — an index into the diff, not a substitute.', inputSchema: { workspace: addrWorkspace(), base: z.string().min(1).max(255).default('main') }, outputSchema: diffMetadataOutput, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_diff_metadata', title: 'Diff metadata', description: 'Syntax-only metadata over the GitHub branch comparison: changed symbols, secret risk, file classification, and suggested hunks. No executor is allocated.', inputSchema: { workspace: addrWorkspace(), base: z.string().min(1).max(255).default('main') }, outputSchema: diffMetadataOutput, sideEffect: 'none', approval: 'none' },
   { name: 'forge_context_get', title: 'Get context', description: 'Deterministic repo-context selection for a goal. Returns ranked file paths with reasons, adjacent tests, governing instructions, and confidence scores. Does NOT return file contents — use forge_files_read for that.', inputSchema: { workspace: addrWorkspace(), goal: z.string().min(1).max(2000), likely_paths: z.array(z.string().min(1).max(500)).max(40).default([]), max_results: z.number().int().min(1).max(100).default(12) }, outputSchema: contextGetOutput, sideEffect: 'none', approval: 'none' },
 
   // Shell + processes
-  { name: 'forge_shell', title: 'Run command', description: 'Run a synced workspace command. Use async:true or work over 30s returns process_id. compact returns short tails; full logs spill to forge_artifact_get. Risky commands need approval_id.', inputSchema: { workspace: addrWorkspace(), command: z.string().min(1).max(16384), cwd, timeout_ms: z.number().int().min(100).max(900000).default(30000), environment: z.record(z.string(), z.string()).default({}), network_policy: z.enum(['deny_all','package_install','development','custom_allowlist','unrestricted_with_approval']).default('development'), output_limit_bytes: z.number().int().min(1000).max(1000000).default(200000), mode: z.enum(['read_only', 'mutating']).optional(), async: z.boolean().optional(), compact: z.boolean().default(true), expected_revision: revision(), idempotency_key: idempotencyOptional(), approval_id: z.string().startsWith('apr_').optional() }, sideEffect: 'workspace', approval: 'policy' },
-  { name: 'forge_process_list', title: 'List processes', description: 'List managed processes. Pass process_id to get one process in detail.', inputSchema: { workspace: addrWorkspace(), process_id: z.string().startsWith('proc_').optional() }, outputSchema: { workspaceId: z.string(), processes: z.array(z.object({ id: z.string(), command: z.string(), status: z.string(), exitCode: z.number().optional(), startedAt: z.string().optional(), completedAt: z.string().optional(), mutatesFilesystem: z.boolean(), filesystemCheckpointed: z.boolean().optional() })).optional(), process: z.unknown().optional(), dependencyState: dependencyStateOut.optional(), workspaceRevision: z.number(), allowedNextActions: z.array(z.string()).optional() }, sideEffect: 'none', approval: 'none' },
-  { name: 'forge_process_wait', title: 'Wait for process', description: 'Observe a managed process for at most 30 seconds. timedOut:true is observational: the process continues, so call this again with the same process_id instead of restarting it. Successful repository mutations report their GitHub durability separately from the filesystem checkpoint.', inputSchema: { workspace: addrWorkspace(), process_id: z.string().startsWith('proc_'), timeout_ms: z.number().int().min(1000).max(30000).default(30000) }, outputSchema: { workspaceId: z.string(), process: z.unknown(), dependencyState: dependencyStateOut, timedOut: z.boolean().optional(), suggestedTimeoutMs: z.number().optional(), filesystemCheckpointed: z.boolean().optional(), committed_files: z.array(z.string()).optional(), commit_sha: z.string().optional(), remote_persisted: z.boolean().optional(), committed_files_warning: z.string().optional(), finalLogCursor: z.string().nullable().optional(), workspaceRevision: z.number(), allowedNextActions: z.array(z.string()).optional(), next_step: z.string().optional() }, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_shell', title: 'Run command', description: 'Allocate an ephemeral executor on first use and run a command for up to 30 seconds. Set async:true for known-long work; otherwise a long-running command returns process_id. Command-created or modified files remain executor-only, are never auto-committed, and report remote_persisted:false. Use forge_edit separately for wanted repository changes.', inputSchema: { workspace: addrWorkspace(), command: z.string().min(1).max(16384), cwd, timeout_ms: z.number().int().min(100).max(900000).default(30000), environment: z.record(z.string(), z.string()).default({}), network_policy: z.enum(['deny_all','package_install','development','custom_allowlist','unrestricted_with_approval']).default('development'), output_limit_bytes: z.number().int().min(1000).max(1000000).default(200000), mode: z.enum(['read_only', 'mutating']).optional(), async: z.boolean().optional(), compact: z.boolean().default(true), expected_revision: revision(), idempotency_key: idempotencyOptional(), approval_id: z.string().startsWith('apr_').optional() }, sideEffect: 'workspace', approval: 'policy' },
+  { name: 'forge_process_list', title: 'List processes', description: 'List managed executor processes. Pass process_id to get one process in detail. Process filesystem effects are ephemeral and never imply a GitHub change.', inputSchema: { workspace: addrWorkspace(), process_id: z.string().startsWith('proc_').optional() }, outputSchema: { workspaceId: z.string(), processes: z.array(z.object({ id: z.string(), command: z.string(), status: z.string(), exitCode: z.number().optional(), startedAt: z.string().optional(), completedAt: z.string().optional(), mutatesFilesystem: z.boolean() })).optional(), process: z.unknown().optional(), dependencyState: dependencyStateOut.optional(), workspaceRevision: z.number(), allowedNextActions: z.array(z.string()).optional() }, sideEffect: 'none', approval: 'none' },
+  { name: 'forge_process_wait', title: 'Wait for process', description: 'Observe a managed executor process for at most 30 seconds. timedOut:true is observational: call again with the same process_id instead of restarting it. Process filesystem effects remain executor-only and are never auto-committed to GitHub.', inputSchema: { workspace: addrWorkspace(), process_id: z.string().startsWith('proc_'), timeout_ms: z.number().int().min(1000).max(30000).default(30000) }, outputSchema: { workspaceId: z.string(), process: z.unknown(), dependencyState: dependencyStateOut, timedOut: z.boolean().optional(), suggestedTimeoutMs: z.number().optional(), remote_persisted: z.literal(false).describe('Always false for executor commands. Use forge_edit to create a durable GitHub change.'), finalLogCursor: z.string().nullable().optional(), workspaceRevision: z.number(), allowedNextActions: z.array(z.string()).optional(), next_step: z.string().optional() }, sideEffect: 'none', approval: 'none' },
   { name: 'forge_process_logs', title: 'Process logs', description: 'Read new log bytes after an opaque cursor. Pass nextCursor until hasMore is false.', inputSchema: { workspace: addrWorkspace(), process_id: z.string().startsWith('proc_'), cursor: z.string().optional() }, outputSchema: processLogsOutput, sideEffect: 'none', approval: 'none' },
   { name: 'forge_process_stop', title: 'Stop process', description: 'Stop a managed process. force:true cancels harder (SIGTERM then SIGKILL).', inputSchema: { workspace: addrWorkspace(), process_id: z.string().startsWith('proc_'), force: z.boolean().default(false), expected_revision: revision(), idempotency_key: idempotencyOptional() }, sideEffect: 'workspace', approval: 'none' },
-  { name: 'forge_deps_install', title: 'Install dependencies', description: 'Start one managed dependency install. Reuse its processId with bounded forge_process_wait calls. Do not start a second install.', inputSchema: { workspace: addrWorkspace(), frozen_lockfile: z.boolean().default(true), allow_lockfile_update: z.boolean().default(false), network_policy: z.enum(['deny_all','package_install','development','custom_allowlist','unrestricted_with_approval']).default('package_install'), timeout_ms: z.number().int().min(10000).max(900000).default(600000), expected_revision: revision(), idempotency_key: idempotencyOptional() }, outputSchema: { workspaceId: z.string(), started: z.boolean().optional(), success: z.boolean().optional(), status: z.string().optional(), exitCode: z.number().optional(), packageManager: z.string().optional(), installCommand: z.string().optional(), lockfileHashBefore: z.string().optional(), lockfileHashAfter: z.string().optional(), lockfileChanged: z.boolean().optional(), dependencyState: dependencyStateOut.optional(), processId: z.string().optional(), managedProcess: z.boolean().optional(), filesystemCommitted: z.boolean().optional(), suggestedTimeoutMs: z.number().optional(), reusedActiveProcess: z.boolean().optional(), checkpoint: z.object({ snapshotId: z.string(), createdAt: z.string(), providerVersion: z.string() }).optional(), operationId: z.string(), workspaceRevision: z.number(), replayed: z.boolean().optional(), idempotencyKey: z.string().optional(), originalOperationId: z.string().optional(), stderr: z.string().optional(), stdout: z.string().optional(), allowedNextActions: z.array(z.string()).optional(), next_step: z.string().optional() }, sideEffect: 'workspace', approval: 'policy' },
+  { name: 'forge_deps_install', title: 'Install dependencies', description: 'Allocate the ephemeral executor if needed and start one managed dependency install. Reuse its processId with bounded forge_process_wait calls; do not start a second install. Lockfile changes remain executor-only until explicitly recreated with forge_edit.', inputSchema: { workspace: addrWorkspace(), frozen_lockfile: z.boolean().default(true), allow_lockfile_update: z.boolean().default(false), network_policy: z.enum(['deny_all','package_install','development','custom_allowlist','unrestricted_with_approval']).default('package_install'), timeout_ms: z.number().int().min(10000).max(900000).default(600000), expected_revision: revision(), idempotency_key: idempotencyOptional() }, outputSchema: { workspaceId: z.string(), started: z.boolean().optional(), success: z.boolean().optional(), status: z.string().optional(), exitCode: z.number().optional(), packageManager: z.string().optional(), installCommand: z.string().optional(), lockfileHashBefore: z.string().optional(), lockfileHashAfter: z.string().optional(), lockfileChanged: z.boolean().optional(), dependencyState: dependencyStateOut.optional(), processId: z.string().optional(), managedProcess: z.boolean().optional(), suggestedTimeoutMs: z.number().optional(), reusedActiveProcess: z.boolean().optional(), remote_persisted: z.literal(false), executor_filesystem: z.literal('ephemeral'), operationId: z.string(), workspaceRevision: z.number(), replayed: z.boolean().optional(), idempotencyKey: z.string().optional(), originalOperationId: z.string().optional(), stderr: z.string().optional(), stdout: z.string().optional(), allowedNextActions: z.array(z.string()).optional(), next_step: z.string().optional() }, sideEffect: 'workspace', approval: 'policy' },
 
   // Git
   { name: 'forge_pr', title: 'Pull requests', description: 'List PRs or read live readiness. Merge and close re-check the head, require human approval, and bind a supplied idempotency_key to one exact mutation.', inputSchema: { owner: z.string().min(1).max(100), repo: z.string().min(1).max(100), action: z.enum(['list', 'status', 'merge', 'close']).default('list'), number: z.number().int().positive().optional(), expected_head_sha: z.string().regex(/^[0-9a-f]{40}$/u).optional().describe('Optional concurrency guard from action:status for merge or close.'), merge_method: z.enum(['merge', 'squash', 'rebase']).default('merge'), force: z.boolean().default(false), reason: z.string().min(1).max(500).optional(), approval_id: z.string().startsWith('apr_').optional(), idempotency_key: idempotencyOptional() }, outputSchema: { repository: z.string(), pull_requests: z.array(z.object({ number: z.number().int(), title: z.string(), head: z.string(), base: z.string(), draft: z.boolean(), url: z.string() })).optional(), status: z.object({ number: z.number().int(), title: z.string(), head_sha: z.string(), mergeable: z.boolean().nullable(), mergeable_state: z.string(), state: z.string(), already_merged: z.boolean(), checks: z.object({ total: z.number().int(), passed: z.number().int(), failed: z.number().int(), pending: z.number().int(), failing: z.array(z.string()) }), review_decision: z.string().nullable(), safe_to_merge: z.boolean(), blockers: z.array(z.string()) }).optional(), merged: z.boolean().optional(), merge_sha: z.string().optional(), closed: z.boolean().optional(), replayed: z.boolean().optional(), next_step: z.string() }, sideEffect: 'external', approval: 'required' },
@@ -506,16 +433,16 @@ export const REMOVED_TOOLS: Record<string, string> = {
   forge_files_replace: 'forge_edit takes replace: [{old,new}] — send just the fragment and Forge applies it.',
   forge_files_patch: 'forge_edit takes replace: [{old,new}] — send just the fragment and Forge applies it.',
   forge_files_upload: 'forge_edit writes file content directly.',
-  forge_git_status: 'There is no local state to inspect — every edit is already committed to GitHub.',
+  forge_git_status: 'Repository status lives on GitHub. Executor-only command files are ephemeral and are not a Git branch state.',
   forge_git_diff: 'Use forge_diff_metadata, or read the branch on GitHub.',
   forge_git_branch: 'Forge cuts your branch when the workspace is created. You never choose one.',
   forge_git_commit: 'forge_edit commits as part of the edit.',
   forge_git_push: 'Nothing needs pushing — forge_edit commits straight to GitHub.',
-  forge_git_sync: 'The workspace tracks GitHub automatically.',
+  forge_git_sync: 'GitHub is the repository plane; a fresh executor checkout is materialized from the selected branch when execution starts.',
   forge_git_rebase: 'Forge re-applies onto the branch head for you when it moves.',
   forge_pull_request_create: 'forge_merge opens the pull request and returns the approval link.',
   forge_submit: 'forge_merge replaces it.',
-  forge_work_export: 'Nothing is ever local-only, so there is nothing to export.',
-  forge_doctor: 'There is no split-brain state left to diagnose.',
+  forge_work_export: 'Command-created files are executor-only and intentionally non-durable. Recreate wanted repository changes with forge_edit.',
+  forge_doctor: 'GitHub is the repository authority. Inspect executor processes with forge_process_list and recreate wanted repository changes with forge_edit.',
   forge_workspace_prove: 'Every edit returns a verified commit URL — that is the proof.'
 };

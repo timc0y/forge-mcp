@@ -5,10 +5,11 @@ Forge currently exposes 43 MCP tools. The source of truth is
 machine-readable schemas are generated into
 [`schemas/forge-tools.schema.json`](../schemas/forge-tools.schema.json).
 
-The public workflow is remote-first: repository reads target the selected
-GitHub branch, and `forge_edit` commits directly to that branch through the
-GitHub API. A container is an execution cache for builds, tests, previews, and
-tools that genuinely need a Linux process; it is not the durability boundary.
+GitHub's API is the sole repository plane for file CRUD, branch reads/writes,
+diffs, commits, history, and pull requests. `forge_edit` is the only tool that
+writes or deletes repository files. An executor is allocated lazily only for
+shell, install, build, test, dev, preview, or deploy work; its filesystem is
+ephemeral and never a source of repository truth.
 
 ## Discover and observe
 
@@ -38,32 +39,30 @@ Tasks are container-free and survive MCP reconnects and workspace teardown.
 | Tool | What it does |
 | --- | --- |
 | `forge_start` | Creates a `forge/<slug>` branch on GitHub from the requested base, with idempotent collision handling. Pass the returned branch as `ref` when creating a workspace. |
-| `forge_workspace_create` | Accepts creation of an isolated workspace and returns `workspace_id`, `operation_id`, and current state within the host request budget. The state may still be `provisioning`. |
-| `forge_workspace_get` | Returns compact state and `branch_policy`; use it to observe provisioning rather than creating a duplicate workspace. |
-| `forge_workspace_destroy` | Tears down a workspace; destructive and revision/idempotency guarded. |
+| `forge_workspace_create` | Creates a lightweight control-plane coding session and returns `workspace_id` and `operation_id` immediately. It records executor runtime/bootstrap preferences but allocates no executor. |
+| `forge_workspace_get` | Returns compact control-plane, process, preview, dependency, and branch state. |
+| `forge_workspace_destroy` | Ends the session and discards ephemeral executor state without changing GitHub. |
 | `forge_operation_get` | Resolves an uncertain mutation result by its `op_...` handle. |
-| `forge_workspace_snapshot` | Captures a named filesystem checkpoint before risky local execution. |
-| `forge_workspace_restore` | Restores a checkpoint, destroying later uncommitted local state. |
 
-Workspace creation is asynchronous at the transport boundary. A response with
-`state: provisioning` is an accepted operation, not a failure. Reuse its
-`workspace_id` and call `forge_workspace_get` with that id in its `workspace`
-field; do not start a second workspace. Once a branch exists, the semantic
-`owner/repo#branch` address remains preferable across long conversations.
+Workspace creation is a control-plane operation, not compute provisioning.
+Reuse its `workspace_id` in subsequent calls. The first execution tool allocates
+the executor; GitHub-only reads and edits never need one. Once a branch exists,
+the semantic `owner/repo#branch` address remains preferable across long
+conversations.
 
 ## Repository reads and edits
 
 | Tool | What it does |
 | --- | --- |
-| `forge_files_list` | Lists a bounded tree from the GitHub branch tip, falling back to the cached checkout only for transient GitHub failure. |
-| `forge_files_read` | Reads one or several files from the GitHub branch tip with the same explicit fallback behavior. |
+| `forge_files_list` | Lists a bounded tree directly from the selected GitHub branch without allocating an executor. |
+| `forge_files_read` | Reads one or several files directly from the selected GitHub branch without allocating an executor. |
 | `forge_edit` | Applies fragment replacements, whole-file content, creation, or deletion and commits the result directly to GitHub. Returns the remote commit URL and SHA. |
-| `forge_diff_metadata` | Returns syntax-only changed-symbol, risk, classification, and suggested-hunk metadata. |
-| `forge_context_get` | Ranks relevant repository paths and adjacent tests for a goal; file contents remain explicit reads. |
+| `forge_diff_metadata` | Returns syntax-only metadata over the GitHub branch comparison. |
+| `forge_context_get` | Ranks relevant GitHub repository paths and adjacent tests for a goal; file contents remain explicit reads. |
 
 Paths are repo-relative or absolute at/below `/workspace/repo`. `/workspace`,
 `/workspace/forge`, `/workspace/tmp`, sibling-prefix paths, traversal, and NUL
-bytes are rejected before either GitHub or container access.
+bytes are rejected before GitHub access or executor materialization.
 
 There is no public file-write/patch/commit/push pipeline. `forge_edit` is the
 guarded remote mutation. Its read guard, expected branch tip, idempotency key,
@@ -73,17 +72,18 @@ commit receipt, and remote read-back keep retries and concurrent changes safe.
 
 | Tool | What it does |
 | --- | --- |
-| `forge_shell` | Runs a command for up to 30 seconds in the checkout, preserving request budget for synchronization and remote ingestion. Longer work returns a `process_id`. Risky commands follow shell/network approval policy. |
+| `forge_shell` | Lazily allocates an ephemeral executor and runs a command for up to 30 seconds. Longer work returns a `process_id`. Risky commands follow shell/network approval policy. |
 | `forge_process_list` | Lists managed processes or reads one in detail. |
-| `forge_process_wait` | Observes a process for one host-safe wait window. A timeout is observational and does not kill or restart it. On successful mutation it reports committed files, commit SHA, and whether remote persistence was verified. |
+| `forge_process_wait` | Observes a process for one host-safe wait window. A timeout does not kill or restart it; executor filesystem effects always report `remote_persisted:false`. |
 | `forge_process_logs` | Reads incremental bounded logs with an opaque cursor. |
 | `forge_process_stop` | Stops a managed process; `force:true` escalates cancellation. |
-| `forge_deps_install` | Starts one managed dependency install and returns its process handle when still running. |
+| `forge_deps_install` | Lazily allocates the executor, starts one managed dependency install, and returns its process handle when still running. |
 
 Repeat `forge_process_wait` when it returns `timedOut:true`; never restart the
-underlying command merely because one observation ended. A successful
-background command is not durable until `remote_persisted:true`. Inspect
-`committed_files_warning` when files could not be committed remotely.
+underlying command merely because one observation ended. Command-created and
+modified files remain in the ephemeral executor only. Forge never auto-commits
+them. Recreate each wanted repository change with `forge_edit`; until then
+`remote_persisted` is always false.
 
 Raw `git push` is blocked in `forge_shell`, including shell wrappers and Git
 global-option forms. It bypasses Forge's concurrency guards and verified

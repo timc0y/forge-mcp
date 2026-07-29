@@ -932,7 +932,21 @@ export async function repositoryCloneSource(env: Env, workspace: Workspace): Pro
   url: string;
   authorizationHeader?: string;
 }> {
-  const row = await authorizeRepository(env, { tenantId: workspace.tenantId, projectId: workspace.projectId }, workspace.repository);
+  // Provisioning already has an immutable, tenant/project-scoped workspace
+  // binding. Read its installation row directly: authorizeRepository's public
+  // API fallback adds a network dependency before the sandbox even exists and
+  // can replace the real clone/setup failure with an unrelated API outage.
+  const row = await env.METADATA.prepare(
+    `SELECT installation_id
+       FROM repositories
+      WHERE tenant_id = ?1 AND project_id = ?2 AND owner = ?3 AND name = ?4
+        AND authorization_state = 'authorized'`
+  ).bind(
+    workspace.tenantId,
+    workspace.projectId,
+    workspace.repository.owner,
+    workspace.repository.name
+  ).first<{ installation_id: string }>();
   if (!row) return { url: `https://github.com/${workspace.repository.owner}/${workspace.repository.name}.git` };
   const now = Math.floor(Date.now() / 1000);
   const capability = await issueCapability({
@@ -1562,7 +1576,7 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
         await stub.requestDestroy({ idempotencyKey: `review-preview-${destroyId}`, force: true });
         await env.DESTROY_WORKFLOW.create({
           id: destroyId,
-          params: { workspaceId: workspaceId as WorkspaceId, idempotencyKey: `review-preview-${destroyId}`, preserveArtifacts: false }
+          params: { workspaceId: workspaceId as WorkspaceId, idempotencyKey: `review-preview-${destroyId}`, preserveArtifacts: false, force: true }
         });
       });
     }
