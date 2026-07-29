@@ -15,11 +15,12 @@ describe('ChatGPT failure-loop contracts', () => {
   it('process_wait documents observational timeout + suggested retry, not kill/restart', () => {
     const wait = tool('forge_process_wait');
     expect(wait.description).toMatch(/observational/i);
-    expect(wait.description).toMatch(/Do not restart/i);
-    expect(wait.description).toMatch(/600000/);
+    expect(wait.description).toMatch(/same process_id instead of restarting/i);
+    expect(wait.description).toMatch(/at most 30 seconds/i);
+    expect(wait.description).not.toMatch(/600000/);
     const schema = wait.outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
     expect(schema.timedOut.safeParse(true).success).toBe(true);
-    expect(schema.suggestedTimeoutMs.safeParse(600_000).success).toBe(true);
+    expect(schema.suggestedTimeoutMs.safeParse(30_000).success).toBe(true);
     expect(schema.next_step.safeParse('retry wait').success).toBe(true);
   });
 

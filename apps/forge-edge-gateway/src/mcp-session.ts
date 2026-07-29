@@ -44,14 +44,14 @@ import { selectBrowserProvider } from './browser-router';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { classifyCommand, assertPublicHost, assertForgeBranch } from '@forge/policy';
 import { normalizeViewports, prepareInlineImages } from './review-images';
-import { resolveWorkspaceId, parseWorkspaceAddress } from './workspace-resolve';
+import { resolveWorkspaceId, parseWorkspaceAddress, isWorkspaceId } from './workspace-resolve';
 import { storeGallery } from './review-gallery';
 import type { CommandClass } from '@forge/policy';
 import type { Env } from './env';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
 import { credentialService } from './credentials';
 import { vaultService } from './vault';
-import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, listSlotOccupants, slotTtlMs, workspaceCaps } from './capacity';
+import { reserveWorkspaceSlot, releaseWorkspaceSlot, reclaimStaleSlots, listSlotOccupants, slotTtlMs, workspaceCaps, TERMINAL_STATES } from './capacity';
 import { snapshotsEnabled } from './snapshots';
 import { aiEnabled, summarizeDiffForPr } from './ai';
 import { registerLegacyWidgetStub } from './legacy-widget';
@@ -87,6 +87,11 @@ import { applyReplacements, ReplacementFailed } from './apply-replacements';
 import { stripAnsi, summariseCommandOutput } from './command-summary';
 import { appendWorkspaceActivity, listWorkspaceActivity } from './workspace-activity';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
+import { readPullRequestReadiness } from './github-pr-readiness';
+import { deleteGitHubBranchIfUnchanged, listGitHubBranchesWithinBudget, liveWorkspaceBranches } from './github-branches';
+import { readFragmentSource } from './github-fragment-source';
+import { forgeStartSlug } from './forge-start-branch';
+import { claimExternalMutation, readExternalMutationReceipt, recordExternalMutationReceipt } from './external-mutation-idempotency';
 
 interface SessionProps extends Record<string, unknown> {
   subject: string;
@@ -652,7 +657,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     workspace: Awaited<ReturnType<typeof authorizedCoordinator>>,
     reason: string
   ): Promise<{ committed: boolean; commit_sha?: string; paths: string[]; truncated: boolean }> {
-    const collected = await workspace.worktreeChanges({}).catch(() => ({ changes: [], truncated: false, baseBlobs: {} as Record<string, string> }));
+    // A failed collection is not the same as a clean tree. Let the caller
+    // return an explicit durability warning instead of falsely claiming there
+    // was nothing to persist.
+    const collected = await workspace.worktreeChanges({});
     if (!collected.changes.length) return { committed: false, paths: [], truncated: collected.truncated };
     const state = (await workspace.getState()) as { repository: RepositoryRef; currentBranch?: string };
     const branch = state.currentBranch;
@@ -1745,13 +1753,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // below is what actually validates either one.
         const slug = input.slug !== undefined
           ? text(input.slug)
-          : (await workspaceIdFromIdempotency(`${identity.tenantId}:${identity.projectId}`, crypto.randomUUID()))
-            .replace(/^ws_/u, '')
-            .slice(0, 16);
+          : await forgeStartSlug({
+            tenantId: identity.tenantId,
+            projectId: identity.projectId,
+            owner,
+            repo,
+            ...(input.idempotency_key === undefined ? {} : { idempotencyKey: text(input.idempotency_key) })
+          });
         const branch = `forge/${slug}`;
         assertForgeBranch(branch);
 
-        await createBranchRef(request, { owner, repo, branch, baseSha });
+        const creation = await createBranchRef(request, { owner, repo, branch, baseSha });
 
         return {
           owner,
@@ -1759,6 +1771,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           branch,
           base_ref: baseRef,
           base_sha: baseSha,
+          created: creation.created,
           next_step: `${branch} now exists on GitHub at ${baseSha}. Call forge_workspace_create with this repository and ref:'${branch}' — it will adopt this branch instead of cutting a new one, so it is already on origin when the workspace becomes ready.`
         };
       },
@@ -1772,6 +1785,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           `${identity.tenantId}:${identity.projectId}`,
           idempotencyKey
         );
+        const operationId = `op_${workspaceId.replace(/^ws_/u, '')}` as OperationId;
         // Claim a slot on the fast path with no reaper cost. Only if the claim
         // hits the quota do we reclaim stale slots (missing, terminal, or idle
         // past the TTL), tear those workspaces down, and retry once.
@@ -1787,10 +1801,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             throw reserveError;
           }
         }
-        let result;
-        try {
-          result = await coordinator(env, workspaceId).initialize({
+        const initializeWorkspace = coordinator(env, workspaceId).initialize({
             workspaceId,
+            operationId,
             tenantId: identity.tenantId as TenantId,
             projectId: identity.projectId as ProjectId,
             repository,
@@ -1806,15 +1819,55 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             idempotencyKey,
             actor: { type: 'agent', id: identity.subject }
           });
-        } catch (error) {
+        const quickInitialize = await Promise.race([
+          initializeWorkspace.then(
+            (value) => ({ status: 'initialized' as const, value }),
+            (error) => ({ status: 'failed' as const, error })
+          ),
+          new Promise<{ status: 'pending' }>((resolve) => setTimeout(() => resolve({ status: 'pending' }), 2_000))
+        ]);
+        if (quickInitialize.status === 'pending') {
+          const finishInitialization = initializeWorkspace.then(async (initialized) => {
+            if (!initialized.replay || initialized.state === 'requested') {
+              const workflowId = workflowInstanceId('provision', workspaceId);
+              try {
+                await env.PROVISION_WORKFLOW.create({
+                  id: workflowId,
+                  params: { workspaceId, bootstrap: Boolean(input.bootstrap) }
+                });
+              } catch {
+                // A retry of workspace_create runs the full existing-instance /
+                // terminal-redrive logic below. This continuation only ensures
+                // the accepted initialize is followed by a first dispatch.
+                await env.PROVISION_WORKFLOW.get(workflowId);
+              }
+            }
+          }).catch(async (error) => {
+            await releaseWorkspaceSlot(env.METADATA, workspaceId).catch(() => undefined);
+            console.warn('forge_workspace_initialize_failed_after_receipt', {
+              workspaceId,
+              reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+            });
+          });
+          (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil?.(finishInitialization);
+          return {
+            workspace_id: workspaceId,
+            state: 'requested',
+            operation_id: operationId,
+            workspace_revision: 1,
+            next_step: `Workspace initialization was accepted but its coordinator is busy. Keep workspace_id ${workspaceId} and operation_id ${operationId}; call forge_workspace_get with workspace:'${workspaceId}' once later. Retrying with the same idempotency_key is safe.`
+          };
+        }
+        if (quickInitialize.status === 'failed') {
           // A workspace-ID conflict means an existing live workspace already
           // holds this slot legitimately — releasing it would let the tenant
           // over-admit past its cap. Only release on genuine init failures.
-          if (!(error instanceof ForgeError && error.code === 'FORGE_WORKSPACE_CONFLICT')) {
+          if (!(quickInitialize.error instanceof ForgeError && quickInitialize.error.code === 'FORGE_WORKSPACE_CONFLICT')) {
             await releaseWorkspaceSlot(env.METADATA, workspaceId);
           }
-          throw error;
+          throw quickInitialize.error;
         }
+        const result = quickInitialize.value;
         // 'suspended' is recoverable (resume), not terminal — keep its slot.
         if (['failed', 'destroyed'].includes(result.state)) {
           await releaseWorkspaceSlot(env.METADATA, workspaceId);
@@ -1822,70 +1875,72 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         if (!result.replay || result.state === 'requested') {
           const workflowId = workflowInstanceId('provision', workspaceId);
           const provisionParams = { workspaceId, bootstrap: Boolean(input.bootstrap) };
-          try {
-            await env.PROVISION_WORKFLOW.create({ id: workflowId, params: provisionParams });
-          } catch (createError) {
-            let instance;
+          const dispatchProvision = async () => {
             try {
-              instance = await env.PROVISION_WORKFLOW.get(workflowId);
-            } catch {
-              // The instance genuinely could not be reached: nothing is driving
-              // provisioning, so release the slot and surface the failure.
-              await releaseWorkspaceSlot(env.METADATA, workspaceId);
-              throw createError;
-            }
-            // .get() succeeds even for a DEAD instance. If that instance has
-            // reached a terminal state (complete/errored/terminated) but the
-            // workspace never reached a live state, the original provisioning
-            // died and would never be re-driven — leaving the workspace stuck
-            // at 'requested'. Re-drive under a fresh, deterministic instance id
-            // (resume-safe: the same idempotency key always derives the same id,
-            // so a retried tool call replays onto the same re-drive instance).
-            const status = await instance.status().catch(() => undefined);
-            const phase = status?.status;
-            const terminal = phase === 'complete' || phase === 'errored' || phase === 'terminated';
-            const workspaceLive = !['requested', 'provisioning', 'bootstrapping'].includes(result.state);
-            if (terminal && !workspaceLive) {
-              const nonce = (await sha256(`${idempotencyKey}:provision-redrive`)).slice(0, 12);
-              const redriveId = `${workflowId}-r${nonce}`;
+              await env.PROVISION_WORKFLOW.create({ id: workflowId, params: provisionParams });
+            } catch (createError) {
+              let instance;
               try {
-                await env.PROVISION_WORKFLOW.create({ id: redriveId, params: provisionParams });
-              } catch (redriveError) {
-                // A prior re-drive already exists (resume-safe replay of this
-                // same tool call). Only fail if it cannot be found at all.
+                instance = await env.PROVISION_WORKFLOW.get(workflowId);
+              } catch {
+                // The instance genuinely could not be reached: nothing is
+                // driving provisioning, so release the slot and surface the
+                // failure if it is immediate. A later failure is still visible
+                // to an idempotent retry of workspace_create.
+                await releaseWorkspaceSlot(env.METADATA, workspaceId);
+                throw createError;
+              }
+              // .get() succeeds even for a DEAD instance. Re-drive a terminal
+              // workflow under a deterministic id so retries remain safe.
+              const status = await instance.status().catch(() => undefined);
+              const phase = status?.status;
+              const terminal = phase === 'complete' || phase === 'errored' || phase === 'terminated';
+              const workspaceLive = !['requested', 'provisioning', 'bootstrapping'].includes(result.state);
+              if (terminal && !workspaceLive) {
+                const nonce = (await sha256(`${idempotencyKey}:provision-redrive`)).slice(0, 12);
+                const redriveId = `${workflowId}-r${nonce}`;
                 try {
-                  await env.PROVISION_WORKFLOW.get(redriveId);
-                } catch {
-                  await releaseWorkspaceSlot(env.METADATA, workspaceId);
-                  throw redriveError;
+                  await env.PROVISION_WORKFLOW.create({ id: redriveId, params: provisionParams });
+                } catch (redriveError) {
+                  try {
+                    await env.PROVISION_WORKFLOW.get(redriveId);
+                  } catch {
+                    await releaseWorkspaceSlot(env.METADATA, workspaceId);
+                    throw redriveError;
+                  }
                 }
               }
+              // Otherwise the existing instance is still running.
             }
-            // Otherwise the instance is still running: keep swallowing, the
-            // in-flight workflow will drive provisioning to completion.
-          }
+          };
+          const provisionDispatch = dispatchProvision();
+          (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil?.(
+            provisionDispatch.catch((error) => {
+              console.warn('forge_workspace_provision_dispatch_failed', {
+                workspaceId,
+                reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
+              });
+            })
+          );
+          // Preserve honest, immediately observable dispatch failures without
+          // making the caller wait behind a slow Workflow or Durable Object.
+          const quickDispatch = await Promise.race([
+            provisionDispatch.then(
+              () => ({ failed: false as const }),
+              (error) => ({ failed: true as const, error })
+            ),
+            new Promise<{ failed: false }>((resolve) => setTimeout(() => resolve({ failed: false }), 250))
+          ]);
+          if (quickDispatch.failed) throw quickDispatch.error;
         }
-        // Wait here rather than making the caller poll. Provisioning takes about
-        // a minute, and "call forge_workspace_get repeatedly until state is
-        // ready" is a loop an ordinary chat session cannot be relied on to run —
-        // it needs a human nudging it through each turn, and any turn that drops
-        // the workspace_id strands a container nobody destroys. One call that
-        // comes back usable is the difference between this flow working and not.
-        // Bounded: if the budget runs out the caller still gets the id and the
-        // real state, and polling remains available for anyone who wants it.
-        let state = result.state;
-        if (Boolean(input.wait_for_ready) && !['ready', 'failed', 'destroyed'].includes(state)) {
-          const waitUntil = Date.now() + number(input.wait_budget_ms);
-          while (Date.now() < waitUntil) {
-            await new Promise((resolve) => setTimeout(resolve, 2000));
-            const current = await coordinator(env, workspaceId).getState().catch(() => undefined);
-            if (!current) continue;
-            state = current.state;
-            if (['ready', 'failed', 'destroyed'].includes(state)) break;
-          }
-        }
+        // The accepted receipt is the recovery handle. Never poll state here:
+        // getState can queue behind provisionInitialized's several-minute DO
+        // lock, outliving the host transport and losing both ids.
+        const state = result.state;
         if (state === 'ready') {
-          await coordinator(env, workspaceId).recordPushAuthProbe().catch(() => undefined);
+          (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil?.(
+            coordinator(env, workspaceId).recordPushAuthProbe().catch(() => undefined)
+          );
         }
         // A failed workspace inside a successful tool result is the same lie as
         // an unpushed commit reported as saved: the field says failed, the
@@ -1894,7 +1949,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // workspace, met a bare "Workspace is failed.", and decided the GitHub
         // App was read-only. Fail the call, and carry the real reason.
         if (state === 'failed') {
-          const failed = await coordinator(env, workspaceId).getState({ compact: true }).catch(() => undefined);
+          const failed = await withDeadline(
+            coordinator(env, workspaceId).getState({ compact: true }) as unknown as Promise<unknown>,
+            1_000
+          );
           const failure = failed && typeof failed === 'object' && 'failure' in failed
             ? (failed as { failure?: { stage?: string; code?: string; message?: string } }).failure
             : undefined;
@@ -1921,7 +1979,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
         }
         const readyState = state === 'ready'
-          ? await coordinator(env, workspaceId).getState({ compact: true }).catch(() => undefined)
+          ? await withDeadline(
+              coordinator(env, workspaceId).getState({ compact: true }) as unknown as Promise<unknown>,
+              1_000
+            )
           : undefined;
         const branch = readyState && typeof readyState === 'object' && 'currentBranch' in readyState
           ? String((readyState as { currentBranch?: string }).currentBranch ?? '')
@@ -1936,12 +1997,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           workspace_revision: result.revision,
           ...(branch ? { current_branch: branch } : {}),
           ...(branch_policy ? { branch_policy } : {}),
-          ...(credentialProfileId ? { credential_profile_id: credentialProfileId } : {}),
           // `failed` never reaches here — it throws above, so this branch only
-          // distinguishes ready from still-provisioning.
+          // distinguishes ready from an accepted asynchronous provision.
           next_step: state === 'ready'
             ? `Ready on ${branch || 'forge/…'}. Edit with forge_edit — it commits to GitHub, no push needed. Reuse this workspace_id.`
-            : `Still provisioning after the wait budget. Call forge_workspace_get with this workspace_id to check again — it is usually ready within a minute of creation.`
+            : `Provisioning was accepted. Keep workspace_id ${workspaceId} and operation_id ${result.operationId}; call forge_workspace_get with workspace:'${workspaceId}' once later to observe readiness. Retrying this create with the same idempotency_key is safe.`
         };
       },
       forge_workspace_get: async (input) => {
@@ -2174,6 +2234,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const message = input.message === undefined
           ? `edit: ${requested.length} file${requested.length === 1 ? '' : 's'}`
           : text(input.message);
+        const editIdempotencyKey = input.idempotency_key === undefined
+          ? undefined
+          : text(input.idempotency_key);
+        const editIntentHash = editIdempotencyKey
+          ? await sha256(JSON.stringify({ requested, message }))
+          : undefined;
+        if (editIdempotencyKey && editIntentHash) {
+          const replay = await workspace.remoteMutationReplay({
+            kind: 'edit',
+            idempotencyKey: editIdempotencyKey,
+            intentHash: editIntentHash
+          });
+          if (replay && typeof replay === 'object') return { ...(replay as Record<string, unknown>), replayed: true };
+        }
 
         const request = await githubRequestForWorkspace(env, identity, { repository: state.repository });
         // Fragment edits are resolved here, against what the file actually
@@ -2186,48 +2260,43 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             files.push({ path: file.path, content: file.content });
             continue;
           }
-          const fetched = await request(
-            `/repos/${state.repository.owner}/${state.repository.name}/contents/${file.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`
-          );
-          if (fetched.status !== 200) {
-            // Every non-200 used to be reported as "the file does not exist —
-            // send content to create it". That is a guess, and when it is
-            // wrong the advice destroys work: an agent told to create a file
-            // that already exists sends whole-file content over the top of it.
-            // Production hit exactly this on package.json and two source files
-            // that were plainly present; the real cause was that the branch
-            // itself was not on GitHub yet. Say which it is, and only advise
-            // creating the file when the branch is known to exist without it.
-            if (fetched.status === 404) {
-              const ref = await request(
-                `/repos/${state.repository.owner}/${state.repository.name}/git/ref/heads/${branch.split('/').map(encodeURIComponent).join('/')}`
-              ).catch(() => undefined);
-              if (!ref || ref.status !== 200) {
-                throw new ForgeError({
-                  code: 'FORGE_FILE_NOT_FOUND',
-                  message: `${branch} is not on GitHub, so ${file.path} cannot be read to replace a fragment of it — the file is not missing, the branch is. Call forge_start to create the branch, then edit again. Do NOT send whole-file content: that would overwrite whatever ${file.path} really contains.`,
-                  retryable: false,
-                  details: { path: file.path, branch, cause: 'branch_absent' }
-                });
-              }
+          const source = await readFragmentSource(request, {
+            base: `/repos/${state.repository.owner}/${state.repository.name}`,
+            branch,
+            baseSha: state.baseCommit ?? state.currentCommit,
+            path: file.path
+          });
+          if (!source.ok) {
+            if (source.kind === 'base_unavailable') {
               throw new ForgeError({
-                code: 'FORGE_FILE_NOT_FOUND',
-                message: `${file.path} does not exist on ${branch}, so there is nothing to replace in it. Send content to create it.`,
-                retryable: false,
-                details: { path: file.path, branch, cause: 'file_absent' }
+                code: 'FORGE_WORKSPACE_NOT_READY',
+                message: `${branch} is not on GitHub yet and the workspace has no base commit recorded, so Forge cannot safely resolve ${file.path}. Nothing was written; retry after the workspace is ready.`,
+                retryable: true,
+                details: { path: file.path, branch, cause: 'branch_absent_no_base' }
               });
             }
-            const transient = fetched.status === 429 || fetched.status >= 500;
+            if (source.kind === 'file_missing') {
+              const missingFrom = source.branchMissing
+                ? `base commit ${source.sourceRef}`
+                : branch;
+              throw new ForgeError({
+                code: 'FORGE_FILE_NOT_FOUND',
+                message: `${file.path} cannot be fragment-edited because it does not exist on ${missingFrom}. Use whole-file content to create it instead.`,
+                retryable: false,
+                details: { path: file.path, branch, sourceRef: source.sourceRef, cause: source.branchMissing ? 'file_absent_at_base' : 'file_absent' }
+              });
+            }
+            const transient = source.status === 429 || source.status >= 500;
             throw new ForgeError({
               code: transient ? 'FORGE_PROVIDER_UNAVAILABLE' : 'FORGE_PERMISSION_DENIED',
               message: transient
-                ? `GitHub returned HTTP ${fetched.status} reading ${file.path} on ${branch}, which is a transient fault rather than anything about the file. Retry the same edit.`
-                : `GitHub returned HTTP ${fetched.status} reading ${file.path} on ${branch}. This is an access problem, not a missing file — call forge_access for this repository, and do not send whole-file content, which would overwrite what is really there.`,
+                ? `GitHub returned HTTP ${source.status} resolving ${file.path} from ${source.sourceRef}, which is a transient fault rather than anything about the file. Retry the same edit.`
+                : `GitHub returned HTTP ${source.status} resolving ${file.path} from ${source.sourceRef}. This is an access problem, not a missing file — call forge_access for this repository, and do not send whole-file content, which would overwrite what is really there.`,
               retryable: transient,
-              details: { path: file.path, branch, status: fetched.status }
+              details: { path: file.path, branch, status: source.status, operation: source.operation }
             });
           }
-          const body = fetched.json as { content?: string; sha?: string; encoding?: string };
+          const body = source.body;
           if (typeof body.content !== 'string' || typeof body.sha !== 'string') {
             throw new ForgeError({
               code: 'FORGE_FILE_CONFLICT',
@@ -2288,8 +2357,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           branch,
           commit: result.commitSha ?? result.parentSha,
           hasUnpushedWork: false,
-          pushVerified: true,
-          remoteSha: result.commitSha ?? result.parentSha,
+          pushVerified: result.pushVerified,
+          remoteSha: result.remoteSha,
           committed: !result.unchanged
         });
         if (result.commitSha) {
@@ -2310,7 +2379,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // work is already safe on GitHub and the container is a cache.
         const synced = await workspace.syncToRemoteHead().then(() => true).catch(() => false);
 
-        return {
+        const receipt = {
           ...verdict,
           ...(result.commitSha ? { commit_sha: result.commitSha } : {}),
           ...(result.commitSha
@@ -2324,6 +2393,15 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             ? 'Nothing changed — the files already had this content. Continue or call forge_merge.'
             : `Committed to origin/${branch}. Run checks with forge_shell, then forge_merge when ready.${synced ? '' : ' The container checkout is stale; forge_shell will re-sync.'}`
         };
+        if (editIdempotencyKey && editIntentHash) {
+          await workspace.recordRemoteMutation({
+            kind: 'edit',
+            idempotencyKey: editIdempotencyKey,
+            intentHash: editIntentHash,
+            receipt
+          }).catch(() => undefined);
+        }
+        return receipt;
       },
       forge_diff_metadata: async (input) => {
         const identity = this.identity();
@@ -2400,13 +2478,39 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // running — which is the worst shape a failure can have. Route it
         // through the managed-process path instead, so a long command always
         // comes back as something the agent can wait on.
-        const HOST_SAFE_SYNC_MS = 45_000;
+        const HOST_SAFE_SYNC_MS = 30_000;
+        const CHECKOUT_SYNC_DEADLINE_MS = 10_000;
         const requestedTimeout = number(input.timeout_ms);
         const escalated = input.async !== true
           && input.mode !== 'read_only'
           && Number.isFinite(requestedTimeout)
           && requestedTimeout > HOST_SAFE_SYNC_MS;
         try {
+          const normalizedCwd = cwd.replace(/\/+$/u, '') || '/workspace';
+          const repoScoped = normalizedCwd === '/workspace/repo' || normalizedCwd.startsWith('/workspace/repo/');
+          if (repoScoped) {
+            // Both foreground and managed commands must start from the remote
+            // branch they claim to verify. Time-box the prerequisite so a busy
+            // coordinator cannot consume the whole client transport before an
+            // async command has returned its process handle.
+            const synced = await withDeadline(workspace.syncToRemoteHead(), CHECKOUT_SYNC_DEADLINE_MS);
+            if (!synced?.synced) {
+              if (synced?.blockedByLocalChanges) {
+                throw new ForgeError({
+                  code: 'FORGE_GIT_DIRTY',
+                  message: 'Forge found uncommitted container writes and refused to reset over them before running this command. The files are preserved. Re-apply or commit them with forge_edit, then retry forge_shell.',
+                  retryable: false,
+                  details: { cwd, preserved: true, allowedNextActions: ['forge_edit', 'forge_workspace_get'] }
+                });
+              }
+              throw new ForgeError({
+                code: 'FORGE_GIT_FETCH_FAILED',
+                message: 'Forge could not prove that the repository checkout matches the GitHub branch before running this command, so nothing ran. Retry forge_shell after checking forge_workspace_get; commands outside /workspace/repo are unaffected.',
+                retryable: true,
+                details: { cwd, syncDeadlineMs: CHECKOUT_SYNC_DEADLINE_MS, allowedNextActions: ['forge_workspace_get', 'forge_shell'] }
+              });
+            }
+          }
           if (input.async === true || escalated) {
             if (input.mode === 'read_only') {
               throw new ForgeError({
@@ -2457,19 +2561,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                     escalated_reason: `timeout_ms ${requestedTimeout}ms exceeds the ${HOST_SAFE_SYNC_MS}ms a client will hold a request open, so this runs as a managed process instead of failing the transport.`
                   }
                 : {}),
-              next_step: `Running in the background as ${processId}. Call forge_process_wait with that process_id (timeout_ms >= 600000 for installs), or forge_process_logs to inspect output. Do not re-run the command.`
+              next_step: `Running in the background as ${processId}. Call forge_process_wait with that process_id; each call observes for at most 30000ms, or use forge_process_logs to inspect output. Do not re-run the command.`
             };
           }
-          // Bring the checkout up to the branch before running anything. The
-          // container is a cache of what is on GitHub, and forge_edit's own
-          // sync is best-effort — so without this a command can test code that
-          // is not what was committed, pass, and be reported as proof. That is
-          // the same false assurance as claiming unpushed work was saved.
-          await workspace.syncToRemoteHead().catch(() => undefined);
           const result = await workspace.shellExec({
             command,
             cwd,
-            timeoutMs: number(input.timeout_ms),
+            timeoutMs: Math.min(number(input.timeout_ms), input.mode === 'read_only' ? 35_000 : HOST_SAFE_SYNC_MS),
             environment,
             networkPolicy,
             outputLimitBytes: number(input.output_limit_bytes),
@@ -2520,16 +2618,25 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           // a formatter or codemod cannot leave work to be lost at the next
           // sync — and so the agent is never holding changes it must remember
           // to save.
-          const ingested = input.mode === 'read_only'
-            ? { committed: false, paths: [] as string[], truncated: false }
-            : await this.ingestContainerWrites(env, identity, workspaceId, workspace, `${command.slice(0, 80)}`)
-                .catch(() => ({ committed: false, paths: [] as string[], truncated: false, failed: true }));
-          const wrote = ingested.paths.length
+          let ingested: { committed: boolean; commit_sha?: string; paths: string[]; truncated: boolean; failed?: boolean };
+          if (input.mode === 'read_only') {
+            ingested = { committed: false, paths: [], truncated: false };
+          } else {
+            const ingestion = this.ingestContainerWrites(env, identity, workspaceId, workspace, `${command.slice(0, 80)}`);
+            (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil?.(
+              ingestion.catch(() => undefined)
+            );
+            ingested = await withDeadline(ingestion, 10_000)
+              ?? { committed: false, paths: [], truncated: false, failed: true };
+          }
+          const wrote = ingested.paths.length || ingested.failed || ingested.truncated
             ? {
-                committed_files: ingested.paths,
+                ...(ingested.paths.length ? { committed_files: ingested.paths } : {}),
                 ...('commit_sha' in ingested && ingested.commit_sha ? { commit_sha: ingested.commit_sha } : {}),
-                ...('failed' in ingested && ingested.failed
-                  ? { committed_files_warning: 'This command changed files that Forge could not commit to GitHub. They exist only in the container. Re-apply them with forge_edit.' }
+                ...(ingested.failed || ingested.truncated
+                  ? { committed_files_warning: ingested.truncated
+                      ? 'Forge found too many changed files, truncated status output, or a changed file over the ingestion limit. It published none of this incomplete set and preserved every container write; publish the wanted files with forge_edit before another repo-scoped shell command.'
+                      : 'Forge could not confirm this command’s repository writes on GitHub within the request. The container is preserved; use forge_edit to publish wanted changes before another repo-scoped shell command.' }
                   : {})
               }
             : {};
@@ -2594,10 +2701,75 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       },
       forge_process_wait: async (input) => {
         const identity = this.identity();
-        return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)))).processWait({
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
+        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const waited = asRecord(await workspace.processWait({
           processId: text(input.process_id) as ProcessId,
-          timeoutMs: optionalNumber(input.timeout_ms) ?? 120_000
+          timeoutMs: Math.min(optionalNumber(input.timeout_ms) ?? 30_000, 30_000)
         }));
+        if (waited.timedOut === true) return waited;
+
+        const process = waited.process && typeof waited.process === 'object'
+          ? waited.process as Record<string, unknown>
+          : {};
+        const mutatesFilesystem = process.mutatesFilesystem === true;
+        const exitCode = typeof process.exitCode === 'number' ? process.exitCode : undefined;
+        if (!mutatesFilesystem) {
+          return {
+            ...waited,
+            remote_persisted: true,
+            next_step: 'Process finished without repository mutations. Continue with forge_shell or forge_workspace_get.'
+          };
+        }
+        if (exitCode !== 0) {
+          return {
+            ...waited,
+            remote_persisted: false,
+            committed_files_warning: 'The mutating process did not exit successfully, so Forge did not publish its partial container writes to GitHub. Inspect the logs and re-apply any wanted changes with forge_edit.',
+            next_step: 'Inspect forge_process_logs. Any partial repository writes remain only in the preserved container until you re-apply them with forge_edit.'
+          };
+        }
+
+        // Application finalization proves provider visibility and may create a
+        // recovery checkpoint; neither is a remote commit. Reconcile through
+        // the same GitHub commit path foreground forge_shell uses before this
+        // successful mutation is described as durable.
+        const ingestion = this.ingestContainerWrites(
+          env,
+          identity,
+          workspaceId,
+          workspace,
+          `${String(process.command ?? 'background command').slice(0, 80)}`
+        );
+        (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil?.(
+          ingestion.catch(() => undefined)
+        );
+        const ingested = await withDeadline(ingestion, 10_000);
+        const remotePersisted = Boolean(
+          ingested &&
+          !ingested.truncated &&
+          (ingested.committed || ingested.paths.length === 0)
+        );
+        return {
+          ...waited,
+          remote_persisted: remotePersisted,
+          ...(ingested?.paths.length ? { committed_files: ingested.paths } : {}),
+          ...(ingested?.commit_sha ? { commit_sha: ingested.commit_sha } : {}),
+          ...(!remotePersisted
+            ? {
+                committed_files_warning: ingested?.truncated
+                  ? 'The process succeeded, but the changed-file set was too large to ingest completely. Forge published none of the incomplete set and preserved every container write; publish the wanted files with forge_edit.'
+                  : 'The process succeeded, but Forge could not confirm its repository writes on GitHub within this request. The container writes are preserved; call forge_process_wait again with the same process_id to retry reconciliation.',
+                next_step: ingested?.truncated
+                  ? 'Use forge_edit to publish the wanted preserved files. Do not re-run the command or start another repo-scoped shell command first.'
+                  : 'Call forge_process_wait again with the same process_id. Do not re-run the command; Forge will retry publishing its preserved writes.'
+              }
+            : {
+                next_step: ingested?.commit_sha
+                  ? `Process finished and its repository writes were committed to GitHub as ${ingested.commit_sha}. Continue with forge_shell or forge_workspace_get.`
+                  : 'Process finished and Forge confirmed there were no repository writes to publish. Continue with forge_shell or forge_workspace_get.'
+              })
+        };
       },
       forge_deps_install: async (input) => {
         const identity = this.identity();
@@ -2645,38 +2817,24 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // Always read fresh. A status an agent read earlier describes the head
         // it saw then; merging on it would merge commits nobody assessed.
         const readStatus = async () => {
-          const pr = await request(`${base}/pulls/${number}`);
-          if (pr.status !== 200) {
-            throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `Pull request #${number} was not found in ${owner}/${repo}.`, retryable: false });
+          try {
+            return await readPullRequestReadiness(request, base, number);
+          } catch (error) {
+            throw new ForgeError({
+              code: 'FORGE_PROVIDER_UNAVAILABLE',
+              message: error instanceof Error ? error.message : `GitHub could not read pull request #${number}.`,
+              retryable: true,
+              details: { owner, repo, number }
+            });
           }
-          const body = pr.json as { number: number; title: string; draft?: boolean; merged?: boolean; state: string; mergeable: boolean | null; mergeable_state?: string; head: { sha: string } };
-          const runs = await request(`${base}/commits/${body.head.sha}/check-runs?per_page=100`);
-          const checkRuns = runs.status === 200 ? (runs.json as { check_runs?: Array<{ name: string; status: string; conclusion: string | null }> }).check_runs ?? [] : [];
-          const failing = checkRuns.filter((run) => run.status === 'completed' && run.conclusion !== null && !['success', 'neutral', 'skipped'].includes(run.conclusion)).map((run) => run.name);
-          const pending = checkRuns.filter((run) => run.status !== 'completed').length;
-          const passed = checkRuns.filter((run) => run.status === 'completed' && ['success', 'neutral', 'skipped'].includes(run.conclusion ?? '')).length;
-          const blockers: string[] = [];
-          if (body.merged) blockers.push('Already merged.');
-          if (body.state !== 'open') blockers.push(`State is ${body.state}, not open.`);
-          if (body.draft) blockers.push('Still a draft.');
-          if (body.mergeable === false) blockers.push(`GitHub reports it not mergeable (${body.mergeable_state ?? 'unknown'}).`);
-          if (failing.length) blockers.push(`${failing.length} check(s) failing: ${failing.join(', ')}.`);
-          if (pending) blockers.push(`${pending} check(s) still running.`);
-          return {
-            number: body.number, title: body.title, head_sha: body.head.sha,
-            mergeable: body.mergeable, mergeable_state: String(body.mergeable_state ?? 'unknown'),
-            checks: { total: checkRuns.length, passed, failed: failing.length, pending, failing },
-            review_decision: null as string | null,
-            safe_to_merge: blockers.length === 0,
-            blockers
-          };
         };
 
         if (input.action === 'status') {
           const status = await readStatus();
+          const { merge_commit_sha: _mergeCommitSha, ...publicStatus } = status;
           return {
             repository: `${owner}/${repo}`,
-            status,
+            status: publicStatus,
             next_step: status.safe_to_merge
               ? `#${number} is safe to merge at ${status.head_sha.slice(0, 12)}. Ask the human, then action:'merge'.`
               : `#${number} is NOT safe to merge: ${status.blockers.join(' ')}`
@@ -2684,14 +2842,86 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
 
         if (input.action === 'close') {
-          const closed = await request(`${base}/pulls/${number}`, { method: 'PATCH', body: { state: 'closed' } });
-          if (closed.status !== 200) {
-            throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: `GitHub returned HTTP ${closed.status} closing #${number}.`, retryable: true });
+          const status = await readStatus();
+          if (input.expected_head_sha !== undefined && text(input.expected_head_sha) !== status.head_sha) {
+            throw new ForgeError({
+              code: 'FORGE_WORKSPACE_CONFLICT',
+              message: `Pull request #${number} moved to ${status.head_sha}, so Forge refused to close the head ${text(input.expected_head_sha)} you assessed. Read status again, then retry with the new expected_head_sha.`,
+              retryable: false,
+              details: { number, expected_head_sha: text(input.expected_head_sha), current_head_sha: status.head_sha }
+            });
           }
-          return { repository: `${owner}/${repo}`, closed: true, next_step: `Closed #${number} without merging.` };
+          if (status.state === 'closed' || status.already_merged) {
+            return { repository: `${owner}/${repo}`, closed: true, next_step: `Pull request #${number} is already closed; this retry changed nothing.` };
+          }
+          const mutationScope = `forge_pr:${owner.toLowerCase()}/${repo.toLowerCase()}`;
+          const mutationKey = input.idempotency_key === undefined ? undefined : text(input.idempotency_key);
+          const mutationIntentHash = mutationKey
+            ? await sha256(JSON.stringify({ action: 'close', owner: owner.toLowerCase(), repo: repo.toLowerCase(), number, head: status.head_sha }))
+            : undefined;
+          if (mutationKey && mutationIntentHash) {
+            const replay = await readExternalMutationReceipt(env, { tenantId: identity.tenantId, scope: mutationScope, idempotencyKey: mutationKey, intentHash: mutationIntentHash });
+            if (replay) return { ...replay, replayed: true };
+          }
+          const approvalPayload = { action: 'close', owner, repo, number, headSha: status.head_sha };
+          let approvalId = input.approval_id === undefined ? undefined : text(input.approval_id);
+          const approvalWorkspace = `repository:${owner.toLowerCase()}/${repo.toLowerCase()}`;
+          if (!approvalId) {
+            const approval = await requestApproval(env, identity, approvalWorkspace, 'pull_request.mutate', `Close pull request #${number}`, approvalPayload);
+            if (approval.already_approved) approvalId = approval.approval_id;
+            else {
+              const inline = await this.tryResolveApprovalInline(identity, approval, `Close pull request #${number}`);
+              if (!inline) {
+                throw new ForgeError({
+                  code: 'FORGE_APPROVAL_REQUIRED',
+                  message: `Closing pull request #${number} needs human approval. Open the approval URL, approve, then retry with approval_id and the same idempotency_key.`,
+                  retryable: false,
+                  details: { kind: 'approval', action: 'pull_request.mutate', ...approval }
+                });
+              }
+              approvalId = inline;
+            }
+          }
+          await requireApproval(env, identity, approvalId, approvalWorkspace, 'pull_request.mutate', approvalPayload, { consume: false });
+          const claim = mutationKey && mutationIntentHash
+            ? await claimExternalMutation(env, { tenantId: identity.tenantId, scope: mutationScope, idempotencyKey: mutationKey, intentHash: mutationIntentHash })
+            : undefined;
+          if (claim?.kind === 'replay') return { ...claim.receipt, replayed: true };
+          await requireApproval(env, identity, approvalId, approvalWorkspace, 'pull_request.mutate', approvalPayload);
+          try {
+            const closed = await request(`${base}/pulls/${number}`, { method: 'PATCH', body: { state: 'closed' } });
+            if (closed.status !== 200) {
+              throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: `GitHub returned HTTP ${closed.status} closing #${number}; retry the same call because Forge did not receive a closing receipt.`, retryable: true });
+            }
+            const receipt = { repository: `${owner}/${repo}`, closed: true, next_step: `Closed #${number} without merging.` };
+            if (mutationKey && claim?.kind === 'claimed') {
+              await recordExternalMutationReceipt(env, { tenantId: identity.tenantId, scope: mutationScope, idempotencyKey: mutationKey, ownerToken: claim.ownerToken, receipt });
+            }
+            await completeApproval(env, approvalId, true);
+            return receipt;
+          } catch (error) {
+            await completeApproval(env, approvalId, false).catch(() => undefined);
+            throw error;
+          }
         }
 
         const status = await readStatus();
+        if (status.already_merged) {
+          return {
+            repository: `${owner}/${repo}`,
+            merged: true,
+            merge_sha: status.merge_commit_sha ?? '',
+            next_step: `Pull request #${number} is already merged; this retry changed nothing.`
+          };
+        }
+        if (input.expected_head_sha !== undefined && text(input.expected_head_sha) !== status.head_sha) {
+          throw new ForgeError({
+            code: 'FORGE_WORKSPACE_CONFLICT',
+            message: `Pull request #${number} moved to ${status.head_sha}, so Forge refused to merge the head ${text(input.expected_head_sha)} you assessed. Read status again, then retry with the new expected_head_sha.`,
+            retryable: false,
+            details: { number, expected_head_sha: text(input.expected_head_sha), current_head_sha: status.head_sha }
+          });
+        }
         if (!status.safe_to_merge && input.force !== true) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
@@ -2708,24 +2938,73 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             details: { number, blockers: status.blockers }
           });
         }
-        const merged = await request(`${base}/pulls/${number}/merge`, {
-          method: 'PUT',
-          body: { merge_method: input.merge_method === undefined ? 'merge' : text(input.merge_method), sha: status.head_sha }
-        });
-        if (merged.status !== 200) {
-          throw new ForgeError({
-            code: 'FORGE_PROVIDER_UNAVAILABLE',
-            message: `GitHub refused the merge of #${number} with HTTP ${merged.status}. Nothing was merged.`,
-            retryable: merged.status >= 500,
-            details: { number, head_sha: status.head_sha }
-          });
+        const mergeMethod = input.merge_method === undefined ? 'merge' : text(input.merge_method);
+        const mutationScope = `forge_pr:${owner.toLowerCase()}/${repo.toLowerCase()}`;
+        const mutationKey = input.idempotency_key === undefined ? undefined : text(input.idempotency_key);
+        const mutationIntentHash = mutationKey
+          ? await sha256(JSON.stringify({ action: 'merge', owner: owner.toLowerCase(), repo: repo.toLowerCase(), number, head: status.head_sha, mergeMethod, force: input.force === true, reason: input.reason === undefined ? null : text(input.reason) }))
+          : undefined;
+        if (mutationKey && mutationIntentHash) {
+          const replay = await readExternalMutationReceipt(env, { tenantId: identity.tenantId, scope: mutationScope, idempotencyKey: mutationKey, intentHash: mutationIntentHash });
+          if (replay) return { ...replay, replayed: true };
         }
-        return {
-          repository: `${owner}/${repo}`,
-          merged: true,
-          merge_sha: String((merged.json as { sha?: string }).sha ?? ''),
-          next_step: `Merged #${number}. Delete the branch with forge_branches if it is no longer needed.`
+        const approvalPayload = {
+          action: 'merge', owner, repo, number, headSha: status.head_sha, mergeMethod,
+          force: input.force === true,
+          reason: input.reason === undefined ? null : text(input.reason)
         };
+        let approvalId = input.approval_id === undefined ? undefined : text(input.approval_id);
+        const approvalWorkspace = `repository:${owner.toLowerCase()}/${repo.toLowerCase()}`;
+        if (!approvalId) {
+          const approval = await requestApproval(env, identity, approvalWorkspace, 'pull_request.mutate', `Merge pull request #${number}`, approvalPayload);
+          if (approval.already_approved) approvalId = approval.approval_id;
+          else {
+            const inline = await this.tryResolveApprovalInline(identity, approval, `Merge pull request #${number}`);
+            if (!inline) {
+              throw new ForgeError({
+                code: 'FORGE_APPROVAL_REQUIRED',
+                message: `Merging pull request #${number} needs human approval. Open the approval URL, approve, then retry with approval_id and the same idempotency_key.`,
+                retryable: false,
+                details: { kind: 'approval', action: 'pull_request.mutate', ...approval }
+              });
+            }
+            approvalId = inline;
+          }
+        }
+        await requireApproval(env, identity, approvalId, approvalWorkspace, 'pull_request.mutate', approvalPayload, { consume: false });
+        const claim = mutationKey && mutationIntentHash
+          ? await claimExternalMutation(env, { tenantId: identity.tenantId, scope: mutationScope, idempotencyKey: mutationKey, intentHash: mutationIntentHash })
+          : undefined;
+        if (claim?.kind === 'replay') return { ...claim.receipt, replayed: true };
+        await requireApproval(env, identity, approvalId, approvalWorkspace, 'pull_request.mutate', approvalPayload);
+        try {
+          const merged = await request(`${base}/pulls/${number}/merge`, {
+            method: 'PUT',
+            body: { merge_method: mergeMethod, sha: status.head_sha }
+          });
+          if (merged.status !== 200) {
+            throw new ForgeError({
+              code: 'FORGE_PROVIDER_UNAVAILABLE',
+              message: `GitHub refused the merge of #${number} with HTTP ${merged.status}; retry the same call because Forge did not receive a merge receipt.`,
+              retryable: merged.status >= 500,
+              details: { number, head_sha: status.head_sha }
+            });
+          }
+          const receipt = {
+            repository: `${owner}/${repo}`,
+            merged: true,
+            merge_sha: String((merged.json as { sha?: string }).sha ?? ''),
+            next_step: `Merged #${number}. Delete the branch with forge_branches if it is no longer needed.`
+          };
+          if (mutationKey && claim?.kind === 'claimed') {
+            await recordExternalMutationReceipt(env, { tenantId: identity.tenantId, scope: mutationScope, idempotencyKey: mutationKey, ownerToken: claim.ownerToken, receipt });
+          }
+          await completeApproval(env, approvalId, true);
+          return receipt;
+        } catch (error) {
+          await completeApproval(env, approvalId, false).catch(() => undefined);
+          throw error;
+        }
       },
       forge_access: async (input) => {
         const identity = this.identity();
@@ -2835,6 +3114,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const repository = { provider: 'github' as const, owner, name: repo };
         const request = await githubRequestForWorkspace(env, identity, { repository });
         const base = `/repos/${owner}/${repo}`;
+        const branchToolDeadline = Date.now() + 45_000;
 
         const repoInfo = await request(base);
         if (repoInfo.status !== 200) {
@@ -2846,25 +3126,45 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
         const defaultBranch = String((repoInfo.json as { default_branch?: string }).default_branch ?? 'main');
 
-        const listed = await request(`${base}/branches?per_page=100`);
-        if (listed.status !== 200) {
+        let raw;
+        let paginationTruncated = false;
+        try {
+          const listed = await listGitHubBranchesWithinBudget(request, base, Math.min(branchToolDeadline, Date.now() + 10_000));
+          raw = listed.branches;
+          paginationTruncated = listed.truncated;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : 'GitHub returned an unreadable branch-list response';
           throw new ForgeError({
             code: 'FORGE_PROVIDER_UNAVAILABLE',
-            message: `GitHub returned HTTP ${listed.status} listing branches for ${owner}/${repo}.`,
+            message: `Forge could not list branches for ${owner}/${repo} because ${reason}. Retry the same call; no branch was changed.`,
             retryable: true
           });
         }
-        const raw = listed.json as Array<{ name: string; commit: { sha: string }; protected?: boolean }>;
 
         // "Merged" is decided by asking GitHub whether the default branch
         // already contains the tip, never by the branch's name or age. A
         // deletion that guessed would be unrecoverable.
-        const branches = await Promise.all(
-          raw.map(async (entry) => {
+        const comparisonDeadline = branchToolDeadline;
+        const branchCandidates = input.action === 'delete' && input.merged_only !== true && input.branch !== undefined
+          ? raw.filter((entry) => entry.name === defaultBranch || entry.name === text(input.branch))
+          : raw;
+        const branches: Array<{ name: string; sha: string; merged: boolean; is_default: boolean; protected: boolean }> = [];
+        let comparisonTruncated = paginationTruncated;
+        for (let offset = 0; offset < branchCandidates.length; offset += 8) {
+          if (Date.now() >= comparisonDeadline) {
+            comparisonTruncated = true;
+            break;
+          }
+          const batch = branchCandidates.slice(offset, offset + 8);
+          const comparedBatch = await Promise.all(batch.map(async (entry) => {
             const isDefault = entry.name === defaultBranch;
             if (isDefault) return { name: entry.name, sha: entry.commit.sha, merged: true, is_default: true, protected: entry.protected === true };
-            const compared = await request(`${base}/compare/${encodeURIComponent(defaultBranch)}...${entry.name.split('/').map(encodeURIComponent).join('/')}`);
-            const status = compared.status === 200 ? (compared.json as { status?: string }).status : undefined;
+            const compared = await withDeadline(
+              request(`${base}/compare/${encodeURIComponent(defaultBranch)}...${entry.name.split('/').map(encodeURIComponent).join('/')}`),
+              Math.max(250, Math.min(5_000, comparisonDeadline - Date.now()))
+            );
+            if (!compared || compared.status !== 200) return undefined;
+            const status = (compared.json as { status?: string }).status;
             // behind or identical => everything on it is already in default.
             return {
               name: entry.name,
@@ -2873,8 +3173,11 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               is_default: false,
               protected: entry.protected === true
             };
-          })
-        );
+          }));
+          branches.push(...comparedBatch.filter((entry): entry is NonNullable<typeof entry> => entry !== undefined));
+          if (comparedBatch.some((entry) => entry === undefined)) comparisonTruncated = true;
+        }
+        if (branches.length < branchCandidates.length) comparisonTruncated = true;
 
         if (input.action !== 'delete') {
           const mergedCount = branches.filter((entry) => entry.merged && !entry.is_default).length;
@@ -2882,26 +3185,83 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             repository: `${owner}/${repo}`,
             default_branch: defaultBranch,
             branches: branches.map(({ protected: _p, ...rest }) => rest),
-            next_step: mergedCount
+            truncated: comparisonTruncated,
+            next_step: comparisonTruncated
+              ? `Returned ${branches.length} branches whose merge state GitHub proved inside the host-safe budget. Retry to reassess omitted branches; do not infer that an omitted branch is unmerged.`
+              : mergedCount
               ? `${mergedCount} branch(es) are already merged into ${defaultBranch}. Delete them with action:'delete', merged_only:true.`
               : `Nothing is safely deletable — no branch other than ${defaultBranch} is fully merged.`
           };
+        }
+
+        if (comparisonTruncated && input.merged_only === true) {
+          throw new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: 'Forge could not prove the merge state of the complete branch set inside one host-safe call, so merged_only cleanup deleted nothing. Retry the same call later or delete one named branch from a complete list.',
+            retryable: true
+          });
+        }
+        if (paginationTruncated && input.branch !== undefined && !raw.some((entry) => entry.name === text(input.branch))) {
+          throw new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: `Forge could not finish listing branches before the host-safe deadline, so it cannot prove that ${text(input.branch)} is absent and deleted nothing. Retry the same call later.`,
+            retryable: true
+          });
+        }
+        if (input.branch !== undefined && raw.some((entry) => entry.name === text(input.branch)) && !branches.some((entry) => entry.name === text(input.branch))) {
+          throw new ForgeError({
+            code: 'FORGE_PROVIDER_UNAVAILABLE',
+            message: `Forge found ${text(input.branch)} but could not prove its current merge state, so it deleted nothing. Retry the same call later.`,
+            retryable: true
+          });
+        }
+
+        if (input.expected_sha !== undefined && input.merged_only === true) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'This call is invalid because expected_sha can guard only one named branch, while merged_only:true selects a batch. Remove expected_sha for the batch, or pass one branch with its expected_sha.',
+            retryable: false
+          });
         }
 
         const wanted = input.merged_only === true
           ? branches.filter((entry) => entry.merged && !entry.is_default)
           : branches.filter((entry) => entry.name === (input.branch === undefined ? '' : text(input.branch)));
         if (!wanted.length) {
+          if (input.merged_only === true) {
+            return {
+              repository: `${owner}/${repo}`,
+              default_branch: defaultBranch,
+              deleted: [],
+              already_absent: [],
+              refused: [],
+              next_step: `No merged branches currently exist to delete in ${owner}/${repo}; this call deleted nothing.`
+            };
+          }
+          if (input.idempotency_key !== undefined && input.branch !== undefined) {
+            return {
+              repository: `${owner}/${repo}`,
+              default_branch: defaultBranch,
+              deleted: [],
+              already_absent: [text(input.branch)],
+              refused: [],
+              next_step: `${text(input.branch)} is already absent from GitHub; this call did not delete it.`
+            };
+          }
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: input.merged_only === true
-              ? `No merged branches to delete in ${owner}/${repo}.`
-              : `Branch ${input.branch === undefined ? '(none given)' : text(input.branch)} does not exist in ${owner}/${repo}. Run action:'list' first.`,
+            message: `Forge cannot delete ${input.branch === undefined ? '(no branch supplied)' : text(input.branch)} because that branch does not exist in ${owner}/${repo}. Call forge_branches with action:'list' and choose a returned branch; nothing was deleted.`,
             retryable: false
           });
         }
 
+        // A remote branch can still be the live backing ref for a workspace.
+        // Deleting it is destructive even when its current tip is merged.
+        const occupants = await listSlotOccupants(env.METADATA, slotTtlMs(env));
+        const liveBranches = liveWorkspaceBranches(occupants, owner, repo, TERMINAL_STATES);
+
         const deleted: string[] = [];
+        const alreadyAbsent: string[] = [];
         const refused: Array<{ branch: string; reason: string }> = [];
         for (const entry of wanted) {
           // Three refusals that no flag overrides, because each one destroys
@@ -2912,6 +3272,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
           if (entry.protected) {
             refused.push({ branch: entry.name, reason: `${entry.name} is protected on GitHub.` });
+            continue;
+          }
+          if (liveBranches.has(entry.name)) {
+            refused.push({
+              branch: entry.name,
+              reason: `${entry.name} backs a live Forge workspace and cannot be deleted while that workspace is active. Destroy or move the workspace deliberately, then retry.`
+            });
             continue;
           }
           if (!entry.merged && input.force !== true) {
@@ -2925,15 +3292,21 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             refused.push({ branch: entry.name, reason: 'force:true requires a reason, so the record says why unmerged work was discarded.' });
             continue;
           }
-          const removed = await request(`${base}/git/refs/heads/${entry.name.split('/').map(encodeURIComponent).join('/')}`, { method: 'DELETE' });
-          if (removed.status === 204) deleted.push(entry.name);
-          else refused.push({ branch: entry.name, reason: `GitHub returned HTTP ${removed.status}.` });
+          // Narrow the listing/compare-to-delete race with an immediate SHA
+          // read-back. GitHub REST has no conditional ref-delete primitive, so
+          // this is a guard rather than a claim of atomic deletion.
+          const expectedSha = input.expected_sha === undefined ? entry.sha : text(input.expected_sha);
+          const deletion = await deleteGitHubBranchIfUnchanged(request, base, entry.name, expectedSha);
+          if (deletion.outcome === 'deleted') deleted.push(entry.name);
+          else if (deletion.outcome === 'already_absent') alreadyAbsent.push(entry.name);
+          else refused.push({ branch: entry.name, reason: deletion.reason });
         }
 
         return {
           repository: `${owner}/${repo}`,
           default_branch: defaultBranch,
           deleted,
+          already_absent: alreadyAbsent,
           refused,
           next_step: deleted.length
             ? `Deleted ${deleted.length} branch(es) on GitHub: ${deleted.join(', ')}.${refused.length ? ` ${refused.length} refused.` : ''}`
@@ -2952,7 +3325,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         // the workspace's actual branch — malformed input would already have
         // thrown inside resolveWorkspaceId, so this second parse cannot fail
         // where the first one succeeded.
-        const requestedBranch = typeof input.workspace === 'string' && input.workspace.trim()
+        const requestedBranch = typeof input.workspace === 'string' && input.workspace.trim() && !isWorkspaceId(input.workspace)
           ? parseWorkspaceAddress(input.workspace.trim()).branch
           : undefined;
         const branch = requestedBranch === undefined ? (workspaceBranch ?? '') : requestedBranch;
@@ -3198,29 +3571,65 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           await requireApproval(env, identity, approvalId, workspaceId, 'cloudflare.deploy', approvalPayload);
         }
         const workspace = await authorizedCoordinator(env, identity, workspaceId);
-        const result = await workspace.shellExec({
+        const synced = await withDeadline(workspace.syncToRemoteHead(), 10_000);
+        if (!synced?.synced) {
+          throw new ForgeError({
+            code: synced?.blockedByLocalChanges ? 'FORGE_GIT_DIRTY' : 'FORGE_GIT_FETCH_FAILED',
+            message: synced?.blockedByLocalChanges
+              ? 'Forge found preserved container writes and refused to reset over them before deploying. Use forge_edit to publish or discard those changes deliberately, then retry forge_cloudflare_deploy.'
+              : 'Forge could not prove the checkout matches the GitHub branch before deploying, so no deploy started. Retry forge_cloudflare_deploy after checking forge_workspace_get.',
+            retryable: !synced?.blockedByLocalChanges
+          });
+        }
+        const started = asRecord(await workspace.processStart({
           command,
           cwd,
-          timeoutMs: 300_000,
           environment: {
             ...attached.vars,
             CLOUDFLARE_API_TOKEN: token,
             CLOUDFLARE_ACCOUNT_ID: accountId
           },
           networkPolicy: 'development',
-          outputLimitBytes: 200_000,
+          expectedRevision: undefined,
+          idempotencyKey: text(input.idempotency_key),
           approved: true,
-          mode: 'mutating'
-        });
-        const combined = `${result.stdout}\n${result.stderr}`;
+        }));
+        const startedValue = started.value && typeof started.value === 'object'
+          ? started.value as Record<string, unknown>
+          : started;
+        const processId = startedValue.id ?? started.processId ?? started.id;
+        if (typeof processId !== 'string' || !processId.startsWith('proc_')) {
+          throw new ForgeError({
+            code: 'FORGE_WORKSPACE_CONFLICT',
+            message: 'The deploy process did not return a process id, so Forge cannot track its outcome. Call forge_process_list before retrying with a new idempotency key.',
+            retryable: false
+          });
+        }
+        const waited = await withDeadline(
+          workspace.processWait({ processId: processId as ProcessId, timeoutMs: 15_000 }) as unknown as Promise<Record<string, unknown>>,
+          16_000
+        );
+        if (!waited || waited.timedOut) {
+          if (approvalId) await completeApproval(env, approvalId, true, { reusable: true });
+          return {
+            deployed: false,
+            accepted: true,
+            process_id: processId,
+            approval_id: approvalId,
+            next_step: `Deploy is still running as ${processId}. Call forge_process_wait with that process_id; do not restart it. Then retry forge_cloudflare_deploy with the same idempotency_key and approval_id to obtain a verified deploy_receipt.`
+          };
+        }
+        const process = waited.process as { exitCode?: number };
+        const logs = asRecord(await workspace.processLogs({ processId: processId as ProcessId }));
+        const combined = String(logs.data ?? '');
         const redacted = await vaultService(env).redactOutput(combined, identity.tenantId as TenantId, workspaceId);
-        if (result.exitCode !== 0) {
+        if (process.exitCode !== 0) {
           if (approvalId) await completeApproval(env, approvalId, false);
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `Wrangler deploy failed (exit ${result.exitCode}). Do not claim the Worker is live.`,
+            message: `Wrangler deploy failed (exit ${String(process.exitCode)}). Inspect forge_process_logs for ${processId}; do not claim the Worker is live.`,
             retryable: true,
-            details: { exitCode: result.exitCode, output_tail: redacted.slice(-4_000) }
+            details: { process_id: processId, exitCode: process.exitCode, output_tail: redacted.slice(-4_000) }
           });
         }
         const workerName = parseWranglerWorkerName(redacted);
@@ -3232,7 +3641,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             const probe = await fetch(publishedUrl, {
               method: 'GET',
               redirect: 'follow',
-              signal: AbortSignal.timeout(15_000)
+              signal: AbortSignal.timeout(8_000)
             });
             httpStatus = probe.status;
             // Any HTTP response from the hostname proves the Worker route exists;
@@ -3265,6 +3674,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const includeOutput = input.include_output === true;
         return {
           deployed: true,
+          accepted: true,
+          process_id: processId,
           deploy_receipt: deployReceipt,
           ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {}),
           ...(includeOutput ? { stdout_tail: redacted.slice(-3_000) } : {}),
@@ -3307,8 +3718,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           preview_capability_header: 'x-forge-preview-capability'
         };
       },
-            forge_preview: async (input) => {
+      forge_preview: async (input) => {
         const identity = this.identity();
+        // One deadline covers startup and capture. A 30s startup budget followed
+        // by the old 110s capture budget still lost the whole response at the
+        // host's ~60s transport boundary.
+        const toolDeadlineAt = Date.now() + 45_000;
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input)) as WorkspaceId;
         // Getting here used to cost four calls and a polling loop: start the dev
         // server, poll its logs until it booted, expose a preview, then capture.
@@ -3319,28 +3734,32 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const workspace = await authorizedCoordinator(env, identity, workspaceId);
         let previewId = input.preview_id ? text(input.preview_id) : '';
         if (!previewId) {
-          const deadline = Date.now() + number(input.preview_wait_ms);
+          const deadline = Math.min(toolDeadlineAt - 10_000, Date.now() + number(input.preview_wait_ms));
           let lastReason = 'the dev server did not start in time';
           for (;;) {
-            const started = await workspace.startReviewPreview({
-              hostname: env.FORGE_PREVIEW_HOSTNAME,
-              ttlSeconds: 3600
-            }).catch((error: unknown) => ({
+            const remainingMs = Math.max(250, Math.min(5_000, deadline - Date.now()));
+            const started = await withDeadline(
+              workspace.startReviewPreview({
+                hostname: env.FORGE_PREVIEW_HOSTNAME,
+                ttlSeconds: 3600
+              }) as unknown as Promise<{ ready: boolean; previewId?: string; reason?: string }>,
+              remainingMs
+            ).catch((error: unknown) => ({
               ready: false as const,
               reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown'
-            }));
-            if (started.ready) {
+            })) ?? { ready: false as const, reason: 'the workspace did not answer before the startup observation deadline' };
+            if (started.ready && started.previewId) {
               previewId = started.previewId;
               break;
             }
-            lastReason = started.reason;
+            lastReason = started.reason ?? 'the dev server did not become ready';
             // No dev server to run is terminal — waiting cannot conjure one.
             if (lastReason.includes('no dev server command') || Date.now() >= deadline) {
               throw new ForgeError({
                 code: 'FORGE_PREVIEW_UNAVAILABLE',
                 message: lastReason.includes('no dev server command')
                   ? 'No dev server command was detected for this project, so there is nothing to screenshot. Start the server with forge_shell async:true, then call forge_preview again (omit preview_id) or pass preview_id once exposed.'
-                  : `The preview was not ready in time (${lastReason}). Check forge_process_logs, or raise preview_wait_ms.`,
+                  : `The preview was not ready inside this call's host-safe startup budget (${lastReason}). Check forge_process_logs, then retry forge_preview; do not restart an already-running server.`,
                 retryable: true
               });
             }
@@ -3360,7 +3779,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         const captures = input.captures as Array<{ selection?: string; route: string; state: string; steps?: Array<{ kind: BrowserActionStep['kind']; selector?: string; value?: string; key?: string; text?: string; path?: string; timeout_ms?: number }> }>;
         const viewports = normalizeViewports(input.viewports);
         const startedAt = Date.now();
-        const deadlineAt = startedAt + 110_000;
+        const deadlineAt = toolDeadlineAt;
         const cells = captures.flatMap((capture) => viewports.map((viewport) => ({ capture, viewport })));
         // Capture cells in parallel with per-cell error isolation, so one failed
         // route no longer throws away the whole packet (the old serial loop did).

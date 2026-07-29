@@ -55,6 +55,53 @@ describe('Forge policy', () => {
     );
   });
 
+  it('blocks raw git push in direct, global-option, wrapper, and compound forms', () => {
+    const blocked = [
+      'git push',
+      'git push origin HEAD:forge/fix',
+      'git --no-pager push origin HEAD',
+      'git -C /workspace/repo push',
+      'git -c credential.helper= push origin HEAD',
+      '/usr/bin/git push origin HEAD',
+      '"/usr/bin/git" push origin HEAD',
+      'env git push origin HEAD',
+      'env -i HOME=/tmp git push origin HEAD',
+      'env -C /workspace/repo git push origin HEAD',
+      'env --chdir /workspace/repo git push origin HEAD',
+      'env "HOME=/tmp" git push origin HEAD',
+      'HOME=/tmp git push origin HEAD',
+      'GIT_DIR=. GIT_WORK_TREE=/workspace/repo /usr/bin/git push origin HEAD',
+      'command HOME=/tmp git push origin HEAD',
+      'command git push origin HEAD',
+      'exec git push origin HEAD',
+      'git status && git push origin HEAD',
+      'sh -c "git push origin HEAD"',
+      'bash -lc "git -C /workspace/repo push origin HEAD"',
+      'echo $(git push origin HEAD)'
+    ];
+    for (const command of blocked) {
+      const decision = classifyCommand(command, 'development');
+      expect(decision, command).toMatchObject({ classification: 'prohibited', allowed: false });
+      expect(decision.reason, command).toContain('forge_edit');
+      expect(decision.reason, command).toContain('forge_merge');
+      expect(() => assertCommandAllowed(command, 'development', true), command).toThrowError(
+        expect.objectContaining({ code: 'FORGE_COMMAND_BLOCKED' })
+      );
+    }
+  });
+
+  it('does not mistake other git commands or arguments containing push for raw git push', () => {
+    for (const command of [
+      'git status',
+      'git commit -m "document git push behavior"',
+      'git branch push-fix',
+      'echo git push',
+      'printf "git push"'
+    ]) {
+      expect(classifyCommand(command, 'development').allowed, command).toBe(true);
+    }
+  });
+
   // The property that actually matters: a benign leading command must never let
   // a severe one ride along behind it, wherever in the line it hides.
   it('catches a severe command hidden anywhere in a chain', () => {

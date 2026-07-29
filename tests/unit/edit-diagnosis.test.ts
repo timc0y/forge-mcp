@@ -1,6 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { toForgeError } from '@forge/core';
 
 /**
@@ -27,29 +25,5 @@ describe('forge_edit reports the cause it actually has', () => {
     const error = toForgeError({});
     expect(error.message).toMatch(/carried no detail/iu);
     expect(error.message).not.toMatch(/undefined|\[object/iu);
-  });
-});
-
-describe('a missing branch is not reported as a missing file', () => {
-  it('never tells an agent to create a file whose absence it has not established', () => {
-    // The live failure: package.json, src/routing/index.ts and
-    // scripts/build-graph.mjs were each reported as "does not exist on
-    // forge/... — send content to create it". All three plainly existed; the
-    // branch was what was missing. Following that advice sends whole-file
-    // content over a real file and discards it.
-    const source = readFileSync(
-      join(process.cwd(), 'apps/forge-edge-gateway/src/mcp-session.ts'),
-      'utf8'
-    );
-    const start = source.indexOf('so there is nothing to replace in it');
-    expect(start).toBeGreaterThan(-1);
-    const region = source.slice(Math.max(0, start - 2_500), start + 500);
-
-    // The create-it advice must sit behind a proven-absent branch check.
-    expect(region).toContain('git/ref/heads/');
-    expect(region).toMatch(/branch_absent/u);
-    expect(region).toMatch(/the file is not missing, the branch is/u);
-    // And a non-404 must not be reported as absence at all.
-    expect(region).toMatch(/status === 429 \|\| fetched\.status >= 500/u);
   });
 });

@@ -6,4 +6,4 @@ Cloudflare `McpAgent` owns protocol-session state only. Workspace state lives in
 
 Primary transport is Streamable HTTP. A future stdio proxy forwards to the same authenticated endpoint and contains no business logic.
 
-All tool results include structured JSON. Side effects are described in tool metadata, outputs are bounded, mutating tools take idempotency keys and expected revisions, and provider failures are mapped to stable Forge error codes.
+All tool results include structured JSON. Side effects are described in tool metadata, outputs are bounded, and provider failures are mapped to stable Forge error codes. Retryable workspace mutations use idempotency keys and expected revisions; remote GitHub mutations additionally use content or ref-SHA preconditions and fresh provider read-back where the operation supports them.

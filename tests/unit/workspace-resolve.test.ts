@@ -118,6 +118,11 @@ describe('resolving which workspace a call means', () => {
     expect(await resolveWorkspaceId(env, identity, { workspaceId: WS_A })).toBe(WS_A);
   });
 
+  it('accepts a freshly returned workspace id through the public workspace field', async () => {
+    const env = envWith([], { throws: true });
+    expect(await resolveWorkspaceId(env, identity, { workspace: WS_A })).toBe(WS_A);
+  });
+
   it('resolves the single open workspace when nothing is given', async () => {
     const env = envWith([{ workspaceId: WS_A, owner: 'acme', repo: 'webapp', branch: 'forge/fix-login' }]);
     for (const empty of [{}, { workspace: undefined }]) {
@@ -216,9 +221,21 @@ describe('resolving which workspace a call means', () => {
     });
   });
 
-  it('treats a lookup failure as "nothing open" rather than crashing the call', async () => {
+  it('preserves a registry lookup failure as a retryable provider error, not "nothing open"', async () => {
     await expect(
       resolveWorkspaceId(envWith([{ workspaceId: WS_A }], { throws: true }), identity, {})
-    ).rejects.toMatchObject({ code: 'FORGE_VALIDATION_FAILED' });
+    ).rejects.toMatchObject({
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      retryable: true,
+      details: {
+        cause: 'D1 unavailable',
+        nextAction: expect.stringContaining('Retry the same call')
+      }
+    });
+    await resolveWorkspaceId(envWith([], { throws: true }), identity, {}).catch((error: Error) => {
+      expect(error.message).toContain('workspace registry');
+      expect(error.message.toLowerCase()).toContain('do not create another workspace');
+      expect(error.message).not.toContain('No workspace is open');
+    });
   });
 });

@@ -48,6 +48,14 @@ flowchart TD
 
 ## Implemented vertical slice
 
-The current foundation implements GitHub-backed identity, installation repository synchronization, public and private Git clone through scoped capabilities, explicit Sandbox sessions, deterministic idempotent workspace creation, durable provisioning and destruction workflows, deterministic project detection, file tree/read/patch, bounded shell commands, background processes, Git status/diff, `forge/` branches, bot commits, approval-gated pushes and draft PRs, private preview capabilities, Browser Run screenshot/accessibility snapshots, workspace revisions, mutation serialization, D1 reconciliation and teardown.
+The current private pilot implements GitHub-backed identity and installation
+repository synchronization, deterministic task/workspace records, durable
+provisioning and destruction workflows, remote-first GitHub file reads and
+guarded edits, bounded shell commands and managed processes, snapshots and
+restore, live observer views, branch/history/access inspection, PR readiness
+and merge actions, private previews, Browser Run evidence, encrypted secret
+attachments, and verified Cloudflare deployment receipts.
 
-The deployed private pilot includes OAuth consent, public clone and the complete review-evidence path. The private Git credential proxy, push/PR approval, suspension/restore workflows and full egress enforcement remain release gates. Their contracts and ADRs exist; the code does not pretend they are complete.
+Repository changes are committed directly through the GitHub API and verified
+by ref read-back. The sandbox remains responsible for execution and preview
+state; it is not the repository durability authority.

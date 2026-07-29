@@ -95,7 +95,20 @@ describe('Forge MCP public contracts', () => {
     expect(edit.approval).toBe('none');
     const schema = edit.inputSchema as Record<string, unknown>;
     expect(Object.keys(schema)).toContain('files');
+    expect(Object.keys(schema)).toContain('idempotency_key');
     expect(Object.keys(schema)).not.toContain('expected_revision');
+  });
+
+  it('keeps every synchronous observation inside the host transport budget', () => {
+    const shell = tool('forge_shell').inputSchema as Record<string, { parse(value: unknown): unknown }>;
+    const wait = tool('forge_process_wait').inputSchema as Record<string, { parse(value: unknown): unknown; safeParse(value: unknown): { success: boolean } }>;
+    const review = tool('forge_review').inputSchema as Record<string, { parse(value: unknown): unknown; safeParse(value: unknown): { success: boolean } }>;
+    const preview = tool('forge_preview').inputSchema as Record<string, { parse(value: unknown): unknown; safeParse(value: unknown): { success: boolean } }>;
+    expect(shell.timeout_ms.parse(undefined)).toBe(30_000);
+    expect(wait.timeout_ms.parse(undefined)).toBe(30_000);
+    expect(wait.timeout_ms.safeParse(30_001).success).toBe(false);
+    expect(review.time_budget_ms.safeParse(40_001).success).toBe(false);
+    expect(preview.preview_wait_ms.safeParse(30_001).success).toBe(false);
   });
 
   it('exposes secret vault tools (detach folded into attach)', () => {
@@ -191,6 +204,12 @@ describe('Forge MCP public contracts', () => {
     expect(shell.async.safeParse(true).success).toBe(true);
     const list = tool('forge_process_list').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
     expect(list.process_id.safeParse('proc_abc').success).toBe(true);
+  });
+
+  it('requires a stable key for managed Cloudflare deploy retries', () => {
+    const deploy = tool('forge_cloudflare_deploy').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(deploy.idempotency_key.safeParse(undefined).success).toBe(false);
+    expect(deploy.idempotency_key.safeParse('deploy-release-2026-07-29').success).toBe(true);
   });
 
   it('edits whole files and deletes by null content', () => {

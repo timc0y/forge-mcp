@@ -15,7 +15,7 @@ sequenceDiagram
   M->>D: initialize(deterministic workspace_id)
   D-->>M: requested + operation_id + revision
   M->>W: create(workflow_id, workspace_id)
-  M-->>C: provisioning state
+  M-->>C: workspace_id + operation_id + provisioning state
   W->>D: provisionInitialized()
   D->>A: provisionWorkspace()
   A->>S: create + clone + detect + bootstrap
@@ -42,7 +42,7 @@ sequenceDiagram
   S-->>D: provider endpoint
   D-->>M: preview_id + expiry
   M-->>C: Forge URL + scoped capability
-  C->>M: forge_browser_screenshot(preview_id)
+  C->>M: forge_preview(preview_id)
   M->>B: screenshot(Forge private URL)
   B->>P: authenticated internal request
   P->>S: proxy request
@@ -50,24 +50,24 @@ sequenceDiagram
   B-->>M: artifact reference + hash
 ```
 
-## Approved push path
+## Remote edit and review path
 
 ```mermaid
 sequenceDiagram
   participant A as Agent
   participant F as Forge
+  participant GH as GitHub API
   participant U as User approval
-  participant G as Git credential proxy
-  participant GH as GitHub App
 
-  A->>F: forge_git_push(branch, diff_hash)
-  F->>F: verify tenant, repository, branch, ancestry, secret scan
-  F->>U: approval request with exact commit range
-  U-->>F: approved capability
-  F->>G: one-operation capability
-  G->>GH: mint installation token
-  G->>GH: proxy permitted Git request
-  GH-->>G: push result
-  G-->>F: redacted result
-  F-->>A: attributable commit range
+  A->>F: forge_edit(workspace, files, idempotency_key)
+  F->>GH: read feature ref + required blobs
+  F->>F: apply replacements and build commit
+  F->>GH: create objects + update expected feature ref
+  F->>GH: read feature ref back
+  GH-->>F: observed commit SHA
+  F-->>A: remote commit URL + verified SHA
+  A->>F: forge_merge(workspace)
+  F->>GH: open/update review request
+  F-->>U: one approval URL
+  U-->>F: approve review/merge path
 ```

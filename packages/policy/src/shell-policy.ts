@@ -376,6 +376,91 @@ function decide(
   return { classification, allowed, approvalRequired, reason };
 }
 
+const GIT_GLOBAL_OPTIONS_WITH_ARGUMENT = new Set([
+  '-C',
+  '-c',
+  '--config-env',
+  '--exec-path',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--super-prefix'
+]);
+
+function commandName(token: string | undefined): string {
+  const value = shellTokenValue(token);
+  return value.split('/').pop()?.toLowerCase() ?? '';
+}
+
+function shellTokenValue(token: string | undefined): string {
+  const value = token ?? '';
+  const quote = value[0];
+  return value.length >= 2 && (quote === '"' || quote === "'") && value.endsWith(quote)
+    ? value.slice(1, -1)
+    : value;
+}
+
+/** Recognise visible raw pushes through common exec/env wrappers and Git global options. */
+function isRawGitPush(command: string): boolean {
+  const tokens = command.trim().split(/\s+/u).filter(Boolean);
+  let index = 0;
+
+  // POSIX assignment words may precede an executable without `env`.
+  // Treat them like env's NAME=value operands so `HOME=/tmp git push`
+  // cannot bypass the same policy applied to `env HOME=/tmp git push`.
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(shellTokenValue(tokens[index]))) index += 1;
+
+  for (let wrappers = 0; wrappers < 4; wrappers += 1) {
+    const wrapper = commandName(tokens[index]);
+    if (wrapper === 'env') {
+      index += 1;
+      while (index < tokens.length) {
+        const token = shellTokenValue(tokens[index]);
+        if (token === '--') {
+          index += 1;
+          break;
+        }
+        if (token === '-u' || token === '--unset' || token === '-S' || token === '--split-string' || token === '-C' || token === '--chdir' || token === '--argv0') {
+          index += 2;
+          continue;
+        }
+        if (token.startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/u.test(token)) {
+          index += 1;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+    if (wrapper === 'command' || wrapper === 'exec') {
+      index += 1;
+      while (tokens[index]?.startsWith('-')) index += 1;
+      while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(shellTokenValue(tokens[index]))) index += 1;
+      continue;
+    }
+    break;
+  }
+
+  if (commandName(tokens[index]) !== 'git') return false;
+  index += 1;
+  while (index < tokens.length) {
+    const token = shellTokenValue(tokens[index]);
+    if (token === 'push') return true;
+    if (!token.startsWith('-')) return false;
+    index += GIT_GLOBAL_OPTIONS_WITH_ARGUMENT.has(token) ? 2 : 1;
+  }
+  return false;
+}
+
+function rawGitPushDecision(): ShellDecision {
+  return decide(
+    'prohibited',
+    false,
+    false,
+    'Raw git push bypasses Forge\'s guarded, verified GitHub write path. Use forge_edit to commit file changes and forge_merge to merge the pull request; Forge performs the required remote writes.'
+  );
+}
+
 /** Classify one already-split command segment. */
 function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, depth: number): ShellDecision {
   const raw = segment.text.trim();
@@ -396,6 +481,8 @@ function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, dep
       return worstOf(split.segments.map((part) => classifySegment(part, networkPolicy, depth + 1)));
     }
   }
+
+  if (isRawGitPush(raw) || isRawGitPush(trimmed)) return rawGitPushDecision();
 
   if (prohibited.some((rule) => rule.test(trimmed))) {
     return decide('prohibited', false, false, 'Command requests prohibited privileges or network access.');
@@ -462,6 +549,9 @@ export function classifyCommand(command: string, networkPolicy: NetworkPolicyMod
   if (!trimmed || trimmed.length > 16_384 || trimmed.includes('\0')) {
     return decide('prohibited', false, false, 'Command is empty, too large, or contains a NUL byte.');
   }
+  // Catch a direct push even if a later unbalanced quote makes structural
+  // parsing fail. Well-formed wrappers and chains are handled per segment.
+  if (isRawGitPush(trimmed)) return rawGitPushDecision();
   const { segments, parseFailed } = splitCommandSegments(trimmed);
   if (parseFailed || segments.length === 0) {
     // Structure we could not read confidently. Fall back to the old behaviour —

@@ -7,6 +7,7 @@ const tool = (name: string) => forgeTools.find((entry) => entry.name === name)!;
 describe('forge_pr', () => {
   it('is an external side effect — it can merge', () => {
     expect(tool('forge_pr').sideEffect).toBe('external');
+    expect(tool('forge_pr').approval).toBe('required');
     expect(toolAnnotations('forge_pr', 'external')).toMatchObject({ readOnlyHint: false });
   });
 
@@ -14,6 +15,9 @@ describe('forge_pr', () => {
     const schema = tool('forge_pr').inputSchema as Record<string, { parse(value: unknown): unknown }>;
     expect(schema.action.parse(undefined)).toBe('list');
     expect(schema.force.parse(undefined)).toBe(false);
+    expect(schema).toHaveProperty('expected_head_sha');
+    expect(schema).toHaveProperty('idempotency_key');
+    expect(schema).toHaveProperty('approval_id');
   });
 
   it('reports blockers and a safe_to_merge verdict rather than a bare state', () => {

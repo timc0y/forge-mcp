@@ -82,6 +82,10 @@ export interface RemoteCommitResult {
   /** True when the resulting tree was identical to the parent's. */
   unchanged: boolean;
   paths: string[];
+  /** The branch SHA observed in an authoritative read after the mutation. */
+  remoteSha: string;
+  /** True only after GitHub read-back matched the commit we attempted to publish. */
+  pushVerified: true;
 }
 
 export class RemoteCommitConflict extends Error {
@@ -130,9 +134,9 @@ export interface CreateBranchRefResult {
  * container exists, or {@link commitFilesToBranch} creating one on the fly for
  * a branch an agent is already editing.
  *
- * A 422 is tolerated, not retried: it means someone else created the same ref
- * between our read and our write, which is a race won by whichever side got
- * there first, not a failure.
+ * GitHub uses 422 for both ref collisions and unrelated validation failures.
+ * A collision is successful only when an authoritative read proves the ref
+ * points at the exact base commit requested by this call.
  */
 export async function createBranchRef(
   request: GitHubRequest,
@@ -142,10 +146,37 @@ export async function createBranchRef(
     method: 'POST',
     body: { ref: `refs/heads/${input.branch}`, sha: input.baseSha }
   });
-  if (created.status !== 201 && created.status !== 422) {
+  if (created.status === 201) return { created: true };
+  if (created.status !== 422) {
     throw new Error(`GitHub branch create failed with HTTP ${created.status}.`);
   }
-  return { created: created.status === 201 };
+  const validation = created.json as {
+    message?: string;
+    errors?: Array<{ code?: string; message?: string } | string>;
+  };
+  const collision = /reference already exists/iu.test(validation.message ?? '') ||
+    (validation.errors ?? []).some((error) =>
+      typeof error === 'string'
+        ? /already exists/iu.test(error)
+        : error.code === 'already_exists' || /already exists/iu.test(error.message ?? '')
+    );
+  if (!collision) {
+    throw new Error(`GitHub branch create failed validation with HTTP 422: ${validation.message ?? 'unknown validation error'}.`);
+  }
+  const existing = await request(
+    `/repos/${input.owner}/${input.repo}/git/ref/heads/${encodePath(input.branch)}`
+  );
+  const existingSha = existing.status === 200
+    ? (existing.json as { object?: { sha?: string } }).object?.sha
+    : undefined;
+  if (existingSha !== input.baseSha) {
+    throw new Error(
+      existing.status === 200
+        ? `GitHub refused to create ${input.branch}: the existing ref points at ${existingSha ?? 'an unknown commit'}, not requested base ${input.baseSha}.`
+        : `GitHub branch create returned a ref collision, and the ref could not be verified (read-back HTTP ${existing.status}).`
+    );
+  }
+  return { created: false };
 }
 
 async function expect<T>(
@@ -302,7 +333,17 @@ export async function commitFilesToBranch(
     // commit here would be a lie of a different kind — it would look like work
     // happened. Report `unchanged` instead.
     if (tree.sha === parentCommit.tree.sha) {
-      return { treeSha: tree.sha, branch, parentSha, attempts, rebased, unchanged: true, paths };
+      return {
+        treeSha: tree.sha,
+        branch,
+        parentSha,
+        attempts,
+        rebased,
+        unchanged: true,
+        paths,
+        remoteSha: parentSha,
+        pushVerified: true
+      };
     }
 
     const commit = await expect<{ sha: string }>(
@@ -318,6 +359,17 @@ export async function commitFilesToBranch(
       body: { sha: commit.sha, force: false }
     });
     if (update.status === 200) {
+      const verified = await request(`${base}/git/ref/heads/${encodePath(branch)}`);
+      const remoteSha = verified.status === 200
+        ? (verified.json as { object?: { sha?: string } }).object?.sha
+        : undefined;
+      if (remoteSha !== commit.sha) {
+        throw new Error(
+          verified.status === 200
+            ? `GitHub ref update could not be verified: ${branch} points at ${remoteSha ?? 'an unknown commit'}, not ${commit.sha}.`
+            : `GitHub ref update could not be verified: read-back failed with HTTP ${verified.status}.`
+        );
+      }
       return {
         commitSha: commit.sha,
         treeSha: tree.sha,
@@ -326,7 +378,9 @@ export async function commitFilesToBranch(
         attempts,
         rebased,
         unchanged: false,
-        paths
+        paths,
+        remoteSha,
+        pushVerified: true
       };
     }
     // 422 is GitHub's non-fast-forward: the branch moved between our read and

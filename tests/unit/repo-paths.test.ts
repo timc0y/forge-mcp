@@ -3,16 +3,42 @@ import { forgeTools } from '@forge/mcp-core';
 import { normalizeRepoPath, readableFile, toContainerPath } from '../../apps/forge-edge-gateway/src/repo-paths';
 
 describe('normalizeRepoPath', () => {
-  it('accepts repo-relative and absolute workspace paths identically', () => {
+  it('accepts repo-relative and absolute repository paths identically', () => {
     expect(normalizeRepoPath('src/a.ts')).toBe('src/a.ts');
     expect(normalizeRepoPath('/workspace/repo/src/a.ts')).toBe('src/a.ts');
     expect(normalizeRepoPath('./src/a.ts')).toBe('src/a.ts');
+    expect(normalizeRepoPath('/workspace/repo')).toBe('');
   });
 
-  it('refuses anything that leaves the repository', () => {
+  it('refuses absolute paths outside the checkout, including sibling-prefix tricks', () => {
+    for (const bad of [
+      '/workspace',
+      '/workspace/',
+      '/workspace/forge',
+      '/workspace/forge/metadata.json',
+      '/workspace/tmp/result',
+      '/workspace/repository/secret',
+      '/workspace/repo-evil/secret',
+      '/etc/passwd'
+    ]) {
+      expect(() => normalizeRepoPath(bad), bad).toThrowError(/workspace\/repo/);
+    }
+  });
+
+  it('refuses traversal and NUL bytes in either path form', () => {
     // A commit is built from these paths verbatim, so an escape here would
     // write outside the repo rather than fail.
-    for (const bad of ['../secrets', 'src/../../etc/passwd', 'a/..', '..', '']) {
+    for (const bad of [
+      '../secrets',
+      'src/../../etc/passwd',
+      'a/..',
+      '..',
+      '/workspace/repo/../forge/metadata.json',
+      '/workspace/repo/src/../../forge/metadata.json',
+      'src/\0secret',
+      '/workspace/repo/src/\0secret',
+      ''
+    ]) {
       expect(() => normalizeRepoPath(bad), bad).toThrow();
     }
   });
@@ -28,15 +54,25 @@ describe('toContainerPath', () => {
     expect(toContainerPath('  src/a.ts  ')).toBe('/workspace/repo/src/a.ts');
   });
 
-  it('leaves an absolute workspace path alone', () => {
+  it('leaves an absolute repository path alone', () => {
     expect(toContainerPath('/workspace/repo/src/a.ts')).toBe('/workspace/repo/src/a.ts');
     expect(toContainerPath('/workspace/repo')).toBe('/workspace/repo');
-    expect(toContainerPath('/workspace')).toBe('/workspace');
   });
 
-  it('still refuses to escape the repository', () => {
-    expect(() => toContainerPath('../etc/passwd')).toThrow();
-    expect(() => toContainerPath('src/../../etc/passwd')).toThrow();
+  it('refuses every absolute path outside the checkout, traversal, and NUL bytes', () => {
+    for (const bad of [
+      '/workspace',
+      '/workspace/forge',
+      '/workspace/tmp/result',
+      '/workspace/repository/secret',
+      '/workspace/repo-evil/secret',
+      '/workspace/repo/../forge/metadata.json',
+      '../etc/passwd',
+      'src/../../etc/passwd',
+      'src/\0secret'
+    ]) {
+      expect(() => toContainerPath(bad), bad).toThrow();
+    }
   });
 
   it('round-trips a listing entry back into a read', () => {
@@ -88,7 +124,7 @@ describe('tool path defaults resolve to somewhere real', () => {
         if (field !== 'path' && field !== 'cwd') continue;
         const defaulted = schema.safeParse?.(undefined)?.data;
         if (typeof defaulted !== 'string') continue;
-        expect(toContainerPath(defaulted), `${tool.name}.${field}`).toMatch(/^\/workspace(\/|$)/u);
+        expect(toContainerPath(defaulted), `${tool.name}.${field}`).toMatch(/^\/workspace\/repo(\/|$)/u);
         expect(toContainerPath(defaulted), `${tool.name}.${field}`).not.toMatch(/\/repo\/repo/u);
       }
     }

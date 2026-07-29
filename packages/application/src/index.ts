@@ -182,6 +182,8 @@ interface WorkspaceCheckpoint extends SnapshotRef {
 
 export interface CreateWorkspaceInput {
   workspaceId?: WorkspaceId;
+  /** Stable receipt supplied by transport layers that must survive a timed-out initialize RPC. */
+  operationId?: OperationId;
   tenantId: TenantId;
   projectId: ProjectId;
   repository: RepositoryRef;
@@ -834,7 +836,7 @@ export class ForgeApplicationService {
     assertRef(input.ref);
     const now = new Date().toISOString();
     const id = input.workspaceId ?? ids.workspace();
-    const operationId = ids.operation();
+    const operationId = input.operationId ?? ids.operation();
     return {
       workspace: {
         id,
@@ -2270,7 +2272,7 @@ export class ForgeApplicationService {
       exitCode: process?.exitCode ?? entry?.exitCode,
       completedAt: process?.completedAt ?? entry?.completedAt ?? null,
       mutatesFilesystem: entry?.mutatesFilesystem ?? process?.mutatesFilesystem ?? false,
-      filesystemCommitted: Boolean(entry?.checkpointAfter),
+      filesystemCheckpointed: Boolean(entry?.checkpointAfter),
       workspaceRevision: record.workspace.revision,
       allowedNextActions: status === 'running' || status === 'starting'
         ? ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
@@ -2293,6 +2295,7 @@ export class ForgeApplicationService {
       command: entry?.command || process.command,
       mutatesFilesystem: entry?.mutatesFilesystem ?? process.mutatesFilesystem,
       checkpointAfter: entry?.checkpointAfter,
+      filesystemCheckpointed: Boolean(entry?.checkpointAfter),
       ...(entry?.completedAt
         ? { completedAt: entry.completedAt, exitCode: entry.exitCode ?? process.exitCode }
         : {})
@@ -2320,7 +2323,7 @@ export class ForgeApplicationService {
       completedAt: entry.completedAt,
       mutatesFilesystem: entry.mutatesFilesystem,
       checkpointAfter: entry.checkpointAfter,
-      filesystemCommitted: Boolean(entry.checkpointAfter)
+      filesystemCheckpointed: Boolean(entry.checkpointAfter)
     }));
     return {
       workspaceId: record.workspace.id,
@@ -2374,7 +2377,7 @@ export class ForgeApplicationService {
             exitCode: processEntry.exitCode,
             completedAt: processEntry.completedAt,
             mutatesFilesystem: processEntry.mutatesFilesystem,
-            filesystemCommitted: Boolean(processEntry.checkpointAfter)
+            filesystemCheckpointed: Boolean(processEntry.checkpointAfter)
           }
         : null,
       dependencyState: dependencyStateView(record.dependencyState),
@@ -2389,7 +2392,11 @@ export class ForgeApplicationService {
     // Never restore a checkpoint while waiting — that would discard the process
     // filesystem writes that this wait is supposed to publish.
     const handle = await this.handle(record, { allowRestore: false });
-    const requestedTimeoutMs = timeoutMs ?? 120_000;
+    // This method is reached through an HTTP tool call whose transport expires
+    // at roughly 60 seconds. Keep a generous response/ingestion margin even
+    // when an older client asks to wait for several minutes: waiting is
+    // observational, so another short call is always safe.
+    const requestedTimeoutMs = Math.max(250, Math.min(timeoutMs ?? 30_000, 30_000));
     let process: ProcessRecord;
     try {
       if (handle.processWait) {
@@ -2430,11 +2437,16 @@ export class ForgeApplicationService {
           : {})
       },
       dependencyState: dependencyStateView(record.dependencyState),
-      filesystemCommitted: Boolean(entry?.checkpointAfter),
+      // A provider checkpoint protects the container filesystem, but it is not
+      // a GitHub commit. The MCP session separately ingests repository writes
+      // before advertising remote durability.
+      filesystemCheckpointed: Boolean(entry?.checkpointAfter),
       finalLogCursor: null,
       workspaceRevision: record.workspace.revision,
       allowedNextActions: ['forge_shell', 'forge_workspace_get', 'forge_process_logs'],
-      next_step: 'Process finished. Continue with shell commands or forge_workspace_get.'
+      next_step: entry?.mutatesFilesystem && (entry.exitCode ?? process.exitCode ?? 1) === 0
+        ? 'Process finished. Forge is reconciling any repository writes to GitHub before reporting remote durability.'
+        : 'Process finished. Continue with shell commands or forge_workspace_get.'
     };
   }
 
@@ -2447,7 +2459,7 @@ export class ForgeApplicationService {
   ) {
     const process = known ?? await handle.getProcess(processId).catch(() => null);
     const entry = record.processes[processId];
-    const suggestedTimeoutMs = Math.min(600_000, Math.max(timeoutMs * 2, 300_000));
+    const suggestedTimeoutMs = 30_000;
     return {
       timedOut: true as const,
       workspaceId: record.workspace.id,
@@ -2465,12 +2477,12 @@ export class ForgeApplicationService {
           : {})
       },
       dependencyState: dependencyStateView(record.dependencyState),
-      filesystemCommitted: Boolean(entry?.checkpointAfter),
+      filesystemCheckpointed: Boolean(entry?.checkpointAfter),
       finalLogCursor: null,
       suggestedTimeoutMs,
       workspaceRevision: record.workspace.revision,
       allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
-      next_step: `Process ${processId} is still running after ${timeoutMs}ms. Retry forge_process_wait with timeout_ms >= ${suggestedTimeoutMs} (use 600000 for large installs). Do not restart the install.`
+      next_step: `Process ${processId} is still running after this bounded observation. Call forge_process_wait again with the same process_id; each call observes for at most ${suggestedTimeoutMs}ms and never restarts or kills the process.`
     };
   }
 
@@ -3302,7 +3314,10 @@ export class ForgeApplicationService {
       dependencyState,
       processId,
       managedProcess: true,
-      filesystemCommitted: Boolean(waited.filesystemCommitted),
+      // Backwards-compatible deps_install field; its checkpoint receipt remains
+      // separately identified below and process_wait uses the honest
+      // filesystemCheckpointed name.
+      filesystemCommitted: Boolean(waited.filesystemCheckpointed),
       checkpoint: entry?.checkpointAfter
         ? { snapshotId: entry.checkpointAfter, createdAt: entry.completedAt ?? new Date().toISOString(), providerVersion: 'process' }
         : undefined,
@@ -3536,22 +3551,51 @@ export class ForgeApplicationService {
       command: 'git status --porcelain', cwd: '/workspace/repo', timeoutMs: 30_000,
       outputLimitBytes: 200_000, sessionId: 'system', networkPolicy: 'deny_all'
     });
-    if (status.exitCode !== 0) return { changes: [], truncated: false, baseBlobs: {} };
+    if (status.exitCode !== 0) return { changes: [], truncated: true, baseBlobs: {} };
     const entries = status.stdout.split('\n').map((line) => line.trimEnd()).filter(Boolean);
+    // Never publish a partial view and then reset the checkout. If status itself
+    // was cut off, or the bounded file count was exceeded, preserving every
+    // local write is safer than committing a prefix and erasing the remainder.
+    if (status.truncated || entries.length > limit) {
+      return { changes: [], truncated: true, baseBlobs: {} };
+    }
+    const structural = await handle.exec({
+      command: 'git diff HEAD --summary', cwd: '/workspace/repo', timeoutMs: 30_000,
+      outputLimitBytes: 200_000, sessionId: 'system', networkPolicy: 'deny_all'
+    });
+    // The GitHub blob writer cannot faithfully encode renames, copies, type
+    // changes, or executable-bit changes. Refuse the whole collection instead
+    // of publishing only destination bytes and calling the tree durable.
+    if (
+      structural.exitCode !== 0 ||
+      structural.truncated ||
+      /\b(rename|copy|mode change)\b|create mode 100755/iu.test(structural.stdout)
+    ) {
+      return { changes: [], truncated: true, baseBlobs: {} };
+    }
     const changes: Array<{ path: string; content: string | null }> = [];
-    for (const entry of entries.slice(0, limit)) {
+    let contentTruncated = false;
+    for (const entry of entries) {
       const code = entry.slice(0, 2);
       // Rename lines read "R  old -> new"; only the destination matters here.
       const raw = entry.slice(3).split(' -> ').pop() ?? '';
       const path = raw.replace(/^"|"$/gu, '');
-      if (!path || path.includes('..')) continue;
+      if (!path || path.includes('..')) {
+        contentTruncated = true;
+        continue;
+      }
       if (code.includes('D')) {
         changes.push({ path, content: null });
         continue;
       }
       const file = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 500_000 }).catch(() => undefined);
-      if (file && typeof file.content === 'string') changes.push({ path, content: file.content });
+      if (!file || file.truncated || typeof file.content !== 'string') {
+        contentTruncated = true;
+        continue;
+      }
+      changes.push({ path, content: file.content });
     }
+    if (contentTruncated) return { changes: [], truncated: true, baseBlobs: {} };
     // What each changed file looked like at the commit the container is on.
     // A shell command edits from that base, so if origin has moved past it,
     // committing this content would revert whatever moved — the same silent
@@ -3570,7 +3614,7 @@ export class ForgeApplicationService {
         }
       }
     }
-    return { changes, truncated: entries.length > limit, baseBlobs };
+    return { changes, truncated: false, baseBlobs };
   }
 
   /**

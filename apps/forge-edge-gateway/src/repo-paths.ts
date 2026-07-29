@@ -28,20 +28,36 @@ export function readableFile(file: Record<string, unknown>): Record<string, unkn
 }
 
 export function toContainerPath(path: string): string {
-  const trimmed = path.trim();
-  if (trimmed === '/workspace' || trimmed.startsWith('/workspace/')) return trimmed;
-  return `${REPO_ROOT}/${normalizeRepoPath(trimmed)}`;
+  const relative = normalizeRepoPath(path);
+  return relative ? `${REPO_ROOT}/${relative}` : REPO_ROOT;
 }
 
 /** The path as git stores it, or a refusal. Nothing may escape the repository. */
 export function normalizeRepoPath(path: string): string {
-  const relative = path.replace(/^\/workspace\/repo\//u, '').replace(/^\.\//u, '').replace(/^\/+/u, '');
-  if (!relative || relative.startsWith('../') || relative.includes('/../') || relative.endsWith('/..') || relative === '..' || relative.includes('\0')) {
-    throw new ForgeError({
-      code: 'FORGE_VALIDATION_FAILED',
-      message: `"${path}" is not a path inside the repository — it is empty, or escapes the repo root via "..". Use a path relative to the repository root (e.g. "src/a.ts"), or the exact string forge_files_list already returned.`,
-      retryable: false
-    });
+  const trimmed = path.trim();
+  const isRepositoryRoot = trimmed === REPO_ROOT || trimmed === `${REPO_ROOT}/`;
+  let relative: string;
+
+  if (!trimmed || path.includes('\0')) throw invalidRepoPath(path);
+  if (trimmed.startsWith('/')) {
+    if (!isRepositoryRoot && !trimmed.startsWith(`${REPO_ROOT}/`)) throw invalidRepoPath(path);
+    relative = isRepositoryRoot ? '' : trimmed.slice(REPO_ROOT.length + 1);
+  } else {
+    relative = trimmed.replace(/^\.\//u, '');
   }
-  return relative;
+
+  const segments = relative.split('/');
+  if (segments.includes('..')) throw invalidRepoPath(path);
+
+  const normalized = segments.filter((segment) => segment !== '' && segment !== '.').join('/');
+  if (!normalized && !isRepositoryRoot) throw invalidRepoPath(path);
+  return normalized;
+}
+
+function invalidRepoPath(path: string): ForgeError {
+  return new ForgeError({
+    code: 'FORGE_VALIDATION_FAILED',
+    message: `"${path}" is not a safe repository path. Use a repo-relative path such as "src/a.ts", or an absolute path at or below ${REPO_ROOT}. Paths outside ${REPO_ROOT}, traversal via "..", empty paths, and NUL bytes are rejected.`,
+    retryable: false
+  });
 }

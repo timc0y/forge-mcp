@@ -1091,7 +1091,7 @@ export async function requestApproval(
   env: Env,
   identity: Pick<AuthenticatedContext, 'tenantId' | 'subject'>,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
+  action: 'git.push' | 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string; already_approved: boolean }> {
@@ -1146,8 +1146,9 @@ export async function requireApproval(
   identity: Pick<AuthenticatedContext, 'tenantId'>,
   approvalId: string,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
-  expected: Record<string, unknown>
+  action: 'git.push' | 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
+  expected: Record<string, unknown>,
+  options: { consume?: boolean } = {}
 ): Promise<void> {
   const row = await env.METADATA.prepare(
     `SELECT request_payload, state, expires_at FROM approvals
@@ -1181,6 +1182,7 @@ export async function requireApproval(
       details: { changed }
     });
   }
+  if (options.consume === false) return;
   const claimed = await env.METADATA.prepare("UPDATE approvals SET state='executing' WHERE id=?1 AND state='approved'")
     .bind(approvalId).run();
   if ((claimed.meta.changes ?? 0) !== 1) throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This approval has already been used.', retryable: false });

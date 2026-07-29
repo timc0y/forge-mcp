@@ -1,33 +1,79 @@
 # Workspace reliability contract
 
-Forge treats the workspace filesystem and its Git repository as the authority for repository state. Durable-object and D1 fields are an observed record, never a substitute for Git objects.
+Forge treats the GitHub feature branch as the authority for repository state.
+The workspace checkout is a rebuildable execution cache. Durable Object and D1
+fields record coordination state and receipts; they never substitute for the
+remote ref.
 
-## Mutation contract
+## Remote-first mutation
 
-`forge_files_write` is the whole-file mutation primitive. Forge writes the requested bytes, immediately re-reads the same absolute path through the same sandbox handle *and hashes it through the shell filesystem mount*, and only then returns success. Its receipt includes the workspace ID, path, prior and resulting SHA-256, filesystem revision, worktree hash (including untracked files), shell hash, and `readAfterWriteVerified: true`.
+`forge_edit` is the public repository-mutation primitive. It reads the current
+branch tip, applies fragment or whole-file changes, creates Git objects through
+the GitHub API, updates the guarded `forge/*` ref, and reads that ref back. It
+reports success only when the observed remote SHA matches the expected commit.
+An HTTP ref-update response by itself is not proof of durability.
 
-Every file mutation, mutating shell command, branch change and commit requires a provider checkpoint. If Forge cannot create that checkpoint, it does not acknowledge the enclosing mutation as successful. Cloudflare backup retention is seven days; use `forge_work_export` before risky or long-lived work to retain a recovery bundle in Forge artifacts.
+Mutation retries carry an idempotency key, and concurrent calls carry an
+expected revision or ref SHA where applicable. A branch collision is adopted
+only when GitHub's existing ref points at the requested base SHA. Branch
+deletion checks live workspace occupants and verifies the tip again immediately
+before deleting.
 
-All workspace mutations, shell operations, Git operations, process operations, previews, checkpoints, and exports require an explicit `workspace_id`. Forge never chooses an implicit current workspace.
+Raw `git push` is refused by `forge_shell`, including common wrapper and Git
+global-option forms. It would bypass authorization, expected-tip checks,
+idempotency, remote read-back, and receipts.
 
-## Git truth and submission
+## Reads and path isolation
 
-Provisioning records `baseCommit` and `initialHeadCommit` from the actual clone. Outgoing diffs and `forge_submit` compare against the immutable **requestedRef** recorded at workspace creation, not a mutable branch name like `main`. `forge_workspace_prove` returns the recorded and observed branch/HEAD, changed paths, worktree hash, outgoing committed hash, file hashes from the filesystem and HEAD, and remote branch agreement via `ls-remote` when GitHub auth is available.
+`forge_files_list` and `forge_files_read` use the GitHub branch tip. They fall
+back to the cached checkout only for a transient GitHub failure and label the
+source explicitly. Both paths pass through the same helper: inputs must be
+repo-relative or absolute at/below `/workspace/repo`. Forge rejects metadata,
+temporary, sibling-prefix, traversal, empty, and NUL-containing paths before
+either backend is called.
 
-Agent work on `forge/*` branches is auto-pushed to origin after each successful `forge_git_commit` unless `FORGE_AUTO_PUSH_FORGE_BRANCHES` is `false` or `0`. Task completion requires a verified **remote feature SHA** (`remoteBranchSha`); staging via `forge_submit` sets `submittedAt` only.
+Fragment edits against a newly created workspace branch resolve against its
+recorded base commit when the feature ref has not yet been published. The first
+successful edit creates that exact feature ref; it never instructs callers to
+invent a second branch or overwrite a whole file to recover.
 
-## Recovery
+## Transport and process completion
 
-- `forge_workspace_checkpoint` creates a provider snapshot of the workspace including Git data.
-- Checkpoints carry a normalized archive hash covering every path, file mode and symlink under `/workspace`, including Git-ignored content. Forge compares the hash before and after capture and after restore; a mismatch quarantines the recovered workspace rather than exposing it.
-- Automatic sleep recovery runs only after Forge proves that the entire `/workspace` restore target is empty. A missing marker, a partial mount, a Git mismatch or a provider probe failure fails closed and never triggers an overwrite.
-- `forge_workspace_restore` restores a saved checkpoint, but refuses to overwrite dirty or unpushed work. Explicit restore records only the selected, manifest-verified checkout identity; a failed restore verifies the rollback checkpoint before declaring recovery.
-- Legacy checkpoints from before manifests are supported only after a confirmed mount-loss restore whose Git identity matches the recorded workspace. Forge immediately upgrades that checkpoint with a manifest.
-- `forge_work_export` persists a recovery artifact containing committed and uncommitted binary diffs and a base64 `tar.gz` archive of every untracked file.
-- Workspace teardown is blocked while the worktree is dirty or the checked-out branch/commit has not been recorded as pushed.
+Workspace creation returns its accepted `workspace_id` and `operation_id`
+within the host request budget. Provisioning may continue after the response;
+call `forge_workspace_get` for the same workspace. A registry outage returns a
+stable retryable provider error with its bounded cause and tells the caller not
+to create a duplicate workspace.
+
+Foreground shell work is bounded. Longer work returns a managed `process_id`.
+Each `forge_process_wait` call observes for one host-safe interval; a timeout
+does not terminate the process. When a successful background mutation is
+finalized, the result distinguishes filesystem checkpointing from GitHub
+durability and reports `committed_files`, `commit_sha`, and
+`remote_persisted`. Callers must not claim remote persistence unless that last
+field is true.
+
+## Checkpoints and restore
+
+- `forge_workspace_snapshot` captures a named provider snapshot including Git
+  and ignored execution state needed for rollback.
+- Checkpoints carry a normalized archive hash over paths, modes, and symlinks;
+  capture and restore verify it before acknowledging success.
+- Automatic recovery overwrites only a proven-empty restore target. A missing
+  marker, partial mount, Git mismatch, or provider-probe failure fails closed.
+- `forge_workspace_restore` is destructive and revision guarded. It never
+  changes the GitHub feature branch implicitly.
+- Workspace teardown refuses unsafe local-only state unless the caller uses the
+  explicit destructive override.
 
 ## Runtime and capability truth
 
-The container image installs Node 24 and Corepack. Provisioning verifies the requested Node major version before it reports a workspace ready. A profile mismatch fails provisioning explicitly instead of returning a misleading ready workspace. `forge_capabilities` returns the session’s stable capability and approval manifest before work begins.
+The container image installs Node 24 and Corepack. Provisioning verifies the
+requested runtime from inside the sandbox before reporting ready. A mismatch is
+a provisioning failure. `forge_capabilities` reports the session's current
+tool and approval surface; observer tools expose live coordination state without
+mutating it.
 
-`/ready` is intentionally stricter than `/health`: it remains unavailable until the required R2 S3 credentials are configured **and** a workspace has completed a manifest-verified backup/restore round trip. This prevents configuration-only readiness from being mistaken for durable recovery.
+`/ready` is stricter than `/health`: it remains unavailable until required R2
+credentials are configured and a workspace has completed a verified
+backup/restore round trip.

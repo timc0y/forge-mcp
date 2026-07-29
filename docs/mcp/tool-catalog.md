@@ -1,75 +1,100 @@
 # Tool catalog
 
-Forge exposes a small MCP tool set (see `forgeTools` in `@forge/mcp-core`). Machine-readable schemas are generated into `schemas/forge-tools.schema.json`.
+Forge exposes 43 remote-first MCP tools from `forgeTools` in
+`@forge/mcp-core`. Generated input/output schemas live in
+`schemas/forge-tools.schema.json`.
 
-## Discover
+## Discover and observe
 
-- `forge_capabilities` — session capability manifest
-- `forge_repository_list` — authorized GitHub repos (no container)
+- `forge_capabilities` — session capability/approval manifest
+- `forge_observer_workspaces` — read-only live workspace/task/branch snapshot
+- `forge_observer_workspace` — read-only process, log, and MCP activity bundle
+- `forge_observer_activity` — bounded, redacted account activity trail
+- `forge_repository_list` — authorized GitHub repositories
 
-## Tasks (durable, container-free)
+## Durable tasks
 
-- `forge_task_create` — create a durable task
+- `forge_task_create` — create goal, decisions, and non-goals
 - `forge_task_get` — `mode`: `full` | `summary` | `resume`
 - `forge_task_list` — recent tasks
-- `forge_task_update` — finish (`outcome`) and/or record `handoff_summary` + `next_steps`
+- `forge_task_update` — finish and/or record structured handoff fields
 
-## Workspace
+## Branch and workspace
 
-- `forge_workspace_create` — waits until ready by default (do not poll-loop)
-- `forge_workspace_get` — compact status + `allowedNextActions`
-- `forge_workspace_destroy`
-- `forge_doctor` — reconcile Git / processes / deps after reconnect
-- `forge_operation_get` — resolve uncertain prior mutation by `op_...`
+- `forge_start` — idempotently create a guarded remote `forge/*` branch
+- `forge_workspace_create` — return accepted `workspace_id` + `operation_id`;
+  state may still be provisioning
+- `forge_workspace_get` — observe compact workspace and branch state
+- `forge_workspace_destroy` — guarded destructive teardown
+- `forge_operation_get` — resolve an uncertain `op_...` mutation
+- `forge_workspace_snapshot` — named provider checkpoint
+- `forge_workspace_restore` — guarded destructive rollback
 
-## Files
+The `workspace` field accepts the fresh `workspace_id` returned by create, as
+well as `owner/repo#branch` or a bare branch. Use the id while provisioning has
+not produced a branch yet; use the semantic branch address afterwards.
 
-- `forge_files_list`, `forge_files_read`, `forge_files_write` (auto-commits on forge/)
-- `forge_files_write_batch` — up to 20 files, auto-commit, sha receipts
-- `forge_files_replace` — search/replace (preferred over unified diffs)
-- `forge_files_patch` — unified diff; optional `paths=`; auto-commits
-- `forge_files_upload` — binary via base64; auto-commits
+Workspace creation never waits behind provisioning long enough to lose its
+recovery handles at the MCP transport boundary.
 
-Workspace create checks out `ref` then **auto-creates `forge/<id>`** so agents never edit main. `branch_policy` is on every `forge_workspace_get`.
+## Read and edit
+
+- `forge_files_list` — bounded GitHub branch tree, with explicit transient
+  container fallback
+- `forge_files_read` — bounded GitHub branch file reads, with the same fallback
+- `forge_edit` — fragment/full-file edit committed directly to GitHub
+- `forge_diff_metadata` — syntax-only outgoing-diff metadata
+- `forge_context_get` — ranked paths, adjacent tests, and governing instructions
+
+Paths are repo-relative or absolute at/below `/workspace/repo`. Other absolute
+workspace paths, sibling-prefix tricks, traversal, empty input, and NUL bytes
+are refused by the shared helper used by both read backends.
 
 ## Shell and processes
 
-- `forge_shell` — **compact by default**: exitCode + short tails; full stdout/stderr → `output_artifact_id` when >20KB
-- `forge_process_list` — all processes, or one when `process_id` is set
-- `forge_process_wait` — observational timeouts (`timedOut` + `suggestedTimeoutMs`; do not restart)
-- `forge_process_logs` — incremental logs via cursor
-- `forge_process_stop` — `force:true` for hard cancel
-- `forge_deps_install` — managed install; may return `processId` for wait
+- `forge_shell` — 30-second foreground budget, then managed background process
+- `forge_process_list` — list all processes or inspect one
+- `forge_process_wait` — observe for at most 30 seconds; repeat with the same
+  process id after `timedOut:true`
+- `forge_process_logs` — incremental log reads by cursor
+- `forge_process_stop` — graceful or forced stop
+- `forge_deps_install` — one managed install, returning its process handle
 
-## Git and ship
+Successful background repository mutations distinguish
+`filesystemCheckpointed` from `remote_persisted` and report
+`committed_files`, `commit_sha`, and any `committed_files_warning`.
 
-- `forge_git_status`
-- `forge_git_diff` — **compact by default** (file list); `compact:false` + `paths`/`cursor` for hunks
-- `forge_git_branch`, `forge_git_commit` — auto-push hard-fails when enabled and push fails
-- `forge_git_push`, `forge_git_sync`, `forge_pull_request_create`
-- `forge_submit` — returns `submission_receipt` only
-- `forge_workspace_prove` — verify local Git + remote feature-branch SHA
-- `forge_work_export` — durable recovery artifact when push is blocked
-- `forge_cloudflare_deploy` — `deploy_receipt`; logs spill to `output_artifact_id`
+Raw `git push`, including common wrapper/global-option forms, is refused by
+`forge_shell`. Use `forge_edit` for guarded remote commits and `forge_merge`
+for review.
 
-## Review
+## GitHub and ship
 
-- `forge_review` — screenshot any public URL (no container)
-- `forge_preview_expose` — expose a process URL (private by default)
-- `forge_preview` — screenshot workspace app (auto-starts/exposes when needed; optional interaction `steps`)
-- `forge_artifact_get` — fetch stored artifact / image
+- `forge_pr` — list/status pull requests; approval-gated, idempotent merge/close
+- `forge_access` — diagnose/prove repository authorization
+- `forge_history` — branch or file commit history
+- `forge_branches` — bounded list or safe delete with immutable live-workspace
+  and SHA guards; large lists report truncation
+- `forge_merge` — open the approval-backed review path from the remote branch
+- `forge_cloudflare_deploy` — approved managed deploy with a required stable key; slow runs return `process_id`, and the same key returns the verified receipt
+
+GitHub writes are durable only after the expected ref SHA is read back. An HTTP
+update response alone is not proof.
+
+## Review, previews, and artifacts
+
+- `forge_review` — screenshot/accessibility evidence for a public URL within a 40-second request budget
+- `forge_preview_expose` — expiring private/public-gated process preview
+- `forge_preview` — start/expose (30-second wait cap) and capture a workspace app with optional steps
+- `forge_artifact_get` — fetch image, text, or bounded base64 artifacts
+- `forge_artifact_upload` — store a base64 binary artifact
 
 ## Secrets
 
-- `forge_secret_list`, `forge_secret_create`, `forge_secret_update`, `forge_secret_delete`
-- `forge_secret_attach` — attach (approval) or `attached:false` to detach
+- `forge_secret_list` — metadata only; never values
+- `forge_secret_create` — encrypt and store environment variables
+- `forge_secret_update` — replace metadata or encrypted variables
+- `forge_secret_delete` — permanently delete and detach
+- `forge_secret_attach` — approved attach, or detach with `attached:false`
 
-Secrets can also be created in the portal UI at `/app/secrets`.
-
-## Removed / folded (clean break)
-
-Not advertised: credential-profile MCP tools (`forge_credential_*`), check_*, process_start/get/cancel,
-operation_reconcile, push envelopes, task_summary/resume/handoff/finish as separate tools.
-Use the folded tools above instead. Live Cloudflare deploys use `forge_cloudflare_deploy`
-(attached vault secret with `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`); recovery
-bundles use `forge_work_export`; remote proof uses `forge_workspace_prove`.
+Secrets can also be managed in the portal at `/app/secrets`.

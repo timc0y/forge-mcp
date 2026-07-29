@@ -20,6 +20,8 @@ function fakeGitHub(options: {
   branchMissingUntilCreated?: boolean;
   /** Simulates GitHub's own `truncated: true` on a tree too large to return in full. */
   treeTruncated?: boolean;
+  /** Return a different SHA on the first read after a successful update. */
+  readBackSha?: string;
 } ) {
   let head = options.head;
   const treeOf = { ...options.treeOf };
@@ -27,6 +29,7 @@ function fakeGitHub(options: {
   const calls: string[] = [];
   let treeSeq = 0;
   let created = false;
+  let verifyNextRead = false;
 
   const request: GitHubRequest = async (path, init) => {
     const method = init?.method ?? 'GET';
@@ -34,6 +37,10 @@ function fakeGitHub(options: {
 
     if (method === 'GET' && path.includes('/git/ref/heads/')) {
       if (options.branchMissingUntilCreated && !created) return { status: 404, json: {} };
+      if (verifyNextRead && options.readBackSha) {
+        verifyNextRead = false;
+        return { status: 200, json: { object: { sha: options.readBackSha } } };
+      }
       return { status: 200, json: { object: { sha: head } } };
     }
     if (method === 'POST' && path.endsWith('/git/refs')) {
@@ -78,6 +85,7 @@ function fakeGitHub(options: {
         return { status: 422, json: {} };
       }
       head = (init!.body as { sha: string }).sha;
+      verifyNextRead = true;
       return { status: 200, json: { object: { sha: head } } };
     }
     return { status: 404, json: {} };
@@ -100,6 +108,8 @@ describe('commitFilesToBranch', () => {
     expect(result.commitSha).toBe('commit-1');
     expect(result.parentSha).toBe('head1');
     expect(result.attempts).toBe(1);
+    expect(result.remoteSha).toBe('commit-1');
+    expect(result.pushVerified).toBe(true);
     expect(gh.head).toBe('commit-1');
     // Fast-forward only — never force. Forcing is how concurrent work vanishes.
     expect(gh.calls.some((c) => c.startsWith('PATCH'))).toBe(true);
@@ -183,6 +193,16 @@ describe('commitFilesToBranch', () => {
     await expect(
       commitFilesToBranch(request, { owner: 'a', repo: 'b', branch: 'forge/x', message: 'm', files: [file] })
     ).rejects.toThrow(/HTTP 403/u);
+  });
+
+  it('fails closed when the updated ref does not read back at the new commit', async () => {
+    const gh = fakeGitHub({ head: 'head1', treeOf: { head1: 'tree1' }, readBackSha: 'someone-else' });
+
+    await expect(
+      commitFilesToBranch(gh.request, {
+        owner: 'acme', repo: 'app', branch: 'forge/x', message: 'edit', files: [file]
+      })
+    ).rejects.toThrow(/could not be verified.*someone-else.*commit-1/u);
   });
 
   it('deletes a path when content is null', async () => {
@@ -353,17 +373,65 @@ describe('createBranchRef', () => {
     expect(calls).toEqual(['POST /repos/acme/app/git/refs']);
   });
 
-  it('tolerates a concurrent creation of the same ref', async () => {
+  it('tolerates a concurrent creation only when the ref matches the requested base', async () => {
     // 422 means someone else — another call, another retry — created the same
     // ref between our read and our write. That is a race resolved in our
     // favour already, not a failure to surface.
-    const request: GitHubRequest = async () => ({ status: 422, json: {} });
+    let calls = 0;
+    const request: GitHubRequest = async () => {
+      calls += 1;
+      return calls === 1
+        ? { status: 422, json: { message: 'Reference already exists' } }
+        : { status: 200, json: { object: { sha: 'base-sha' } } };
+    };
 
     const result = await createBranchRef(request, {
       owner: 'acme', repo: 'app', branch: 'forge/new-task', baseSha: 'base-sha'
     });
 
     expect(result.created).toBe(false);
+  });
+
+  it('rejects a 422 when a colliding ref points at a different commit', async () => {
+    let calls = 0;
+    const request: GitHubRequest = async () => {
+      calls += 1;
+      return calls === 1
+        ? { status: 422, json: { message: 'Reference already exists' } }
+        : { status: 200, json: { object: { sha: 'unrelated-sha' } } };
+    };
+
+    await expect(
+      createBranchRef(request, {
+        owner: 'acme', repo: 'app', branch: 'forge/new-task', baseSha: 'base-sha'
+      })
+    ).rejects.toThrow(/existing ref points at unrelated-sha.*base-sha/u);
+  });
+
+  it('rejects an unrelated 422 whose ref cannot be verified', async () => {
+    const request: GitHubRequest = async () => ({ status: 422, json: { message: 'Invalid request' } });
+
+    await expect(
+      createBranchRef(request, {
+        owner: 'acme', repo: 'app', branch: 'forge/new-task', baseSha: 'base-sha'
+      })
+    ).rejects.toThrow(/failed validation.*422.*Invalid request/u);
+  });
+
+  it('rejects a non-collision 422 without attempting to adopt an existing ref', async () => {
+    let calls = 0;
+    const request: GitHubRequest = async () => {
+      calls += 1;
+      return calls === 1
+        ? { status: 422, json: { message: 'Object does not exist' } }
+        : { status: 200, json: { object: { sha: 'base-sha' } } };
+    };
+    await expect(
+      createBranchRef(request, {
+        owner: 'acme', repo: 'app', branch: 'forge/new-task', baseSha: 'base-sha'
+      })
+    ).rejects.toThrow(/Object does not exist/u);
+    expect(calls).toBe(1);
   });
 
   it('throws on any other failure', async () => {

@@ -17,7 +17,13 @@ The Cloudflare implementation uses `@cloudflare/sandbox` 0.12.3 through `package
     processes.json
 ```
 
-Provider IDs are derived from Forge IDs and never accepted directly from clients. The adapter consistently uses RPC transport, lowercase identifiers, bounded timeouts and stable Forge errors. Repository paths are checked in Forge and again inside the runtime.
+Provider IDs are derived from Forge IDs and never accepted directly from
+clients. The adapter consistently uses RPC transport, lowercase identifiers,
+bounded timeouts and stable Forge errors. Public repository paths are either
+repo-relative or absolute at/below `/workspace/repo`; `/workspace/forge`,
+`/workspace/tmp`, sibling-prefix paths, traversal, and NUL bytes are rejected
+by the shared path helper before GitHub or runtime access. The runtime repeats
+the repository-bound check.
 
 Forge verifies the requested runtime from inside the provisioned sandbox before a workspace is marked ready. A requested Node profile must report that exact Node major plus Corepack; a mismatch is a provisioning failure, never a misleading ready workspace. The deployed Cloudflare Sandbox image and the default workspace profile use Node 24; the local Docker provider selects `node:22-bookworm-slim` or `node:24-bookworm-slim` from the requested profile.
 

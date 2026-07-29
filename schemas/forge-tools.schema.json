@@ -38,7 +38,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           }
         },
@@ -62,7 +62,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "payloads": {
@@ -244,7 +244,7 @@
             ]
           },
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "compact": {
@@ -424,6 +424,12 @@
           "slug": {
             "description": "Branch becomes forge/<slug>. Omit for a generated one.",
             "$ref": "#/$defs/__schema1"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
@@ -448,7 +454,7 @@
     },
     "forge_workspace_create": {
       "title": "Create workspace",
-      "description": "Create an isolated workspace from an authorized repo. Checks out ref (default main) then auto-creates forge/<id> so agents never edit main. Waits until ready by default.",
+      "description": "Start an isolated workspace. Returns workspace_id + operation_id immediately; provisioning continues asynchronously, observed with forge_workspace_get.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -499,16 +505,6 @@
             "default": true,
             "type": "boolean"
           },
-          "wait_for_ready": {
-            "default": true,
-            "type": "boolean"
-          },
-          "wait_budget_ms": {
-            "default": 60000,
-            "type": "integer",
-            "minimum": 5000,
-            "maximum": 110000
-          },
           "idempotency_key": {
             "type": "string",
             "minLength": 8,
@@ -521,9 +517,7 @@
           "ref",
           "runtime",
           "persistence",
-          "bootstrap",
-          "wait_for_ready",
-          "wait_budget_ms"
+          "bootstrap"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -554,7 +548,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "compact": {
@@ -581,7 +575,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "preserve_artifacts": {
@@ -629,7 +623,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "operation_id": {
@@ -660,7 +654,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "name": {
@@ -689,7 +683,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "snapshot_id": {
@@ -727,7 +721,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "path": {
@@ -735,7 +729,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1000,
-            "description": "Repo-relative, or absolute under /workspace."
+            "description": "Repo-relative, or absolute at or under /workspace/repo."
           },
           "depth": {
             "default": 4,
@@ -775,14 +769,14 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "path": {
             "type": "string",
             "minLength": 1,
             "maxLength": 1000,
-            "description": "Repo-relative, or absolute under /workspace."
+            "description": "Repo-relative, or absolute at or under /workspace/repo."
           },
           "paths": {
             "minItems": 1,
@@ -826,7 +820,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1000,
-            "description": "Repo-relative, or absolute under /workspace."
+            "description": "Repo-relative, or absolute at or under /workspace/repo."
           }
         }
       }
@@ -841,7 +835,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "files": {
@@ -856,6 +850,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
@@ -936,7 +936,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "base": {
@@ -969,7 +969,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "goal": {
@@ -1014,7 +1014,7 @@
     },
     "forge_shell": {
       "title": "Run command",
-      "description": "Run a command in the workspace. Anything expected to take over ~45s runs in the background and returns a process_id to wait on, because a client will not hold a request open longer. compact defaults true: returns exitCode + short tails; full stdout/stderr spill to output_artifact_id when >20KB (forge_artifact_get). async:true for long work. Risky commands need approval_id.",
+      "description": "Run a synced workspace command. Use async:true or work over 30s returns process_id. compact returns short tails; full logs spill to forge_artifact_get. Risky commands need approval_id.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -1022,7 +1022,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "command": {
@@ -1036,7 +1036,7 @@
             "$ref": "#/$defs/__schema1"
           },
           "timeout_ms": {
-            "default": 45000,
+            "default": 30000,
             "type": "integer",
             "minimum": 100,
             "maximum": 900000
@@ -1132,7 +1132,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1152,7 +1152,7 @@
     },
     "forge_process_wait": {
       "title": "Wait for process",
-      "description": "Wait for a managed process to finish, or time out. Timeouts are observational (process is NOT killed) and return timedOut:true with suggestedTimeoutMs — retry with a larger timeout_ms (use >=600000 for large installs). Do not restart the command.",
+      "description": "Observe a managed process for at most 30 seconds. timedOut:true is observational: the process continues, so call this again with the same process_id instead of restarting it. Successful repository mutations report their GitHub durability separately from the filesystem checkpoint.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1160,7 +1160,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1168,10 +1168,10 @@
             "pattern": "^proc_.*"
           },
           "timeout_ms": {
-            "default": 120000,
+            "default": 30000,
             "type": "integer",
             "minimum": 1000,
-            "maximum": 600000
+            "maximum": 30000
           }
         },
         "required": [
@@ -1198,7 +1198,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1232,7 +1232,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1272,7 +1272,7 @@
     },
     "forge_deps_install": {
       "title": "Install dependencies",
-      "description": "Start dependency install as a managed process. If still running, returns processId — call forge_process_wait with timeout_ms >= 600000. Do not start a second install.",
+      "description": "Start one managed dependency install. Reuse its processId with bounded forge_process_wait calls. Do not start a second install.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -1280,7 +1280,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "frozen_lockfile": {
@@ -1339,9 +1339,9 @@
     },
     "forge_pr": {
       "title": "Pull requests",
-      "description": "List pull requests, read one’s real merge readiness (checks, reviews, mergeable state), merge it, or close it. status is the one to call before merging — it answers whether merging is safe. Merging re-checks live, so a green result read earlier cannot authorise a merge of newer commits.",
+      "description": "List PRs or read live readiness. Merge and close re-check the head, require human approval, and bind a supplied idempotency_key to one exact mutation.",
       "sideEffect": "external",
-      "approval": "none",
+      "approval": "required",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1371,6 +1371,10 @@
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
+          "expected_head_sha": {
+            "description": "Optional concurrency guard from action:status for merge or close.",
+            "$ref": "#/$defs/__schema0"
+          },
           "merge_method": {
             "default": "merge",
             "type": "string",
@@ -1388,6 +1392,16 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          },
+          "approval_id": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
@@ -1397,7 +1411,13 @@
           "merge_method",
           "force"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        }
       }
     },
     "forge_access": {
@@ -1469,7 +1489,7 @@
     },
     "forge_branches": {
       "title": "List or delete branches",
-      "description": "List a repository’s branches with whether each is already merged into the default branch, or delete one. Deleting refuses the default branch always, and refuses an unmerged branch unless you pass force with a reason. merged_only:true deletes every merged branch in one call.",
+      "description": "List branches with proved merge state, or delete one. Live-workspace and default branches are always refused; unmerged deletion needs force plus reason. Large lists report truncation.",
       "sideEffect": "external",
       "approval": "none",
       "inputSchema": {
@@ -1499,6 +1519,10 @@
             "minLength": 1,
             "maxLength": 255
           },
+          "expected_sha": {
+            "description": "Optional concurrency guard from action:list. Refuse deletion if the branch tip changed.",
+            "$ref": "#/$defs/__schema0"
+          },
           "merged_only": {
             "default": false,
             "type": "boolean"
@@ -1511,6 +1535,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Optional. Stable key makes a retry safe; omit to always execute."
           }
         },
         "required": [
@@ -1520,7 +1550,13 @@
           "merged_only",
           "force"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        }
       }
     },
     "forge_merge": {
@@ -1533,7 +1569,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "pr_base": {
@@ -1585,7 +1621,7 @@
     },
     "forge_cloudflare_deploy": {
       "title": "Deploy to Cloudflare",
-      "description": "Deploy with wrangler using an attached Cloudflare vault secret (CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID). Returns deploy_receipt; full logs spill to output_artifact_id. Do not claim live without verified_url.",
+      "description": "Run approved Wrangler deploy as a managed process. idempotency_key is required: slow runs return process_id, then the same key reopens that process for a verified receipt.",
       "sideEffect": "external",
       "approval": "required",
       "inputSchema": {
@@ -1593,7 +1629,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "command": {
@@ -1623,13 +1659,14 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         },
         "required": [
           "command",
           "cwd",
-          "include_output"
+          "include_output",
+          "idempotency_key"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -1647,7 +1684,7 @@
     },
     "forge_review": {
       "title": "Review URL",
-      "description": "Screenshot any public URL (no container). Returns images in this call.",
+      "description": "Screenshot a public URL and return images within a 40s capture budget.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -1689,10 +1726,10 @@
             "type": "boolean"
           },
           "time_budget_ms": {
-            "default": 45000,
+            "default": 40000,
             "type": "integer",
             "minimum": 10000,
-            "maximum": 110000
+            "maximum": 40000
           }
         },
         "required": [
@@ -1780,7 +1817,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "process_id": {
@@ -1839,7 +1876,7 @@
     },
     "forge_preview": {
       "title": "Preview capture",
-      "description": "Screenshot your workspace app. Omit preview_id and Forge starts/exposes the dev server. Optional steps drive click/fill before the shot.",
+      "description": "Screenshot a workspace app. Omit preview_id to start/expose its server; optional steps drive interactions.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -1847,7 +1884,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "preview_id": {
@@ -1855,10 +1892,10 @@
             "pattern": "^prv_.*"
           },
           "preview_wait_ms": {
-            "default": 60000,
+            "default": 30000,
             "type": "integer",
             "minimum": 5000,
-            "maximum": 110000
+            "maximum": 30000
           },
           "captures": {
             "minItems": 1,
@@ -2032,7 +2069,7 @@
             "description": "Workspace id from a forge_review result (no repository/branch). Otherwise use workspace."
           },
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "artifact_id": {
@@ -2070,7 +2107,7 @@
         "type": "object",
         "properties": {
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "filename": {
@@ -2267,7 +2304,7 @@
             "description": "Secret id (sec_...)."
           },
           "workspace": {
-            "description": "\"owner/repo#branch\", or just the branch. Omit to use your one open workspace.",
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
           "attached": {

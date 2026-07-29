@@ -7,8 +7,9 @@ interface Identity { tenantId: string }
 /**
  * What a call means when it does not carry an opaque workspace id.
  *
- * `workspace` is ONE optional string — `"owner/repo#branch"`, `"owner/repo"`,
- * or a bare `"forge/..."` branch — not three separate fields. Three optional
+ * `workspace` is ONE optional string — a freshly returned `ws_...` recovery
+ * handle, `"owner/repo#branch"`, `"owner/repo"`, or a bare `"forge/..."`
+ * branch — not three separate fields. Three optional
  * fields cost roughly 353 bytes per tool once emitted as JSON schema (type +
  * minLength + maxLength + description, times three) against 157 for one;
  * across the 25 converted tools that is ~4,900 bytes added to a catalog that
@@ -41,7 +42,12 @@ function normalize(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-const WORKSPACE_ADDRESS_FORMS = '"owner/repo#branch", "owner/repo", or a bare branch like "forge/fix-login"';
+const WORKSPACE_ID_RE = /^ws_[0-9a-hjkmnp-tv-z]{20,32}$/u;
+const WORKSPACE_ADDRESS_FORMS = 'a returned "ws_..." handle, "owner/repo#branch", "owner/repo", or a bare branch like "forge/fix-login"';
+
+export function isWorkspaceId(value: string): boolean {
+  return WORKSPACE_ID_RE.test(value.trim());
+}
 
 function malformedWorkspaceAddress(raw: string): ForgeError {
   return new ForgeError({
@@ -143,11 +149,31 @@ export async function resolveWorkspaceId(env: Env, identity: Identity, address: 
   if (explicit) return explicit;
 
   const raw = normalize(address.workspace);
+  // A non-blocking create has no branch until provisioning reaches the branch
+  // step, so its returned workspace id is the only immediately usable recovery
+  // address. authorizedCoordinator still verifies tenant/project ownership;
+  // the opaque id is a locator, never authorization.
+  if (raw && isWorkspaceId(raw)) return raw;
   const parsed: ParsedAddress = raw ? parseWorkspaceAddress(raw) : {};
   const { owner, repo, branch } = parsed;
 
-  const occupants = await listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), identity.tenantId)
-    .catch(() => [] as Awaited<ReturnType<typeof listSlotOccupants>>);
+  let occupants: Awaited<ReturnType<typeof listSlotOccupants>>;
+  try {
+    occupants = await listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), identity.tenantId);
+  } catch (error) {
+    const cause = error instanceof Error
+      ? error.message.slice(0, 1_000)
+      : typeof error === 'string'
+        ? error.slice(0, 1_000)
+        : 'The workspace registry returned an unknown failure.';
+    const nextAction = 'Retry the same call once. Do not create another workspace: Forge could not determine whether one is already open.';
+    throw new ForgeError({
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      message: 'Forge could not query the workspace registry, so it cannot safely choose a workspace. Retry the same call once; do not create another workspace because Forge could not determine whether one is already open.',
+      retryable: true,
+      details: { cause, nextAction }
+    });
+  }
   const live = occupants.filter((occupant) => occupant.state !== null && !TERMINAL_STATES.includes(occupant.state));
 
   let candidates = live;

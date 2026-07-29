@@ -153,6 +153,7 @@ const ALLOWLIST_A: ReadonlyArray<{ tool: string; field: string; note: string }> 
   { tool: 'forge_diff_metadata', field: 'hash', note: 'A content fingerprint of the diff for the caller’s own change-detection between calls; no tool accepts a diff hash as input.' },
   { tool: 'forge_process_list', field: 'lockfileHash', note: 'See forge_workspace_get.lockfileHash.' },
   { tool: 'forge_process_wait', field: 'lockfileHash', note: 'See forge_workspace_get.lockfileHash.' },
+  { tool: 'forge_process_wait', field: 'commit_sha', note: 'The remotely persisted background-process commit receipt; like forge_edit.commit_sha, it is evidence to report rather than a follow-up input.' },
   { tool: 'forge_process_wait', field: 'finalLogCursor', note: 'Consumable as the `cursor` input to forge_process_logs, qualified with "final" because the process has already finished by the time this is returned.' },
   { tool: 'forge_process_logs', field: 'nextCursor', note: 'The schema’s own description says to pass it back as `cursor`; consumed by forge_process_logs.cursor on the next page, just named "next" to distinguish it from the cursor that was just consumed.' },
   { tool: 'forge_deps_install', field: 'lockfileHashBefore', note: 'See forge_workspace_get.lockfileHash — the before/after pair around one install.' },

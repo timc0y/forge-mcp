@@ -15,6 +15,7 @@ class FakeProvider implements SandboxProvider {
   readonly files = new Map<string, string>();
   readonly startedSessions: string[] = [];
   readonly processStates = new Map<string, ProcessRecord>();
+  lastProcessWaitTimeoutMs?: number;
   head = 'abcdef';
   branch = 'main';
   workspacePresent = true;
@@ -134,6 +135,7 @@ class FakeProvider implements SandboxProvider {
     },
     getProcess: async (processId) => this.processStates.get(processId) ?? null,
     processWait: async ({ processId, timeoutMs = 120_000 }) => {
+      this.lastProcessWaitTimeoutMs = timeoutMs;
       const deadline = Date.now() + timeoutMs;
       for (;;) {
         const current = this.processStates.get(processId);
@@ -282,6 +284,26 @@ function ready(record: WorkspaceRuntimeRecord): void {
 }
 
 describe('Forge application service', () => {
+  it('records a caller-supplied workspace operation receipt for timed-out initialize recovery', () => {
+    const service = new ForgeApplicationService(new FakeProvider());
+    const operationId = ids.operation();
+    const record = service.initializeWorkspace({
+      workspaceId: ids.workspace(),
+      operationId,
+      tenantId: ids.tenant(),
+      projectId: ids.project(),
+      repository: { provider: 'github', owner: 'example', name: 'project' },
+      ref: 'main',
+      runtimeProfile: 'node-24',
+      persistence: 'ephemeral',
+      bootstrap: true,
+      idempotencyKey: 'create-with-receipt-1',
+      actor: { type: 'agent', id: 'tester' }
+    });
+
+    expect(record.idempotency['create-with-receipt-1']?.operationId).toBe(operationId);
+  });
+
   it('rejects client operations until provisioning has completed', async () => {
     const service = new ForgeApplicationService(new FakeProvider());
     const record = initialized(service);
@@ -680,7 +702,7 @@ describe('Forge application service', () => {
     const waited = await service.processWait(record, processId, 1_000);
     expect(waited.process).toMatchObject({ status: 'exited', exitCode: 0, mutatesFilesystem: true });
     expect(waited.dependencyState).toMatchObject({ status: 'ready', usable: true, lockfileHash: 'b'.repeat(64) });
-    expect(waited.filesystemCommitted).toBe(true);
+    expect(waited.filesystemCheckpointed).toBe(true);
     expect(record.dependencyState).toMatchObject({ usable: true, lockfileHash: 'b'.repeat(64) });
     expect(record.processes[processId]?.completedAt).toBeTruthy();
     expect(record.processes[processId]?.checkpointAfter).toBeTruthy();
@@ -1058,6 +1080,10 @@ describe('Forge application service', () => {
 
   it('returns timedOut process waits with suggestedTimeoutMs instead of killing or throwing', async () => {
     const provider = new FakeProvider();
+    provider.handle.processWait = async ({ processId, timeoutMs }) => {
+      provider.lastProcessWaitTimeoutMs = timeoutMs;
+      return provider.processStates.get(processId)!;
+    };
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
@@ -1070,11 +1096,14 @@ describe('Forge application service', () => {
       approved: true
     });
     if ('replay' in started) throw new Error('Unexpected replay.');
-    const waited = await service.processWait(record, started.value.id, 20);
+    const waited = await service.processWait(record, started.value.id, 600_000);
     expect(waited.timedOut).toBe(true);
-    expect(waited.suggestedTimeoutMs).toBeGreaterThanOrEqual(300_000);
+    expect(provider.lastProcessWaitTimeoutMs).toBe(30_000);
+    expect(waited.suggestedTimeoutMs).toBe(30_000);
+    expect(waited.filesystemCheckpointed).toBe(false);
     expect(waited.allowedNextActions).toContain('forge_process_wait');
-    expect(waited.next_step).toMatch(/Do not restart the install/i);
+    expect(waited.next_step).toMatch(/each call observes for at most 30000ms/i);
+    expect(waited.next_step).not.toMatch(/600000/);
     expect(record.processes[started.value.id]?.completedAt).toBeUndefined();
   });
 

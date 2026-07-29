@@ -1,139 +1,147 @@
 # Tool reference
 
-The canonical list of Forge MCP tools, as registered in
-[`packages/mcp-core/src/index.ts`](../packages/mcp-core/src/index.ts). Every
-name and description below is taken verbatim (or trivially shortened) from
-that file — if the two ever disagree, the source file wins.
+Forge currently exposes 43 MCP tools. The source of truth is
+[`packages/mcp-core/src/index.ts`](../packages/mcp-core/src/index.ts), and the
+machine-readable schemas are generated into
+[`schemas/forge-tools.schema.json`](../schemas/forge-tools.schema.json).
 
-Each tool also carries a `sideEffect` (`none` / `workspace` / `external` /
-`destructive`) and an `approval` mode (`none` / `policy` / `required`) noted
-inline. `policy` means Forge's shell/network policy decides whether a real
-user-approval page is required; `required` always needs one.
+The public workflow is remote-first: repository reads target the selected
+GitHub branch, and `forge_edit` commits directly to that branch through the
+GitHub API. A container is an execution cache for builds, tests, previews, and
+tools that genuinely need a Linux process; it is not the durability boundary.
 
-## Repositories and review (no workspace needed)
+## Discover and observe
 
-| Tool | Approval | Description |
-| --- | --- | --- |
-| `forge_repository_list` | none | List GitHub repositories currently authorized through the Forge GitHub App for this account. |
-| `forge_review` | none | The cheapest Forge path: capture screenshot and accessibility evidence from an existing URL without starting a container, ready for a strict Parallax review. Flags heading-structure defects (stacked/empty/duplicated headings, skipped levels) that a screenshot alone hides. |
+| Tool | What it does |
+| --- | --- |
+| `forge_capabilities` | Returns the session's workspace, Git, secrets, preview, and approval capabilities. |
+| `forge_observer_workspaces` | Read-only snapshot of live workspace slots, tasks, and branches. |
+| `forge_observer_workspace` | Read-only process, log-tail, and merged MCP activity for one workspace. |
+| `forge_observer_activity` | Read-only account activity trail; payloads are redacted and bounded. |
+| `forge_repository_list` | Lists repositories authorized through the Forge GitHub App. |
+
+Observer tools never mutate sandboxes.
 
 ## Durable tasks
 
-A task is a persistent coding-session record; none of these tools start a container.
-
-| Tool | Approval | Description |
-| --- | --- | --- |
-| `forge_task_start` | none | Create a durable coding-session record that survives MCP reconnects, context compression, and container sleep. Call first for any coherent piece of work; attach a workspace later only when execution is needed. |
-| `forge_task_get` | none | Return the full durable task record: branch, workspace, previews, files read/changed, checks, evidence ids. Supports `compact: true` for tight context. |
-| `forge_task_summary` | none | Return a compact reconnect summary (goal, decisions, non-goals, state, files, checks, evidence, outstanding work, next recommended action) so a fresh turn can resume without replaying the session. Supports `compact: true`. |
-| `forge_task_handoff` | none | Record structured handoff notes (`summary`, `next_steps`, `key_learnings`, `modified_files`, `blocked_by`) on a task so another agent or a fresh ChatGPT session can pick up work without context loss. |
-| `forge_task_resume` | none | Single-turn recovery for a fresh ChatGPT chat session or new agent. Returns task goal, workspace state, latest Git diff summary, checks, and handoff notes in one response. |
-| `forge_task_list` | none | List recent durable tasks for the account, most-recently-updated first, optionally filtered by state. |
-| `forge_task_finish` | none | Move a task to a terminal state (`complete` / `failed` / `cancelled`). The record and its evidence stay retrievable afterwards. |
-
-## Workspace lifecycle
-
-| Tool | Approval | Description |
-| --- | --- | --- |
-| `forge_workspace_create` | none (workspace side effect) | Create a disposable isolated workspace from an authorized repository. Returns immediately with state `requested`; poll `forge_workspace_get` until `ready` (usually under a minute). |
-| `forge_workspace_get` | none | Return lifecycle, repository, revision, processes, previews, snapshot, and outstanding state for one workspace. |
-| `forge_workspace_destroy` | policy (destructive) | Revoke previews and capabilities, stop processes, destroy the sandbox, and mark the workspace destroyed. |
-| `forge_doctor` | none | Reconcile local Git, processes, and dependency state after reconnect. Returns split `healthSignals` (local Git, remote agreement, push auth, submission readiness, and related checks) plus workspace age, branch, and dirty/unpushed hints. |
-| `forge_workspace_prove` | none | Prove local Git state and, when the GitHub App is authorized, verify the remote `forge/*` feature branch SHA with `ls-remote`. Use the returned `remote_sha` before claiming work is pushed. |
-| `forge_git_sync` | none (workspace side effect) | `git fetch` and detect or reconcile divergence between workspace HEAD and the recorded remote feature branch (`detect`, `reset_to_remote`, or `keep_local_and_push`). Mutating tools stay blocked while divergent until reconciled. |
-
-## Context and diff insight
-
-Deterministic, model-free tools — no embeddings, syntax-only analysis.
-
-| Tool | Approval | Description |
-| --- | --- | --- |
-| `forge_context_get` | none | Rank the most relevant repository files for a goal deterministically. Returns paths with reasons, governing instructions, adjacent tests, and package context — never file contents; the client decides what to read. |
-| `forge_context_pack` | none | Extract and pack essential file signatures, exports, instructions, and path context into a single token-optimized context block for ChatGPT turn initialization. Container-free. |
-| `forge_diff_metadata` | none | Summarize the outgoing diff: changed files, additions/deletions, changed exports, tests, config, migrations, possible secret exposure, risk areas, suggested hunks, and targeted verification suggestions. Syntax-only — inspect the raw diff via `forge_git_outgoing_diff` before any Git mutation. |
-
-## Files
-
-| Tool | Approval | Description |
-| --- | --- | --- |
-| `forge_files_tree` | none | Return a bounded, Git-aware file tree rooted inside `/workspace`. |
-| `forge_files_read` | none | Read one file (`path`) or several at once (`paths`) as bounded text, each with a content hash for conflict-safe edits. |
-| `forge_files_write` | none (workspace side effect) | Create or overwrite a file with full content — simpler and more reliable than a diff for whole-file changes. Pass `expected_sha256` for a conflict-safe overwrite. |
-| `forge_files_patch` | none (workspace side effect) | Apply a unified diff inside the repository. Best for surgical multi-hunk edits; prefer `forge_files_write` for whole-file rewrites. |
-
-## Shell and processes
-
-| Tool | Approval | Description |
-| --- | --- | --- |
-| `forge_shell` | policy | Execute a foreground command in an explicit directory with timeout, output, and network-policy bounds. Risky commands return a real user-approval URL. |
-| `forge_process_start` | policy | Start a long-running process (e.g. a dev server) and return a Forge process identifier immediately. |
-| `forge_process_logs` | none | Read a bounded process-log page using an opaque cursor. |
-
-## Git and pull requests
-
-| Tool | Approval | Description |
-| --- | --- | --- |
-| `forge_git_status` | none | Return structured working-tree and branch status. |
-| `forge_git_diff` | none | Return the working-tree or staged diff one page of files at a time. Always returns the complete changed-file list; `diff` holds that page's hunks. See [Paged diffs](#paged-diffs). |
-| `forge_git_branch_create` | none (workspace side effect) | Create and check out a local branch under the required `forge/` namespace. |
-| `forge_git_commit` | none (workspace side effect) | Stage selected paths and create a commit attributed to `forge-mcp[bot]`. On agent `forge/*` branches, Forge auto-pushes to origin by default after commit (disable with `FORGE_AUTO_PUSH_FORGE_BRANCHES=false`). Returns `auto_push.pushed` and `auto_push.remote_sha` when verified. Omit `message` to auto-generate a conventional-commit message from the diff (Workers AI). |
-| `forge_git_outgoing_diff` | none | Return the diff between the workspace **requestedRef** (immutable base at creation) and the current Forge branch, one page of files at a time, plus `diffHash` over the whole change — call this before any push/PR approval. See [Paged diffs](#paged-diffs). |
-| `forge_git_push` | **required** (external) | Promote an already-pushed or staged `forge/` branch through the GitHub App credential proxy. Always needs a real user-approval page when auto-push did not already durably publish HEAD. |
-| `forge_submit` | **required** (external) | One-call human review path: auto-commit if needed, outgoing diff vs **requestedRef**, stage to `forge/staged/*`, queue draft PR targeting `pr_base` (default `main`). Sets task `submittedAt`; remote durability comes from auto-push (`remoteBranchSha`), not staging alone. |
-| `forge_pull_request_create` | **required** (external) | Create a draft GitHub pull request for an already-pushed Forge branch. Omit `title` to auto-generate title/body from the diff. Always needs approval. |
-
-## Preview and browser evidence
-
-| Tool | Approval | Description |
-| --- | --- | --- |
-| `forge_preview_expose` | policy | Expose a running process through a short-lived Forge preview capability. Private by default; `public` access requires approval. |
-| `forge_review_capture` | none (workspace side effect) | Capture screenshot + accessibility evidence of a running Forge preview across bounded routes, states, and viewports. Optional `steps` drive real interactions (click/fill/press/wait) before the shot, so a multi-step flow (open a menu, submit a form) can be proven, not just a static screenshot. This is the only preview-evidence tool. |
-| `forge_artifact_get` | none | Return a stored Forge artifact (e.g. a screenshot) to the MCP client; image artifacts come back as MCP image content for direct model inspection. |
-
-## Paged diffs
-
-A diff is the one Forge result whose size is set by the user's repository
-rather than by anything Forge chooses — one generated file, a vendored bundle
-or a large content change can run to megabytes. `forge_git_diff` and
-`forge_git_outgoing_diff` therefore return **a page of files at a time**:
-
-| Field | Meaning |
+| Tool | What it does |
 | --- | --- |
-| `files` | Every changed file with `additions` / `deletions` / `binary`. **Always complete**, on every page — it comes from `--numstat`, whose size scales with file count, not content. |
-| `totalFiles`, `totalAdditions`, `totalDeletions` | Totals for the whole change, not the page. |
-| `diff` | Unified diff for this page's files only. |
-| `pageFiles` | The paths whose hunks are in `diff`. |
-| `nextCursor` / `hasMore` | Call again with `cursor: nextCursor` for the next page. |
-| `truncated` | A single file was too large to include whole. Paging will **not** return the rest — read it with `forge_files_read`. |
-| `note` | One sentence stating what you are holding and the next call to make. |
+| `forge_task_create` | Creates a durable goal/decision/non-goal record before coherent work begins. |
+| `forge_task_get` | Reads a task in `full`, `summary`, or reconnect-oriented `resume` mode. |
+| `forge_task_list` | Lists recent tasks, optionally filtered by state or query. |
+| `forge_task_update` | Records a handoff and/or finishes a task with an outcome. |
 
-Inputs: `cursor`, `max_bytes` (default 64 000), and `paths` — pass `paths` to
-jump straight to specific files instead of paging up to them.
+Tasks are container-free and survive MCP reconnects and workspace teardown.
 
-`forge_git_outgoing_diff` additionally returns `diffHash`, computed inside the
-container over the **complete** diff. It is identical on every page and is safe
-to carry into `forge_git_push` from any of them. (Previously the hash was taken
-over the Worker-side stdout, which was silently truncated at 1 MB — so a large
-change could be approved and pushed against a hash covering only its first
-megabyte.)
+## Branches and workspace lifecycle
 
-Push-envelope checks and the envelope's default allow-list are derived from
-`git diff --name-only` over the whole change, never from a page's hunks, and
-fail closed if the path list cannot be enumerated in full.
+| Tool | What it does |
+| --- | --- |
+| `forge_start` | Creates a `forge/<slug>` branch on GitHub from the requested base, with idempotent collision handling. Pass the returned branch as `ref` when creating a workspace. |
+| `forge_workspace_create` | Accepts creation of an isolated workspace and returns `workspace_id`, `operation_id`, and current state within the host request budget. The state may still be `provisioning`. |
+| `forge_workspace_get` | Returns compact state and `branch_policy`; use it to observe provisioning rather than creating a duplicate workspace. |
+| `forge_workspace_destroy` | Tears down a workspace; destructive and revision/idempotency guarded. |
+| `forge_operation_get` | Resolves an uncertain mutation result by its `op_...` handle. |
+| `forge_workspace_snapshot` | Captures a named filesystem checkpoint before risky local execution. |
+| `forge_workspace_restore` | Restores a checkpoint, destroying later uncommitted local state. |
 
-## No MCP-UI widget
+Workspace creation is asynchronous at the transport boundary. A response with
+`state: provisioning` is an accepted operation, not a failure. Reuse its
+`workspace_id` and call `forge_workspace_get` with that id in its `workspace`
+field; do not start a second workspace. Once a branch exists, the semantic
+`owner/repo#branch` address remains preferable across long conversations.
 
-No tool declares `_meta.ui` or `_meta['openai/outputTemplate']`, so every host
-— ChatGPT included — renders tool results with its own plain text/structured
-output. A single `ui://` resource still resolves, to an empty document, purely
-so sessions opened before the widget was removed do not hang on an unresolved
-placeholder; see [connectors.md](connectors.md#no-in-chat-widget). The only
-`_meta` a tool carries is the short `openai/toolInvocation/{invoking,invoked}`
-status strings.
+## Repository reads and edits
 
-Approvals are the one Forge-authored screen: tools that need one return an
-`approval_url` pointing at the hosted Approve / Deny page at `/approvals/:id`.
-See [connectors.md](connectors.md#no-in-chat-widget).
+| Tool | What it does |
+| --- | --- |
+| `forge_files_list` | Lists a bounded tree from the GitHub branch tip, falling back to the cached checkout only for transient GitHub failure. |
+| `forge_files_read` | Reads one or several files from the GitHub branch tip with the same explicit fallback behavior. |
+| `forge_edit` | Applies fragment replacements, whole-file content, creation, or deletion and commits the result directly to GitHub. Returns the remote commit URL and SHA. |
+| `forge_diff_metadata` | Returns syntax-only changed-symbol, risk, classification, and suggested-hunk metadata. |
+| `forge_context_get` | Ranks relevant repository paths and adjacent tests for a goal; file contents remain explicit reads. |
 
-See [connectors.md](connectors.md) for the OAuth flow and how ChatGPT/Claude
-connect to this tool set.
+Paths are repo-relative or absolute at/below `/workspace/repo`. `/workspace`,
+`/workspace/forge`, `/workspace/tmp`, sibling-prefix paths, traversal, and NUL
+bytes are rejected before either GitHub or container access.
+
+There is no public file-write/patch/commit/push pipeline. `forge_edit` is the
+guarded remote mutation. Its read guard, expected branch tip, idempotency key,
+commit receipt, and remote read-back keep retries and concurrent changes safe.
+
+## Shell and managed processes
+
+| Tool | What it does |
+| --- | --- |
+| `forge_shell` | Runs a command for up to 30 seconds in the checkout, preserving request budget for synchronization and remote ingestion. Longer work returns a `process_id`. Risky commands follow shell/network approval policy. |
+| `forge_process_list` | Lists managed processes or reads one in detail. |
+| `forge_process_wait` | Observes a process for one host-safe wait window. A timeout is observational and does not kill or restart it. On successful mutation it reports committed files, commit SHA, and whether remote persistence was verified. |
+| `forge_process_logs` | Reads incremental bounded logs with an opaque cursor. |
+| `forge_process_stop` | Stops a managed process; `force:true` escalates cancellation. |
+| `forge_deps_install` | Starts one managed dependency install and returns its process handle when still running. |
+
+Repeat `forge_process_wait` when it returns `timedOut:true`; never restart the
+underlying command merely because one observation ended. A successful
+background command is not durable until `remote_persisted:true`. Inspect
+`committed_files_warning` when files could not be committed remotely.
+
+Raw `git push` is blocked in `forge_shell`, including shell wrappers and Git
+global-option forms. It bypasses Forge's concurrency guards and verified
+GitHub receipts. Use `forge_edit` for repository changes and `forge_merge` for
+the review/merge path.
+
+## GitHub history, branches, and pull requests
+
+| Tool | What it does |
+| --- | --- |
+| `forge_access` | Explains repository authorization and proves read/write capability. |
+| `forge_history` | Reads recent branch or file commit history without cloning. |
+| `forge_branches` | Lists branch tips and proved merged state inside a host-safe budget, or deletes with immutable live-workspace, expected-SHA, merge, and idempotency guards. Large lists explicitly report truncation. |
+| `forge_pr` | Lists PRs, reads live merge readiness, merges, or closes. Readiness includes checks, classic statuses, required reviews, and GitHub mergeability. Merge and close re-read the current head and require human approval. |
+| `forge_merge` | Opens the PR/review flow for the workspace branch and returns the human approval URL; it does not push because the branch is already remote. |
+
+Treat `forge_pr` status as a point-in-time observation. Merge and close recheck
+the head, bind a supplied idempotency key to one intent, and require an approval
+for that exact mutation before changing GitHub.
+
+## Deploy, previews, review, and artifacts
+
+| Tool | What it does |
+| --- | --- |
+| `forge_cloudflare_deploy` | Runs approved Wrangler deployment with an attached Cloudflare secret. A stable idempotency key is required; slow deploys return a managed `process_id`, then the same key obtains the verified receipt without starting another deploy. |
+| `forge_review` | Captures screenshot/accessibility evidence from a public URL without a workspace, within a 40-second host-safe budget. |
+| `forge_preview_expose` | Exposes a running workspace process through an expiring private preview; public access needs approval. |
+| `forge_preview` | Starts/exposes the app for at most 30 seconds when needed and captures workspace screenshots, optionally after interactions. |
+| `forge_artifact_get` | Fetches stored images, text, or bounded base64 binary content. |
+| `forge_artifact_upload` | Stores a base64-encoded binary file as a workspace artifact. |
+
+Do not claim a deployment is live without `deploy_receipt.verified_url`, or a
+review journey passed without inspecting the returned evidence.
+
+## Secrets
+
+| Tool | What it does |
+| --- | --- |
+| `forge_secret_list` | Lists labels, providers, and environment-variable names; never values. |
+| `forge_secret_create` | Stores encrypted environment variables under a label. |
+| `forge_secret_update` | Updates the label, provider, or encrypted variables. |
+| `forge_secret_delete` | Permanently deletes and detaches a secret. |
+| `forge_secret_attach` | Attaches an approved secret to one workspace, or detaches with `attached:false`. |
+
+Secret values never appear in list results, activity payloads, or workspace
+metadata.
+
+## Result and retry rules
+
+- Mutating tools use `idempotency_key`; use a fresh value per intended change
+  and reuse it only when retrying that same change.
+- Revision/SHA guards reject stale callers instead of overwriting newer work.
+- Provider or registry outages use stable retryable Forge errors and preserve a
+  bounded cause plus the next safe action.
+- A GitHub write is durable only after reading the remote ref back and matching
+  the expected SHA. An HTTP update response alone is not proof.
+- Large command output spills to an artifact instead of expanding the MCP
+  response without bound.
+
+No tool declares an MCP-UI output template. Hosts render Forge's structured
+results directly; approval URLs point to Forge's hosted approval page.

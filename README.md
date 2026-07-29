@@ -43,18 +43,26 @@ ever starting a workspace. Full reference: [`docs/tools.md`](docs/tools.md).
 
 | Group | Tools | Container? |
 | --- | --- | --- |
-| Repositories & review | `forge_repository_list`, `forge_review` | no |
-| Durable tasks | `forge_task_start` / `_get` / `_summary` / `_list` / `_finish` | no |
-| Context & diff insight | `forge_context_get`, `forge_diff_metadata` | no |
-| Workspace lifecycle | `forge_workspace_create` / `_get` / `_destroy` | yes (create) |
-| Files | `forge_files_tree` / `_read` / `_write` / `_patch` | yes |
-| Shell & processes | `forge_shell`, `forge_process_start` / `_logs` | yes |
-| Git & review | `forge_git_*`, `forge_submit`, `forge_workspace_prove`, `forge_doctor` | yes |
-| Review evidence | `forge_review_capture`, `forge_artifact_get` | mixed |
-| Previews & PRs | `forge_preview_expose`, `forge_pull_request_create` | yes |
+| Discover & observe | `forge_capabilities`, `forge_observer_*`, `forge_repository_list` | no |
+| Durable tasks | `forge_task_create` / `_get` / `_list` / `_update` | no |
+| Branch & workspace | `forge_start`, `forge_workspace_*`, `forge_operation_get` | create only |
+| Read & edit | `forge_files_list`, `forge_files_read`, `forge_edit`, context/diff tools | reads: no; shell fallback: yes |
+| Shell & processes | `forge_shell`, `forge_process_*`, `forge_deps_install` | yes |
+| GitHub review | `forge_pr`, `forge_access`, `forge_history`, `forge_branches`, `forge_merge` | no |
+| Preview & artifacts | `forge_review`, `forge_preview*`, `forge_artifact_*` | mixed |
+| Deployment & secrets | `forge_cloudflare_deploy`, `forge_secret_*` | mixed |
 
-External changes — Git push, `forge_submit`, and pull-request creation — are **approval-gated** when auto-push has not already published the feature branch:
-Forge returns a signed approval page and only proceeds once a human approves. Commits on `forge/*` branches auto-push to GitHub by default (`FORGE_AUTO_PUSH_FORGE_BRANCHES`; set to `false` or `0` to disable).
+Forge is remote-first. `forge_edit` commits directly to the selected
+`forge/*` branch through the GitHub API and returns the remote commit URL; there
+is no separate push step. Raw `git push` through `forge_shell` is refused
+because it bypasses Forge's branch, concurrency, and durability checks. Use
+`forge_merge` to open the review path and return the human approval link.
+
+Workspace creation returns its `workspace_id` and operation handle within the
+host request budget; readiness may still be `provisioning`. Pass that id as the
+`workspace` value to `forge_workspace_get` instead of starting another one. Managed
+process waits are likewise bounded to one host-safe observation; a timeout does
+not stop the process.
 
 ## Parallax
 

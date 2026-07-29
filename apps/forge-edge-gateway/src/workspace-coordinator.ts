@@ -1234,8 +1234,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     // can still run while ChatGPT waits on a long install. Holding the mutation
     // lock for the full timeout made recovery tools appear dead and caused
     // retry storms.
-    const timeoutMs = input.timeoutMs ?? 120_000;
-    const sliceMs = 5_000;
+    const timeoutMs = Math.max(250, Math.min(input.timeoutMs ?? 30_000, 30_000));
+    const sliceMs = 2_500;
     const deadline = Date.now() + timeoutMs;
     let lastTimedOut: Awaited<ReturnType<ForgeApplicationService['processWait']>> | null = null;
     while (Date.now() < deadline) {
@@ -1249,8 +1249,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (lastTimedOut) {
       return {
         ...lastTimedOut,
-        suggestedTimeoutMs: Math.min(600_000, Math.max(timeoutMs * 2, 300_000)),
-        next_step: `Process ${input.processId} is still running after ${timeoutMs}ms. Retry forge_process_wait with timeout_ms >= ${Math.min(600_000, Math.max(timeoutMs * 2, 300_000))} (use 600000 for large installs). Do not restart the install.`
+        suggestedTimeoutMs: 30_000,
+        next_step: `Process ${input.processId} is still running after this bounded observation. Call forge_process_wait again with the same process_id; each call observes for at most 30000ms and never restarts or kills the process.`
       };
     }
     return this.readWithRecovery((record) => this.app.processWait(record, input.processId, 250));
@@ -1460,6 +1460,36 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async forgetReads(input: { paths: string[] }): Promise<void> {
     if (!input.paths.length) return;
     await this.ctx.storage.delete(input.paths.map((path) => `seen:${path}`));
+  }
+
+  /**
+   * Replay cache for remote mutations whose side effect happens outside the
+   * coordinator. The intent hash prevents one key from silently authorising a
+   * different edit after a client retry or context loss.
+   */
+  async remoteMutationReplay(input: { kind: 'edit'; idempotencyKey: string; intentHash: string }) {
+    const key = `remote-mutation:${input.kind}:${encodeURIComponent(input.idempotencyKey)}`;
+    const stored = await this.ctx.storage.get<{ intentHash: string; receipt: Record<string, unknown> }>(key);
+    if (!stored) return null;
+    if (stored.intentHash !== input.intentHash) {
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_CONFLICT',
+        message: 'This idempotency key already belongs to a different forge_edit intent. Reuse the original files and message, or call forge_edit with a fresh key for the new change.',
+        retryable: false,
+        details: { kind: input.kind }
+      });
+    }
+    return stored.receipt;
+  }
+
+  async recordRemoteMutation(input: {
+    kind: 'edit';
+    idempotencyKey: string;
+    intentHash: string;
+    receipt: Record<string, unknown>;
+  }): Promise<void> {
+    const key = `remote-mutation:${input.kind}:${encodeURIComponent(input.idempotencyKey)}`;
+    await this.ctx.storage.put(key, { intentHash: input.intentHash, receipt: input.receipt });
   }
 
   /** Whatever the container wrote that GitHub does not know about yet. */
