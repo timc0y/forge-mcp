@@ -140,9 +140,17 @@ export function toForgeError(error: unknown): ForgeError {
     });
   }
 
+  // The block above goes to the trouble of capturing `message` and stashing it
+  // in details.reason so the client sees something actionable — and then this
+  // return threw it away and sent the bare string anyway. Production shows what
+  // that costs: three forge_edit failures whose entire agent-visible text was
+  // "Forge could not complete the operation." on the one tool that matters
+  // most. The reason was sitting in details the whole time.
   return new ForgeError({
     code: 'FORGE_INTERNAL_ERROR',
-    message: 'Forge could not complete the operation.',
+    message: message
+      ? `Forge could not complete the operation: ${message.slice(0, 500)} This was not a fault Forge recognises, so there is no specific remedy — retry once, and if it repeats, report it rather than varying the arguments, which will not help.`
+      : 'Forge could not complete the operation, and the failure carried no detail to report. Retry once; if it repeats, report it rather than varying the arguments, which will not help.',
     retryable: false,
     ...(Object.keys(details).length ? { details } : {})
   });

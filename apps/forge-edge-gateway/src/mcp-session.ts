@@ -2190,11 +2190,41 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             `/repos/${state.repository.owner}/${state.repository.name}/contents/${file.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`
           );
           if (fetched.status !== 200) {
+            // Every non-200 used to be reported as "the file does not exist —
+            // send content to create it". That is a guess, and when it is
+            // wrong the advice destroys work: an agent told to create a file
+            // that already exists sends whole-file content over the top of it.
+            // Production hit exactly this on package.json and two source files
+            // that were plainly present; the real cause was that the branch
+            // itself was not on GitHub yet. Say which it is, and only advise
+            // creating the file when the branch is known to exist without it.
+            if (fetched.status === 404) {
+              const ref = await request(
+                `/repos/${state.repository.owner}/${state.repository.name}/git/ref/heads/${branch.split('/').map(encodeURIComponent).join('/')}`
+              ).catch(() => undefined);
+              if (!ref || ref.status !== 200) {
+                throw new ForgeError({
+                  code: 'FORGE_FILE_NOT_FOUND',
+                  message: `${branch} is not on GitHub, so ${file.path} cannot be read to replace a fragment of it — the file is not missing, the branch is. Call forge_start to create the branch, then edit again. Do NOT send whole-file content: that would overwrite whatever ${file.path} really contains.`,
+                  retryable: false,
+                  details: { path: file.path, branch, cause: 'branch_absent' }
+                });
+              }
+              throw new ForgeError({
+                code: 'FORGE_FILE_NOT_FOUND',
+                message: `${file.path} does not exist on ${branch}, so there is nothing to replace in it. Send content to create it.`,
+                retryable: false,
+                details: { path: file.path, branch, cause: 'file_absent' }
+              });
+            }
+            const transient = fetched.status === 429 || fetched.status >= 500;
             throw new ForgeError({
-              code: 'FORGE_FILE_NOT_FOUND',
-              message: `${file.path} does not exist on ${branch}, so there is nothing to replace in it. Send content to create it.`,
-              retryable: false,
-              details: { path: file.path, branch }
+              code: transient ? 'FORGE_PROVIDER_UNAVAILABLE' : 'FORGE_PERMISSION_DENIED',
+              message: transient
+                ? `GitHub returned HTTP ${fetched.status} reading ${file.path} on ${branch}, which is a transient fault rather than anything about the file. Retry the same edit.`
+                : `GitHub returned HTTP ${fetched.status} reading ${file.path} on ${branch}. This is an access problem, not a missing file — call forge_access for this repository, and do not send whole-file content, which would overwrite what is really there.`,
+              retryable: transient,
+              details: { path: file.path, branch, status: fetched.status }
             });
           }
           const body = fetched.json as { content?: string; sha?: string; encoding?: string };
