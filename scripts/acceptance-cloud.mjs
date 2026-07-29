@@ -197,14 +197,15 @@ if (process.env.FORGE_ACCEPTANCE_READ_ONLY === 'true') {
 }
 const cleanupWorkspace = process.env.FORGE_CLEANUP_WORKSPACE;
 if (cleanupWorkspace) {
-  const inspected = await mcp.call('forge_workspace_get', { workspace_id: cleanupWorkspace });
+  const inspected = await mcp.call('forge_workspace_get', { workspace: cleanupWorkspace });
   if (!inspected.value || typeof inspected.value !== 'object') {
     throw new Error('forge_workspace_get did not return structured workspace state.');
   }
-  console.log(`workspace ${cleanupWorkspace}: current state ${inspected.value.state}`);
+  console.log(`workspace ${cleanupWorkspace}: current state ${inspected.value.state}${inspected.value.failure ? ` ${JSON.stringify(inspected.value.failure)}` : ''}`);
   const cleanup = await mcp.call('forge_workspace_destroy', {
-    workspace_id: cleanupWorkspace,
+    workspace: cleanupWorkspace,
     preserve_artifacts: true,
+    force: true,
     idempotency_key: key('cleanup')
   });
   if (!cleanup.value || typeof cleanup.value !== 'object') {
@@ -231,7 +232,7 @@ try {
   workspaceId = created.value.workspace_id;
   console.log(`workspace ${workspaceId}: ${created.value.state}`);
   const ready = await waitFor(
-    async () => (await mcp.call('forge_workspace_get', { workspace_id: workspaceId })).value,
+    async () => (await mcp.call('forge_workspace_get', { workspace: workspaceId })).value,
     'workspace readiness',
     (value) => value.state === 'ready' || value.state === 'failed'
   );
@@ -242,7 +243,7 @@ try {
   }
   console.log(`waiting ${recoveryWaitMs}ms to verify durable Sandbox sleep recovery`);
   await new Promise((resolveWait) => setTimeout(resolveWait, recoveryWaitMs));
-  const recovered = await mcp.call('forge_workspace_get', { workspace_id: workspaceId });
+  const recovered = await mcp.call('forge_workspace_get', { workspace: workspaceId });
   if (
     recovered.value.state !== 'ready' ||
     !recovered.value.activeSnapshotId ||
@@ -263,7 +264,7 @@ try {
   }
 
   const command = await mcp.call('forge_shell', {
-    workspace_id: workspaceId,
+    workspace: workspaceId,
     command: "node --version && git rev-parse --short HEAD && git remote get-url origin && test -f index.html",
     cwd: '/workspace/repo',
     timeout_ms: 30_000,
@@ -279,7 +280,7 @@ try {
   }
 
   const process = await mcp.call('forge_shell', {
-    workspace_id: workspaceId,
+    workspace: workspaceId,
     command: 'python3 -m http.server 8000 --bind 0.0.0.0',
     cwd: '/workspace/repo',
     environment: {},
@@ -292,7 +293,7 @@ try {
   await new Promise((resolveWait) => setTimeout(resolveWait, 2_000));
 
   const preview = await mcp.call('forge_preview_expose', {
-    workspace_id: workspaceId,
+    workspace: workspaceId,
     process_id: processId,
     port: 8000,
     access: 'private',
@@ -328,7 +329,7 @@ try {
   }
 
   const review = await mcp.call('forge_preview', {
-    workspace_id: workspaceId,
+    workspace: workspaceId,
     preview_id: previewId,
     captures: [{ selection: 'homepage', route: '/', state: 'entry' }],
     viewports: [
@@ -373,14 +374,15 @@ try {
 } finally {
   if (workspaceId) {
     const result = await mcp.call('forge_workspace_destroy', {
-      workspace_id: workspaceId,
+      workspace: workspaceId,
       preserve_artifacts: true,
+      force: true,
       idempotency_key: key('destroy')
     }).catch((error) => ({ value: { error: String(error) } }));
     let reportedState = result.value.state;
     if (reportedState === 'destroying') {
       const finalState = await waitFor(
-        async () => (await mcp.call('forge_workspace_get', { workspace_id: workspaceId })).value,
+        async () => (await mcp.call('forge_workspace_get', { workspace: workspaceId })).value,
         'workspace destruction',
         (value) => value.state === 'destroyed' || value.state === 'failed',
         120_000
