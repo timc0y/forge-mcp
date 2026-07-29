@@ -3574,6 +3574,7 @@ export class ForgeApplicationService {
       return { changes: [], truncated: true, baseBlobs: {} };
     }
     const changes: Array<{ path: string; content: string | null }> = [];
+    const newPaths = new Set<string>();
     let contentTruncated = false;
     for (const entry of entries) {
       const code = entry.slice(0, 2);
@@ -3586,6 +3587,17 @@ export class ForgeApplicationService {
       }
       if (code.includes('D')) {
         changes.push({ path, content: null });
+        continue;
+      }
+      if (code.includes('?') || code.includes('A')) newPaths.add(path);
+      const representable = await handle.exec({
+        command: 'test -f "$FORGE_INGEST_PATH" && test ! -L "$FORGE_INGEST_PATH" && test ! -x "$FORGE_INGEST_PATH"',
+        cwd: '/workspace/repo', timeoutMs: 5_000, outputLimitBytes: 1_000,
+        environment: { FORGE_INGEST_PATH: `/workspace/repo/${path}` },
+        sessionId: 'system', networkPolicy: 'deny_all'
+      });
+      if (representable.exitCode !== 0 || representable.truncated) {
+        contentTruncated = true;
         continue;
       }
       const file = await handle.readFile({ path: `/workspace/repo/${path}`, maxBytes: 500_000 }).catch(() => undefined);
@@ -3601,18 +3613,29 @@ export class ForgeApplicationService {
     // committing this content would revert whatever moved — the same silent
     // overwrite the read-check prevents for agent edits.
     const baseBlobs: Record<string, string> = {};
-    if (changes.length) {
+    for (const change of changes) {
       const listed = await handle.exec({
-        command: 'git ls-tree -r HEAD', cwd: '/workspace/repo', timeoutMs: 30_000,
-        outputLimitBytes: 1_000_000, sessionId: 'system', networkPolicy: 'deny_all'
+        command: 'git ls-tree -z HEAD -- ":(literal)$FORGE_INGEST_PATH"',
+        cwd: '/workspace/repo', timeoutMs: 5_000, outputLimitBytes: 1_000,
+        environment: { FORGE_INGEST_PATH: change.path },
+        sessionId: 'system', networkPolicy: 'deny_all'
       });
-      if (listed.exitCode === 0) {
-        const wanted = new Set(changes.map((change) => change.path));
-        for (const line of listed.stdout.split('\n')) {
-          const match = /^\d+ blob ([0-9a-f]{40,64})\t(.+)$/u.exec(line.trimEnd());
-          if (match && wanted.has(match[2] as string)) baseBlobs[match[2] as string] = match[1] as string;
-        }
+      if (listed.exitCode !== 0 || listed.truncated) {
+        return { changes: [], truncated: true, baseBlobs: {} };
       }
+      if (!listed.stdout) {
+        if (!newPaths.has(change.path)) return { changes: [], truncated: true, baseBlobs: {} };
+        continue;
+      }
+      const match = /^(\d+) blob ([0-9a-f]{40,64})\t([\s\S]*)\0$/u.exec(listed.stdout);
+      if (!match || match[3] !== change.path) return { changes: [], truncated: true, baseBlobs: {} };
+      // Deleting any Git blob mode is representable. Writes are restricted to
+      // regular non-executable files because the remote tree writer emits
+      // 100644 for every non-null blob.
+      if (change.content !== null && match[1] !== '100644') {
+        return { changes: [], truncated: true, baseBlobs: {} };
+      }
+      baseBlobs[change.path] = match[2] as string;
     }
     return { changes, truncated: false, baseBlobs };
   }
