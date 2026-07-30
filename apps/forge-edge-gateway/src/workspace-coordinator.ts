@@ -778,17 +778,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     }
   }
 
-  private assertMutableOnAgentForgeBranch(record: WorkspaceRuntimeRecord): void {
-    if (isAgentForgeBranch(record.workspace.currentBranch)) return;
-    const branchPolicy = branchPolicyFor(record.workspace.currentBranch);
-    throw new ForgeError({
-      code: 'FORGE_VALIDATION_FAILED',
-      message: branchPolicy.next_step,
-      retryable: false,
-      details: { branch_policy: branchPolicy, allowedNextActions: ['forge_workspace_create', 'forge_workspace_get'] }
-    });
-  }
-
   async shellExec(input: {
     command: string;
     cwd: string;
@@ -842,7 +831,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const normalizedCwd = input.cwd.replace(/\/+$/u, '') || '/';
       const touchesRepo = normalizedCwd === '/workspace/repo' || normalizedCwd.startsWith('/workspace/repo/');
       const record = touchesRepo ? await this.repoRecord() : await this.getRecord();
-      if (touchesRepo) this.assertMutableOnAgentForgeBranch(record);
       const before = record.workspace.revision;
       const updatedAt = record.workspace.updatedAt;
       const divergenceAt = record.lastGitDivergence?.observedAt;

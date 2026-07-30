@@ -1782,10 +1782,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
         let workspaceRef = text(input.ref);
         try {
-          // Establish the durable branch before any executor exists. A
-          // workspace is now a GitHub control-plane session first; its
-          // container is optional and provisioned only by an execution tool.
-          if (!workspaceRef.startsWith('forge/')) {
+          // Installed repositories get a durable forge/* branch before any
+          // executor exists. Public repositories without an installation can
+          // still use the execution plane read-only; forge_edit remains
+          // unavailable until the App is installed.
+          const installation = await authorizeRepository(env, identity, repository);
+          if (installation && !workspaceRef.startsWith('forge/')) {
             const request = await githubRequestForWorkspace(env, identity, { repository });
             const encodedRef = workspaceRef.split('/').map(encodeURIComponent).join('/');
             const base = await request(
@@ -1811,11 +1813,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               baseSha
             });
             workspaceRef = branch;
-          } else {
+          } else if (workspaceRef.startsWith('forge/')) {
             assertForgeBranch(workspaceRef);
-            // This also proves the App is installed: all durable repository
-            // CRUD runs through its scoped GitHub installation token.
-            await githubRequestForWorkspace(env, identity, { repository });
           }
         } catch (error) {
           await releaseWorkspaceSlot(env.METADATA, workspaceId).catch(() => undefined);

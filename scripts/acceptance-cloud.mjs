@@ -230,6 +230,25 @@ try {
   });
   workspaceId = created.value.workspace_id;
   console.log(`workspace ${workspaceId}: ${created.value.state}`);
+  if (created.value.state === 'requested') {
+    const firstExecution = await mcp.call('forge_shell', {
+      workspace: workspaceId,
+      command: 'node --version',
+      cwd: '/workspace/repo',
+      timeout_ms: 30_000,
+      environment: {},
+      network_policy: 'deny_all',
+      output_limit_bytes: 20_000,
+      mode: 'read_only',
+      idempotency_key: key('lazy-provision')
+    }).then(
+      () => ({ unexpectedlyRan: true, message: '' }),
+      (error) => ({ unexpectedlyRan: false, message: String(error) })
+    );
+    if (firstExecution.unexpectedlyRan || !/executor is starting|provisioning/iu.test(firstExecution.message)) {
+      throw new Error(`First execution call did not return the lazy-provisioning receipt: ${firstExecution.message}`);
+    }
+  }
   const ready = await waitFor(
     async () => (await mcp.call('forge_workspace_get', { workspace: workspaceId })).value,
     'workspace readiness',
