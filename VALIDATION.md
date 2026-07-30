@@ -11,13 +11,20 @@ Last verified on 30 July 2026 in the current workspace.
   - 77 test files and 573 tests passed
   - generated MCP tool schemas matched the checked-in schemas
 - `pnpm cf:typegen` and `wrangler deploy --dry-run --containers-rollout=none`
-  - previously validated the generated bindings and Worker deployment graph; rerun
-    these commands before deployment changes.
+  - generated bindings and the production Worker deployment graph validated.
+- `pnpm run deploy:worker`
+  - production Worker version `d3b687b1-8b78-4137-bffc-4eb6c81140dd` deployed;
+    no pending D1 migrations.
+  - `/health`, `/ready`, and the OAuth protected-resource metadata endpoint
+    returned healthy production responses.
+- `pnpm acceptance:cloud`
+  - authenticated MCP acceptance provisioned a public-repository workspace,
+    executed it, captured phone and desktop evidence with zero findings, and
+    destroyed it successfully.
 
 ## Environment-limited validation
 
-A full container-image dry run requires Docker. Run it whenever `Dockerfile` or
-the container configuration changes; the current verification did not exercise
-live Cloudflare resources.
-
-No live Cloudflare account resources, OAuth registration, GitHub App installation or public preview domain were available in this environment, so this ZIP does not claim a production deployment.
+The release used `deploy:worker`, so it did not build or roll out a new Sandbox
+container image. Run the full Docker-backed deploy whenever `Dockerfile` or the
+container configuration changes. Cloud acceptance used the public fixture; a
+private GitHub App installation remains a separate operator check.
