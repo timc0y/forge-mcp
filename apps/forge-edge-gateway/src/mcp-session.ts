@@ -2412,7 +2412,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const normalizedCwd = cwd.replace(/\/+$/u, '') || '/workspace';
           const repoScoped = normalizedCwd === '/workspace/repo' || normalizedCwd.startsWith('/workspace/repo/');
           let preservedExecutorChanges = false;
-          if (repoScoped) {
+          const executionBinding = repoScoped ? await workspace.getAuthorizationBinding() : undefined;
+          const durableAgentBranch = executionBinding?.currentBranch?.startsWith('forge/') === true;
+          if (repoScoped && durableAgentBranch) {
             // Both foreground and managed commands must start from the remote
             // branch they claim to verify. Time-box the prerequisite so a busy
             // coordinator cannot consume the whole client transport before an

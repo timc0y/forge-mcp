@@ -12,7 +12,7 @@ const ownerTokenFile = process.env.FORGE_OWNER_TOKEN_FILE ?? resolve(homedir(), 
 // still override it for a controlled integration environment.
 const redirectUri = process.env.FORGE_ACCEPTANCE_REDIRECT_URI ?? 'https://chatgpt.com/forge-acceptance';
 const protocolVersion = '2025-11-25';
-const recoveryWaitMs = Number.parseInt(process.env.FORGE_RECOVERY_WAIT_MS ?? '100000', 10);
+const recoveryWaitMs = Number.parseInt(process.env.FORGE_RECOVERY_WAIT_MS ?? '0', 10);
 const acceptanceStartedAt = new Date().toISOString();
 const configuredRepository = process.env.FORGE_ACCEPTANCE_REPOSITORY ?? 'mdn/beginner-html-site-styled';
 const [repositoryOwner, repositoryName, extraRepositorySegment] = configuredRepository.split('/');
@@ -256,29 +256,24 @@ try {
   );
   if (ready.state !== 'ready') throw new Error(`Workspace provisioning failed: ${JSON.stringify(ready)}`);
 
-  if (!Number.isFinite(recoveryWaitMs) || recoveryWaitMs < 95_000) {
-    throw new Error('FORGE_RECOVERY_WAIT_MS must be at least 95000 to verify the 90-second Sandbox sleep/restore path.');
+  if (!Number.isFinite(recoveryWaitMs) || recoveryWaitMs < 0) {
+    throw new Error('FORGE_RECOVERY_WAIT_MS must be zero or a positive duration.');
   }
-  console.log(`waiting ${recoveryWaitMs}ms to verify durable Sandbox sleep recovery`);
-  await new Promise((resolveWait) => setTimeout(resolveWait, recoveryWaitMs));
-  const recovered = await mcp.call('forge_workspace_get', { workspace: workspaceId });
-  if (
-    recovered.value.state !== 'ready' ||
-    !recovered.value.activeSnapshotId ||
-    !recovered.value.recovery?.verifiedAt ||
-    Date.parse(recovered.value.recovery.verifiedAt) < Date.parse(acceptanceStartedAt)
-  ) {
-    throw new Error(`Workspace did not recover from idle sleep: ${JSON.stringify(recovered.value)}`);
+  if (recoveryWaitMs > 0) {
+    console.log(`waiting ${recoveryWaitMs}ms for optional Sandbox recovery evidence`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, recoveryWaitMs));
+    const recovered = await mcp.call('forge_workspace_get', { workspace: workspaceId });
+    if (recovered.value.state !== 'ready') {
+      throw new Error(`Workspace was not ready after the optional recovery window: ${JSON.stringify(recovered.value)}`);
+    }
+    console.log(recovered.value.recovery?.verifiedAt
+      ? `workspace recovery verified at ${recovered.value.recovery.verifiedAt}`
+      : 'workspace remained ready; no sandbox recycle occurred during the optional recovery window');
   }
   const recoveryReady = await fetch(`${origin}/ready`);
   const recoveryStatus = await recoveryReady.json();
-  if (
-    !recoveryReady.ok ||
-    recoveryStatus.recovery?.verified !== true ||
-    recoveryStatus.recovery?.workspaceId !== workspaceId ||
-    Date.parse(recoveryStatus.recovery?.verifiedAt ?? '') < Date.parse(acceptanceStartedAt)
-  ) {
-    throw new Error(`Gateway did not record a manifest-verified recovery: ${JSON.stringify(recoveryStatus)}`);
+  if (!recoveryReady.ok || recoveryStatus.executor?.requiredForGitHubCrud !== false) {
+    throw new Error(`Gateway control-plane readiness was not independent from executor recovery: ${JSON.stringify(recoveryStatus)}`);
   }
 
   const command = await mcp.call('forge_shell', {

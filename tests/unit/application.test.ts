@@ -326,10 +326,10 @@ describe('Forge application service', () => {
       states.push(next.workspace.state);
     });
     expect(states).toEqual(['provisioning', 'bootstrapping', 'ready']);
-    // Provisioning never leaves an agent on main — it cuts forge/<workspace>
-    // from the immutable base before the workspace goes ready.
+    // Provisioning preserves the durable branch chosen by the control plane;
+    // it never creates a container-only branch.
     expect(record.workspace).toMatchObject({ currentCommit: 'abcdef', state: 'ready' });
-    expect(record.workspace.currentBranch).toMatch(/^forge\//u);
+    expect(record.workspace.currentBranch).toBe('main');
     expect(record.workspace.activeSnapshotId).toBeDefined();
     expect(Object.keys(record.snapshots)).toHaveLength(1);
     expect(provider.calls).toContain('npm ci');
@@ -386,7 +386,7 @@ describe('Forge application service', () => {
     await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
       .resolves.toMatchObject({ entries: [] });
     expect(record.snapshots[snapshotId]?.manifest).toMatchObject({ commit: 'abcdef' });
-    expect(record.snapshots[snapshotId]?.manifest?.branch).toMatch(/^forge\//u);
+    expect(record.snapshots[snapshotId]?.manifest?.branch).toBe('main');
   });
 
   it('never restores when the workspace probe itself is unavailable', async () => {
@@ -436,9 +436,9 @@ describe('Forge application service', () => {
     record.workspace.requestedRef = 'v1.0.0';
 
     await service.provisionWorkspace(record, false);
-    // The tag is never mislabelled as a checked-out branch: the probe reports
-    // no branch, and the agent branch cut from it is a forge/ ref, not 'v1.0.0'.
-    expect(record.workspace.currentBranch).toMatch(/^forge\//u);
+    // The tag is never mislabelled as a checked-out branch and provisioning
+    // never invents a container-only branch for it.
+    expect(record.workspace.currentBranch).toBeUndefined();
     expect(record.workspace.requestedRef).toBe('v1.0.0');
     await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
       .resolves.toMatchObject({ entries: [] });
