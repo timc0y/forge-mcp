@@ -6,8 +6,9 @@ Last verified on 30 July 2026 in the current workspace.
 
 - `pnpm check`
   - dependency-boundary validation across 11 domain packages
+  - tool/catalogue and live-D1 wiring validation (41 tools, 25 tables)
   - strict TypeScript checks across 24 workspace packages
-  - 77 test files and 571 tests passed
+  - 77 test files and 573 tests passed
   - generated MCP tool schemas matched the checked-in schemas
 - `pnpm cf:typegen` and `wrangler deploy --dry-run --containers-rollout=none`
   - previously validated the generated bindings and Worker deployment graph; rerun

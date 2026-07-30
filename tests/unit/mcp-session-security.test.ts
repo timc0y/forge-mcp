@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { ForgeError } from '@forge/core';
 import { assertPublicHost, classifyCommand } from '@forge/policy';
-import type { CommandClass } from '@forge/policy';
 import { assertTaskTransition, isTerminalTaskState } from '@forge/task-core';
 import type { TaskState } from '@forge/task-core';
 import { forgeTools } from '@forge/mcp-core';
+import { mayAutoApproveShell } from '../../apps/forge-edge-gateway/src/handlers/helpers';
 
 // These tests cover the security-relevant primitives that mcp-session.ts wires
 // into its handlers. The handler bodies themselves need a full Worker harness
@@ -48,18 +48,13 @@ describe('SSRF guard (forge_review URL egress)', () => {
 });
 
 describe('nuanced shell auto-approve gating', () => {
-  // Replicates mcp-session.ts mayAutoApproveShell: auto-approve is limited to the
-  // low-risk gated class (dependency_install) and never applies under the
-  // unrestricted_with_approval network policy.
-  const AUTO_APPROVABLE: ReadonlySet<CommandClass> = new Set<CommandClass>(['dependency_install']);
-  const mayAutoApprove = (flagOn: boolean, cls: CommandClass, networkPolicy: string) =>
-    flagOn && networkPolicy !== 'unrestricted_with_approval' && AUTO_APPROVABLE.has(cls);
+  const productionAutoApprove = { FORGE_AUTO_APPROVE_SHELL: 'true' } as const;
 
   it('dependency_install is gated (allowed + approvalRequired) and auto-approvable', () => {
     const decision = classifyCommand('npm install left-pad', 'development');
     expect(decision.allowed).toBe(true);
     expect(decision.approvalRequired).toBe(true);
-    expect(mayAutoApprove(true, decision.classification, 'development')).toBe(true);
+    expect(mayAutoApproveShell(productionAutoApprove, decision.classification, 'development')).toBe(true);
   });
 
   it('network egress under unrestricted_with_approval is NEVER auto-approved', () => {
@@ -67,18 +62,27 @@ describe('nuanced shell auto-approve gating', () => {
     expect(decision.allowed).toBe(true);
     expect(decision.approvalRequired).toBe(true);
     // Even with the operator flag on, this must require a real human approval.
-    expect(mayAutoApprove(true, decision.classification, 'unrestricted_with_approval')).toBe(false);
+    expect(mayAutoApproveShell(productionAutoApprove, decision.classification, 'unrestricted_with_approval')).toBe(false);
   });
 
   it('destructive commands are never silently auto-approved', () => {
     const decision = classifyCommand('rm -rf /workspace/repo', 'development');
     expect(decision.classification).toBe('destructive');
-    expect(mayAutoApprove(true, decision.classification, 'development')).toBe(false);
+    expect(mayAutoApproveShell(productionAutoApprove, decision.classification, 'development')).toBe(false);
   });
 
   it('auto-approve is off entirely when the operator flag is off', () => {
     const decision = classifyCommand('pnpm add react', 'development');
-    expect(mayAutoApprove(false, decision.classification, 'development')).toBe(false);
+    expect(mayAutoApproveShell({ FORGE_AUTO_APPROVE_SHELL: 'false' }, decision.classification, 'development')).toBe(false);
+  });
+
+  it('never silently auto-approves a shell evaluator, even if its class is configured', () => {
+    const decision = classifyCommand("eval 'git push origin HEAD'", 'development');
+    expect(decision).toMatchObject({ classification: 'shell_evaluation', approvalRequired: true });
+    expect(mayAutoApproveShell({
+      FORGE_AUTO_APPROVE_SHELL: 'true',
+      FORGE_AUTO_APPROVE_SHELL_CLASSES: 'dependency_install,shell_evaluation'
+    }, decision.classification, 'development')).toBe(false);
   });
 });
 

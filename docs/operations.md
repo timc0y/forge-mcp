@@ -16,7 +16,8 @@ allocation, Browser Run, OAuth, D1, R2, Workflows, or preview routing.
 
 ## Deploy
 
-Forge has one deployable environment, defined by `infra/wrangler/forge.jsonc`.
+Forge has one production environment plus a named development environment,
+defined by `infra/wrangler/forge.jsonc`.
 
 Wrangler is a dev dependency — there is no global `wrangler` on `PATH` unless you
 install it yourself. Use the repo scripts:
@@ -24,7 +25,7 @@ install it yourself. Use the repo scripts:
 ```bash
 pnpm wrangler login          # refresh Cloudflare OAuth
 pnpm run deploy              # Worker + Sandbox container image (needs Docker)
-pnpm run deploy:worker       # Worker only; skips container image build/push
+pnpm run deploy:worker       # Worker only; still migrates D1, skips image build/push
 ```
 
 **Live operator view:** signed-in owners open [`/app/live`](https://forge.timcoy.uk/app/live)
@@ -32,7 +33,8 @@ for a read-only window: workspace list, D1 + in-DO MCP tool trail, process log t
 SSE updates (~4s), and an optional PostHog embed (`FORGE_POSTHOG_LIVE_EMBED_URL` or
 `FORGE_POSTHOG_PROJECT_ID` + `POSTHOG_API_KEY`). Observer MCP tools:
 `forge_observer_workspaces`, `forge_observer_workspace`, `forge_observer_activity`.
-Deploy with `pnpm run deploy:worker` to avoid disturbing running sandboxes.
+Deploy with `pnpm run deploy:worker` to avoid disturbing running sandboxes. It
+still applies pending D1 migrations before publishing the Worker.
 
 **Docker is required for `pnpm run deploy`.** Wrangler builds `infra/wrangler`
 `containers[].image` (`../../Dockerfile`) locally before upload. Start Docker
@@ -41,7 +43,11 @@ code and do not need a new Sandbox image.
 
 **Deploy applies D1 migrations first.** `migrations/d1/` (`0001`…`0032` today)
 must apply in strict numeric sequence before the Worker goes live; CI checks
-migration sequencing.
+migration sequencing. Every migration must remain compatible with both the
+currently deployed Worker and the release being published. If the Worker deploy
+fails after migration, stop retries that could compound state, inspect the
+applied migration state, then roll forward a compatible Worker. Do not roll
+back production schema except through an explicitly approved restore plan.
 
 Local iteration uses the same config with an auth-relaxed identity:
 
@@ -68,6 +74,15 @@ Deployment checklist:
 6. Verify previews and capabilities fail after workspace destruction.
 7. Record the deployment date, Worker version, Sandbox SDK version, and
    Cloudflare account in the PR evidence.
+
+## Private GitHub App access
+
+This private pilot uses an owner-managed GitHub App. The owner installs or
+reconnects the App and selects repositories; a collaborator does not use an App
+installation URL. To add a collaborator, invite their GitHub username to the
+repository, have them sign in to Forge and choose **Request access**, then
+approve that request in Forge. Reconnect the App after changing its repository
+selection.
 
 ## Cloudflare bindings
 
@@ -96,22 +111,13 @@ outright, so a repo with a slightly stale lockfile still becomes usable
 
 ## Cost
 
-Target: below roughly USD 10/month for one heavy personal user, tracked via
-`UsageCounters` (workspace active/idle ms, browser session ms, browser
-captures, dependency installs, builds, command count, stored artifact bytes).
-`budgetPosition(usage)` estimates monthly USD:
-
-| Level | Estimate | Response |
-| --- | --- | --- |
-| ok | < $5 | none |
-| warning | ≥ $5 | surface budget on responses |
-| strong-warning | ≥ $8 | surface prominently, prefer container-free actions |
-| hard | ≥ $10 | refuse new cloud workspaces; cleanup, metadata, summaries and compute-free Git stay available |
-
-Keep costs low: reuse one workspace per coherent task; workspaces idle-sleep
-after 90s; destroy on durable completion; prefer `forge_review` (no
-container) for already-deployed URLs; capture browser evidence only when
-deliberate.
+Automated metering and hard budget enforcement are proposed, not deployed: the
+`UsageCounters` / `budgetPosition` model belongs to
+[cost-controls.md](plans/cost-controls.md) and `@forge/cost` is not a current
+package. Keep costs low operationally: reuse one workspace per coherent task,
+allow idle instances to sleep, destroy on durable completion, prefer
+`forge_review` (no container) for already-deployed URLs, and capture browser
+evidence only when deliberate.
 
 ## Workspace cleanup
 

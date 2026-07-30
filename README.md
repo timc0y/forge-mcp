@@ -107,7 +107,7 @@ behind adapters.
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
-pnpm check          # boundaries + typecheck + tests + schemas
+pnpm check          # boundaries + wiring + typecheck + tests + schemas
 pnpm dev            # local worker (requires Docker for the local sandbox)
 ```
 

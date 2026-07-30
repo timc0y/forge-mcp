@@ -126,7 +126,8 @@ session was an instance of one:
 **Beware tests that pin a literal.** Two were found holding bugs open: one asserted a removed
 tool name, one pinned a migration count. Assert the property, not the value.
 
-**Gate:** `pnpm check` (typecheck, 592 tests, schemas, boundaries). `pnpm catalog:measure`
+**Gate:** `pnpm check` (boundaries, wiring, typecheck, test suite and schemas; see
+`VALIDATION.md` for the current count). `pnpm catalog:measure`
 reports the real `tools/list` wire bytes — the generated schema file omits `outputSchema`,
 `annotations` and `_meta` and cannot measure the true cost.
 

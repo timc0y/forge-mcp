@@ -61,6 +61,9 @@ export type CommandClass =
   | 'privileged'
   | 'destructive'
   | 'prohibited'
+  // Shell evaluators execute an argument or file as another shell program. They
+  // always need a human approval and are never eligible for auto-approval.
+  | 'shell_evaluation'
   // Fallback bucket for commands whose structure could not be parsed well enough
   // to classify segment-by-segment (unbalanced quotes, pathological nesting).
   // Allowed to run, but never auto-approved.
@@ -75,6 +78,7 @@ const SEVERITY: Record<CommandClass, number> = {
   external_side_effect: 3,
   dependency_install: 4,
   requires_approval: 5,
+  shell_evaluation: 5,
   destructive: 6,
   privileged: 7,
   prohibited: 8
@@ -355,6 +359,11 @@ function matchClosing(input: string, open: number, openChar: string, closeChar: 
 // `sh -c "…"` / `bash -lc '…'` wraps a real shell command. Unwrap it so the inner
 // command is what gets classified rather than the harmless-looking wrapper.
 const SHELL_WRAPPER = /^(?:[a-z0-9/_.-]*\/)?(?:ba|z|da|a|k|c)?sh\s+(?:-[a-z]*\s+)*-[a-z]*c\s+(.*)$/is;
+// `command` and `builtin` are ordinary shell wrappers around a builtin. They
+// cannot turn an evaluator into a harmless command: `command eval …` and
+// `builtin source …` still hand a second program to the shell. Repeated wrappers
+// are accepted defensively; `--` is valid for `builtin` and harmless to handle.
+const SHELL_EVALUATOR = /^(?:(?:command|builtin)(?:\s+--)?\s+)*(?:(?:eval|source)(?:\s|$)|\.\s+)/i;
 
 function unwrapShellC(text: string): string | null {
   const match = SHELL_WRAPPER.exec(text.trim());
@@ -483,6 +492,20 @@ function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, dep
   }
 
   if (isRawGitPush(raw) || isRawGitPush(trimmed)) return rawGitPushDecision();
+
+  // These builtins execute their arguments (or the contents of a file) as
+  // shell code. We intentionally do not pretend to parse that second shell
+  // program, but neither may it enter the automatic path as an ordinary local
+  // mutation. This is an approval seam, not a containment boundary; sandbox
+  // isolation and egress controls still enforce the actual security boundary.
+  if (SHELL_EVALUATOR.test(trimmed)) {
+    return decide(
+      'shell_evaluation',
+      true,
+      true,
+      'Shell evaluation executes an additional command program and requires explicit approval.'
+    );
+  }
 
   if (prohibited.some((rule) => rule.test(trimmed))) {
     return decide('prohibited', false, false, 'Command requests prohibited privileges or network access.');

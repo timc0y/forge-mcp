@@ -61,6 +61,11 @@
     // blocked outright by policy. This flag never touches git-push /
     // pull-request gating, which is enforced on its own path.
     "FORGE_AUTO_APPROVE_SHELL": "true",
+    // Keep the control-plane quota explicit and equal to the provider's hard
+    // container limit. Defaults in code are intentionally not deployment
+    // configuration: a later default must not raise production capacity.
+    "FORGE_MAX_WORKSPACES": "8",
+    "FORGE_MAX_WORKSPACES_PER_TENANT": "5",
     "POSTHOG_HOST": "https://us.i.posthog.com",
     "FORGE_POSTHOG_PROJECT_ID": "522676"
   },
@@ -162,6 +167,10 @@
         "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
         "GITHUB_APP_SLUG": "forge-mcp-cloud",
         "FORGE_AUTO_APPROVE_SHELL": "true",
+        // The development container provider exposes five instances, so its
+        // controller must not advertise the production default of eight.
+        "FORGE_MAX_WORKSPACES": "5",
+        "FORGE_MAX_WORKSPACES_PER_TENANT": "3",
         "POSTHOG_HOST": "https://us.i.posthog.com",
         "FORGE_POSTHOG_PROJECT_ID": "522676"
       },

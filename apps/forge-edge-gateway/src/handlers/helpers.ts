@@ -36,7 +36,8 @@ export const DEFAULT_AUTO_APPROVABLE_SHELL_CLASSES: readonly CommandClass[] = ['
 
 export const KNOWN_SHELL_CLASSES: ReadonlySet<string> = new Set<CommandClass>([
   'read_only', 'local_mutation', 'dependency_install', 'network_access',
-  'external_side_effect', 'privileged', 'destructive', 'prohibited', 'requires_approval'
+  'external_side_effect', 'privileged', 'destructive', 'prohibited', 'requires_approval',
+  'shell_evaluation'
 ]);
 
 export function autoApprovableShellClasses(env: Pick<Env, 'FORGE_AUTO_APPROVE_SHELL_CLASSES'>): ReadonlySet<CommandClass> {
@@ -62,6 +63,10 @@ export function mayAutoApproveShell(
 ): boolean {
   if (!autoApproveShell(env)) return false;
   if (networkPolicy === 'unrestricted_with_approval') return false;
+  // `eval`, `source`, and `.` hand a second command program to the shell. This
+  // classification is deliberately excluded even if a misconfigured class list
+  // names it: an operator's broad auto-approve flag must not erase that seam.
+  if (classification === 'shell_evaluation') return false;
   return autoApprovableShellClasses(env).has(classification);
 }
 
