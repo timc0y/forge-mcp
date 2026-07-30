@@ -1,6 +1,6 @@
 # Tool catalog
 
-Forge exposes 43 MCP tools from `forgeTools` in `@forge/mcp-core`. GitHub's API
+Forge exposes 41 MCP tools from `forgeTools` in `@forge/mcp-core`. GitHub's API
 is the sole durable file/branch/diff/commit/history/PR plane; executor compute
 is lazy and ephemeral. Generated schemas live in
 `schemas/forge-tools.schema.json`.

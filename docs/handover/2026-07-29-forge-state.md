@@ -82,7 +82,7 @@ is a genuine question whether a session needs a container before its first comma
 3. **157 `ForgeError` sites still state no cause and no next action.** An audit found 182 of
    231; packages have been fixing their own as they touch them. `ALLOWLIST_C` in
    `tests/unit/invariants.test.ts` is the work list and should only ever shrink.
-4. **Tool catalogue: 43 tools, ~44.8 KB re-sent every turn.** A collapse to ~15 is designed
+4. **Tool catalogue: 41 tools, ~44.8 KB re-sent every turn.** A collapse to ~15 is designed
    but **deliberately deferred** — see the warning below.
 5. Smaller: `forge_shell` has no `git push` denylist; unrecognised long-command output has
    not been checked for whether head or tail survives; each read costs three GitHub calls to

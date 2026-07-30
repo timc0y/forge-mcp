@@ -13,10 +13,10 @@
 - **Secret handling** — task summaries and evidence pass through redaction
   (`@forge/task-core` `redactSecrets`); compact diffs flag possible secret
   exposure in added lines (`@forge/insight`).
-- **Structured app actions** — `@forge/app-actions` blocks payment/admin/identity
-  patterns unless explicit test controls are set; functional and browser evidence
-  stay distinct.
 - **GitHub** — `forge_edit` writes only guarded `forge/` branches; raw executor
   pushes and default-branch writes are blocked; PR mutations require approval.
-- **Evidence honesty** — a screenshot cannot be marked `passed`
-  (`@forge/evidence`).
+- **Evidence honesty** — browser providers store captures as artifacts and return
+  structure findings separately; Forge does not claim an unexecuted journey passed.
+
+> `@forge/app-actions` and `@forge/evidence` are planned concepts, not current
+> workspace packages. Do not treat them as enforced controls.

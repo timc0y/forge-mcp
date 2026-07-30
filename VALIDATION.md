@@ -1,23 +1,22 @@
 # Forge MCP validation
 
-Validated on 12 July 2026 in the provided build environment.
+Last verified on 30 July 2026 in the current workspace.
 
 ## Passed
 
 - `pnpm check`
-  - dependency-boundary validation across 10 domain packages
-  - strict TypeScript checks across 23 workspace packages
-  - 16 unit/domain tests passed
-  - 1 Local Docker provider contract test skipped because no Docker daemon was available
+  - dependency-boundary validation across 11 domain packages
+  - strict TypeScript checks across 24 workspace packages
+  - 77 test files and 571 tests passed
   - generated MCP tool schemas matched the checked-in schemas
-- `pnpm cf:typegen`
-  - Wrangler generated Worker binding/runtime types successfully
-- `wrangler deploy --dry-run --containers-rollout=none`
-  - Worker bundle completed
-  - Durable Object, Workflow, D1, R2, Browser Run and environment bindings validated
+- `pnpm cf:typegen` and `wrangler deploy --dry-run --containers-rollout=none`
+  - previously validated the generated bindings and Worker deployment graph; rerun
+    these commands before deployment changes.
 
 ## Environment-limited validation
 
-A full container-image dry run was not possible because this environment has no Docker daemon. Wrangler reached the configured image-build step and reported that Docker was required. The Worker deployment graph was then validated with container rollout disabled.
+A full container-image dry run requires Docker. Run it whenever `Dockerfile` or
+the container configuration changes; the current verification did not exercise
+live Cloudflare resources.
 
 No live Cloudflare account resources, OAuth registration, GitHub App installation or public preview domain were available in this environment, so this ZIP does not claim a production deployment.

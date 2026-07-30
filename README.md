@@ -96,7 +96,7 @@ For the GitHub durability and ephemeral-executor guarantees, see the [workspace 
 - `packages/mcp-core` — the tool catalog (source of truth for tool names)
 - `packages/mcp-adapter-v1` — production MCP SDK wiring
 - `packages/{sandbox,browser,git,artifacts}-*` — Cloudflare providers plus the optional self-hosted browser
-- `packages/{task-core,insight,evidence,cost,policy,capabilities}` — domain logic
+- `packages/{task-core,insight,policy,capabilities,credentials,events,audit}` — domain logic
 - `migrations/d1` — database schema; `infra/wrangler` — deploy config
 
 Domain packages never import Cloudflare, GitHub, MCP, or UI types — those live

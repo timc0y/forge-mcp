@@ -1,7 +1,7 @@
 # Cost controls
 
-Status: model and thresholds implemented in `@forge/cost`; response-metadata and
-usage-accumulation wiring pending live runtime counters.
+Status: archived proposal. `@forge/cost` is not present in this workspace, and
+neither its model nor runtime enforcement is implemented.
 
 ## Target
 
@@ -11,7 +11,7 @@ metered usage — never claimed as precise dollars.
 
 ## Model
 
-`@forge/cost` provides:
+The proposed `@forge/cost` package would provide:
 
 - `UsageCounters` — workspace active/idle ms, browser session ms, browser
   captures, dependency installs, builds, command count, stored artifact bytes.
@@ -33,10 +33,9 @@ metered usage — never claimed as precise dollars.
 | strong-warning | ≥ $8 | allowed, strongly surfaced |
 | hard | ≥ $10 | refused (cleanup + compute-free still allowed) |
 
-## Runtime wiring pending
+## Proposed runtime wiring
 
 Accumulating real `UsageCounters` requires the workspace coordinator and
 workflows to record active/idle time, captures and stored bytes, and a per-tenant
 usage row. Attaching `costMetadata` to every relevant response and enforcing
-`gateComputeAction` in `forge_workspace_create` is the follow-up integration;
-the model and gating logic are implemented and unit-tested now.
+`gateComputeAction` in `forge_workspace_create` are future implementation work.

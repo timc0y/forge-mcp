@@ -33,9 +33,8 @@ import { describeDurability } from '../durability';
 import { normalizeRepoPath, toContainerPath } from '../repo-paths';
 import { GitHubReadUnavailable, resolveBranchTree, readBlobFromTree, listEntriesFromTree } from '../github-reads';
 import { applyReplacements, ReplacementFailed } from '../apply-replacements';
-import { readPullRequestReadiness } from '../github-pr-readiness';
 import { deleteGitHubBranchIfUnchanged, listGitHubBranchesWithinBudget, liveWorkspaceBranches } from '../github-branches';
-import { readFragmentSource } from '../github-fragment-source';
+import { readFragmentSource, readPullRequestReadiness } from '../github-repository';
 import { forgeStartSlug } from '../forge-start-branch';
 import {
   spillTextArtifact, withDeadline, authorizedCoordinator, text, number, optionalNumber,

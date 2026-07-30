@@ -32,6 +32,19 @@ const toolSource = readFileSync(resolve(root, 'packages/mcp-core/src/index.ts'),
 const toolNames = new Set([...toolSource.matchAll(/name:\s*'(forge_[a-z_]+)'/g)].map((m) => m[1]));
 if (toolNames.size === 0) errors.push('Found no forge_* tool names in packages/mcp-core — check the regex.');
 
+// The two human-facing catalogues state the tool count explicitly. Keep them
+// honest: a source/schema change must update their introduction in the same
+// commit rather than leaving users with a contradictory API description.
+for (const doc of ['docs/tools.md', 'docs/mcp/tool-catalog.md']) {
+  const source = readFileSync(resolve(root, doc), 'utf8');
+  const match = /Forge(?: currently)? exposes (\d+) MCP tools/u.exec(source);
+  if (!match) {
+    errors.push(`${doc} must state the current MCP tool count.`);
+  } else if (Number(match[1]) !== toolNames.size) {
+    errors.push(`${doc} says ${match[1]} MCP tools, but mcp-core defines ${toolNames.size}.`);
+  }
+}
+
 const adapterSource = readFileSync(resolve(root, 'packages/mcp-adapter-v1/src/index.ts'), 'utf8');
 
 // The four Set literals are flat string arrays — a lazy match to the closing

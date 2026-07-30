@@ -39,7 +39,7 @@ Deploy with `pnpm run deploy:worker` to avoid disturbing running sandboxes.
 Desktop (`open -a Docker`) or use `deploy:worker` when you changed only Worker
 code and do not need a new Sandbox image.
 
-**Deploy applies D1 migrations first.** `migrations/d1/` (`0001`…`0011` today)
+**Deploy applies D1 migrations first.** `migrations/d1/` (`0001`…`0032` today)
 must apply in strict numeric sequence before the Worker goes live; CI checks
 migration sequencing.
 

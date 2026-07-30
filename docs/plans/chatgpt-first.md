@@ -1,7 +1,8 @@
 # ChatGPT-first workflow
 
-Status: cores implemented across task, insight, evidence, app-actions and cost;
-Cloudflare runtime wiring tracked in the sibling plans.
+Status: task and insight cores are implemented. Evidence, structured app actions,
+and cost controls remain proposals; Cloudflare runtime wiring is tracked in the
+sibling plans.
 
 ## Goal
 

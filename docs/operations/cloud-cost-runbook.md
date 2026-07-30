@@ -1,12 +1,14 @@
 # Cloud cost runbook
 
+> This is a proposed cost-control runbook. The referenced `@forge/cost` package
+> and its runtime counters are not present in this workspace.
+
 Target: below approximately USD 10 per month for one heavy personal user. All
-figures are **estimates** derived from metered usage (`@forge/cost`), not
-Cloudflare billing.
+figures are **estimates**, not Cloudflare billing.
 
 ## Monitor
 
-Track `UsageCounters`: workspace active/idle ms, browser session ms, browser
+When implemented, track `UsageCounters`: workspace active/idle ms, browser session ms, browser
 captures, dependency installs, builds, command count, stored artifact bytes.
 `budgetPosition(usage)` yields the estimated monthly USD and a level.
 
@@ -19,8 +21,8 @@ captures, dependency installs, builds, command count, stored artifact bytes.
 | strong-warning | ≥ $8 | surface prominently; prefer container-free actions |
 | hard | ≥ $10 | refuse new cloud workspaces; allow cleanup, metadata, summaries and compute-free Git |
 
-`gateComputeAction` enforces the hard ceiling for workspace creation while
-keeping cleanup and compute-free paths open.
+The proposed `gateComputeAction` would enforce the hard ceiling for workspace
+creation while keeping cleanup and compute-free paths open.
 
 ## Keep costs low
 

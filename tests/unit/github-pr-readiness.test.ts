@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubRequest } from '@forge/git-github';
-import { readPullRequestReadiness } from '../../apps/forge-edge-gateway/src/github-pr-readiness';
+import { readPullRequestReadiness } from '../../apps/forge-edge-gateway/src/github-repository';
 
 function github(overrides: Record<string, { status: number; json: unknown }> = {}): GitHubRequest {
   const defaults: Record<string, { status: number; json: unknown }> = {

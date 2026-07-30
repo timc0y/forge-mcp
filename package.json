@@ -15,7 +15,7 @@
     "test:e2e": "vitest run tests/e2e",
     "acceptance:cloud": "node scripts/acceptance-cloud.mjs",
     "github-app:create": "node scripts/create-github-app.mjs",
-    "check": "pnpm boundaries:check && pnpm typecheck && pnpm test && pnpm schemas:check",
+    "check": "pnpm boundaries:check && pnpm wiring:check && pnpm typecheck && pnpm test && pnpm schemas:check",
     "schemas:generate": "tsx scripts/generate-schemas.ts",
     "schemas:check": "tsx scripts/generate-schemas.ts --check",
     "migrations:check": "tsx scripts/check-migrations.ts",

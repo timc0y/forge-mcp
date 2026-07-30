@@ -58,9 +58,9 @@ All additive, each backed by repository-local tests:
 | Slice | Packages | Tools | Plan |
 | --- | --- | --- | --- |
 | Context, diffs, checks | `@forge/insight` | `forge_context_get`, `forge_diff_metadata` | `plans/context-and-diffs.md` |
-| Evidence model | `@forge/evidence` | (consumed by capture/journey) | `plans/previews-and-browser.md` |
-| Structured app actions | `@forge/app-actions` | intended `forge_app_*` (runtime pending) | `plans/previews-and-browser.md` |
-| Cost controls | `@forge/cost` | metadata + `forge_workspace_create` gate (runtime pending) | `plans/cost-controls.md` |
+| Evidence model | proposed `@forge/evidence` | not present in this workspace | `plans/previews-and-browser.md` |
+| Structured app actions | proposed `@forge/app-actions` | not present in this workspace | `plans/previews-and-browser.md` |
+| Cost controls | proposed `@forge/cost` | not present in this workspace | `plans/cost-controls.md` |
 | Browser session model | `@forge/browser-core/session` | intended `forge_browser_*` (runtime pending) | `plans/previews-and-browser.md` |
 | Fixture app | `apps/fixture-catalog` | n/a (acceptance substrate) | `plans/chatgpt-first.md` |
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubRequest } from '@forge/git-github';
-import { readFragmentSource } from '../../apps/forge-edge-gateway/src/github-fragment-source';
+import { readFragmentSource } from '../../apps/forge-edge-gateway/src/github-repository';
 
 describe('readFragmentSource', () => {
   it('reads the exact base commit when the workspace branch is not remote yet', async () => {
