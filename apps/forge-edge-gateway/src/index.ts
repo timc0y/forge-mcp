@@ -82,6 +82,29 @@ function favicon(): Response {
   );
 }
 
+async function operatorForceDestroy(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+  const expected = env.FORGE_OWNER_AUTH_TOKEN?.trim();
+  const supplied = request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/iu)?.[1]?.trim() ?? '';
+  if (!expected || !supplied || !constantTimeEqual(supplied, expected)) {
+    return json({ error: 'unauthorized' }, 401);
+  }
+  const match = /^\/__forge_operator\/workspaces\/(ws_[A-Za-z0-9_-]+)\/destroy$/u.exec(url.pathname);
+  if (!match?.[1]) return json({ error: 'invalid_workspace' }, 400);
+  const workspaceId = match[1] as WorkspaceId;
+  const idempotencyKey = `operator-destroy-${crypto.randomUUID()}`;
+  const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
+  const requested = await stub.requestDestroy({ idempotencyKey, force: true });
+  if (requested.state !== 'destroyed') {
+    const workflowId = `operator-${workflowInstanceId('destroy', workspaceId)}-${crypto.randomUUID()}`;
+    await env.DESTROY_WORKFLOW.create({
+      id: workflowId,
+      params: { workspaceId, idempotencyKey, preserveArtifacts: true, force: true }
+    });
+  }
+  return json({ workspace_id: workspaceId, state: requested.state, force: true }, 202);
+}
+
 
 // Small monoline marks for the landing cards. Distinct shapes rather than the
 // Forge glyph repeated three times, which says nothing about what each card is.
@@ -598,6 +621,7 @@ export default {
       if (url.pathname === '/favicon.ico' && request.method === 'GET') return favicon();
       if (url.pathname.startsWith('/__forge_snapshot/')) return await snapshotEndpoint(request, env, url);
       if (url.pathname.startsWith('/__forge_deps/')) return await depsEndpoint(request, env, url);
+      if (url.pathname.startsWith('/__forge_operator/workspaces/')) return await operatorForceDestroy(request, env, url);
       if (url.pathname.startsWith('/git/')) return await gitCredentialProxy(request, env);
       if (
         url.pathname.startsWith('/__forge_browser/') ||
