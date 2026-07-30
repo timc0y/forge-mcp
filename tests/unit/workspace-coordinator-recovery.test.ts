@@ -43,12 +43,102 @@ describe('workspace coordinator recovery paths', () => {
       currentBranch: 'forge/test',
       revision: 7,
       bootstrapRequested: true,
+      executorSyncPending: false,
+      githubEditInProgress: false,
       operationId: 'op_create'
     });
     expect(get).toHaveBeenCalledTimes(1);
   });
 
-  it('force destroy skips reconciliation and mount-dependent safety checks', async () => {
+  it('defers a GitHub commit while a mutating executor process is active', async () => {
+    const record = {
+      workspace: {
+        id: 'ws_test',
+        state: 'ready',
+        currentCommit: 'old',
+        currentBranch: 'forge/test',
+        revision: 7
+      },
+      processes: {
+        proc_live: { command: 'pnpm test', startedAt: new Date().toISOString(), mutatesFilesystem: true }
+      },
+      executorCommit: 'old',
+      githubEditInProgress: {
+        token: 'edit_test',
+        branch: 'forge/test',
+        intentHash: 'intent',
+        startedAt: new Date().toISOString()
+      }
+    } as unknown as WorkspaceRuntimeRecord;
+    const save = vi.fn(async () => undefined);
+    const coordinator = {
+      serializeMutation: async (action: () => Promise<unknown>) => action(),
+      getRecord: async () => record,
+      syncPendingRemoteCommit: vi.fn(async () => false),
+      save
+    };
+
+    await expect(WorkspaceCoordinator.prototype.recordGitHubCommit.call(coordinator as never, {
+      token: 'edit_test',
+      commit: 'new',
+      branch: 'forge/test'
+    })).resolves.toMatchObject({ executorSynced: false });
+    expect(record.workspace.currentCommit).toBe('new');
+    expect(record.executorCommit).toBe('old');
+    expect(record.pendingRemoteCommit).toMatchObject({ commit: 'new', branch: 'forge/test' });
+    expect(save).toHaveBeenCalledWith(record);
+  });
+
+  it('replays a lost recordGitHubCommit response by edit token without advancing GitHub state twice', async () => {
+    const record = {
+      workspace: {
+        id: 'ws_test',
+        state: 'ready',
+        currentCommit: 'new',
+        currentBranch: 'forge/test',
+        revision: 8
+      },
+      processes: {},
+      executorCommit: 'old',
+      pendingRemoteCommit: {
+        commit: 'new', branch: 'forge/test', recordedAt: new Date().toISOString(), invalidateDependencies: false
+      },
+      lastRecordedGitHubEdit: { token: 'edit_test', commit: 'new', branch: 'forge/test' }
+    } as unknown as WorkspaceRuntimeRecord;
+    const save = vi.fn(async () => undefined);
+    const coordinator = {
+      serializeMutation: async (action: () => Promise<unknown>) => action(),
+      getRecord: async () => record,
+      syncPendingRemoteCommit: vi.fn(async () => false),
+      save
+    };
+
+    await expect(WorkspaceCoordinator.prototype.recordGitHubCommit.call(coordinator as never, {
+      token: 'edit_test', commit: 'new', branch: 'forge/test'
+    })).resolves.toMatchObject({ executorSynced: false, replayed: true, revision: 8 });
+    expect(record.workspace.revision).toBe(8);
+    expect(coordinator.syncPendingRemoteCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks executor starts while a GitHub edit token is unresolved', async () => {
+    const record = {
+      workspace: { id: 'ws_test', currentCommit: 'old' },
+      processes: {},
+      githubEditInProgress: {
+        token: 'edit_test', branch: 'forge/test', intentHash: 'intent', startedAt: new Date().toISOString()
+      }
+    } as unknown as WorkspaceRuntimeRecord;
+    const prepareExecution = (WorkspaceCoordinator.prototype as unknown as {
+      prepareExecution(this: unknown, record: WorkspaceRuntimeRecord): Promise<void>;
+    }).prepareExecution;
+
+    await expect(prepareExecution.call({}, record)).rejects.toMatchObject({
+      code: 'FORGE_WORKSPACE_CONFLICT',
+      message: expect.stringContaining('forge_workspace_destroy')
+    });
+  });
+
+  it('destroy skips reconciliation and mount-dependent safety checks', async () => {
     const record = { workspace: { id: 'ws_test' } } as WorkspaceRuntimeRecord;
     const reconcileGitState = vi.fn(async () => { throw new Error('mount missing'); });
     const requestDestroy = vi.fn(() => ({ state: 'destroying' }));
@@ -66,7 +156,7 @@ describe('workspace coordinator recovery paths', () => {
       force: true
     })).resolves.toMatchObject({ state: 'destroying' });
     expect(reconcileGitState).not.toHaveBeenCalled();
-    expect(requestDestroy).toHaveBeenCalledWith(record, undefined, 'force-destroy-test', true);
+    expect(requestDestroy).toHaveBeenCalledWith(record, undefined, 'force-destroy-test');
     expect(save).toHaveBeenCalledWith(record);
   });
 });

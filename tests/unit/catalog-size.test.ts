@@ -59,7 +59,7 @@ describe('output shape enforcement', () => {
       expect.arrayContaining(['mutationOutcome', 'durability', 'on_remote'])
     );
     expect(outputSchemaDrift('forge_edit', {
-      mutationOutcome: 'pushed_remote',
+      mutationOutcome: 'committed_remote',
       durability: 'remote_branch',
       on_remote: true,
       durability_statement: 'on GitHub',

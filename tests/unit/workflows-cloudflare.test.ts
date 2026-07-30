@@ -6,10 +6,7 @@ describe('workflows-cloudflare package', () => {
   it('generates expected workflow instance IDs', () => {
     const wsId = 'ws_1234567890123456789012' as WorkspaceId;
     expect(workflowInstanceId('provision', wsId)).toBe(`provision-${wsId}`);
-    expect(workflowInstanceId('suspend', wsId)).toBe(`suspend-${wsId}`);
-    expect(workflowInstanceId('restore', wsId)).toBe(`restore-${wsId}`);
     expect(workflowInstanceId('destroy', wsId)).toBe(`destroy-${wsId}`);
-    expect(workflowInstanceId('pull-request', wsId)).toBe(`pull-request-${wsId}`);
   });
 
   it('exports retry policy configuration', () => {

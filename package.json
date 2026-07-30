@@ -36,6 +36,7 @@
     "@forge/browser-core": "workspace:*",
     "@forge/capabilities": "workspace:*",
     "@forge/core": "workspace:*",
+    "@forge/events": "workspace:*",
     "@forge/credentials": "workspace:*",
     "@forge/mcp-core": "workspace:*",
     "@forge/policy": "workspace:*",
@@ -54,7 +55,6 @@
     "@forge/workflows-cloudflare": "workspace:*",
     "@forge/browser-selfhosted": "workspace:*",
     "@forge/mcp-adapter-v1": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.29.0",
-    "jose": "6.2.2"
+    "@modelcontextprotocol/sdk": "1.29.0"
   }
 }

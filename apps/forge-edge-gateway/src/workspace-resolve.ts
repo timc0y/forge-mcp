@@ -27,7 +27,7 @@ interface Identity { tenantId: string }
  * given, it is trusted verbatim, exactly as the old single-string `provided`
  * parameter was.
  */
-export interface WorkspaceAddress {
+interface WorkspaceAddress {
   workspaceId?: unknown;
   workspace?: unknown;
 }

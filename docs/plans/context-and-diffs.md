@@ -27,8 +27,9 @@ tree), adjacent tests, package context, warnings and a relative confidence —
 reported via `truncated` so nothing is silently dropped. One-hop only: it does
 not recursively ingest the repository.
 
-Exposed as `forge_context_get`, which reads the workspace file list via
-`filesTree` and runs the selection. The client decides what to read.
+Exposed as `forge_context_get`, which reads the selected GitHub branch tree and
+runs the selection without allocating an executor. The client decides what to
+read with `forge_files_read`.
 
 ### Compact diff metadata — `analyzeDiff`
 
@@ -38,10 +39,9 @@ worker-config changes, migrations, lockfile and generated changes, possible
 secret exposure, risk areas, suggested hunks and a stable FNV-1a hash. It is
 **syntax-only** and claims no semantic certainty.
 
-Exposed as `forge_diff_metadata`, which pulls the outgoing diff via
-`gitOutgoingDiff` and returns the metadata plus the raw diff hash and a pointer
-back to `forge_git_outgoing_diff`. The compact summary never substitutes for raw
-diff inspection before a push.
+Exposed as `forge_diff_metadata`, which compares the selected GitHub branch with
+its base and returns syntax-only metadata plus the diff hash. The compact summary
+never substitutes for reviewing the GitHub comparison before opening a PR.
 
 ### Targeted verification — `suggestChecks`
 
@@ -63,5 +63,5 @@ package context, category filters and truncation reporting.
 ## Out of scope for this slice
 
 - Import/export graph following beyond filename adjacency for tests.
-- Attaching diff metadata automatically onto every `forge_git_*` response.
+- Attaching diff metadata automatically onto every GitHub review response.
 - Cost instrumentation — separate plan.

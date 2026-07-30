@@ -12,7 +12,7 @@
  * artifact; this only changes what is put in front of the model.
  */
 
-export interface CommandSummary {
+interface CommandSummary {
   kind: 'tests' | 'typecheck' | 'lint';
   ok: boolean;
   /** One line safe to echo verbatim. */

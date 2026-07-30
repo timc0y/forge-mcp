@@ -36,12 +36,8 @@ interface WorkspaceRow extends Record<string, unknown> {
   created_at: string;
   updated_at: string;
   current_commit: string | null;
-  last_pushed_commit: string | null;
-  last_pushed_branch: string | null;
   current_branch: string | null;
   idle_deadline: string | null;
-  active_snapshot_id: string | null;
-  has_unpushed_work: number | null;
 }
 
 export class D1MetadataStore implements MetadataStore {
@@ -54,9 +50,8 @@ export class D1MetadataStore implements MetadataStore {
           id, tenant_id, project_id, repository, requested_ref, base_commit, initial_head_commit, credential_profile_id, state,
           persistence_mode, runtime_profile, provider_kind, provider_version,
           revision, created_by, created_at, updated_at, current_commit,
-          current_branch, last_pushed_commit, last_pushed_branch, idle_deadline,
-          active_snapshot_id, has_unpushed_work
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          current_branch, idle_deadline
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           state = excluded.state,
           base_commit = excluded.base_commit,
@@ -67,11 +62,7 @@ export class D1MetadataStore implements MetadataStore {
           updated_at = excluded.updated_at,
           current_commit = excluded.current_commit,
           current_branch = excluded.current_branch,
-          last_pushed_commit = excluded.last_pushed_commit,
-          last_pushed_branch = excluded.last_pushed_branch,
-          idle_deadline = excluded.idle_deadline,
-          active_snapshot_id = excluded.active_snapshot_id,
-          has_unpushed_work = excluded.has_unpushed_work
+          idle_deadline = excluded.idle_deadline
       `)
       .bind(
         workspace.id,
@@ -93,11 +84,7 @@ export class D1MetadataStore implements MetadataStore {
         workspace.updatedAt,
         workspace.currentCommit ?? null,
         workspace.currentBranch ?? null,
-        workspace.lastPushedCommit ?? null,
-        workspace.lastPushedBranch ?? null,
-        workspace.idleDeadline ?? null,
-        workspace.activeSnapshotId ?? null,
-        workspace.hasUnpushedWork ? 1 : 0
+        workspace.idleDeadline ?? null
       )
       .run();
   }
@@ -133,13 +120,7 @@ export class D1MetadataStore implements MetadataStore {
       updatedAt: row.updated_at,
       ...(row.current_commit ? { currentCommit: row.current_commit } : {}),
       ...(row.current_branch ? { currentBranch: row.current_branch } : {}),
-      ...(row.last_pushed_commit ? { lastPushedCommit: row.last_pushed_commit } : {}),
-      ...(row.last_pushed_branch ? { lastPushedBranch: row.last_pushed_branch } : {}),
-      hasUnpushedWork: Boolean(row.has_unpushed_work),
-      ...(row.idle_deadline ? { idleDeadline: row.idle_deadline } : {}),
-      ...(row.active_snapshot_id
-        ? { activeSnapshotId: row.active_snapshot_id as Workspace['activeSnapshotId'] }
-        : {})
+      ...(row.idle_deadline ? { idleDeadline: row.idle_deadline } : {})
     };
   }
 }
@@ -344,9 +325,8 @@ export class D1TaskStore implements TaskStore {
   }
 
   /**
-   * Most-recently-updated task attached to a workspace, if any. Used to
-   * record push/verification bookkeeping (e.g. pushedAt) against the task
-   * that owns a workspace, since forge_git_push only knows the workspace id.
+   * Most-recently-updated task attached to a workspace, if any. Used to record
+   * verified remote-commit bookkeeping against the task that owns a workspace.
    */
   async getByWorkspace(workspaceId: string): Promise<Task | null> {
     const row = await this.db

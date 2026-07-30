@@ -5,31 +5,11 @@ export interface ProvisionWorkspaceParams {
   bootstrap: boolean;
 }
 
-export interface SuspendWorkspaceParams {
-  workspaceId: WorkspaceId;
-  requestedBy: string;
-}
-
-export interface RestoreWorkspaceParams {
-  workspaceId: WorkspaceId;
-  snapshotId: string;
-  restoreIntoNewWorkspace: boolean;
-}
-
 export interface DestroyWorkspaceParams {
   workspaceId: WorkspaceId;
   idempotencyKey: string;
   preserveArtifacts: boolean;
   force: boolean;
-}
-
-export interface CreatePullRequestParams {
-  workspaceId: WorkspaceId;
-  approvalId: string;
-  head: string;
-  base: string;
-  title: string;
-  body: string;
 }
 
 export const workflowRetryPolicy = {
@@ -42,7 +22,7 @@ export const workflowRetryPolicy = {
 };
 
 export function workflowInstanceId(
-  kind: 'provision' | 'suspend' | 'restore' | 'destroy' | 'pull-request',
+  kind: 'provision' | 'destroy',
   workspaceId: WorkspaceId
 ): string {
   return `${kind}-${workspaceId}`;

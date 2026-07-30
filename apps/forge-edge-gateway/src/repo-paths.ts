@@ -1,7 +1,7 @@
 import { ForgeError } from '@forge/core';
 
 /** Where the checkout lives in the container. */
-export const REPO_ROOT = '/workspace/repo';
+const REPO_ROOT = '/workspace/repo';
 
 /**
  * Accept a path in either form an agent can be holding.

@@ -1,7 +1,7 @@
 import { ForgeError } from '@forge/core';
 import type { Env } from './env';
 
-export type ExternalMutationClaim =
+type ExternalMutationClaim =
   | { kind: 'claimed'; ownerToken: string }
   | { kind: 'replay'; receipt: Record<string, unknown> };
 

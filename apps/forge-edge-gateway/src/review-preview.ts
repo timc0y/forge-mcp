@@ -20,9 +20,9 @@ import type { Env } from './env';
  * HTTP timeout.
  */
 
-export type ReviewPreviewState = 'none' | 'provisioning' | 'starting' | 'ready' | 'failed';
+type ReviewPreviewState = 'none' | 'provisioning' | 'starting' | 'ready' | 'failed';
 
-export interface ReviewPreviewStatus {
+interface ReviewPreviewStatus {
   state: ReviewPreviewState;
   url?: string;
   expiresAt?: string;

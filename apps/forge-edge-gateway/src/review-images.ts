@@ -13,8 +13,8 @@
 // phone shots cost far less than one full-page desktop capture, and a fixed
 // count either starves the cheap case or blows the payload on the expensive one.
 // Sized to stay comfortably inside what chat clients accept in one tool result.
-export const MAX_INLINE_IMAGE_BYTES = 3_500_000;
-export const MAX_INLINE_IMAGES = 8;
+const MAX_INLINE_IMAGE_BYTES = 3_500_000;
+const MAX_INLINE_IMAGES = 8;
 
 // Viewport shorthand. Asking a model to hand-build {id,width,height} objects is a
 // pointless failure mode in a non-agentic chat client; 'phone' is not.
@@ -122,7 +122,7 @@ async function streamToText(stream: ReadableStream<Uint8Array>): Promise<string>
  * preference `selectInlineImages` applies, exposed so the caller can decide which
  * images are worth spending a transformation on before the budget is applied.
  */
-export function orderForInline<T extends { route?: unknown }>(cells: T[]): T[] {
+function orderForInline<T extends { route?: unknown }>(cells: T[]): T[] {
   const seen = new Set<unknown>();
   const first: T[] = [];
   const rest: T[] = [];

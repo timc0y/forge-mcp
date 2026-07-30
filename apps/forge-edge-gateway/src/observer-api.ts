@@ -1,11 +1,7 @@
 import type { Env } from './env';
 import { listSlotOccupants, slotTtlMs } from './capacity';
 import { listWorkspaceActivity } from './workspace-activity';
-import type { WorkspaceCoordinator } from './workspace-coordinator';
-
-function coordinator(env: Env, workspaceId: string) {
-  return env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId));
-}
+import { workspaceOperations } from './workspace-operations';
 
 function parseRepository(raw: string): { owner: string; name: string } | null {
   const slash = raw.indexOf('/');
@@ -31,7 +27,7 @@ export async function buildLiveWorkspaceList(env: Env, tenantId: string) {
   const workspaceIds = live.map((row) => row.workspaceId);
   const workspaces = workspaceIds.length
     ? await env.METADATA.prepare(
-        `SELECT id, repository, requested_ref, state, current_branch, current_commit, has_unpushed_work, updated_at, base_commit
+        `SELECT id, repository, requested_ref, state, current_branch, current_commit, updated_at, base_commit
            FROM workspaces WHERE tenant_id = ?1 AND id IN (${workspaceIds.map((_, i) => `?${i + 2}`).join(', ')})`
       ).bind(tenantId, ...workspaceIds).all<{
         id: string;
@@ -40,7 +36,6 @@ export async function buildLiveWorkspaceList(env: Env, tenantId: string) {
         state: string;
         current_branch: string | null;
         current_commit: string | null;
-        has_unpushed_work: number | null;
         updated_at: string;
         base_commit: string | null;
       }>().then((result) => result.results ?? [])
@@ -83,7 +78,6 @@ export async function buildLiveWorkspaceList(env: Env, tenantId: string) {
         branch: row?.current_branch ?? task?.branch ?? null,
         head: row?.current_commit ? row.current_commit.slice(0, 12) : null,
         requestedRef: row?.requested_ref ?? null,
-        hasUnpushedWork: row?.has_unpushed_work === 1,
         updatedAt: row?.updated_at ?? slot.lastActiveAt,
         task: task
           ? {
@@ -106,7 +100,7 @@ export async function buildWorkspaceObserverDetail(env: Env, tenantId: string, w
   ).bind(workspaceId, tenantId).first<{ id: string }>();
   if (!row) return { workspaceId, available: false as const, reason: 'not_found' as const };
 
-  const stub = coordinator(env, workspaceId) as DurableObjectStub<WorkspaceCoordinator>;
+  const stub = workspaceOperations(env, workspaceId);
   const detail = await stub.getObserverSnapshot().catch(() => null);
   const d1Activity = await listWorkspaceActivity(env, tenantId, { workspaceId, limit: 60 });
   const tenantActivity = await listWorkspaceActivity(env, tenantId, { limit: 30 });

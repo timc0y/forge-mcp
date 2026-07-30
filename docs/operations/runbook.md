@@ -31,11 +31,11 @@ Local iteration runs the same config with an auth-relaxed identity:
 pnpm dev
 ```
 
-1. Ensure the isolated development and production D1, artifact R2 and backup R2 resources exist and match the IDs and names in `forge.jsonc`.
-2. configure `FORGE_DEV_AUTH_TOKEN`, `FORGE_CAPABILITY_SIGNING_KEY`, `FORGE_CREDENTIAL_ENCRYPTION_KEY`, `FORGE_INTERNAL_PREVIEW_KEY`, `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` as Worker secrets. The R2 pair must have **Object Read & Write** S3 permission scoped to that environment's backup bucket;
+1. Ensure the isolated development and production D1 and artifact R2 resources exist and match the IDs and names in `forge.jsonc`.
+2. configure `FORGE_DEV_AUTH_TOKEN`, `FORGE_CAPABILITY_SIGNING_KEY`, `FORGE_CREDENTIAL_ENCRYPTION_KEY` and `FORGE_INTERNAL_PREVIEW_KEY` as Worker secrets;
 3. deploy the Worker and apply D1 migrations;
 4. invoke `/health` and `/ready`, plus the RFC 9728 metadata endpoint;
-5. run `pnpm acceptance:cloud` through a real MCP client. It waits past the 90-second Sandbox idle limit, verifies a manifest-backed restore, and requires `/ready` to report the resulting recovery evidence. Before a production release, also run it against an installed private repository: `FORGE_ACCEPTANCE_REPOSITORY=owner/private-repo FORGE_ACCEPTANCE_REQUIRE_GITHUB_APP=true pnpm acceptance:cloud`;
+5. run `pnpm acceptance:cloud` through a real MCP client. It waits past the 90-second Sandbox idle limit and verifies that a subsequent execution materializes the GitHub branch afresh. Before a production release, also run it against an installed private repository: `FORGE_ACCEPTANCE_REPOSITORY=owner/private-repo FORGE_ACCEPTANCE_REQUIRE_GITHUB_APP=true pnpm acceptance:cloud`;
 6. capture workflow IDs, workspace state transitions, screenshot artifact hash and teardown evidence;
 7. verify the preview and capability fail after destruction;
 8. record the deployment date, Worker version, Sandbox SDK version and Cloudflare account in the PR evidence.
@@ -66,6 +66,6 @@ To add a trusted collaborator:
 
 1. Check `/health`, Worker errors, Workflow failures, Durable Object state and Sandbox provider status.
 2. Locate by trace ID, operation ID and workspace ID; never expose raw provider IDs in user communication.
-3. For a stuck workspace, revoke previews, stop processes, persist redacted diagnostics, then destroy or snapshot according to policy.
+3. For a stuck workspace, revoke previews, stop processes, persist redacted diagnostics, then destroy it. Recovery materializes the GitHub branch in a fresh executor.
 4. For GitHub authorization changes, revoke capabilities immediately and reconcile installations.
 5. Never retrieve secrets from logs. Rotate signing keys and invalidate capabilities if leakage is suspected.

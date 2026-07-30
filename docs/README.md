@@ -12,7 +12,7 @@ context.
 - [Connectors & setup](./connectors.md) — add Forge to ChatGPT or Claude.
 - [Operations](./operations.md) — deploy, D1 migrations, config, runbook.
 - [Security](./security/README.md) — approvals, capability tokens, tenancy.
-- [Self-hosting](./self-host.md) — run Forge compute on your own box.
+- [Self-hosted browser](./self-host.md) — optionally render browser evidence on your own box.
 - [Parallax](./architecture/parallax.md) — the review contract and evidence rules.
 
 ## Terminology (one word per concept)

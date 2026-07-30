@@ -1,9 +1,8 @@
 import type { ProcessId } from '@forge/core';
 import type {
   CreateSandboxInput, ExecInput, ExecResult, ExposePortInput, FileReadInput, FileReadResult,
-  FileTree, FileWriteInput, FileWriteResult, ListFilesInput, PatchInput, PatchResult,
-  PreviewEndpoint, ProcessLogsInput, ProcessLogsResult, ProcessRecord, SnapshotInput,
-  SnapshotRef, StartProcessInput
+  FileTree, FileWriteInput, FileWriteResult, ListFilesInput,
+  PreviewEndpoint, ProcessLogsInput, ProcessLogsResult, ProcessRecord, StartProcessInput
 } from './types';
 
 export interface SandboxProvider {
@@ -17,8 +16,6 @@ export interface SandboxProvider {
    */
   setKeepAlive?(providerId: string, keepAlive: boolean): Promise<void>;
   destroy(providerId: string): Promise<void>;
-  snapshot(providerId: string, input: SnapshotInput): Promise<SnapshotRef>;
-  restore(snapshot: SnapshotRef, input: CreateSandboxInput): Promise<SandboxHandle>;
 }
 
 export interface SandboxHandle {
@@ -40,7 +37,6 @@ export interface SandboxHandle {
   processCancel?(processId: ProcessId): Promise<ProcessRecord>;
   readFile(input: FileReadInput): Promise<FileReadResult>;
   writeFile(input: FileWriteInput): Promise<FileWriteResult>;
-  applyPatch(input: PatchInput): Promise<PatchResult>;
   listFiles(input: ListFilesInput): Promise<FileTree>;
   exposePort(input: ExposePortInput): Promise<PreviewEndpoint>;
   revokePort(port: number): Promise<void>;

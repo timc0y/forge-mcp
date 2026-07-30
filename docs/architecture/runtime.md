@@ -37,8 +37,8 @@ allocated. A requested Node profile must report that exact Node major plus
 Corepack; a mismatch fails the execution request. Workspace creation itself
 does not wait for or claim runtime readiness.
 
-Command-created files remain in this executor only. Snapshots are local
-rollback aids, not repository persistence. Destroying or reaping the executor
-discards them; wanted repository changes must go through `forge_edit`.
+Command-created files remain in this executor only. Destroying or reaping the
+executor discards them; recovery materializes the GitHub branch afresh, and
+wanted repository changes must go through `forge_edit`.
 
 Browser evidence reaches the running service through a private Worker bridge. Browser Run receives the Forge origin plus workspace-scoped internal headers; the Worker validates those headers, resolves the preview in the coordinator and uses `containerFetch` to reach the service. Responses are buffered to a 20 MB bound so browser navigation completes deterministically. Root-relative assets carry the same scoped headers, and no raw provider URL exists to leak or revoke.

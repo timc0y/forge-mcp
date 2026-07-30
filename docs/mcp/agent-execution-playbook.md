@@ -1,6 +1,6 @@
 # Agent execution playbook
 
-Forge is a remote development computer, not the place where an agent should perform all of its thinking. The cheapest and most reliable pattern is to make the product decision first, send Forge a bounded implementation packet, and use the workspace only for work that requires a real checkout, command execution, build, browser or Git state.
+Forge is a GitHub-native coding control plane with optional ephemeral execution, not the place where an agent should perform all of its thinking. The cheapest and most reliable pattern is to make the product decision first, use GitHub-backed tools for repository work, and allocate the executor only for commands, installs, builds, tests, dev servers, previews, or deploys.
 
 ## Core operating model
 
@@ -19,21 +19,21 @@ The coordinating agent owns:
 
 Do this with repository search, existing documentation, issue or PR context, and deployed-site review. Do not open a container merely to think broadly, summarise documentation or inspect a public URL.
 
-### Low-level layer: execute inside Forge
+### Low-level layer: operate through Forge
 
-Forge owns work that benefits from a real development environment:
+Forge owns two deliberately separate kinds of work:
 
-- read a bounded repository tree and targeted file ranges;
-- edit several related files atomically;
+- read a bounded GitHub repository tree and targeted file ranges;
+- commit several related file edits atomically with `forge_edit`;
 - install only the dependencies needed for the task;
 - run the smallest useful checks first;
 - start a development server only when runtime verification is required;
 - capture bounded browser and accessibility evidence;
-- inspect Git status and outgoing diff;
-- commit, push and create a draft PR through the approval flow;
-- destroy the workspace immediately after the result is durable.
+- inspect GitHub diff metadata and commit history;
+- open a draft PR through the approval flow;
+- destroy the workspace when no later execution command needs its ephemeral state.
 
-The workspace should receive a decision, not an open-ended research problem.
+Repository reads, edits, diffs, commits, branches, history, and pull requests use the GitHub API and do not allocate an executor. Executor filesystem changes are disposable and never become GitHub edits unless the agent explicitly recreates them with `forge_edit`.
 
 ## Cost ladder
 
@@ -43,8 +43,8 @@ Use the lowest rung that can prove the claim.
 | --- | --- | --- |
 | Lowest | No Forge call | reasoning, planning, public documentation, connector-native repository reads |
 | Very low | `forge_review` | screenshots and accessibility evidence for an already deployed URL; no container |
-| Low | Workspace with `bootstrap: false` | file-tree inspection, targeted reads, documentation edits, small patches that need Git state |
-| Medium | Bootstrapped workspace | type-checking, unit tests, builds and dependency-aware code changes |
+| Low | GitHub-backed workspace session | file-tree inspection, targeted reads, documentation edits, and `forge_edit` commits; no executor |
+| Medium | Ephemeral executor | type-checking, unit tests, builds and dependency-aware runtime checks |
 | Higher | Running process and private preview | route, state and responsive verification that cannot be proven statically |
 | Highest | Broad installs, full builds, many browser captures or long-lived workspaces | only when a release-level claim genuinely requires them |
 
@@ -105,40 +105,42 @@ If substantially more is required, split the task or create a discovery-only pas
 
 ## Workspace strategy
 
-### Reuse one workspace per repository task
+### Reuse one control-plane workspace per repository task
 
-Do not create separate workspaces for planning, editing, testing and review. Reuse the same `workspace_id` so the checkout, dependencies, processes, revision and diff remain coherent.
+Do not create separate workspace sessions for reading, editing, testing, and review. Reuse the same `workspace_id` so repository authorization, branch selection, processes, and previews remain coherent. GitHub remains authoritative even while an executor exists.
 
 ### Choose bootstrap deliberately
 
-Use `bootstrap: false` when the first pass only needs:
+Use repository tools without waking the executor when the first pass only needs:
 
 - a file tree;
 - file reads;
-- documentation or configuration edits;
+- documentation or configuration edits through `forge_edit`;
 - a decision about which package must be installed or tested.
 
-Use `bootstrap: true` when project detection and dependency setup are clearly required immediately. Do not pay for bootstrap merely to inspect a repository.
+The `bootstrap` setting is applied only if an execution tool later allocates the executor. Enable it when project detection and dependency setup will be required; do not pay for execution merely to inspect or edit a repository.
 
 ### Destroy aggressively
 
 Destroy the workspace once:
 
-- changes are pushed or otherwise made durable;
-- the final diff and evidence are captured;
+- wanted changes are committed and verified on GitHub through `forge_edit`;
+- the final GitHub diff and evidence are captured;
 - no follow-up command depends on local state.
 
 Preserve artifacts when review evidence matters. A sleeping workspace is cheaper than an active one, but a destroyed workspace is the correct default after task completion and frees scarce capacity.
 
 ## Editing strategy
 
-- Prefer one coherent unified patch over many single-line writes.
-- Patch the implementation and its tests together.
-- Use `expected_revision` after the first mutation to prevent stale writes.
+- Prefer one coherent `forge_edit` call over many single-line edits.
+- Edit the implementation and its tests together.
+- Re-read paths after a conflict; GitHub blob and branch-tip guards prevent stale overwrites.
 - Use stable idempotency keys derived from task and operation, not random retries.
-- Inspect `forge_git_diff` after each meaningful patch, not after every tiny edit.
+- Inspect `forge_diff_metadata` after each meaningful edit, not after every tiny change.
 - Keep unrelated formatting or cleanup out of the diff.
 - Split a large programme into independently shippable PRs rather than one long-running workspace.
+
+Commands may create or modify executor files, but those changes remain executor-only and report `remote_persisted:false`. Recreate only deliberate repository changes with `forge_edit`; Forge never imports an executor filesystem into GitHub.
 
 ## Command strategy
 
@@ -160,7 +162,7 @@ Browser evidence is for behaviour that source and tests cannot prove.
 - For local changes, start one server, expose one private preview and reuse it.
 - Capture only the routes, states and viewports named in the acceptance criteria.
 - Start with phone and desktop. Add more viewports only when a breakpoint-specific issue exists.
-- Prefer one bounded `forge_review_capture` packet over many ad-hoc screenshots.
+- Prefer one bounded `forge_review` or `forge_preview` packet over many ad-hoc screenshots.
 - Inspect each screenshot used in a conclusion and pair it with the accessibility tree when interaction, labels or order matter.
 - Never claim a journey passed from static screenshots alone; execute the interaction or state clearly that it remains unverified.
 
@@ -168,19 +170,18 @@ Browser evidence is for behaviour that source and tests cannot prove.
 
 ```text
 1. Decide outcome and architecture outside Forge.
-2. Create one workspace on the intended base ref.
-3. Read instructions and a shallow targeted tree.
-4. Read the minimum source and test files.
-5. Create a forge/ branch.
-6. Apply one coherent implementation-and-tests patch.
+2. Create a forge/ branch on GitHub with forge_start.
+3. Create one lightweight workspace session on that branch.
+4. Read instructions and a shallow targeted tree from GitHub.
+5. Read the minimum source and test files from GitHub.
+6. Commit one coherent implementation-and-tests edit with forge_edit.
 7. Run the smallest relevant checks.
 8. Expand checks only when risk or failures require it.
 9. Start a preview only for behavioural acceptance criteria.
 10. Capture bounded evidence.
-11. Inspect status, working diff and outgoing diff.
-12. Commit selected paths.
-13. Push and open a draft PR through approval.
-14. Destroy the workspace.
+11. Inspect GitHub diff metadata and history.
+12. Open a draft PR through forge_merge and approval.
+13. Destroy the workspace.
 ```
 
 ## Example: headless cart task
@@ -216,7 +217,7 @@ Avoid:
 - running `pnpm install`, the full test suite and a production build before inspecting the package boundary;
 - starting multiple development servers for the same task;
 - capturing every route at every viewport;
-- leaving workspaces alive after push or review;
+- leaving workspaces alive after review when no later command needs the executor;
 - using Forge for a docs-only GitHub edit when the repository connector can make it safely;
 - turning one feature into a broad refactor because the workspace makes it possible.
 
@@ -233,7 +234,7 @@ Forge itself should reinforce this operating model over time:
 - return suggested next cheapest action after each tool result;
 - add targeted project checks generated from changed paths;
 - summarise large command output into durable artifacts rather than returning it repeatedly to model context;
-- support snapshot or resume only when it is cheaper than rebuilding the checkout.
+- re-materialize disposable executors from the current GitHub branch when their checkout is lost.
 
 ## Completion standard
 

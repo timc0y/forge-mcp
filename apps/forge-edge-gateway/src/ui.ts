@@ -78,7 +78,7 @@ footer{border-top:1px solid var(--line);margin-top:2.5rem;padding:1.4rem 0 2.4re
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 `.trim();
 
-export interface PageOptions {
+interface PageOptions {
   title: string;
   body: string;
   /** Extra CSS appended after the shared sheet. */

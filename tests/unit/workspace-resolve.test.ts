@@ -191,7 +191,7 @@ describe('resolving which workspace a call means', () => {
 
   it('treats every non-terminal state as live, not only "ready"', async () => {
     // provisioning/bootstrapping/requested are all live — only
-    // suspended/failed/destroying/destroyed are excluded (capacity.ts's
+    // failed/destroying/destroyed are excluded (capacity.ts's
     // TERMINAL_STATES, imported rather than redefined).
     const env = envWith([{ workspaceId: WS_A, owner: 'acme', repo: 'webapp', branch: 'forge/fix-login', state: 'provisioning' }]);
     expect(await resolveWorkspaceId(env, identity, {})).toBe(WS_A);

@@ -1,5 +1,5 @@
 import { getSandbox, type ExecutionSession, type Sandbox } from '@cloudflare/sandbox';
-import { ForgeError, ids, type ProcessId } from '@forge/core';
+import { ForgeError, type ProcessId } from '@forge/core';
 import type {
   CreateSandboxInput,
   ExecInput,
@@ -12,16 +12,12 @@ import type {
   FileWriteInput,
   FileWriteResult,
   ListFilesInput,
-  PatchInput,
-  PatchResult,
   PreviewEndpoint,
   ProcessLogsInput,
   ProcessLogsResult,
   ProcessRecord,
   SandboxHandle,
   SandboxProvider,
-  SnapshotInput,
-  SnapshotRef,
   StartProcessInput
 } from '@forge/sandbox-core';
 import { mapCloudflareSandboxError } from './error-map';
@@ -47,23 +43,6 @@ function assertWorkspacePath(path: string): string {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-// git apply emits `error: patch failed: path/to/file:12` and
-// `error: path/to/file: patch does not apply` on rejection. Surface the
-// offending paths so the caller learns which file blocked the patch.
-function parseRejectedPatchFiles(output: string): string[] {
-  const files = new Set<string>();
-  for (const line of output.split('\n')) {
-    const failed = line.match(/patch failed:\s*(.+?):\d+/);
-    if (failed?.[1]) {
-      files.add(failed[1].trim());
-      continue;
-    }
-    const doesNotApply = line.match(/error:\s*(.+?):\s*patch does not apply/);
-    if (doesNotApply?.[1]) files.add(doesNotApply[1].trim());
-  }
-  return [...files];
 }
 
 async function sha256(content: string): Promise<string> {
@@ -405,73 +384,6 @@ class CloudflareSandboxHandle implements SandboxHandle {
     }
   }
 
-  async applyPatch(input: PatchInput): Promise<PatchResult> {
-    const cwd = await this.canonicalWorkspacePath(input.cwd);
-    const patchPath = `/workspace/tmp/patch-${crypto.randomUUID()}.diff`;
-    try {
-      await this.sandbox.writeFile(patchPath, input.patch, { sessionId: 'system' });
-    } catch (error) {
-      throw mapCloudflareSandboxError(error, 'applyPatch:write');
-    }
-    try {
-      // --check first so a rejected patch never mutates the tree; git apply is
-      // atomic, so a failed check guarantees the working tree is unchanged.
-      const check = await this.exec({
-        command: `git apply --check --whitespace=nowarn ${shellQuote(patchPath)}`,
-        cwd,
-        timeoutMs: 60_000,
-        outputLimitBytes: 100_000,
-        sessionId: 'system',
-        networkPolicy: 'deny_all'
-      });
-      if (check.exitCode !== 0) {
-        const output = `${check.stdout}${check.stderr}`;
-        return {
-          applied: false,
-          output,
-          changedFiles: [],
-          rejectedFiles: parseRejectedPatchFiles(output),
-          rolledBack: true
-        };
-      }
-      const result = await this.exec({
-        command: `git apply --whitespace=nowarn ${shellQuote(patchPath)}`,
-        cwd,
-        timeoutMs: 60_000,
-        outputLimitBytes: 100_000,
-        sessionId: 'system',
-        networkPolicy: 'deny_all'
-      });
-      if (result.exitCode !== 0) {
-        const output = `${result.stdout}${result.stderr}`;
-        return {
-          applied: false,
-          output,
-          changedFiles: [],
-          rejectedFiles: parseRejectedPatchFiles(output),
-          rolledBack: true
-        };
-      }
-      const changed = await this.exec({
-        command: 'git diff --name-only',
-        cwd,
-        timeoutMs: 30_000,
-        outputLimitBytes: 100_000,
-        sessionId: 'system',
-        networkPolicy: 'deny_all'
-      });
-      return {
-        applied: true,
-        output: `${result.stdout}${result.stderr}`,
-        changedFiles: changed.stdout.split('\n').filter(Boolean)
-      };
-    } catch (error) {
-      throw mapCloudflareSandboxError(error, 'applyPatch');
-    } finally {
-      await this.sandbox.deleteFile(patchPath).catch(() => undefined);
-    }
-  }
-
   async listFiles(input: ListFilesInput): Promise<FileTree> {
     const root = await this.canonicalWorkspacePath(input.path);
     try {
@@ -560,33 +472,4 @@ export class CloudflareSandboxProvider implements SandboxProvider {
     }
   }
 
-  async snapshot(providerId: string, input: SnapshotInput): Promise<SnapshotRef> {
-    try {
-      const backup = await this.sandbox(providerId).createBackup({
-        dir: ROOT,
-        name: input.name,
-        ttl: input.ttlSeconds,
-        gitignore: input.excludeGitignored
-      });
-      return {
-        id: ids.snapshot(),
-        providerSnapshotId: JSON.stringify(backup),
-        providerVersion: this.version,
-        createdAt: new Date().toISOString()
-      };
-    } catch (error) {
-      throw mapCloudflareSandboxError(error, 'snapshot');
-    }
-  }
-
-  async restore(snapshot: SnapshotRef, input: CreateSandboxInput): Promise<SandboxHandle> {
-    try {
-      const handle = await this.create(input);
-      const backup = JSON.parse(snapshot.providerSnapshotId) as Parameters<Sandbox['restoreBackup']>[0];
-      await this.sandbox(input.providerId).restoreBackup(backup);
-      return handle;
-    } catch (error) {
-      throw mapCloudflareSandboxError(error, 'restore');
-    }
-  }
 }

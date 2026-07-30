@@ -1,34 +1,24 @@
-# Forge Node Agent (reference)
+# Forge browser agent
 
-Runs Forge workspaces + browser evidence on a machine you own (e.g. a Mac mini).
-**Same model as Forge Cloud: every workspace is a container.** One primitive
-everywhere — nothing bespoke to reason about. Forge health-checks this agent and
-routes work here only when it's healthy and has spare capacity, otherwise it
-falls back to Cloudflare — transparent to the MCP caller.
+This optional agent renders browser evidence with Chromium on a machine you
+own. Forge health-checks it and falls back to Cloudflare Browser Run when it is
+unavailable.
 
-Containers are run **hardened by default**: non-root (`--user 1000`), all Linux
-capabilities dropped, no privilege escalation, no host mounts, memory/CPU/pids
-limits — so agent-authored code is isolated from your machine.
+It does **not** run repository commands or hold workspace files. Cloudflare
+Sandbox is Forge's only execution provider; GitHub is the only durable code
+store.
 
-Quick start:
 ```bash
-brew install colima docker node   # Docker engine (Colima) + CLI + Node for the agent
-colima start --cpu 4 --memory 8 --disk 60
+brew install node
 npm install
-npx playwright install chromium   # optional: local browser evidence
-docker build -f Dockerfile.workspace -t forge-workspace:latest .
-FORGE_AGENT_TOKEN=$(openssl rand -hex 32) npm run selftest   # must exit 0
-FORGE_AGENT_TOKEN=xxx npm start                              # listens on :8787
+npx playwright install chromium
+FORGE_AGENT_TOKEN=$(openssl rand -hex 32) npm run selftest
+FORGE_AGENT_TOKEN=xxx npm start
 ```
 
-Full setup — always-on, tunnel, pre-cloned repos, concurrency, taking over a
-workspace, security — is in
-[`docs/self-host/mac-mini.md`](../../docs/self-host/mac-mini.md).
+Expose the service through an authenticated tunnel, then configure the Worker
+with `FORGE_SELFHOST_ENABLED`, `FORGE_SELFHOST_URL`, and
+`FORGE_SELFHOST_TOKEN`. The only routes are browser health, capture, screenshot,
+accessibility, and interaction under `/v1/browser/*`.
 
-Implements: `POST /v1/health` (with `capacity`), `/v1/browser/health`, sandbox
-create/exec/suspend/resume/destroy/info, `files/{read,write,patch,tree}`,
-`process/{start,get,logs,stop}`, `ports/{expose,revoke}`, a `/preview/<id>/<port>/`
-proxy to the live dev server, and browser `capture/screenshot/accessibility/act`.
-Only snapshots return 501. Preview ports must be published at container-create
-time — the common dev ports (3000/4321/5173/8000/8080) are, override with
-`FORGE_AGENT_PREVIEW_PORTS`.
+See [`docs/self-host.md`](../../docs/self-host.md) for setup and security notes.

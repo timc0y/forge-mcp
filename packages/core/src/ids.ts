@@ -1,5 +1,5 @@
 const PREFIXES = {
-  tenant: 'ten', project: 'prj', workspace: 'ws', operation: 'op', snapshot: 'snap', approval: 'apr', artifact: 'art', preview: 'prv', process: 'proc', credentialProfile: 'crp', task: 'task', deferred: 'dfr', secret: 'sec'
+  tenant: 'ten', project: 'prj', workspace: 'ws', operation: 'op', approval: 'apr', artifact: 'art', preview: 'prv', process: 'proc', credentialProfile: 'crp', task: 'task', deferred: 'dfr', secret: 'sec'
 } as const;
 
 export type Branded<T, Brand extends string> = T & { readonly __brand: Brand };
@@ -7,7 +7,6 @@ export type TenantId = Branded<string, 'TenantId'>;
 export type ProjectId = Branded<string, 'ProjectId'>;
 export type WorkspaceId = Branded<string, 'WorkspaceId'>;
 export type OperationId = Branded<string, 'OperationId'>;
-export type SnapshotId = Branded<string, 'SnapshotId'>;
 export type ApprovalId = Branded<string, 'ApprovalId'>;
 export type ArtifactId = Branded<string, 'ArtifactId'>;
 export type PreviewId = Branded<string, 'PreviewId'>;
@@ -32,7 +31,6 @@ export const ids = {
   project: () => createId('project') as ProjectId,
   workspace: () => createId('workspace') as WorkspaceId,
   operation: () => createId('operation') as OperationId,
-  snapshot: () => createId('snapshot') as SnapshotId,
   approval: () => createId('approval') as ApprovalId,
   artifact: () => createId('artifact') as ArtifactId,
   preview: () => createId('preview') as PreviewId,

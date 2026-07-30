@@ -4,7 +4,7 @@
 > client supplies reasoning; Forge supplies repository state, execution,
 > previews, browser evidence, Git operations and durable task context.
 
-The stable product statement and the Local / self-hosted / hosted editions are
+The stable product statement and hosted/self-managed deployment model are
 described in [`../PRODUCT-PLAN.md`](../PRODUCT-PLAN.md).
 
 ## Target user
@@ -27,7 +27,7 @@ Task, Workspace, Process, Preview, Browser session, Evidence, Artifact, Approval
 
 ## Supported workflows
 
-Durable coding tasks, bounded repository context, safe reads/patches, targeted
-verification, private previews, structured functional journeys, browser
-evidence, and approval-gated Git commit/push/PR. See
+Durable coding tasks, bounded GitHub repository context, guarded `forge_edit`
+commits, targeted verification in an ephemeral executor, private previews,
+structured functional journeys, browser evidence, and approval-gated PR review. See
 [`../plans/chatgpt-first.md`](../plans/chatgpt-first.md).

@@ -38,7 +38,7 @@ function serviceWithFailedWorkspace(failure?: {
 
 async function refusal(record: ReturnType<typeof serviceWithFailedWorkspace>['record'], service: ForgeApplicationService) {
   try {
-    await service.read(record, { path: '/workspace/repo/a.ts', maxBytes: 100 });
+    await service.gitStatus(record);
     throw new Error('expected a refusal');
   } catch (error) {
     return error as { code?: string; message: string; retryable?: boolean; details?: Record<string, unknown> };

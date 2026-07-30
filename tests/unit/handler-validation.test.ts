@@ -111,8 +111,8 @@ describe('approval lifecycle (completeApproval on failure)', () => {
     const { requireApproval, completeApproval } = await import('../../apps/forge-edge-gateway/src/github');
     const identity = { tenantId: 'ten_t', projectId: 'prj_p' } as never;
 
-    d1.rows.push({ id: 'apr_success', state: 'approved', expires_at: new Date(Date.now() + 3_600_000).toISOString(), tenant_id: 'ten_t', workspace_id: 'ws_w', requested_action: 'git.push', request_payload: JSON.stringify({ action: 'git.push' }) });
-    await requireApproval(envWrap(d1), identity, 'apr_success', 'ws_w', 'git.push', { action: 'git.push' });
+    d1.rows.push({ id: 'apr_success', state: 'approved', expires_at: new Date(Date.now() + 3_600_000).toISOString(), tenant_id: 'ten_t', workspace_id: 'ws_w', requested_action: 'pull_request.create', request_payload: JSON.stringify({ action: 'pull_request.create' }) });
+    await requireApproval(envWrap(d1), identity, 'apr_success', 'ws_w', 'pull_request.create', { action: 'pull_request.create' });
     await completeApproval(envWrap(d1), 'apr_success', true);
     expect(d1.rows.find((a) => a.id === 'apr_success')?.state).toBe('consumed');
   });
@@ -122,8 +122,8 @@ describe('approval lifecycle (completeApproval on failure)', () => {
     const { requireApproval, completeApproval } = await import('../../apps/forge-edge-gateway/src/github');
     const identity = { tenantId: 'ten_u', projectId: 'prj_u' } as never;
 
-    d1.rows.push({ id: 'apr_fail', state: 'approved', expires_at: new Date(Date.now() + 3_600_000).toISOString(), tenant_id: 'ten_u', workspace_id: 'ws_w', requested_action: 'git.push', request_payload: JSON.stringify({ action: 'git.push' }) });
-    await requireApproval(envWrap(d1), identity, 'apr_fail', 'ws_w', 'git.push', { action: 'git.push' });
+    d1.rows.push({ id: 'apr_fail', state: 'approved', expires_at: new Date(Date.now() + 3_600_000).toISOString(), tenant_id: 'ten_u', workspace_id: 'ws_w', requested_action: 'pull_request.create', request_payload: JSON.stringify({ action: 'pull_request.create' }) });
+    await requireApproval(envWrap(d1), identity, 'apr_fail', 'ws_w', 'pull_request.create', { action: 'pull_request.create' });
     await completeApproval(envWrap(d1), 'apr_fail', false);
     expect(d1.rows.find((a) => a.id === 'apr_fail')?.state).toBe('failed');
   });
@@ -132,7 +132,7 @@ describe('approval lifecycle (completeApproval on failure)', () => {
     const d1 = fakeD1();
     const { completeApproval } = await import('../../apps/forge-edge-gateway/src/github');
 
-    d1.rows.push({ id: 'apr_pending', state: 'pending', expires_at: new Date(Date.now() + 3_600_000).toISOString(), tenant_id: 'ten_p', workspace_id: 'ws_w', requested_action: 'git.push', request_payload: '{}' });
+    d1.rows.push({ id: 'apr_pending', state: 'pending', expires_at: new Date(Date.now() + 3_600_000).toISOString(), tenant_id: 'ten_p', workspace_id: 'ws_w', requested_action: 'pull_request.create', request_payload: '{}' });
     await completeApproval(envWrap(d1), 'apr_pending', false);
     expect(d1.rows.find((a) => a.id === 'apr_pending')?.state).toBe('pending');
   });
@@ -173,7 +173,7 @@ describe('ForgeError codes from new handlers', () => {
       code: 'FORGE_APPROVAL_REQUIRED',
       message: 'Pushing requires human approval.',
       retryable: false,
-      details: { kind: 'approval', action: 'git.push', approval_id: 'apr_xxx', approval_url: 'https://forge.test/approvals/apr_xxx' }
+      details: { kind: 'approval', action: 'pull_request.create', approval_id: 'apr_xxx', approval_url: 'https://forge.test/approvals/apr_xxx' }
     });
     expect(error.details?.kind).toBe('approval');
     expect(error.details?.approval_id).toBe('apr_xxx');

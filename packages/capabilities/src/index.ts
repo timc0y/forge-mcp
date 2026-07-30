@@ -7,8 +7,6 @@ export interface CapabilityClaims {
   workspaceId: string;
   action: string;
   repository?: string;
-  branchPattern?: string;
-  gitCommit?: string;
   nonce: string;
   issuedAt: number;
   expiresAt: number;
@@ -39,9 +37,7 @@ function parseClaims(value: unknown): CapabilityClaims {
     !Number.isSafeInteger(input.issuedAt) ||
     typeof input.expiresAt !== 'number' ||
     !Number.isSafeInteger(input.expiresAt) ||
-    (input.repository !== undefined && typeof input.repository !== 'string') ||
-    (input.branchPattern !== undefined && typeof input.branchPattern !== 'string') ||
-    (input.gitCommit !== undefined && (typeof input.gitCommit !== 'string' || !/^[a-f0-9]{40,64}$/i.test(input.gitCommit)))
+    (input.repository !== undefined && typeof input.repository !== 'string')
   ) {
     throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Invalid capability token.', retryable: false });
   }
@@ -61,11 +57,9 @@ export async function issueCapability(claims: CapabilityClaims, secret: string):
  * capability token can only be redeemed once (replay protection).
  *
  * NOTE ON WIRING: this single-use primitive is intentionally NOT applied to the
- * current capability consumers (git credential proxy, preview proxy, snapshot
- * and deps R2 gateways). Each of those legitimately redeems ONE capability
- * across MULTIPLE HTTP requests within the token's short TTL — git's smart
- * protocol (info/refs GET + receive-pack POST), the preview proxy (one request
- * per page asset), and multipart snapshot/deps uploads plus their read-back.
+ * current capability consumers (git clone/fetch and the preview proxy). Each
+ * legitimately redeems one capability across multiple HTTP requests within
+ * the token's short TTL: Git's smart read protocol and preview page assets.
  * Single-use enforcement would break all of them. Replay for these is bounded
  * by the short expiry + tight (workspace/repo/action/content) scope. `claimNonce`
  * exists for any FUTURE genuinely single-shot capability, which should pass it.
@@ -79,7 +73,7 @@ export type ClaimNonce = (
 export async function verifyCapability(
   token: string,
   secret: string,
-  expected: Pick<CapabilityClaims, 'workspaceId' | 'action'> & Partial<Pick<CapabilityClaims, 'repository' | 'branchPattern' | 'gitCommit'>>,
+  expected: Pick<CapabilityClaims, 'workspaceId' | 'action'> & Partial<Pick<CapabilityClaims, 'repository'>>,
   claimNonce?: ClaimNonce
 ): Promise<CapabilityClaims> {
   const [payload, signature] = token.split('.');
@@ -97,7 +91,7 @@ export async function verifyCapability(
   if (claims.version !== 1 || claims.expiresAt <= now || claims.workspaceId !== expected.workspaceId || claims.action !== expected.action) {
     throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Capability is expired or outside its scope.', retryable: false });
   }
-  for (const field of ['repository', 'branchPattern', 'gitCommit'] as const) {
+  for (const field of ['repository'] as const) {
     if (expected[field] !== undefined && claims[field] !== expected[field]) {
       throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Capability is expired or outside its scope.', retryable: false });
     }

@@ -113,6 +113,9 @@ const workspaceGetOutput = {
   repository: repositoryRefOut,
   requestedRef: z.string(),
   currentCommit: z.string().optional().describe('Current GitHub branch commit observed by the control plane.'),
+  executorCommit: z.string().nullable().optional().describe('Commit currently materialized in the ephemeral executor, or null when no executor exists.'),
+  executorSyncPending: z.boolean().optional().describe('True while the executor must advance to the current GitHub commit before execution.'),
+  githubEditInProgress: z.boolean().optional().describe('True while a GitHub edit is being finalized; executor starts are blocked.'),
   currentBranch: z.string().optional(),
   state: z.string().describe('Control-plane session state. Executor allocation is lazy and may be absent until an execution tool is called.'),
   persistenceMode: z.string(),
@@ -140,13 +143,6 @@ const workspaceGetOutput = {
     usable: z.boolean()
   }).describe('Dependency installation state. Always an object — never null.'),
   activeProcessIds: z.array(z.string()).optional().describe('Process ids that are still running.'),
-  lastChecks: z.array(z.object({
-    processId: z.string(),
-    name: z.string(),
-    exitCode: z.number().optional(),
-    completedAt: z.string().optional(),
-    startedAt: z.string().optional()
-  })).optional().describe('Recent managed checks for resume/context.'),
   allowedNextActions: z.array(z.string()).optional().describe('Safe next Forge tools from this workspace state.'),
   next_step: z.string().optional().describe('Human-readable next action hint.'),
   previews: z.record(z.string(), z.object({ port: z.number(), processId: z.string(), access: z.string(), expiresAt: z.string() })).optional(),
@@ -351,7 +347,7 @@ export const forgeTools = [
   // Files
   { name: 'forge_files_list', title: 'List files', description: 'List a bounded file tree from the selected GitHub branch. No executor is allocated and no executor filesystem is consulted. Paths come back repo-relative, which is the form forge_edit and forge_files_read take.', inputSchema: { workspace: addrWorkspace(), path: repoPath().default('/workspace/repo'), depth: z.number().int().min(1).max(20).default(4), limit: z.number().int().min(1).max(10000).default(1000) }, outputSchema: { root: z.string(), entries: z.array(z.unknown()), truncated: z.boolean(), source: z.literal('github').optional(), hint: z.string().optional(), next_step: z.string().optional() }, sideEffect: 'none', approval: 'none' },
   { name: 'forge_files_read', title: 'Read files', description: 'Read one file or several directly from the selected GitHub branch without allocating an executor. The read guard that protects forge_edit is server-side; no input takes a hash back.', inputSchema: { workspace: addrWorkspace(), path: repoPath().optional(), paths: z.array(repoPath()).min(1).max(20).optional(), start_line: z.number().int().positive().optional(), end_line: z.number().int().positive().optional(), max_bytes: z.number().int().min(1).max(500000).default(200000), compact: z.boolean().optional() }, outputSchema: filesReadOutput, sideEffect: 'none', approval: 'none' },
-  { name: 'forge_edit', title: 'Edit files', description: 'Edit files. Committed straight to GitHub on your branch — no push, nothing left only in the workspace. Prefer replace: [{old,new}] and send only the fragment you are changing; Forge reads the current file and applies it. Use content for a whole new file, or content:null to delete. Returns the commit URL.', inputSchema: { workspace: addrWorkspace(), files: z.array(z.object({ path: z.string().min(1).max(1000), content: z.string().max(500000).nullable().optional(), replace: z.array(z.object({ old: z.string().min(1).max(100000), new: z.string().max(100000), all: z.boolean().optional() })).min(1).max(20).optional() })).min(1).max(50), message: z.string().min(1).max(500).optional(), idempotency_key: idempotencyOptional() }, outputSchema: { mutationOutcome: z.string(), durability: z.string(), on_remote: z.boolean(), durability_statement: z.string(), commit_sha: z.string().optional(), commit_url: z.string().optional(), branch: z.string(), paths: z.array(z.string()), rebased: z.boolean(), replayed: z.boolean().optional(), next_step: z.string() }, sideEffect: 'external', approval: 'none' },
+  { name: 'forge_edit', title: 'Edit files', description: 'Edit files. Committed straight to GitHub on your branch — no push, nothing left only in the workspace. Prefer replace: [{old,new}] and send only the fragment you are changing; Forge reads the current file and applies it. Use content for a whole new file, or content:null to delete. Returns the commit URL.', inputSchema: { workspace: addrWorkspace(), files: z.array(z.object({ path: z.string().min(1).max(1000), content: z.string().max(500000).nullable().optional(), replace: z.array(z.object({ old: z.string().min(1).max(100000), new: z.string().max(100000), all: z.boolean().optional() })).min(1).max(20).optional() })).min(1).max(50), message: z.string().min(1).max(500).optional(), idempotency_key: idempotencyOptional() }, outputSchema: { mutationOutcome: z.string(), durability: z.string(), on_remote: z.boolean(), durability_statement: z.string(), commit_sha: z.string().optional(), commit_url: z.string().optional(), branch: z.string(), paths: z.array(z.string()), rebased: z.boolean(), executor_synced: z.boolean().optional(), executor_sync_recorded: z.boolean().optional(), replayed: z.boolean().optional(), next_step: z.string() }, sideEffect: 'external', approval: 'none' },
   { name: 'forge_diff_metadata', title: 'Diff metadata', description: 'Syntax-only metadata over the GitHub branch comparison: changed symbols, secret risk, file classification, and suggested hunks. No executor is allocated.', inputSchema: { workspace: addrWorkspace(), base: z.string().min(1).max(255).default('main') }, outputSchema: diffMetadataOutput, sideEffect: 'none', approval: 'none' },
   { name: 'forge_context_get', title: 'Get context', description: 'Deterministic repo-context selection for a goal. Returns ranked file paths with reasons, adjacent tests, governing instructions, and confidence scores. Does NOT return file contents — use forge_files_read for that.', inputSchema: { workspace: addrWorkspace(), goal: z.string().min(1).max(2000), likely_paths: z.array(z.string().min(1).max(500)).max(40).default([]), max_results: z.number().int().min(1).max(100).default(12) }, outputSchema: contextGetOutput, sideEffect: 'none', approval: 'none' },
 

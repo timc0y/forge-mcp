@@ -26,7 +26,7 @@ Ten commits, `5d7d34f..23ff741`. The end-to-end flow was exercised against real 
 | `forge_workspace_create` | **adopts** that branch rather than cutting `forge/<hex>`; `branch` came back equal to `requestedRef` |
 | `forge_files_read` | `source: "github"`, served from the branch tip; `sizeBytes` describes the returned slice, not the whole file |
 | addressing | resolved from a bare branch name, no workspace id anywhere |
-| `forge_edit` | `pushed_remote`, `on_remote: true`, commit URL returned |
+| `forge_edit` | `committed_remote`, `on_remote: true`, commit URL returned |
 | `forge_shell` | container synced to the new commit, clean tree |
 | `forge_merge` | `feature_branch_on_origin: true`, `staged_ref` = the feature branch itself, **no push** |
 

@@ -36,9 +36,9 @@ allocates an isolated executor and materializes the selected GitHub commit.
 Executor files are ephemeral. Command-created changes are never auto-committed
 and report `remote_persisted:false`; recreate wanted changes with `forge_edit`.
 
-Snapshots and artifacts support local rollback and evidence, not repository
-durability. Destroying the session discards executor-only state while GitHub
-commits remain.
+Artifacts support bounded logs and evidence, not repository durability.
+Destroying the session discards executor-only state; recovery materializes a
+fresh checkout from GitHub while GitHub commits remain.
 
 Detailed views:
 

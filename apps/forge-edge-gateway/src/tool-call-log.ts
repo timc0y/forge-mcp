@@ -57,7 +57,7 @@ export function serialiseBounded(value: unknown): { json: string; bytes: number 
   return { json: bytes > MAX_PAYLOAD_BYTES ? `${json.slice(0, MAX_PAYLOAD_BYTES)}…[truncated]` : json, bytes };
 }
 
-export interface ToolCallRecord {
+interface ToolCallRecord {
   tenantId: string;
   projectId?: string;
   workspaceId?: string | null;

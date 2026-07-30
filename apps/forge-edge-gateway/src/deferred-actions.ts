@@ -21,7 +21,7 @@ import type { Env } from './env';
  * token, which is why neither needs the workspace to still exist.
  */
 
-export type DeferredActionState =
+type DeferredActionState =
   | 'awaiting_approval'
   | 'executing'
   | 'completed'

@@ -5,9 +5,8 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends git curl jq ripgrep fd-find tree python3 python3-pip ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 ENV PATH="/usr/bin:${PATH}" \
-  # /workspace is the durable checkpoint boundary. Keep image-level Corepack
-  # state outside it so a post-sleep image scaffold has no files that could be
-  # mistaken for tenant work during fail-closed recovery.
+  # Keep image-level tooling outside the disposable checkout so executor loss
+  # never makes runtime scaffold look like repository content.
   COREPACK_HOME=/opt/forge/corepack
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
   && apt-get install -y --no-install-recommends nodejs \

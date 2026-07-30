@@ -35,6 +35,9 @@ importers:
       '@forge/credentials':
         specifier: workspace:*
         version: link:packages/credentials
+      '@forge/events':
+        specifier: workspace:*
+        version: link:packages/events
       '@forge/fixture-catalog':
         specifier: workspace:*
         version: link:apps/fixture-catalog
@@ -71,9 +74,6 @@ importers:
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1
-      jose:
-        specifier: 6.2.2
-        version: 6.2.2
       tsx:
         specifier: 4.21.0
         version: 4.21.0
@@ -127,9 +127,6 @@ importers:
       '@forge/events':
         specifier: workspace:*
         version: link:../../packages/events
-      '@forge/git-core':
-        specifier: workspace:*
-        version: link:../../packages/git-core
       '@forge/git-github':
         specifier: workspace:*
         version: link:../../packages/git-github
@@ -179,9 +176,6 @@ importers:
 
   packages/application:
     dependencies:
-      '@forge/capabilities':
-        specifier: workspace:*
-        version: link:../capabilities
       '@forge/core':
         specifier: workspace:*
         version: link:../core
@@ -269,26 +263,7 @@ importers:
         specifier: workspace:*
         version: link:../core
 
-  packages/git-core:
-    dependencies:
-      '@forge/core':
-        specifier: workspace:*
-        version: link:../core
-
-  packages/git-github:
-    dependencies:
-      '@forge/capabilities':
-        specifier: workspace:*
-        version: link:../capabilities
-      '@forge/core':
-        specifier: workspace:*
-        version: link:../core
-      '@forge/git-core':
-        specifier: workspace:*
-        version: link:../git-core
-      jose:
-        specifier: 6.2.2
-        version: 6.2.2
+  packages/git-github: {}
 
   packages/insight: {}
 
@@ -309,9 +284,6 @@ importers:
 
   packages/mcp-core:
     dependencies:
-      '@forge/core':
-        specifier: workspace:*
-        version: link:../core
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -363,9 +335,6 @@ importers:
       '@forge/core':
         specifier: workspace:*
         version: link:../core
-      zod:
-        specifier: 4.4.3
-        version: 4.4.3
 
   packages/workflows-cloudflare:
     dependencies:

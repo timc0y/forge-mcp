@@ -7,19 +7,13 @@ import {
   type CreateWorkspaceInput,
   type WorkspaceRuntimeRecord
 } from '@forge/application';
-import { ForgeError, type OperationId, type ProcessId } from '@forge/core';
-import { D1AuditStore } from '@forge/audit';
+import { ForgeError, nextRevision, type OperationId, type ProcessId } from '@forge/core';
 import { D1MetadataStore } from '@forge/metadata-d1';
 import type { NetworkPolicyMode } from '@forge/sandbox-core';
 import { CloudflareSandboxProvider } from '@forge/sandbox-cloudflare';
-import { issueCapability } from '@forge/capabilities';
 import { branchPolicyFor, classifyCommand, isAgentForgeBranch, nonInteractiveShellEnv } from '@forge/policy';
 import type { Env } from './env';
-import { repositoryCloneSource, repositoryPushSource } from './github';
-import { autoPushForgeBranchesEnabled } from './auto-push-policy';
-import { describeDurability, type DurabilityVerdict } from './durability';
-import { snapshotsEnabled, getSnapshot } from './snapshots';
-import { depsCacheKey, getDepsCache } from './deps-cache';
+import { repositoryCloneSource } from './github';
 
 const RECORD_KEY = 'workspace-runtime';
 // Legacy key from a removed mutation-lease mechanism; still cleared on destroy.
@@ -40,11 +34,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   // window so `updated_at` stays fresh within the minute-scale slot TTL.
   private lastD1: { signature: string; atMs: number } | null = null;
   private static readonly D1_DEBOUNCE_MS = 60_000;
-  // The full-workspace snapshot and the per-repo deps cache both tar large trees
-  // (~100MB+ each) from the same container after bootstrap. Running them at once
-  // contends on container disk/CPU and one loses, so they chain onto this shared
-  // promise to upload sequentially instead of concurrently.
-  private pendingUpload: Promise<unknown> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -70,7 +59,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         retryable: false
       });
     }
-    return { ...record, snapshots: record.snapshots ?? {}, checks: record.checks ?? {} };
+    return record;
   }
 
   /**
@@ -94,60 +83,22 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     try {
       await this.app.assertCheckoutPresent(record);
     } catch (error) {
-      // Self-heal: an idle recycle can drop /workspace/repo. Try to bring the
-      // checkout back (snapshot restore, then a fresh clone) before surfacing
-      // the failure. A fresh-clone recovery that had to discard real
-      // unpushed work throws FORGE_CHECKOUT_DATA_LOSS — that must reach the
-      // caller loudly, not be swallowed as an ordinary self-heal success, so
-      // save the (now-recovered) record either way and propagate it.
+      // Self-heal an idle recycle by materializing the GitHub checkout again.
       try {
         await this.recoverCheckout(record);
         await this.save(record);
         return record;
-      } catch (recoveryError) {
+      } catch {
         await this.save(record);
-        if (recoveryError instanceof ForgeError && recoveryError.code === 'FORGE_CHECKOUT_DATA_LOSS') {
-          await new D1AuditStore(this.env.METADATA)
-            .append({
-              schemaVersion: 1,
-              id: crypto.randomUUID(),
-              traceId: crypto.randomUUID(),
-              tenantId: record.workspace.tenantId,
-              workspaceId: record.workspace.id,
-              actor: { type: 'service', id: 'workspace-coordinator' },
-              type: 'workspace.checkout_data_loss',
-              occurredAt: new Date().toISOString(),
-              payload: { detail: record.workspace.dataLoss?.detail, branch: record.workspace.currentBranch }
-            })
-            .catch(() => undefined);
-          throw recoveryError;
-        }
         throw error;
       }
     }
     return record;
   }
 
-  // Attempt in-place recovery of a missing repository checkout. assertCheckoutPresent
-  // has already flipped the record to `failed`; we optimistically restore `ready`
-  // so the handle-gated restore path can run. Throws on total failure, and also
-  // throws FORGE_CHECKOUT_DATA_LOSS (record still mutated to a usable `ready`
-  // state) when the only available recovery path lost real unpushed work.
+  // Re-materialize a missing checkout from GitHub.
   private async recoverCheckout(record: WorkspaceRuntimeRecord): Promise<void> {
     record.workspace.state = 'ready';
-    // 1. Best-effort snapshot restore of the whole /workspace tar — lossless
-    // when it works, since it's a filesystem-level restore, not a re-clone.
-    try {
-      const snap = await this.restoreFromR2();
-      if (snap.restored) {
-        await this.app.assertCheckoutPresent(record);
-        record.workspace.failure = undefined;
-        return;
-      }
-    } catch {
-      // fall through to a fresh clone
-    }
-    // 2. Fresh clone — may throw FORGE_CHECKOUT_DATA_LOSS; let it propagate.
     const cloneSource = await repositoryCloneSource(this.env, record.workspace);
     await this.app.recoverCheckout(record, cloneSource);
   }
@@ -156,7 +107,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     const workspace = record.workspace;
     // Fields the reaper/dashboard actually read. A change to any of these — or a
     // stale debounce window — forces the D1 write; otherwise it is skipped.
-    const signature = `${workspace.state}|${workspace.currentCommit ?? ''}|${workspace.currentBranch ?? ''}|${workspace.hasUnpushedWork ? 1 : 0}`;
+    const signature = `${workspace.state}|${workspace.currentCommit ?? ''}|${workspace.currentBranch ?? ''}`;
     const now = Date.now();
     const writeD1 =
       this.lastD1 === null ||
@@ -164,74 +115,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       now - this.lastD1.atMs >= WorkspaceCoordinator.D1_DEBOUNCE_MS;
     const writes: Array<Promise<unknown>> = [this.ctx.storage.put(RECORD_KEY, record)];
     if (writeD1) writes.push(this.metadata.putWorkspace(workspace));
-    if (record.lastRecoveryVerifiedAt) {
-      writes.push(
-        this.env.METADATA.prepare(
-          `INSERT INTO service_verifications (name, verified_at, evidence)
-           VALUES (?1, ?2, ?3)
-           ON CONFLICT(name) DO UPDATE SET verified_at=excluded.verified_at, evidence=excluded.evidence
-           WHERE excluded.verified_at >= service_verifications.verified_at`
-        ).bind(
-          'workspace_recovery',
-          record.lastRecoveryVerifiedAt,
-          JSON.stringify({
-            workspaceId: record.workspace.id,
-            snapshotId: record.workspace.activeSnapshotId ?? null,
-            commit: record.workspace.currentCommit ?? null,
-            branch: record.workspace.currentBranch ?? null,
-            recoveryVersion: this.env.CF_VERSION_METADATA.id
-          })
-        ).run()
-      );
-    }
     await Promise.all(writes);
     if (writeD1) this.lastD1 = { signature, atMs: now };
-  }
-
-  private async assertCheckpointQuiescent(record: WorkspaceRuntimeRecord): Promise<void> {
-    // Reap finished processes first. Otherwise a completed install/probe keeps
-    // blocking reads and writes forever with "stop workspace-owned processes".
-    await this.app.syncProcessLifecycle(record);
-    const active = Object.entries(record.processes)
-      .filter(([, entry]) => !entry.completedAt)
-      .map(([id, entry]) => ({
-        id,
-        command: entry.command.slice(0, 200),
-        status: 'running',
-        mutatesFilesystem: entry.mutatesFilesystem,
-        startedAt: entry.startedAt
-      }));
-    if (active.length > 0) {
-      const recommendedWait = active.find((process) =>
-        /\b(pnpm|npm|yarn|bun|pip|uv)\b/i.test(process.command) &&
-        /\b(install|ci|sync)\b/i.test(process.command)
-      );
-      const recommendedStop = active.find((process) => process.id !== recommendedWait?.id);
-      throw new ForgeError({
-        code: 'FORGE_WORKSPACE_CONFLICT',
-        message: 'Stop or wait for workspace-owned processes before a filesystem mutation or checkpoint so Forge can capture an immutable recovery snapshot.',
-        retryable: true,
-        details: {
-          status: 'blocked',
-          reason: 'active_process',
-          processIds: active.map((process) => process.id),
-          processes: active,
-          ...(recommendedWait
-            ? { recommendedWaitProcessId: recommendedWait.id, recommendedAction: 'forge_process_wait' }
-            : {}),
-          ...(recommendedStop && !recommendedWait
-            ? { recommendedStopProcessId: recommendedStop.id, recommendedAction: 'forge_process_stop' }
-            : {}),
-          allowedNextActions: [
-            'forge_process_wait',
-            'forge_process_list',
-            'forge_process_list',
-            'forge_process_stop',
-            'forge_process_stop'
-          ]
-        }
-      });
-    }
   }
 
   private async readWithRecovery<T>(action: (record: WorkspaceRuntimeRecord) => Promise<T>): Promise<T> {
@@ -324,6 +209,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     currentBranch: string | null;
     revision: number;
     bootstrapRequested: boolean;
+    executorSyncPending: boolean;
+    githubEditInProgress: boolean;
     operationId?: OperationId;
   }> {
     const record = await this.ctx.storage.get<WorkspaceRuntimeRecord>(RECORD_KEY);
@@ -344,6 +231,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       currentBranch: record.workspace.currentBranch ?? null,
       revision: record.workspace.revision,
       bootstrapRequested: record.bootstrapRequested ?? true,
+      executorSyncPending: Boolean(record.pendingRemoteCommit),
+      githubEditInProgress: Boolean(record.githubEditInProgress),
       ...(operationId ? { operationId } : {})
     };
   }
@@ -365,49 +254,13 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           revision: record.workspace.revision
         };
       }
-      // The D1 snapshot lookup and the GitHub token fetch are independent of each
-      // other and of container boot — start them together. The token fetch can throw,
-      // so it is only awaited inside the try below where its failure is handled.
-      const cloneSourcePromise = repositoryCloneSource(this.env, record.workspace);
-      // If a prior snapshot exists, let provisioning restore it and skip the slow
-      // clone+install. Best-effort — a failed restore falls back to full bootstrap.
-      const priorSnapshot = await getSnapshot(this.env.METADATA, record.workspace.id).catch(() => null);
-      const restore = priorSnapshot
-        ? () => this.restoreFromR2().then((r) => r.restored).catch(() => false)
-        : undefined;
-      // Per-repo dependency cache hooks (content-keyed, shared across workspaces of
-      // the same repo+lockfile). Gated on the same snapshot flag and fully
-      // best-effort — a failure in either hook never blocks provisioning.
-      const repoSlug = `${record.workspace.repository.owner}/${record.workspace.repository.name}`;
-      const runtime = record.workspace.runtimeProfile;
-      // Scope the deps cache to the tenant: node_modules is executable, so a
-      // shared cross-tenant tree would let one tenant run another's code.
-      const tenantId = record.workspace.tenantId;
-      const depsCache = snapshotsEnabled(this.env)
-        ? {
-            restore: (lockfileHash: string) =>
-              this.restoreDepsFromR2(depsCacheKey(tenantId, repoSlug, lockfileHash, runtime).cacheKey).catch(() => false),
-            populate: (lockfileHash: string) => {
-              const { cacheKey } = depsCacheKey(tenantId, repoSlug, lockfileHash, runtime);
-              console.log('forge_deps_populate_called', { cacheKey });
-              // Chain so the post-bootstrap snapshot uploads after this, not with it.
-              this.pendingUpload = this.pendingUpload
-                .then(() => this.depsToR2(cacheKey))
-                .then((r) => console.log('forge_deps_upload_result', { cacheKey, ...r }))
-                .catch((e) => console.log('forge_deps_upload_threw', { cacheKey, error: String(e).slice(0, 200) }));
-              this.ctx.waitUntil(this.pendingUpload);
-            }
-          }
-        : undefined;
       try {
-        const cloneSource = await cloneSourcePromise;
+        const cloneSource = await repositoryCloneSource(this.env, record.workspace);
         await this.app.provisionWorkspace(
           record,
           input.bootstrap,
           (next) => this.save(next),
-          cloneSource,
-          restore,
-          depsCache
+          cloneSource
         );
       } catch (error) {
         const forgeError = error instanceof ForgeError
@@ -436,14 +289,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           code: forgeError.code,
           message: forgeError.message
         };
-      }
-      // After a full bootstrap (no snapshot to restore from) capture one now so a
-      // mid-life eviction — not just a graceful reap — comes back warm. Fire-and-
-      // forget: never let snapshotting delay or fail readiness.
-      if (!priorSnapshot) {
-        // Chain after any deps-cache upload so the two large tars don't contend.
-        this.pendingUpload = this.pendingUpload.then(() => this.snapshotToR2().catch(() => undefined));
-        this.ctx.waitUntil(this.pendingUpload);
       }
       return {
         ok: true,
@@ -480,7 +325,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
 
   async getState(options: { compact?: boolean } = {}) {
     return this.readWithRecovery(async (record) => {
-      if (['ready', 'busy'].includes(record.workspace.state) && await this.app.reconcileGitState(record)) await this.save(record);
+      if (
+        !record.pendingRemoteCommit &&
+        ['ready', 'busy'].includes(record.workspace.state) &&
+        await this.app.reconcileGitState(record)
+      ) await this.save(record);
       // Build the gitIntegrity report. When there is a lastGitDivergence, the
       // state is 'diverged'. Otherwise, perform a lightweight probe to determine
       // the actual integrity state with reason and remediation.
@@ -501,7 +350,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           gitHeadReadable: true,
           gitIndexReadable: true,
           workingTreeReadable: true,
-          recommendedAction: 'The recorded Git state differs from the filesystem. Do not restore a checkpoint — inspect manually.',
+          recommendedAction: 'The recorded Git state differs from the executor filesystem. Destroy and recreate the workspace if a fresh GitHub checkout is required.',
           destructiveRecoveryRequired: false,
           ...record.lastGitDivergence
         };
@@ -538,8 +387,10 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           baseCommit: record.workspace.baseCommit,
           currentBranch: record.workspace.currentBranch,
           currentCommit: record.workspace.currentCommit,
+          executorCommit: record.executorCommit ?? null,
+          executorSyncPending: Boolean(record.pendingRemoteCommit),
+          githubEditInProgress: Boolean(record.githubEditInProgress),
           revision: record.workspace.revision,
-          hasUnpushedWork: record.workspace.hasUnpushedWork,
           persistenceMode: record.workspace.persistenceMode,
           runtimeProfile: record.workspace.runtimeProfile,
           createdAt: record.workspace.createdAt,
@@ -560,15 +411,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
             command: process.command.slice(0, 120)
           })),
           previewCount: Object.keys(record.previews).length,
-          lastChecks: Object.entries(record.checks)
-            .slice(-5)
-            .map(([id, check]) => ({
-              processId: id,
-              name: check.name,
-              exitCode: check.exitCode,
-              completedAt: check.completedAt,
-              startedAt: check.startedAt
-            })),
           allowedNextActions,
           branch_policy: branchPolicyFor(record.workspace.currentBranch),
           next_step: !isAgentForgeBranch(record.workspace.currentBranch)
@@ -580,18 +422,11 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       }
       return {
         ...record.workspace,
+        executorCommit: record.executorCommit ?? null,
+        executorSyncPending: Boolean(record.pendingRemoteCommit),
+        githubEditInProgress: Boolean(record.githubEditInProgress),
         branch_policy: branchPolicyFor(record.workspace.currentBranch),
         processes,
-        checks: record.checks,
-        lastChecks: Object.entries(record.checks)
-          .slice(-5)
-          .map(([id, check]) => ({
-            processId: id,
-            name: check.name,
-            exitCode: check.exitCode,
-            completedAt: check.completedAt,
-            startedAt: check.startedAt
-          })),
         previews: Object.fromEntries(
           Object.entries(record.previews).map(([id, value]) => [
             id,
@@ -603,11 +438,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
             }
           ])
         ),
-        checkpoints: Object.values(record.snapshots).map((snapshot) => ({
-          snapshotId: snapshot.id,
-          createdAt: snapshot.createdAt,
-          providerVersion: snapshot.providerVersion
-        })),
         gitIntegrity,
         dependencyState,
         activeProcessIds,
@@ -615,167 +445,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         next_step: allowedNextActions[0]
           ? `Next safe tool: ${allowedNextActions[0]}`
           : 'Inspect forge_workspace_get for details.',
-        ...(record.lastRecoveryVerifiedAt
-          ? {
-              recovery: {
-                verifiedAt: record.lastRecoveryVerifiedAt,
-                snapshotId: record.workspace.activeSnapshotId ?? null
-              }
-            }
-          : {})
       };
     });
-  }
-
-  // Mint a short-lived capability scoped to this workspace's snapshot endpoint,
-  // so untrusted container code can only PUT/GET its own snapshot.
-  private async snapshotToken(workspaceId: string, tenantId: string): Promise<string> {
-    const now = Math.floor(Date.now() / 1000);
-    return issueCapability(
-      { version: 1, subject: 'forge-snapshot', tenantId, workspaceId, action: `snapshot:${workspaceId}`, nonce: crypto.randomUUID(), issuedAt: now, expiresAt: now + 900 },
-      this.env.FORGE_CAPABILITY_SIGNING_KEY
-    );
-  }
-
-  // snapshot_on_idle: tar /workspace and stream it (from inside the container) to
-  // the Worker's R2 snapshot gateway. Best-effort and gated — a failure never
-  // blocks teardown. Must run while the workspace is still ready (before destroy).
-  async snapshotToR2(): Promise<{ snapshotted: boolean; reason?: string }> {
-    if (!snapshotsEnabled(this.env)) return { snapshotted: false, reason: 'disabled' };
-    let record: WorkspaceRuntimeRecord;
-    try {
-      record = await this.getRecord();
-    } catch {
-      return { snapshotted: false, reason: 'no-record' };
-    }
-    if (!['ready', 'busy'].includes(record.workspace.state)) return { snapshotted: false, reason: `state ${record.workspace.state}` };
-    try {
-      const workspaceId = record.workspace.id;
-      const token = await this.snapshotToken(workspaceId, record.workspace.tenantId);
-      const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_snapshot/${workspaceId}`;
-      const handle = await this.app.handle(record);
-      // Chunked multipart upload: split the tar into <100MB parts so each
-      // request stays under the Cloudflare edge inbound-body limit. The single
-      // -shot PUT path still exists on the gateway as a fallback for small tars.
-      const command = [
-        'set -e',
-        `U=${JSON.stringify(url)}`,
-        `T=${JSON.stringify(token)}`,
-        'D=$(mktemp -d)',
-        `tar czf - -C /workspace --exclude=./tmp --exclude='./repo/node_modules/.cache' . | split -b 80m -d -a 4 - "$D/p"`,
-        `UP=$(curl -sf -X POST -H "authorization: Bearer $T" "$U?mp=create")`,
-        'i=0; PARTS=""',
-        `for f in "$D"/p*; do i=$((i+1)); E=$(curl -sf -X PUT --data-binary @"$f" -H "authorization: Bearer $T" "$U?mp=part&uploadId=$UP&part=$i"); PARTS="$PARTS$i:$E\\n"; done`,
-        `printf "%b" "$PARTS" | curl -sf -X POST --data-binary @- -H "authorization: Bearer $T" "$U?mp=complete&uploadId=$UP"`,
-        'rm -rf "$D"'
-      ].join('\n');
-      const result = await handle.exec({ command, cwd: '/workspace', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
-      return { snapshotted: result.exitCode === 0, reason: result.exitCode === 0 ? undefined : result.stderr.slice(0, 200) };
-    } catch (error) {
-      return { snapshotted: false, reason: error instanceof Error ? error.message.slice(0, 200) : 'error' };
-    }
-  }
-
-  // Restore a prior snapshot over a freshly provisioned workspace (best-effort).
-  async restoreFromR2(): Promise<{ restored: boolean }> {
-    if (!snapshotsEnabled(this.env)) return { restored: false };
-    let record: WorkspaceRuntimeRecord;
-    try {
-      record = await this.getRecord();
-    } catch {
-      return { restored: false };
-    }
-    const snap = await getSnapshot(this.env.METADATA, record.workspace.id).catch(() => null);
-    if (!snap) return { restored: false };
-    try {
-      const workspaceId = record.workspace.id;
-      const token = await this.snapshotToken(workspaceId, record.workspace.tenantId);
-      const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_snapshot/${workspaceId}`;
-      const handle = await this.app.handle(record);
-      const command = `curl -sf -H ${JSON.stringify(`authorization: Bearer ${token}`)} ${JSON.stringify(url)} | tar xzf - -C /workspace`;
-      const result = await handle.exec({ command, cwd: '/workspace', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
-      return { restored: result.exitCode === 0 };
-    } catch {
-      return { restored: false };
-    }
-  }
-
-  // Mint a short-lived capability scoped to one deps cache_key, so untrusted
-  // container code can only PUT/GET that exact content-keyed cache entry.
-  private async depsToken(workspaceId: string, tenantId: string, cacheKey: string): Promise<string> {
-    const now = Math.floor(Date.now() / 1000);
-    return issueCapability(
-      { version: 1, subject: 'forge-deps', tenantId, workspaceId, action: `deps:${cacheKey}`, nonce: crypto.randomUUID(), issuedAt: now, expiresAt: now + 900 },
-      this.env.FORGE_CAPABILITY_SIGNING_KEY
-    );
-  }
-
-  // Restore the shared dependency dirs (node_modules / .venv) for this repo's
-  // lockfile from R2 into /workspace/repo. Best-effort and gated — a miss or
-  // failure just falls back to a normal install.
-  async restoreDepsFromR2(cacheKey: string): Promise<boolean> {
-    if (!snapshotsEnabled(this.env)) return false;
-    let record: WorkspaceRuntimeRecord;
-    try {
-      record = await this.getRecord();
-    } catch {
-      return false;
-    }
-    const row = await getDepsCache(this.env.METADATA, cacheKey).catch(() => null);
-    if (!row) return false;
-    try {
-      const workspaceId = record.workspace.id;
-      const token = await this.depsToken(workspaceId, record.workspace.tenantId, cacheKey);
-      const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_deps/${workspaceId}`;
-      const handle = await this.app.handle(record);
-      const command = `curl -sf -H ${JSON.stringify(`authorization: Bearer ${token}`)} -H ${JSON.stringify(`x-forge-deps-key: ${cacheKey}`)} ${JSON.stringify(url)} | tar xzf - -C /workspace/repo`;
-      const result = await handle.exec({ command, cwd: '/workspace/repo', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
-      return result.exitCode === 0;
-    } catch {
-      return false;
-    }
-  }
-
-  // Populate the shared dependency cache from a freshly installed /workspace/repo:
-  // tar every node_modules dir (and .venv if present) and stream it to the deps
-  // gateway, which records the D1 row on PUT. Best-effort and gated.
-  async depsToR2(cacheKey: string): Promise<{ cached: boolean; reason?: string }> {
-    if (!snapshotsEnabled(this.env)) return { cached: false, reason: 'disabled' };
-    let record: WorkspaceRuntimeRecord;
-    try {
-      record = await this.getRecord();
-    } catch {
-      return { cached: false, reason: 'no-record' };
-    }
-    if (!['ready', 'busy', 'bootstrapping'].includes(record.workspace.state)) return { cached: false, reason: `state ${record.workspace.state}` };
-    try {
-      const workspaceId = record.workspace.id;
-      const token = await this.depsToken(workspaceId, record.workspace.tenantId, cacheKey);
-      const url = `${this.env.FORGE_PUBLIC_ORIGIN}/__forge_deps/${workspaceId}`;
-      const handle = await this.app.handle(record);
-      // Same chunked multipart flow as snapshotToR2, preserving the node_modules
-      // /.venv path discovery. Each part is its own <100MB request.
-      const command = [
-        'set -e',
-        `U=${JSON.stringify(url)}`,
-        `T=${JSON.stringify(token)}`,
-        `K=${JSON.stringify(cacheKey)}`,
-        'paths=$(find . -type d -name node_modules -prune 2>/dev/null)',
-        'if [ -d .venv ]; then paths="$paths .venv"; fi',
-        'if [ -z "$paths" ]; then exit 0; fi',
-        'D=$(mktemp -d)',
-        'tar czf - $paths | split -b 80m -d -a 4 - "$D/p"',
-        `UP=$(curl -sf -X POST -H "authorization: Bearer $T" -H "x-forge-deps-key: $K" "$U?mp=create")`,
-        'i=0; PARTS=""',
-        `for f in "$D"/p*; do i=$((i+1)); E=$(curl -sf -X PUT --data-binary @"$f" -H "authorization: Bearer $T" -H "x-forge-deps-key: $K" "$U?mp=part&uploadId=$UP&part=$i"); PARTS="$PARTS$i:$E\\n"; done`,
-        `printf "%b" "$PARTS" | curl -sf -X POST --data-binary @- -H "authorization: Bearer $T" -H "x-forge-deps-key: $K" "$U?mp=complete&uploadId=$UP"`,
-        'rm -rf "$D"'
-      ].join('\n');
-      const result = await handle.exec({ command, cwd: '/workspace/repo', timeoutMs: 300_000, outputLimitBytes: 20_000, sessionId: 'system', networkPolicy: 'development' });
-      return { cached: result.exitCode === 0, reason: result.exitCode === 0 ? undefined : result.stderr.slice(0, 200) };
-    } catch (error) {
-      return { cached: false, reason: error instanceof Error ? error.message.slice(0, 200) : 'error' };
-    }
   }
 
   async shellExec(input: {
@@ -804,10 +475,10 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       });
     }
     const forcedReadOnly = input.mode === 'read_only' || shellDecision.classification === 'read_only';
-    // Pure read-only probes skip the mutation lock so they are not blocked by
-    // another process's snapshot/serialize queue, and never create checkpoints.
+    // Pure read-only probes skip the mutating-command path.
     if (forcedReadOnly) {
       return this.readWithRecovery(async (record) => {
+        await this.prepareExecution(record);
         const normalizedCwd = input.cwd.replace(/\/+$/u, '') || '/';
         const value = await this.app.exec(record, {
           command: input.command,
@@ -831,6 +502,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const normalizedCwd = input.cwd.replace(/\/+$/u, '') || '/';
       const touchesRepo = normalizedCwd === '/workspace/repo' || normalizedCwd.startsWith('/workspace/repo/');
       const record = touchesRepo ? await this.repoRecord() : await this.getRecord();
+      await this.prepareExecution(record);
       const before = record.workspace.revision;
       const updatedAt = record.workspace.updatedAt;
       const divergenceAt = record.lastGitDivergence?.observedAt;
@@ -867,7 +539,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           ...(started.replay ? { replay: true } : {}),
           workspaceId: record.workspace.id,
           branch: record.workspace.currentBranch,
-          head: record.workspace.currentCommit,
+          head: entry?.executorCommit ?? record.executorCommit ?? record.workspace.currentCommit,
           baseCommit: record.workspace.baseCommit,
           classification: decision.classification,
           operationId: started.operationId,
@@ -890,10 +562,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       };
       try {
         const environment = nonInteractiveShellEnv(input.environment);
-        // Mutating commands sync/reap finished processes before the quiescent check.
-        if (input.idempotencyKey) {
-          await this.assertCheckpointQuiescent(record);
-        }
         // Dependency installs always start as managed processes once approved.
         // Sync exec + timeout conversion restarted the install after the transport
         // deadline and left later shells unable to see node_modules.
@@ -1004,6 +672,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
+        await this.prepareExecution(record);
         return await this.app.startProcess(record, input);
       } finally {
         await this.save(record);
@@ -1111,7 +780,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       branch: string | null | undefined;
       head: string | null | undefined;
       requestedRef: string;
-      hasUnpushedWork: boolean;
       revision: number;
       updatedAt: string;
     };
@@ -1167,7 +835,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           branch: record.workspace.currentBranch,
           head: record.workspace.currentCommit,
           requestedRef: record.workspace.requestedRef,
-          hasUnpushedWork: Boolean(record.workspace.hasUnpushedWork),
           revision: record.workspace.revision,
           updatedAt: record.workspace.updatedAt
         },
@@ -1182,13 +849,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.readWithRecovery((record) => this.app.operationGet(record, input.operationId));
   }
 
-  async reconcile() {
-    return this.readRepoWithRecovery(async (record) => {
-      const result = await this.app.reconcileWorkspace(record);
-      return result;
-    });
-  }
-
   async dependenciesInstall(input: {
     frozenLockfile?: boolean;
     allowLockfileUpdate?: boolean;
@@ -1200,35 +860,13 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.repoRecord();
       try {
+        await this.prepareExecution(record);
         const result = await this.app.dependenciesInstall(record, input);
         return result;
       } finally {
         await this.save(record);
       }
     });
-  }
-
-  async checkStart(input: {
-    name: string;
-    command: string;
-    cwd: string;
-    environment: Record<string, string>;
-    networkPolicy: Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>;
-    expectedRevision?: number;
-    idempotencyKey: string;
-  }) {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      try {
-        return await this.app.startCheck(record, input);
-      } finally {
-        await this.save(record);
-      }
-    });
-  }
-
-  async checkGet(input: { processId: ProcessId }) {
-    return this.readWithRecovery((record) => this.app.checkGet(record, input.processId));
   }
 
   /**
@@ -1263,6 +901,203 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     await this.ctx.storage.delete(input.paths.map((path) => `seen:${path}`));
   }
 
+  private activeMutatingProcessIds(record: WorkspaceRuntimeRecord): string[] {
+    return Object.entries(record.processes)
+      .filter(([, process]) => process.mutatesFilesystem && !process.completedAt)
+      .map(([id]) => id);
+  }
+
+  private async prepareExecution(record: WorkspaceRuntimeRecord): Promise<void> {
+    if (record.githubEditInProgress) {
+      throw new ForgeError({
+        code: 'FORGE_WORKSPACE_CONFLICT',
+        message: 'A forge_edit GitHub mutation is still being finalized, so Forge will not run an executor command against an uncertain checkout. Retry forge_edit with the same input. If its coordinator handoff could not be confirmed, call forge_workspace_destroy, then forge_workspace_create before executing.',
+        retryable: true,
+        details: {
+          branch: record.githubEditInProgress.branch,
+          startedAt: record.githubEditInProgress.startedAt,
+          next_step: 'Retry forge_edit with the same files/idempotency key, or destroy and recreate the workspace.'
+        }
+      });
+    }
+    if (!record.pendingRemoteCommit) return;
+    const synced = await this.syncPendingRemoteCommit(record);
+    if (synced) return;
+    const activeProcessIds = this.activeMutatingProcessIds(record);
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_CONFLICT',
+      message: 'GitHub has a newer durable commit, but the loaded executor still has an active mutating process. Call forge_process_wait or forge_process_stop for that process; execution remains blocked until the executor is synchronized.',
+      retryable: true,
+      details: { activeProcessIds, commit: record.pendingRemoteCommit.commit }
+    });
+  }
+
+  private async syncPendingRemoteCommit(record: WorkspaceRuntimeRecord): Promise<boolean> {
+    const pending = record.pendingRemoteCommit;
+    if (!pending) return true;
+    await this.app.syncProcessLifecycle(record).catch(() => undefined);
+    if (this.activeMutatingProcessIds(record).length > 0) return false;
+    const cloneSource = await repositoryCloneSource(this.env, record.workspace);
+    await this.app.syncRemoteCommit(
+      record,
+      pending.commit,
+      pending.branch,
+      pending.invalidateDependencies,
+      cloneSource
+    );
+    record.pendingRemoteCommit = undefined;
+    return true;
+  }
+
+  /**
+   * Record a commit created through the GitHub CRUD plane and propagate it into
+   * an already-loaded executor without turning executor files into GitHub edits.
+   */
+  async beginGitHubEdit(input: { branch: string; intentHash: string }): Promise<{ token: string; revision: number; replayed: boolean }> {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      record.executorCommit ??= record.workspace.currentCommit;
+      const active = record.githubEditInProgress;
+      if (active) {
+        if (active.branch === input.branch && active.intentHash === input.intentHash) {
+          return { token: active.token, revision: record.workspace.revision, replayed: true };
+        }
+        throw new ForgeError({
+          code: 'FORGE_WORKSPACE_CONFLICT',
+          message: 'Another forge_edit is still finalizing its GitHub mutation. Retry forge_edit with the same input, or call forge_workspace_destroy then forge_workspace_create if its handoff could not be confirmed.',
+          retryable: true,
+          details: { branch: active.branch, startedAt: active.startedAt }
+        });
+      }
+      const token = `edit_${crypto.randomUUID().replaceAll('-', '')}`;
+      record.githubEditInProgress = {
+        token,
+        branch: input.branch,
+        intentHash: input.intentHash,
+        startedAt: new Date().toISOString()
+      };
+      await this.save(record);
+      return { token, revision: record.workspace.revision, replayed: false };
+    });
+  }
+
+  async cancelGitHubEdit(input: { token: string }): Promise<{ cancelled: boolean }> {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      if (!record.githubEditInProgress) {
+        return { cancelled: false };
+      }
+      if (record.githubEditInProgress.token !== input.token) {
+        throw new ForgeError({
+          code: 'FORGE_WORKSPACE_CONFLICT',
+          message: 'The forge_edit cancellation token does not own the active edit.',
+          retryable: false
+        });
+      }
+      record.githubEditInProgress = undefined;
+      await this.save(record);
+      return { cancelled: true };
+    });
+  }
+
+  async recordGitHubCommit(input: { token: string; commit: string; branch: string; invalidateDependencies?: boolean }): Promise<{ executorSynced: boolean; revision: number; replayed: boolean }> {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      const previous = record.lastRecordedGitHubEdit;
+      if (previous?.token === input.token) {
+        if (previous.commit !== input.commit || previous.branch !== input.branch) {
+          throw new ForgeError({
+            code: 'FORGE_WORKSPACE_CONFLICT',
+            message: 'This forge_edit token was already recorded for a different GitHub commit.',
+            retryable: false
+          });
+        }
+        const executorSynced = record.executorCommit === input.commit && !record.pendingRemoteCommit;
+        if (!executorSynced && record.pendingRemoteCommit) {
+          try {
+            const synced = await this.syncPendingRemoteCommit(record);
+            await this.save(record);
+            return { executorSynced: synced, revision: record.workspace.revision, replayed: true };
+          } catch (error) {
+            await this.save(record);
+            throw error;
+          }
+        }
+        return { executorSynced, revision: record.workspace.revision, replayed: true };
+      }
+      if (record.githubEditInProgress?.token !== input.token) {
+        throw new ForgeError({
+          code: 'FORGE_WORKSPACE_CONFLICT',
+          message: 'Forge cannot attach this GitHub commit to the workspace because its edit token is absent or stale. Call forge_workspace_destroy, then forge_workspace_create before running commands.',
+          retryable: false,
+          details: { branch: input.branch, commit: input.commit }
+        });
+      }
+      if (record.githubEditInProgress.branch !== input.branch) {
+        throw new ForgeError({
+          code: 'FORGE_WORKSPACE_CONFLICT',
+          message: 'The completed GitHub commit belongs to a different branch than the active forge_edit token.',
+          retryable: false
+        });
+      }
+      record.workspace.currentCommit = input.commit;
+      record.workspace.currentBranch = input.branch;
+      record.workspace.revision = nextRevision(record.workspace.revision);
+      record.workspace.updatedAt = new Date().toISOString();
+      record.lastRecordedGitHubEdit = { token: input.token, commit: input.commit, branch: input.branch };
+      record.githubEditInProgress = undefined;
+
+      // A requested workspace has no executor to update; first materialization
+      // clones the current GitHub branch directly.
+      if (!['ready', 'busy'].includes(record.workspace.state)) {
+        record.pendingRemoteCommit = undefined;
+        await this.save(record);
+        return { executorSynced: true, revision: record.workspace.revision, replayed: false };
+      }
+
+      if (record.executorCommit === input.commit) {
+        record.pendingRemoteCommit = undefined;
+        await this.save(record);
+        return { executorSynced: true, revision: record.workspace.revision, replayed: false };
+      }
+
+      record.pendingRemoteCommit = {
+        commit: input.commit,
+        branch: input.branch,
+        recordedAt: new Date().toISOString(),
+        invalidateDependencies: input.invalidateDependencies === true
+      };
+      record.workspace.checkout = {
+        healthy: false,
+        checkedAt: new Date().toISOString(),
+        detail: 'The loaded executor is waiting to advance to the latest GitHub commit.'
+      };
+      let executorSynced = false;
+      try {
+        executorSynced = await this.syncPendingRemoteCommit(record);
+      } finally {
+        await this.save(record);
+      }
+      return { executorSynced, revision: record.workspace.revision, replayed: false };
+    });
+  }
+
+  /** Retry a deferred GitHub-to-executor sync before an execution tool runs. */
+  async ensureGitHubCheckout(): Promise<{ synced: true; revision: number }> {
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      try {
+        if (!record.pendingRemoteCommit && !record.githubEditInProgress) {
+          return { synced: true, revision: record.workspace.revision };
+        }
+        await this.prepareExecution(record);
+        return { synced: true, revision: record.workspace.revision };
+      } finally {
+        await this.save(record);
+      }
+    });
+  }
+
   /**
    * Replay cache for remote mutations whose side effect happens outside the
    * coordinator. The intent hash prevents one key from silently authorising a
@@ -1293,30 +1128,6 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     await this.ctx.storage.put(key, { intentHash: input.intentHash, receipt: input.receipt });
   }
 
-  /**
-   * Fast-forward the container checkout to whatever origin now holds.
-   *
-   * The container is a cache, not the source of truth: an edit is already a
-   * commit on GitHub before this runs. If this fails the work is still safe —
-   * only the local copy is stale — so callers treat it as best effort.
-   */
-  async syncToRemoteHead() {
-    return this.serializeMutation(async () => {
-      const record = await this.repoRecord();
-      try {
-        const source = await repositoryCloneSource(this.env, record.workspace);
-        return await this.app.fastForwardToRemote(record, source);
-      } finally {
-        await this.save(record);
-      }
-    });
-  }
-
-  /** Repository file list for context selection — git's view, not a filesystem walk. */
-  async listRepositoryFiles(input: { limit?: number } = {}) {
-    return this.readRepoWithRecovery((record) => this.app.listRepositoryFiles(record, input.limit ?? 10_000));
-  }
-
   async gitStatus() {
     return this.readRepoWithRecovery(async (record) => {
       await this.app.reconcileGitState(record);
@@ -1324,305 +1135,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
-  async checkpoint(input: { name?: string }) {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      try {
-        await this.assertCheckpointQuiescent(record);
-        return await this.app.checkpoint(record, input.name);
-      } finally {
-        await this.save(record);
-      }
-    });
-  }
-
-  async exportRecoveryPatch(input: { maxBytes?: number } = {}) {
-    return this.readRepoWithRecovery((record) => this.app.exportRecoveryPatch(record, input.maxBytes ?? 2_000_000));
-  }
-
-  async restoreCheckpoint(input: { snapshotId: string; expectedRevision?: number }) {
-    return this.serializeMutation(async () => {
-      const record = await this.repoRecord();
-      try {
-        await this.assertCheckpointQuiescent(record);
-        const source = await repositoryCloneSource(this.env, record.workspace);
-        return await this.app.restoreCheckpoint(
-          record,
-          input.snapshotId as Parameters<ForgeApplicationService['restoreCheckpoint']>[1],
-          input.expectedRevision,
-          source
-        );
-      } finally {
-        await this.save(record);
-      }
-    });
-  }
-
-  async gitDiff(input: { staged: boolean; cursor?: number; maxBytes?: number; paths?: string[] }) {
-    return this.readRepoWithRecovery(async (record) => {
-      await this.app.reconcileGitState(record);
-      return this.app.gitDiff(record, input.staged, {
-        cursor: input.cursor,
-        maxBytes: input.maxBytes,
-        paths: input.paths
-      });
-    });
-  }
-
-  async gitBranchCreate(input: { branch: string; expectedRevision?: number; idempotencyKey: string }) {
-    return this.serializeMutation(async () => {
-      const record = await this.repoRecord();
-      try {
-        await this.assertCheckpointQuiescent(record);
-        await this.app.reconcileGitState(record);
-        const value = await this.app.gitBranchCreate(record, input.branch, input.expectedRevision, input.idempotencyKey);
-        const checkpoint = await this.app.checkpoint(record, `branch-${record.workspace.currentBranch ?? record.workspace.revision}`);
-        return { ...value, checkpoint };
-      } finally {
-        await this.save(record);
-      }
-    });
-  }
-
-  async gitCommit(input: { message: string; paths: string[]; expectedRevision?: number; idempotencyKey: string }) {
-    return this.serializeMutation(async () => {
-      const record = await this.repoRecord();
-      try {
-        await this.assertCheckpointQuiescent(record);
-        await this.assertRemoteNotBlocking(record);
-        await this.app.reconcileGitState(record);
-        const value = await this.app.gitCommit(record, input);
-        // commit -> checkpoint -> push: the snapshot must record the identity
-        // of the commit it contains, and a push failure must not cost us it.
-        const checkpoint = await this.app.checkpoint(record, `commit-${record.workspace.currentCommit ?? record.workspace.revision}`);
-        const durability = await this.reconcileDurability(record, 'committed' in value ? value.committed !== false : true);
-        return { ...value, ...durability, checkpoint };
-      } finally {
-        await this.save(record);
-      }
-    });
-  }
-
-  private assertRemoteNotBlocking(record: WorkspaceRuntimeRecord): void {
-    if (record.workspace.gitRemoteDivergence) {
-      throw new ForgeError({
-        code: 'FORGE_WORKSPACE_CONFLICT',
-        message: 'The branch moved on GitHub. Re-read the files you are changing and call forge_edit again — Forge re-applies onto the new head for you.',
-        retryable: false,
-        details: record.workspace.gitRemoteDivergence
-      });
-    }
-  }
-
   /**
-   * Push whatever is unpushed on the agent's `forge/` branch and state plainly
-   * where the work now lives.
-   *
-   * Two deliberate properties, both learned from the incident this replaced a
-   * throwing version over:
-   *
-   * 1. It never throws for a push failure. The write and the commit genuinely
-   *    succeeded; turning that into a tool error told the agent "your write
-   *    failed", which is false and is what made it retry the write instead of
-   *    the push. The push outcome is data, not an exception.
-   * 2. It keys off `hasUnpushedWork`, not off whether *this* call produced a
-   *    commit. Previously a retry whose commit was a no-op skipped the push
-   *    entirely, so the first failed push stranded that commit permanently —
-   *    nothing in the edit path would ever try again. Now every subsequent
-   *    mutation re-attempts the push until origin actually has the work.
-   */
-  async reconcileDurability(record: WorkspaceRuntimeRecord, committed?: boolean): Promise<{
-    auto_push?: { pushed: boolean; remote_sha?: string; causeClass?: string; reason?: string };
-  } & DurabilityVerdict> {
-    const branch = record.workspace.currentBranch ?? undefined;
-    const commit = record.workspace.currentCommit ?? undefined;
-
-    if (!autoPushForgeBranchesEnabled(this.env) || !isAgentForgeBranch(branch)) {
-      return {
-        auto_push: { pushed: false, reason: 'disabled' },
-        ...describeDurability({ branch, commit, hasUnpushedWork: true, committed, pushFailureReason: 'auto-push is disabled for this branch' })
-      };
-    }
-    if (!record.workspace.hasUnpushedWork) {
-      return {
-        auto_push: { pushed: false, reason: 'nothing to push' },
-        ...describeDurability({
-          branch,
-          commit,
-          hasUnpushedWork: false,
-          committed,
-          remoteSha: record.workspace.lastPushedCommit ?? commit
-        })
-      };
-    }
-    if (!commit) {
-      return {
-        auto_push: { pushed: false, reason: 'no commit to push' },
-        ...describeDurability({ branch, commit, hasUnpushedWork: true, committed, pushFailureReason: 'there is no commit to push' })
-      };
-    }
-
-    let result: { pushed: boolean; remote_sha?: string; reason?: string; causeClass?: string };
-    try {
-      const source = await repositoryPushSource(this.env, record.workspace, branch!, commit);
-      result = await this.app.autoPushForgeBranch(record, source);
-    } catch (error) {
-      result = {
-        pushed: false,
-        reason: error instanceof Error ? error.message.slice(0, 300) : 'no GitHub App authorization',
-        causeClass: 'auth'
-      };
-    }
-
-    return {
-      auto_push: {
-        pushed: result.pushed,
-        remote_sha: result.remote_sha,
-        causeClass: result.causeClass,
-        reason: result.reason
-      },
-      ...describeDurability({
-        branch,
-        commit,
-        hasUnpushedWork: !result.pushed,
-        pushVerified: result.pushed,
-        committed,
-        remoteSha: result.remote_sha,
-        ...(result.pushed ? {} : { pushFailureReason: result.reason })
-      })
-    };
-  }
-
-  async durablePushBeforeTeardown(): Promise<{
-    pushed: boolean;
-    ref?: string;
-    branch?: string;
-    remote_sha?: string;
-    reason?: string;
-    causeClass?: string;
-  }> {
-    const record = await this.getRecord();
-    if (autoPushForgeBranchesEnabled(this.env) && isAgentForgeBranch(record.workspace.currentBranch)) {
-      const branch = record.workspace.currentBranch!;
-      const commit = record.workspace.currentCommit ?? '';
-      if (commit) {
-        try {
-          const source = await repositoryPushSource(this.env, record.workspace, branch, commit);
-          const persisted = await this.app.persistAgentBranchToRemote(record, source, {
-            idempotencyKey: `teardown-${record.workspace.id}-${record.workspace.revision}`
-          });
-          await this.save(record);
-          if (persisted.pushed) {
-            return { pushed: true, branch: persisted.branch, remote_sha: persisted.commit, ref: persisted.branch };
-          }
-        } catch {
-          // fall through to backup ref
-        }
-      }
-    }
-    return this.backupUnpushedWork();
-  }
-
-  async recordPushAuthProbe(): Promise<{ ok: boolean; reason?: string }> {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      let ok = false;
-      let reason: string | undefined;
-      try {
-        const branch = record.workspace.currentBranch ?? 'forge/probe-auth';
-        const commit = record.workspace.currentCommit ?? '0'.repeat(40);
-        await repositoryPushSource(this.env, record.workspace, branch, commit);
-        ok = true;
-      } catch (error) {
-        reason = error instanceof Error ? error.message.slice(0, 300) : 'push authorization unavailable';
-      }
-      record.workspace.pushAuthProbe = { ok, checkedAt: new Date().toISOString(), ...(reason ? { reason } : {}) };
-      await this.save(record);
-      return { ok, ...(reason ? { reason } : {}) };
-    });
-  }
-
-  async gitSyncRemote(input: { action: 'detect' | 'reset_to_remote' | 'keep_local_and_push' }) {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      const source = await repositoryCloneSource(this.env, record.workspace);
-      const value = await this.app.gitSyncRemote(record, source, input.action);
-      await this.save(record);
-      return value;
-    });
-  }
-
-  async proveWorkspaceState() {
-    return this.readRepoWithRecovery(async (record) => {
-      let source: Awaited<ReturnType<typeof repositoryCloneSource>> | undefined;
-      try {
-        source = await repositoryCloneSource(this.env, record.workspace);
-      } catch {
-        source = undefined;
-      }
-      return this.app.proveWorkspaceState(record, source);
-    });
-  }
-
-  async gitOutgoingDiff(input: { base: string; cursor?: number; maxBytes?: number; paths?: string[] }) {
-    return this.readRepoWithRecovery(async (record) => {
-      await this.app.reconcileGitState(record);
-      return this.app.gitOutgoingDiff(record, input.base, {
-        cursor: input.cursor,
-        maxBytes: input.maxBytes,
-        paths: input.paths
-      });
-    });
-  }
-
-  async gitOutgoingPaths(input: { base: string }) {
-    return this.readRepoWithRecovery(async (record) => {
-      await this.app.reconcileGitState(record);
-      return this.app.gitOutgoingPaths(record, input.base);
-    });
-  }
-
-  async gitIsAncestor(input: { ancestor: string }) {
-    return this.readRepoWithRecovery(async (record) => {
-      await this.app.reconcileGitState(record);
-      return this.app.gitIsAncestor(record, input.ancestor);
-    });
-  }
-
-  async gitPush(input: { branch: string; base: string; expectedDiffHash: string; expectedRevision?: number; idempotencyKey: string }) {
-    return this.serializeMutation(async () => {
-      const record = await this.getRecord();
-      try {
-        await this.app.reconcileGitState(record);
-        const source = await repositoryPushSource(this.env, record.workspace, input.branch, record.workspace.currentCommit ?? '');
-        return await this.app.gitPush(record, { ...input, source });
-      } finally {
-        await this.save(record);
-      }
-    });
-  }
-
-  // Best-effort, no-approval safety push to a Forge-owned backup ref — see
-  // Application.backupUnpushedWork. Called by the idle reaper right before it
-  // destroys a dirty workspace, never as part of any human-facing tool.
-  async backupUnpushedWork(): Promise<{ pushed: boolean; ref?: string; reason?: string }> {
-    const record = await this.getRecord();
-    if (!record.workspace.hasUnpushedWork || !record.workspace.currentBranch || !record.workspace.currentCommit) {
-      return { pushed: false, reason: 'nothing to back up' };
-    }
-    const backupRef = `forge/backup/${record.workspace.id}`;
-    let source: { url: string; authorizationHeader: string };
-    try {
-      source = await repositoryPushSource(this.env, record.workspace, backupRef, record.workspace.currentCommit);
-    } catch (error) {
-      return { pushed: false, reason: error instanceof Error ? error.message.slice(0, 300) : 'no authorization' };
-    }
-    return this.app.backupUnpushedWork(record, source);
-  }
-
-  /**
-   * Bring up the project's dev server and expose it, in one call.
-   *
    * Used by the review preview on the approval page: a reviewer clicking "launch
    * preview" has no agent to drive the usual detect → process_start →
    * preview_expose sequence for them, and the detection result lives on the DO
@@ -1634,63 +1147,63 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
   async startReviewPreview(input: { hostname: string; ttlSeconds: number }): Promise<
     { ready: true; previewId: string; port: number; expiresAt: string } | { ready: false; reason: string }
   > {
-    const record = await this.getRecord();
-    if (record.workspace.state !== 'ready') {
-      return { ready: false, reason: `workspace is ${record.workspace.state}` };
-    }
-    const devCommand = record.detection?.devCommand;
-    if (!devCommand) {
-      return { ready: false, reason: 'no dev server command was detected for this project' };
-    }
-    const port = record.detection?.expectedPorts?.[0] ?? 3000;
+    return this.serializeMutation(async () => {
+      const record = await this.getRecord();
+      try {
+        await this.prepareExecution(record);
+        if (record.workspace.state !== 'ready') {
+          return { ready: false as const, reason: `workspace is ${record.workspace.state}` };
+        }
+        const devCommand = record.detection?.devCommand;
+        if (!devCommand) {
+          return { ready: false as const, reason: 'no dev server command was detected for this project' };
+        }
+        const port = record.detection?.expectedPorts?.[0] ?? 3000;
 
-    // Reuse a live preview rather than starting a second server.
-    const live = Object.entries(record.previews).find(
-      ([, preview]) => preview.port === port && Date.parse(preview.expiresAt) > Date.now()
-    );
-    if (live) {
-      return { ready: true, previewId: live[0], port, expiresAt: live[1].expiresAt };
-    }
+        const live = Object.entries(record.previews).find(
+          ([, preview]) => preview.port === port && Date.parse(preview.expiresAt) > Date.now()
+        );
+        if (live) {
+          return { ready: true as const, previewId: live[0], port, expiresAt: live[1].expiresAt };
+        }
 
-    const existingProcess = Object.entries(record.processes).find(([, value]) => value.command === devCommand);
-    let processId = existingProcess?.[0];
-    if (!processId) {
-      const started = await this.processStart({
-        command: devCommand,
-        cwd: '/workspace/repo',
-        environment: {},
-        networkPolicy: 'development',
-        idempotencyKey: `review-preview-process-${record.workspace.id}`
-      });
-      if ('replay' in started && started.replay) {
-        const refreshed = await this.getRecord();
-        processId = Object.entries(refreshed.processes).find(([, value]) => value.command === devCommand)?.[0];
-      } else {
-        processId = (started as { value?: { processId?: string } }).value?.processId
-          ?? Object.entries((await this.getRecord()).processes).find(([, value]) => value.command === devCommand)?.[0];
+        const existingProcess = Object.entries(record.processes).find(
+          ([, value]) => value.command === devCommand && !value.completedAt
+        );
+        let processId = existingProcess?.[0];
+        if (!processId) {
+          const started = await this.app.startProcess(record, {
+            command: devCommand,
+            cwd: '/workspace/repo',
+            environment: {},
+            networkPolicy: 'development',
+            idempotencyKey: `review-preview-process-${record.workspace.id}`
+          });
+          processId = started.value.id;
+        }
+        if (!processId) return { ready: false as const, reason: 'the dev server did not start' };
+
+        const exposed = await this.app.exposePreview(record, {
+          processId: processId as ProcessId,
+          port,
+          hostname: input.hostname,
+          access: 'private',
+          ttlSeconds: input.ttlSeconds,
+          idempotencyKey: `review-preview-expose-${record.workspace.id}-${port}`
+        });
+        if ('replay' in exposed && exposed.replay) {
+          const found = Object.entries(record.previews).find(([, preview]) => preview.port === port);
+          return found
+            ? { ready: true as const, previewId: found[0], port, expiresAt: found[1].expiresAt }
+            : { ready: false as const, reason: 'preview is still starting' };
+        }
+        return exposed.previewId && exposed.expiresAt
+          ? { ready: true as const, previewId: exposed.previewId, port, expiresAt: exposed.expiresAt }
+          : { ready: false as const, reason: 'preview is still starting' };
+      } finally {
+        await this.save(record);
       }
-    }
-    if (!processId) return { ready: false, reason: 'the dev server did not start' };
-
-    const exposed = await this.previewExpose({
-      processId: processId as ProcessId,
-      port,
-      hostname: input.hostname,
-      access: 'private',
-      ttlSeconds: input.ttlSeconds,
-      idempotencyKey: `review-preview-expose-${record.workspace.id}-${port}`
     });
-    if ('replay' in exposed && exposed.replay) {
-      const refreshed = await this.getRecord();
-      const found = Object.entries(refreshed.previews).find(([, preview]) => preview.port === port);
-      return found
-        ? { ready: true, previewId: found[0], port, expiresAt: found[1].expiresAt }
-        : { ready: false, reason: 'preview is still starting' };
-    }
-    const value = exposed as { previewId?: string; expiresAt?: string };
-    return value.previewId && value.expiresAt
-      ? { ready: true, previewId: value.previewId, port, expiresAt: value.expiresAt }
-      : { ready: false, reason: 'preview is still starting' };
   }
 
   async previewExpose(input: {
@@ -1705,6 +1218,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
+        await this.prepareExecution(record);
         return await this.app.exposePreview(record, input);
       } finally {
         await this.save(record);
@@ -1733,17 +1247,10 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
-        if (!input.force) {
-          await this.app.reconcileGitState(record);
-          await this.durablePushBeforeTeardown().catch(() => undefined);
-          const source = await repositoryCloneSource(this.env, record.workspace);
-          await this.app.assertDestroySafe(record, source);
-        }
         return this.app.requestDestroy(
           record,
           input.expectedRevision,
-          input.idempotencyKey,
-          input.force
+          input.idempotencyKey
         );
       } finally {
         await this.save(record);
@@ -1755,10 +1262,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
-        const source = input.force
-          ? undefined
-          : await repositoryCloneSource(this.env, record.workspace);
-        const value = await this.app.completeDestroy(record, source, input.force === true);
+        const value = await this.app.completeDestroy(record);
         await this.ctx.storage.delete(LEASE_KEY);
         return value;
       } finally {

@@ -48,8 +48,8 @@ auto-committed or pushed. Process results report `remote_persisted:false`.
 
 A successful command proves only its exit status and captured evidence. It does
 not prove that files it generated are on GitHub. Recreate wanted changes with
-`forge_edit` before destroying the workspace. Executor snapshots can roll back
-local experiments but do not strengthen repository durability.
+`forge_edit` before destroying the workspace. A later executor is materialized
+from GitHub and does not recover command-created local experiments.
 
 ### 5. Raw push cannot bypass the control plane
 

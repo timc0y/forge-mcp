@@ -1,4 +1,4 @@
-import type { CredentialProfileId, ProjectId, SnapshotId, TenantId, WorkspaceId } from './ids';
+import type { CredentialProfileId, ProjectId, TenantId, WorkspaceId } from './ids';
 
 export type WorkspaceLifecycleState =
   | 'requested'
@@ -6,14 +6,11 @@ export type WorkspaceLifecycleState =
   | 'bootstrapping'
   | 'ready'
   | 'busy'
-  | 'suspending'
-  | 'suspended'
-  | 'restoring'
   | 'failed'
   | 'destroying'
   | 'destroyed';
 
-export type PersistenceMode = 'ephemeral' | 'snapshot_on_idle' | 'persistent';
+export type PersistenceMode = 'ephemeral';
 export type ActorRef =
   | { type: 'user'; id: string }
   | { type: 'agent'; id: string; provider?: string; model?: string }
@@ -41,26 +38,7 @@ export interface Workspace {
   initialHeadCommit?: string;
   credentialProfileId?: CredentialProfileId;
   currentCommit?: string;
-  lastPushedCommit?: string;
-  lastPushedBranch?: string;
   currentBranch?: string;
-  // True once local work exists that hasn't been pushed (a forge branch, a
-  // commit, an applied patch or file write). The idle reaper refuses to destroy
-  // such a workspace so an agent's unpushed work is never silently lost.
-  hasUnpushedWork?: boolean;
-  /** Set when origin disagrees with workspace HEAD on the feature branch. */
-  gitRemoteDivergence?: {
-    remoteSha: string;
-    localHead: string;
-    branch: string;
-    detectedAt: string;
-  };
-  /** Result of a push-authorization probe at workspace create. */
-  pushAuthProbe?: {
-    ok: boolean;
-    checkedAt: string;
-    reason?: string;
-  };
   state: WorkspaceLifecycleState;
   persistenceMode: PersistenceMode;
   runtimeProfile: string;
@@ -70,7 +48,6 @@ export interface Workspace {
   createdAt: string;
   updatedAt: string;
   idleDeadline?: string;
-  activeSnapshotId?: SnapshotId;
   failure?: {
     stage: string;
     code: string;
@@ -79,11 +56,6 @@ export interface Workspace {
     details?: WorkspaceFailureDetails;
   };
   checkout?: { healthy: boolean; checkedAt: string; detail?: string };
-  // Set when checkout recovery (after an idle container recycle wiped
-  // /workspace/repo) could only re-clone from the remote, losing local-only
-  // commits/edits that were never pushed. Sticky — cleared only by the caller
-  // once the loss has been surfaced and acknowledged.
-  dataLoss?: { at: string; detail: string };
   // Non-fatal bootstrap issue: the workspace came up `ready` but dependency
   // install did not fully succeed (e.g. a --frozen-lockfile mismatch that the
   // non-frozen fallback also could not resolve). The checkout is usable; deps
@@ -113,7 +85,7 @@ export interface WorkspaceMutationResult<T> {
   revisionChange?: {
     from: number;
     to: number;
-    reason: 'checkpoint_created' | 'mutation_applied' | 'process_state_changed' | 'state_transition' | 'recovery';
+    reason: 'mutation_applied' | 'process_state_changed' | 'state_transition' | 'recovery';
     filesystemChanged: boolean;
     gitChanged: boolean;
     processStateChanged: boolean;

@@ -5,12 +5,9 @@ const transitions: Record<WorkspaceLifecycleState, readonly WorkspaceLifecycleSt
   requested: ['provisioning', 'destroying', 'failed'],
   provisioning: ['bootstrapping', 'failed', 'destroying'],
   bootstrapping: ['ready', 'failed', 'destroying'],
-  ready: ['busy', 'suspending', 'destroying', 'failed'],
-  busy: ['ready', 'suspending', 'destroying', 'failed'],
-  suspending: ['suspended', 'failed', 'destroying'],
-  suspended: ['restoring', 'destroying'],
-  restoring: ['ready', 'failed', 'destroying'],
-  failed: ['restoring', 'destroying'],
+  ready: ['busy', 'destroying', 'failed'],
+  busy: ['ready', 'destroying', 'failed'],
+  failed: ['destroying'],
   destroying: ['destroyed', 'failed'],
   destroyed: []
 };

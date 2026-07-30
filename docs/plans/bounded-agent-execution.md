@@ -172,7 +172,7 @@ Select likely context, inspect files, search tasks, and understand an outgoing d
 
 ### Isolated coding task
 
-Create an ephemeral workspace from an authorised repository, run commands, edit files, execute checks, preview the app, and preserve task state outside the container.
+Create a lightweight workspace session for an authorised GitHub branch, edit durably through `forge_edit`, allocate an ephemeral executor only to run commands and checks or preview the app, and preserve task state outside that executor.
 
 ### Product-finding implementation
 

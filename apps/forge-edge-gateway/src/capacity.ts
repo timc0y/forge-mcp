@@ -25,16 +25,16 @@ const DEFAULT_PER_TENANT_CAP = 5;
 // Exported so workspace-resolve.ts can exclude the same states when deciding
 // which workspaces are "live" candidates for owner/repo/branch resolution —
 // one definition of "terminal", not two that can drift apart.
-export const TERMINAL_STATES = ['suspended', 'failed', 'destroying', 'destroyed'];
+export const TERMINAL_STATES = ['failed', 'destroying', 'destroyed'];
 // Non-terminal provisioning states. A workspace should march through these in
 // well under a minute; sitting in one for longer than STUCK_PROVISION_MS means
 // the provision workflow died mid-run (timed out / evicted before its JS catch)
 // and the slot is leaking. Such a slot is reclaimable on the short bound below
 // instead of the generous idle TTL, and the scheduled watchdog force-fails it.
 const PROVISIONING_STATES = ['requested', 'provisioning', 'bootstrapping'];
-export const STUCK_PROVISION_MS = 15 * 60_000;
+const STUCK_PROVISION_MS = 15 * 60_000;
 
-export interface WorkspaceCaps {
+interface WorkspaceCaps {
   global: number;
   perTenant: number;
 }
@@ -77,7 +77,7 @@ function parseRepositoryColumn(raw: string | null): { owner: string; name: strin
   return owner && name ? { owner, name } : null;
 }
 
-export interface ReclaimedSlot {
+interface ReclaimedSlot {
   slot: number;
   tenantId: string;
   workspaceId: string;
@@ -118,22 +118,18 @@ export async function listSlotOccupants(
   database: D1Database,
   ttlMs: number,
   now: number = Date.now(),
-  tenantId?: string,
-  // When true (default), an idle workspace with unpushed work is protected from
-  // reaping. When snapshots are enabled the caller passes false — the reaper
-  // snapshots the workspace to R2 first, so idle-reaping it is safe.
-  protectUnpushed = true
+  tenantId?: string
 ): Promise<SlotOccupant[]> {
   const rows = await database.prepare(
     `SELECT s.slot AS slot, s.tenant_id AS tenant_id, s.workspace_id AS workspace_id, s.claimed_at AS claimed_at,
-            w.state AS state, w.updated_at AS updated_at, w.has_unpushed_work AS has_unpushed_work,
+            w.state AS state, w.updated_at AS updated_at,
             w.repository AS repository, w.current_branch AS current_branch
        FROM workspace_slots AS s
        LEFT JOIN workspaces AS w ON w.id = s.workspace_id
        ${tenantId ? 'WHERE s.tenant_id = ?1' : ''}
        ORDER BY s.tenant_id, s.slot`
   ).bind(...(tenantId ? [tenantId] : [])).all<{
-    slot: number; tenant_id: string; workspace_id: string; claimed_at: string; state: string | null; updated_at: string | null; has_unpushed_work: number | null;
+    slot: number; tenant_id: string; workspace_id: string; claimed_at: string; state: string | null; updated_at: string | null;
     repository: string | null; current_branch: string | null;
   }>();
   const ttlMinutes = ttlMs / 60_000;
@@ -151,12 +147,7 @@ export async function listSlotOccupants(
       PROVISIONING_STATES.includes(row.state) &&
       idle !== null &&
       idle >= STUCK_PROVISION_MS / 60_000;
-    // A workspace with unpushed work is never idle-reaped while `protectUnpushed`
-    // holds (pushes need human approval and humans sleep longer than the TTL);
-    // with snapshots on, the caller drops that protection because the reaper
-    // saves the work to R2 first. Orphaned/terminal are always reclaimed.
-    const dirtyProtected = protectUnpushed && row.has_unpushed_work === 1;
-    const stale = terminal || stuckProvisioning || (idleExpired && !dirtyProtected);
+    const stale = terminal || stuckProvisioning || idleExpired;
     return {
       slot: row.slot,
       tenantId: row.tenant_id,
@@ -180,10 +171,9 @@ export async function listSlotOccupants(
 export async function reclaimStaleSlots(
   database: D1Database,
   ttlMs: number,
-  now: number = Date.now(),
-  protectUnpushed = true
+  now: number = Date.now()
 ): Promise<ReclaimedSlot[]> {
-  const occupants = await listSlotOccupants(database, ttlMs, now, undefined, protectUnpushed);
+  const occupants = await listSlotOccupants(database, ttlMs, now);
   const stale = occupants.filter((occupant) => occupant.stale);
   if (stale.length === 0) return [];
   // One batched DELETE instead of a round trip per row. RETURNING confirms

@@ -8,7 +8,7 @@ import {
   type MinimalGitHubRequest
 } from '../../apps/forge-edge-gateway/src/merge-guards';
 
-const SESSION = readFileSync(join(process.cwd(), 'apps/forge-edge-gateway/src/mcp-session.ts'), 'utf8');
+const SESSION = readFileSync(join(process.cwd(), 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts'), 'utf8');
 
 const CORE = readFileSync(join(process.cwd(), 'packages/mcp-core/src/index.ts'), 'utf8');
 
@@ -38,7 +38,7 @@ describe('forge_merge receipt', () => {
     // not be reachable from forge_merge's own handler body ever again.
     const start = SESSION.indexOf('forge_merge: async');
     expect(start).toBeGreaterThan(-1);
-    const end = SESSION.indexOf('forge_cloudflare_deploy: async', start);
+    const end = SESSION.indexOf('forge_workspace_destroy: async', start);
     expect(end).toBeGreaterThan(start);
     const merge = SESSION.slice(start, end);
     expect(merge).not.toContain('stageForReview');

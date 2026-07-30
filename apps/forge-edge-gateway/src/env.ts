@@ -14,7 +14,6 @@ export interface Env {
   DESTROY_WORKFLOW: Workflow<DestroyWorkspaceParams>;
   METADATA: D1Database;
   ARTIFACTS: R2Bucket;
-  BACKUP_BUCKET: R2Bucket;
   BROWSER: BrowserRun;
   // Cloudflare Workers AI binding. Powers best-effort commit-message and PR
   // summarisation; every call has a deterministic fallback so AI is never on
@@ -31,10 +30,6 @@ export interface Env {
   // `wrangler secret put FORGE_SESSION_SIGNING_KEY` to split the two key roles.
   FORGE_SESSION_SIGNING_KEY?: string;
   FORGE_INTERNAL_PREVIEW_KEY: string;
-  BACKUP_BUCKET_NAME: string;
-  CLOUDFLARE_ACCOUNT_ID: string;
-  R2_ACCESS_KEY_ID?: string;
-  R2_SECRET_ACCESS_KEY?: string;
   FORGE_DEFAULT_TENANT_ID: string;
   FORGE_DEFAULT_PROJECT_ID: string;
   FORGE_PUBLIC_ORIGIN: string;
@@ -57,16 +52,9 @@ export interface Env {
   // How long an approval (push / PR / gated shell) stays valid. Optional; default
   // 60 minutes — long enough to survive an install+build before using it.
   FORGE_APPROVAL_TTL_MINUTES?: string;
-  // Persist a workspace's /workspace to R2 before the idle reaper destroys it,
-  // and restore it on next use (snapshot_on_idle). Optional; off unless 'true'.
-  FORGE_SNAPSHOT_ENABLED?: string;
-  // Push `forge/*` agent branches to GitHub without per-push human approval.
-  // Commits trigger a push; idle reap / destroy attempt WIP commit + push first.
-  // Set to `false` or `0` to require forge_git_push approval again. Default on.
-  FORGE_AUTO_PUSH_FORGE_BRANCHES?: string;
   // Operator policy: auto-approve in-workspace shell commands that would
   // otherwise need a human click (dependency installs and other gated shell).
-  // GitHub writes (git push / PR create) stay gated regardless. Optional; the
+  // GitHub writes remain independently gated. Optional; the
   // gate stays on unless this is 'true'/'1'.
   FORGE_AUTO_APPROVE_SHELL?: string;
   /** Comma-separated CommandClass list the auto-approve flag may cover. */
@@ -74,9 +62,7 @@ export interface Env {
   // Self-hosted machine (e.g. a Mac mini running the Forge Node Agent). The
   // sandbox/workspace self-host provider has been removed — Cloudflare is now
   // the only sandbox backend — but these still gate self-hosted browser
-  // capture (see browser-router.ts) and the preview route for any workspace
-  // that was persisted with provider.kind 'self-hosted' before the removal.
-  // All optional — unset means Cloudflare-only for both.
+  // capture (see browser-router.ts). All optional — unset means Browser Run.
   FORGE_SELFHOST_ENABLED?: string;
   FORGE_SELFHOST_URL?: string;
   FORGE_SELFHOST_TOKEN?: string;

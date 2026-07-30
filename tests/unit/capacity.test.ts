@@ -219,23 +219,12 @@ describe('workspace slot capacity (per-tenant)', () => {
     expect(db.slots.map((s) => s.workspace_id)).toEqual(['wsp_fresh']);
   });
 
-  it('protects an idle workspace with unpushed work from idle-reaping by default', async () => {
+  it('reaps an idle executor even when its checkout changed', async () => {
     const db = fakeD1(
       [{ slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_dirty', claimed_at: minutesAgo(600) }],
       { wsp_dirty: { state: 'ready', updated_at: minutesAgo(600), has_unpushed_work: 1 } }
     );
-    // Default protectUnpushed=true: idle past TTL, but dirty work keeps the slot.
-    expect(await reclaimStaleSlots(db, slotTtlMs({}), NOW)).toEqual([]);
-    expect(db.slots.map((s) => s.workspace_id)).toEqual(['wsp_dirty']);
-  });
-
-  it('reaps an idle dirty workspace when protection is dropped (snapshots on)', async () => {
-    const db = fakeD1(
-      [{ slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_dirty', claimed_at: minutesAgo(600) }],
-      { wsp_dirty: { state: 'ready', updated_at: minutesAgo(600), has_unpushed_work: 1 } }
-    );
-    // protectUnpushed=false: the caller snapshots to R2 first, so idle-reaping is safe.
-    const reclaimed = await reclaimStaleSlots(db, slotTtlMs({}), NOW, false);
+    const reclaimed = await reclaimStaleSlots(db, slotTtlMs({}), NOW);
     expect(reclaimed.map((r) => r.workspaceId)).toEqual(['wsp_dirty']);
     expect(db.slots.length).toBe(0);
   });

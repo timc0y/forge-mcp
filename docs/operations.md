@@ -94,19 +94,6 @@ Workspace bootstrap (dependency install after clone) tolerates lockfile drift
 outright, so a repo with a slightly stale lockfile still becomes usable
 (`packages/core/src/workspace.ts`).
 
-## Per-repo dependency cache
-
-`deps-cache` (`apps/forge-edge-gateway/src/deps-cache.ts`) caches
-`node_modules` in R2 per repository, keyed by content
-(`tenantId|repoSlug|runtime|lockfileHash`), not by workspace — so the first
-workspace ever created for a known repo/lockfile can still restore from cache
-instead of a cold install. It shares the `FORGE_SNAPSHOT_ENABLED` flag with
-workspace snapshots and is best-effort throughout. The cache key is
-**tenant-scoped by design**: two tenants that clone the same public repo at
-the same lockfile never share a cached tree, because `node_modules` contains
-executable code and a shared cache would let one tenant's poisoned install run
-inside another tenant's workspace.
-
 ## Cost
 
 Target: below roughly USD 10/month for one heavy personal user, tracked via
@@ -142,38 +129,30 @@ and cleans them up.
 2. Locate by trace ID, operation ID, and workspace ID; never expose raw
    provider IDs in user-facing communication.
 3. For a stuck workspace: revoke previews, stop processes, persist redacted
-   diagnostics, then destroy or snapshot per policy.
+   diagnostics, then destroy; a later execution materializes a fresh checkout
+   from GitHub.
 4. For a GitHub App authorization change: revoke capabilities immediately and
    reconcile installations.
 5. Never retrieve secrets from logs. Rotate signing keys and invalidate
    capabilities if leakage is suspected.
 
-## Self-hosted compute (Mac mini / node agent)
+## Optional self-hosted browser
 
-`packages/sandbox-selfhosted` is a real, shipped provider: Forge health-checks
-a self-hosted compute agent and falls back to the Cloudflare Sandbox provider
-if it's unavailable or out of capacity — transparent to the MCP caller. The
-reference agent lives in `self-host/forge-node-agent` (`server.mjs`, plus a
-`launchd` plist for always-on macOS use). It uses the **same model as Forge
-Cloud** — every workspace is a Docker container, run hardened by default
-(non-root, all Linux capabilities dropped, no privilege escalation, no host
-mounts, memory/CPU/pid limits) — so agent-authored code stays isolated from
-the host machine. Quick start:
+`packages/browser-selfhosted` is an optional browser-evidence provider. Forge
+health-checks a local Chromium agent and falls back to Cloudflare Browser Run
+when it is unavailable. It is not a sandbox provider: repository commands still
+run only in Cloudflare Sandbox, and durable file operations still use GitHub.
+
+The reference browser agent lives in `self-host/forge-node-agent`:
 
 ```bash
 cd self-host/forge-node-agent
-brew install colima docker node        # Docker engine (Colima) + CLI + Node
-colima start --cpu 4 --memory 8 --disk 60
+brew install node
 npm install
-docker build -f Dockerfile.workspace -t forge-workspace:latest .
-FORGE_AGENT_TOKEN=$(openssl rand -hex 32) npm run selftest   # must exit 0
-FORGE_AGENT_TOKEN=xxx npm start                              # listens on :8787
+npx playwright install chromium
+FORGE_AGENT_TOKEN=$(openssl rand -hex 32) npm run selftest
+FORGE_AGENT_TOKEN=xxx npm start
 ```
 
-It implements the same primitives as the cloud path — sandbox
-create/exec/suspend/resume/destroy, file read/write/patch/tree, process
-start/get/logs/stop, preview expose/revoke and proxy, and browser
-capture/screenshot/accessibility/act. Snapshots are not implemented on this
-provider (return `501`). See [self-host.md](self-host.md) for the full guide:
-always-on setup, tunnels, pre-cloned repos, concurrency, and taking over a
-workspace.
+See [self-host.md](self-host.md) for tunnel setup and the exact browser-only
+surface.

@@ -73,7 +73,7 @@ function firstString(output: unknown): string {
   return '';
 }
 
-export interface PrSummary {
+interface PrSummary {
   title: string;
   body: string;
 }

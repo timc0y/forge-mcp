@@ -1,7 +1,6 @@
 import { SignJWT, importPKCS8 } from 'jose';
 import { ForgeError, ids, type ArtifactId, type RepositoryRef, type TenantId, type Workspace, type WorkspaceId } from '@forge/core';
 import { issueCapability, verifyCapability } from '@forge/capabilities';
-import { assertReceivePackScope, parseReceivePackCommands } from '@forge/git-core';
 import type { GitHubRequest } from '@forge/git-github';
 import { assertAllowedForgeBranch } from '@forge/policy';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
@@ -489,7 +488,7 @@ export const REPOSITORY_UPSERT_SQL =
  *
  * Best-effort by contract: this must never be the reason a login fails.
  */
-export async function resyncTenantInstallations(env: Env, user: UserRow): Promise<void> {
+async function resyncTenantInstallations(env: Env, user: UserRow): Promise<void> {
   try {
     // Deliberately not filtered to status='active'. The state most in need of
     // repair is an installation marked revoked that is in fact live on GitHub —
@@ -755,7 +754,7 @@ export function hasForgeAccess(user: Pick<UserRow, 'access_state' | 'is_owner'> 
 }
 
 /** The page a signed-in account without access sees instead of the portal. */
-export function accessPendingPage(env: Env, user: UserRow, state: string): Response {
+function accessPendingPage(env: Env, user: UserRow, state: string): Response {
   const declined = state === 'denied';
   return page({
     title: `Forge — ${declined ? 'access declined' : 'access requested'}`,
@@ -774,7 +773,7 @@ export function accessPendingPage(env: Env, user: UserRow, state: string): Respo
  * not turn that into an opaque 404: say exactly who installs the App and what
  * an approved collaborator should do next.
  */
-export function privateAppInstallHelpPage(env: Env): Response {
+function privateAppInstallHelpPage(env: Env): Response {
   return page({
     title: 'Forge — private GitHub connection',
     topRight: '<a href="/app">Back to Forge</a>',
@@ -966,72 +965,8 @@ export async function repositoryCloneSource(env: Env, workspace: Workspace): Pro
   };
 }
 
-export async function repositoryPushSource(env: Env, workspace: Workspace, branch: string, commit: string): Promise<{
-  url: string;
-  authorizationHeader: string;
-}> {
-  const row = await authorizeRepository(env, { tenantId: workspace.tenantId, projectId: workspace.projectId }, workspace.repository);
-  if (!row) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'Install the Forge GitHub App before pushing.', retryable: false });
-  if (!/^[a-f0-9]{40,64}$/i.test(commit)) throw new ForgeError({ code: 'FORGE_GIT_PUSH_BLOCKED', message: 'The approved Git commit is unavailable.', retryable: false });
-  const now = Math.floor(Date.now() / 1000);
-  const capability = await issueCapability({
-    version: 1,
-    subject: workspace.createdBy.type === 'agent' ? workspace.createdBy.id : 'forge-workspace',
-    tenantId: workspace.tenantId,
-    workspaceId: workspace.id,
-    repository: `${workspace.repository.owner}/${workspace.repository.name}`,
-    action: 'git:push',
-    branchPattern: branch,
-    gitCommit: commit,
-    nonce: crypto.randomUUID(),
-    issuedAt: now,
-    // The push itself is allowed 120s and the ls-remote verification another
-    // 60s, so a 5-minute window left almost no margin: a cold container or a
-    // large packfile could expire the capability mid-push and surface as an
-    // unexplained 403. Widening the window costs nothing here — this capability
-    // is pinned to one workspace, repository, branch AND exact commit, so time
-    // is not what bounds it.
-    expiresAt: now + 15 * 60
-  }, env.FORGE_CAPABILITY_SIGNING_KEY);
-  return {
-    url: `${env.FORGE_PUBLIC_ORIGIN}/git/${workspace.id}/${workspace.repository.owner}/${workspace.repository.name}.git`,
-    authorizationHeader: `Authorization: Bearer ${capability}`
-  };
-}
-
 function bearer(request: Request): string {
   return request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1] ?? '';
-}
-
-async function inspectReceivePackBody(body: ReadableStream<Uint8Array<ArrayBuffer>>): Promise<{
-  body: ReadableStream<Uint8Array<ArrayBuffer>>;
-  commands: ReturnType<typeof parseReceivePackCommands>;
-}> {
-  const [inspection, upstream] = body.tee();
-  const reader = inspection.getReader();
-  let buffered = new Uint8Array();
-  try {
-    while (buffered.byteLength <= 65_536) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const next = new Uint8Array(buffered.byteLength + value.byteLength);
-      next.set(buffered);
-      next.set(value, buffered.byteLength);
-      buffered = next;
-      const commands = parseReceivePackCommands(buffered);
-      if (commands) {
-        await reader.cancel();
-        return { body: upstream, commands };
-      }
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => undefined);
-    await upstream.cancel().catch(() => undefined);
-    throw error;
-  }
-  await reader.cancel().catch(() => undefined);
-  await upstream.cancel().catch(() => undefined);
-  throw new Error('Git receive-pack command section is missing or too large.');
 }
 
 export async function gitCredentialProxy(request: Request, env: Env): Promise<Response> {
@@ -1040,9 +975,16 @@ export async function gitCredentialProxy(request: Request, env: Env): Promise<Re
   if (!match) return new Response('Not found', { status: 404 });
   const [, workspaceId = '', owner = '', name = '', rest = ''] = match;
   const push = rest.includes('receive-pack') || url.searchParams.get('service') === 'git-receive-pack';
+  if (push) {
+    throw new ForgeError({
+      code: 'FORGE_GIT_PUSH_BLOCKED',
+      message: 'Git receive-pack is disabled because forge_edit is the only repository writer. Use forge_edit to save code.',
+      retryable: false
+    });
+  }
   const claims = await verifyCapability(bearer(request), env.FORGE_CAPABILITY_SIGNING_KEY, {
     workspaceId,
-    action: push ? 'git:push' : 'git:clone',
+    action: 'git:clone',
     repository: `${owner}/${name}`
   });
   if (claims.repository !== `${owner}/${name}`) {
@@ -1053,36 +995,7 @@ export async function gitCredentialProxy(request: Request, env: Env): Promise<Re
       WHERE tenant_id = ?1 AND owner = ?2 AND name = ?3 AND authorization_state = 'authorized'`
   ).bind(claims.tenantId, owner, name).first<{ installation_id: string; name: string }>();
   if (!repository) throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Repository authorization was revoked.', retryable: false });
-  let upstreamBody = request.body;
-  if (push && request.method === 'POST') {
-    if (!upstreamBody || !claims.branchPattern || !claims.gitCommit) {
-      throw new ForgeError({ code: 'FORGE_PERMISSION_DENIED', message: 'Git push capability is missing its approved branch or commit.', retryable: false });
-    }
-    // Keep the real cause. This used to be a bare `catch` that reported every
-    // failure here as "outside its approved branch or commit scope" — so a
-    // truncated body, an unparseable packet or a genuine scope violation were
-    // indistinguishable, and all three reached the agent as an opaque HTTP 403
-    // from what looked like GitHub. The push was in fact refused by Forge.
-    try {
-      const inspected = await inspectReceivePackBody(upstreamBody);
-      assertReceivePackScope(inspected.commands, claims.branchPattern, claims.gitCommit);
-      upstreamBody = inspected.body;
-    } catch (error) {
-      const cause = error instanceof Error ? error.message : String(error);
-      throw new ForgeError({
-        code: 'FORGE_PERMISSION_DENIED',
-        message: `Forge refused this push before it reached GitHub: ${cause}`,
-        retryable: false,
-        details: {
-          refusedBy: 'forge_git_proxy',
-          expectedRef: `refs/heads/${claims.branchPattern}`,
-          expectedCommit: claims.gitCommit,
-          cause
-        }
-      });
-    }
-  }
-  const token = await installationToken(env, repository.installation_id, repository.name, push ? 'write' : 'read');
+  const token = await installationToken(env, repository.installation_id, repository.name, 'read');
   const upstream = new URL(`https://github.com/${owner}/${name}.git/${rest}`);
   upstream.search = url.search;
   const headers = new Headers(request.headers);
@@ -1092,7 +1005,7 @@ export async function gitCredentialProxy(request: Request, env: Env): Promise<Re
   const response = await fetch(upstream, {
     method: request.method,
     headers,
-    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : upstreamBody,
+    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
     redirect: 'manual'
   });
   const responseHeaders = new Headers(response.headers);
@@ -1105,7 +1018,7 @@ export async function requestApproval(
   env: Env,
   identity: Pick<AuthenticatedContext, 'tenantId' | 'subject'>,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
+  action: 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string; already_approved: boolean }> {
@@ -1160,7 +1073,7 @@ export async function requireApproval(
   identity: Pick<AuthenticatedContext, 'tenantId'>,
   approvalId: string,
   workspaceId: string,
-  action: 'git.push' | 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'task.push_envelope' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
+  action: 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
   expected: Record<string, unknown>,
   options: { consume?: boolean } = {}
 ): Promise<void> {
@@ -1220,7 +1133,7 @@ export async function markApprovalApproved(env: Env, tenantId: string, approvalI
 /**
  * Settle an approval after its operation ran.
  *
- * External writes (git.push, pull_request.create) stay strictly one-approval-one-
+ * External writes stay strictly one-approval-one-
  * execution: the thing they authorize is irreversible and leaves Forge, so a
  * second push must mean a second human decision.
  *
@@ -1245,7 +1158,7 @@ export async function completeApproval(
 }
 
 /** Actions whose approval may be reused for an identical repeat within its TTL. */
-export function approvalIsReusable(action: string): boolean {
+function approvalIsReusable(action: string): boolean {
   return action === 'shell.exec';
 }
 

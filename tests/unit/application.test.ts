@@ -59,7 +59,6 @@ class FakeProvider implements SandboxProvider {
             this.head,
             '===FORGE_BRANCH===',
             this.branch,
-            '===FORGE_LOCKFILE===',
             '===FORGE_DETECTION===',
             JSON.stringify({ pm: 'npm', framework: 'vite', scripts: { dev: 'vite', build: 'vite build' } })
           ].join('\n'),
@@ -202,7 +201,6 @@ class FakeProvider implements SandboxProvider {
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
       return { path, sha256: Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(''), sizeBytes: new TextEncoder().encode(content).byteLength };
     },
-    applyPatch: async () => { this.files.set('/workspace/repo/src/app.ts', 'patched'); return { applied: true, output: '', changedFiles: ['src/app.ts'] }; },
     listFiles: async () => {
       if (this.workspaceProbeFails) throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: 'sandbox probe timed out', retryable: true });
       if (!this.workspacePresent && this.workspaceOtherContentPresent) return {
@@ -250,16 +248,6 @@ class FakeProvider implements SandboxProvider {
     this.calls.push(`keepAlive:${keepAlive}`);
   }
   async destroy() { this.calls.push('destroy'); }
-  async snapshot() { return { id: ids.snapshot(), providerSnapshotId: 'snapshot', providerVersion: this.version, createdAt: new Date().toISOString() }; }
-  async restore(snapshot: Parameters<SandboxProvider['restore']>[0]) {
-    this.calls.push('restore');
-    const manifest = (snapshot as { manifest?: { commit?: string; branch?: string } }).manifest;
-    if (manifest?.commit) this.head = manifest.commit;
-    if (manifest?.branch !== undefined) this.branch = manifest.branch;
-    this.workspacePresent = true;
-    this.workspaceMarkerPresent = true;
-    return this.handle;
-  }
 }
 
 function initialized(service: ForgeApplicationService): WorkspaceRuntimeRecord {
@@ -304,64 +292,78 @@ describe('Forge application service', () => {
     expect(record.idempotency['create-with-receipt-1']?.operationId).toBe(operationId);
   });
 
+  it('advances a loaded executor to the GitHub commit without deleting untracked caches', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.dependencyState = {
+      lockfileHash: 'old-lockfile',
+      installedAt: new Date().toISOString(),
+      usable: true
+    };
+    record.detection = { packageManager: 'npm', framework: 'vite', installCommand: 'npm ci' } as never;
+    const commit = '1'.repeat(40);
+
+    await service.syncRemoteCommit(record, commit, 'main', true, {
+      url: 'https://github.invalid/example/project.git',
+      authorizationHeader: 'Bearer test'
+    });
+
+    const syncCommand = provider.calls.find((command) => command.includes('git fetch --no-tags'));
+    expect(syncCommand).toContain(`git reset --hard '${commit}'`);
+    expect(syncCommand).not.toContain('git clean');
+    expect(record.workspace.currentCommit).toBe(commit);
+    expect(record.executorCommit).toBe(commit);
+    expect(record.workspace.checkout?.healthy).toBe(true);
+    expect(record.dependencyState).toBeUndefined();
+    expect(record.detection).toBeUndefined();
+  });
+
+  it('keeps installed dependency state when a GitHub edit does not change dependency inputs', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    const dependencyState = {
+      lockfileHash: 'same-lockfile',
+      installedAt: new Date().toISOString(),
+      usable: true
+    };
+    record.dependencyState = dependencyState;
+
+    await service.syncRemoteCommit(record, '2'.repeat(40), 'main', false, {
+      url: 'https://github.invalid/example/project.git'
+    });
+
+    expect(record.dependencyState).toBe(dependencyState);
+  });
+
   it('rejects client operations until provisioning has completed', async () => {
     const service = new ForgeApplicationService(new FakeProvider());
     const record = initialized(service);
 
     record.workspace.state = 'provisioning';
-    await expect(service.read(record, { path: '/workspace/repo/README.md', maxBytes: 1_000 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({ code: 'FORGE_WORKSPACE_NOT_READY' });
 
     record.workspace.state = 'bootstrapping';
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({ code: 'FORGE_WORKSPACE_NOT_READY' });
   });
 
-  it('provisions through explicit lifecycle states', async () => {
-    const provider = new FakeProvider();
-    const service = new ForgeApplicationService(provider);
-    const record = initialized(service);
-    const states: string[] = [];
-    await service.provisionWorkspace(record, true, async (next) => {
-      states.push(next.workspace.state);
-    });
-    expect(states).toEqual(['provisioning', 'bootstrapping', 'ready']);
-    // Provisioning preserves the durable branch chosen by the control plane;
-    // it never creates a container-only branch.
-    expect(record.workspace).toMatchObject({ currentCommit: 'abcdef', state: 'ready' });
-    expect(record.workspace.currentBranch).toBe('main');
-    expect(record.workspace.activeSnapshotId).toBeDefined();
-    expect(Object.keys(record.snapshots)).toHaveLength(1);
-    expect(provider.calls).toContain('npm ci');
-  });
-
-  it('restores its active checkpoint before exposing a workspace after a sandbox restart', async () => {
-    const provider = new FakeProvider();
-    const service = new ForgeApplicationService(provider);
-    const record = initialized(service);
-    await service.provisionWorkspace(record, false);
-    provider.workspacePresent = false;
-
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
-      .resolves.toMatchObject({ entries: [] });
-    expect(provider.calls).toContain('restore');
-    expect(record.processes).toEqual({});
-    expect(record.previews).toEqual({});
-  });
-
-  it('never restores over a workspace whose marker is missing but repository mount remains', async () => {
+  it('fails closed when the workspace marker is missing but the repository mount remains', async () => {
     const provider = new FakeProvider();
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     await service.provisionWorkspace(record, false);
     provider.workspaceMarkerPresent = false;
 
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({ code: 'FORGE_PROVIDER_UNAVAILABLE' });
-    expect(provider.calls).not.toContain('restore');
   });
 
-  it('never restores when any other snapshot-target content remains mounted', async () => {
+  it('never overwrites other content when the workspace mount is incomplete', async () => {
     const provider = new FakeProvider();
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
@@ -369,63 +371,30 @@ describe('Forge application service', () => {
     provider.workspacePresent = false;
     provider.workspaceOtherContentPresent = true;
 
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({ code: 'FORGE_PROVIDER_UNAVAILABLE' });
-    expect(provider.calls).not.toContain('restore');
   });
 
-  it('upgrades a legacy checkpoint only after a confirmed mount-loss restore', async () => {
-    const provider = new FakeProvider();
-    const service = new ForgeApplicationService(provider);
-    const record = initialized(service);
-    await service.provisionWorkspace(record, false);
-    const snapshotId = record.workspace.activeSnapshotId!;
-    delete record.snapshots[snapshotId]!.manifest;
-    provider.workspacePresent = false;
-
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
-      .resolves.toMatchObject({ entries: [] });
-    expect(record.snapshots[snapshotId]?.manifest).toMatchObject({ commit: 'abcdef' });
-    expect(record.snapshots[snapshotId]?.manifest?.branch).toBe('main');
-  });
-
-  it('never restores when the workspace probe itself is unavailable', async () => {
+  it('fails closed when the workspace probe itself is unavailable', async () => {
     const provider = new FakeProvider();
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     await service.provisionWorkspace(record, false);
     provider.workspaceProbeFails = true;
 
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({ code: 'FORGE_PROVIDER_UNAVAILABLE' });
-    expect(provider.calls).not.toContain('restore');
   });
 
-  it('never restores over a live Git divergence', async () => {
+  it('fails closed on a live Git divergence', async () => {
     const provider = new FakeProvider();
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     await service.provisionWorkspace(record, false);
     provider.head = 'different-commit';
 
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED' });
-    expect(provider.calls).not.toContain('restore');
-  });
-
-  it('rejects a restored filesystem that does not match its checkpoint manifest', async () => {
-    const provider = new FakeProvider();
-    const service = new ForgeApplicationService(provider);
-    const record = initialized(service);
-    await service.provisionWorkspace(record, false);
-    provider.workspacePresent = false;
-    provider.workspaceHash = 'b'.repeat(64);
-
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
-      .rejects.toMatchObject({ code: 'FORGE_SNAPSHOT_INCOMPATIBLE' });
-    expect(provider.calls).toContain('restore');
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
-      .rejects.toMatchObject({ code: 'FORGE_WORKSPACE_NOT_READY' });
   });
 
   it('keeps a detached checkout distinct from a checked-out branch', async () => {
@@ -440,9 +409,7 @@ describe('Forge application service', () => {
     // never invents a container-only branch for it.
     expect(record.workspace.currentBranch).toBeUndefined();
     expect(record.workspace.requestedRef).toBe('v1.0.0');
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
-      .resolves.toMatchObject({ entries: [] });
-    expect(provider.calls).not.toContain('restore');
+    await expect(service.gitStatus(record)).resolves.toMatchObject({ branch: 'v1.0.0' });
   });
 
   it('rejects an external branch checkout even when detached HEAD stays on the same commit', async () => {
@@ -454,9 +421,8 @@ describe('Forge application service', () => {
     await service.provisionWorkspace(record, false);
     provider.branch = 'main';
 
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED' });
-    expect(provider.calls).not.toContain('restore');
   });
 
   it('falls back to a lenient install when the frozen install rejects the lockfile', async () => {
@@ -520,119 +486,6 @@ describe('Forge application service', () => {
     });
   });
 
-  it('replays a patch idempotently without applying twice', async () => {
-    const service = new ForgeApplicationService(new FakeProvider());
-    const record = initialized(service);
-    ready(record);
-    const first = await service.patch(record, { cwd: '/workspace/repo', patch: 'patch' }, 1, 'patch-123456');
-    const second = await service.patch(record, { cwd: '/workspace/repo', patch: 'patch' }, undefined, 'patch-123456');
-    expect(first).toMatchObject({ workspaceRevision: 2 });
-    expect(second).toMatchObject({ replay: true, operationId: first.operationId });
-  });
-
-  it('acknowledges a whole-file write only after the same workspace can read it', async () => {
-    const provider = new FakeProvider();
-    const service = new ForgeApplicationService(provider);
-    const record = initialized(service);
-    ready(record);
-    const result = await service.write(record, { path: '/workspace/repo/src/main.ts', content: 'export const value = 1;' }, 1, 'write-123456');
-    expect(result).toMatchObject({ workspaceId: record.workspace.id, path: '/workspace/repo/src/main.ts', previousSha256: null, readAfterWriteVerified: true, filesystemRevision: 2 });
-    expect((await provider.handle.readFile({ path: '/workspace/repo/src/main.ts', maxBytes: 100 })).content).toBe('export const value = 1;');
-  });
-
-  it('records a provider checkpoint outside the mutable worktree record', async () => {
-    const service = new ForgeApplicationService(new FakeProvider());
-    const record = initialized(service);
-    ready(record);
-    const checkpoint = await service.checkpoint(record, 'before-submit');
-    expect(record.workspace.activeSnapshotId).toBe(checkpoint.snapshotId);
-    expect(record.snapshots[checkpoint.snapshotId]).toMatchObject({
-      manifest: { commit: 'abcdef', branch: 'main' }
-    });
-  });
-
-  it('adopts only Forge-owned branch and commit transitions', async () => {
-    const provider = new FakeProvider();
-    const service = new ForgeApplicationService(provider);
-    const record = initialized(service);
-    ready(record);
-    record.workspace.currentCommit = 'abcdef';
-    record.workspace.currentBranch = 'main';
-
-    await expect(service.gitBranchCreate(record, 'forge/recovery-receipt', 1, 'branch-123456'))
-      .resolves.toMatchObject({ branch: 'forge/recovery-receipt' });
-    expect(record.workspace.currentBranch).toBe('forge/recovery-receipt');
-
-    await expect(service.gitCommit(record, { message: 'Record a durable transition', paths: ['.'], expectedRevision: 2, idempotencyKey: 'commit-123456' }))
-      .resolves.toMatchObject({ commit: '1'.repeat(40), branch: 'forge/recovery-receipt' });
-    expect(record.lastGitDivergence).toBeUndefined();
-  });
-
-  it('restores a checkpoint only when newer local work is safe', async () => {
-    const provider = new FakeProvider();
-    provider.branch = 'forge/base';
-    const service = new ForgeApplicationService(provider);
-    const record = initialized(service);
-    ready(record);
-    provider.branch = 'forge/base';
-    record.workspace.currentCommit = 'abcdef';
-    record.workspace.currentBranch = 'forge/base';
-    record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'forge/base';
-    const checkpoint = await service.checkpoint(record);
-    await expect(service.restoreCheckpoint(record, checkpoint.snapshotId)).resolves.toMatchObject({ restoredSnapshotId: checkpoint.snapshotId, branch: 'forge/base' });
-  });
-
-  it('records the selected checkpoint identity only after its filesystem is verified', async () => {
-    const provider = new FakeProvider();
-    const service = new ForgeApplicationService(provider);
-    const record = initialized(service);
-    ready(record);
-    provider.branch = 'forge/base';
-    record.workspace.currentCommit = 'abcdef';
-    record.workspace.currentBranch = 'forge/base';
-    record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'forge/base';
-    const checkpoint = await service.checkpoint(record, 'before-newer-commit');
-    provider.head = 'newer-commit';
-    record.workspace.currentCommit = 'newer-commit';
-    record.workspace.lastPushedCommit = 'newer-commit';
-
-    await expect(service.restoreCheckpoint(record, checkpoint.snapshotId)).resolves.toMatchObject({
-      restoredSnapshotId: checkpoint.snapshotId,
-      commit: 'abcdef',
-      branch: 'forge/base'
-    });
-    expect(record.workspace).toMatchObject({ currentCommit: 'abcdef', currentBranch: 'forge/base' });
-    expect(record.lastGitDivergence).toBeUndefined();
-  });
-
-  it('blocks checkpoint restoration when Git reveals an unpushed commit created outside cached metadata', async () => {
-    const provider = new FakeProvider();
-    const service = new ForgeApplicationService(provider);
-    const record = initialized(service);
-    ready(record);
-    provider.branch = 'forge/base';
-    record.workspace.currentCommit = 'abcdef';
-    record.workspace.currentBranch = 'forge/base';
-    record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'forge/base';
-    const checkpoint = await service.checkpoint(record);
-    provider.head = 'new-local-commit';
-    await expect(service.restoreCheckpoint(record, checkpoint.snapshotId)).rejects.toMatchObject({ code: 'FORGE_WORKSPACE_GIT_STATE_DIVERGED' });
-    expect(record.lastGitDivergence).toMatchObject({ observedCommit: 'new-local-commit', observedBranch: 'forge/base' });
-  });
-
-  it('turns a long-running validation into a durable check with a process handle', async () => {
-    const service = new ForgeApplicationService(new FakeProvider());
-    const record = initialized(service);
-    ready(record);
-    const started = await service.startCheck(record, { name: 'unit tests', command: 'pnpm test', cwd: '/workspace/repo', networkPolicy: 'development', idempotencyKey: 'check-123456', expectedRevision: 1 });
-    if ('replay' in started) throw new Error('Unexpected check replay.');
-    const check = await service.checkGet(record, started.value.id);
-    expect(check).toMatchObject({ workspaceId: record.workspace.id, process: { status: 'running' }, check: { name: 'unit tests', command: 'pnpm test' } });
-  });
-
   it('only stops a process that belongs to the explicit workspace', async () => {
     const service = new ForgeApplicationService(new FakeProvider());
     const record = initialized(service);
@@ -682,7 +535,6 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
-    record.workspace.activeSnapshotId = undefined;
     const started = await service.startProcess(record, {
       command: 'pnpm install',
       cwd: '/workspace/repo',
@@ -715,7 +567,6 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
-    record.workspace.activeSnapshotId = undefined;
     const started = await service.startProcess(record, {
       command: 'pnpm install',
       cwd: '/workspace/repo',
@@ -744,7 +595,6 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
-    record.workspace.activeSnapshotId = undefined;
     const started = await service.startProcess(record, {
       command: 'pnpm install',
       cwd: '/workspace/repo',
@@ -789,12 +639,11 @@ describe('Forge application service', () => {
       mutatesFilesystem: true
     });
     provider.workspacePresent = false;
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({
         code: 'FORGE_PROVIDER_UNAVAILABLE',
         message: expect.stringContaining('will not replace the executor')
       });
-    expect(provider.calls).not.toContain('restore');
   });
 
   it('syncs finished processes so they stop blocking later work', async () => {
@@ -802,7 +651,6 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
-    record.workspace.activeSnapshotId = undefined;
     const processId = 'proc_probe';
     record.processes[processId] = {
       command: 'touch .forge-persistence-probe',
@@ -833,7 +681,6 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
-    record.workspace.activeSnapshotId = undefined;
     const first = await service.startProcess(record, {
       command: 'pnpm install',
       cwd: '/workspace/repo',
@@ -873,7 +720,7 @@ describe('Forge application service', () => {
       throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: 'blip', retryable: true });
     };
     provider.workspaceProbeFails = true;
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({ code: 'FORGE_PROVIDER_UNAVAILABLE' });
     expect(lookups).toBeGreaterThan(0);
     expect(record.processes[processId]?.completedAt).toBeUndefined();
@@ -903,13 +750,12 @@ describe('Forge application service', () => {
       mutatesFilesystem: true
     });
     provider.workspaceProbeFails = true;
-    await expect(service.tree(record, { path: '/workspace/repo', depth: 1, limit: 10 }))
+    await expect(service.gitStatus(record))
       .rejects.toMatchObject({
         code: 'FORGE_PROVIDER_UNAVAILABLE',
         details: expect.objectContaining({ recoveryAttempted: true })
       });
     expect(record.processes[processId]?.completedAt).toBeTruthy();
-    expect(provider.calls).not.toContain('restore');
   });
 
   it('separates destroy request from durable completion', async () => {
@@ -920,8 +766,6 @@ describe('Forge application service', () => {
     provider.branch = 'forge/base';
     record.workspace.currentCommit = 'abcdef';
     record.workspace.currentBranch = 'forge/base';
-    record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'forge/base';
     const request = service.requestDestroy(record, 1, 'destroy-123456');
     expect(request.state).toBe('destroying');
     await service.completeDestroy(record);
@@ -929,7 +773,7 @@ describe('Forge application service', () => {
     expect(provider.calls).toContain('destroy');
   });
 
-  it('rechecks actual Git immediately before workspace teardown', async () => {
+  it('discards executor changes during workspace teardown', async () => {
     const provider = new FakeProvider();
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
@@ -937,12 +781,10 @@ describe('Forge application service', () => {
     provider.branch = 'forge/base';
     record.workspace.currentCommit = 'abcdef';
     record.workspace.currentBranch = 'forge/base';
-    record.workspace.lastPushedCommit = 'abcdef';
-    record.workspace.lastPushedBranch = 'forge/base';
     service.requestDestroy(record, 1, 'destroy-123456');
     provider.head = '1234567';
-    await expect(service.completeDestroy(record)).rejects.toMatchObject({ code: 'FORGE_GIT_PUSH_BLOCKED' });
-    expect(record.workspace.state).toBe('destroying');
+    await expect(service.completeDestroy(record)).resolves.toMatchObject({ replay: false });
+    expect(record.workspace.state).toBe('destroyed');
   });
 
   it('force-completes teardown without inspecting a missing mount or requiring provider cleanup to succeed', async () => {
@@ -958,7 +800,7 @@ describe('Forge application service', () => {
       throw new Error('sandbox already absent');
     };
 
-    await expect(service.completeDestroy(record, undefined, true)).resolves.toMatchObject({ replay: false });
+    await expect(service.completeDestroy(record)).resolves.toMatchObject({ replay: false });
     expect(record.workspace.state).toBe('destroyed');
     expect(record.processes).toEqual({});
     expect(record.previews).toEqual({});
@@ -1083,7 +925,6 @@ describe('Forge application service', () => {
     const service = new ForgeApplicationService(provider);
     const record = initialized(service);
     ready(record);
-    record.workspace.activeSnapshotId = undefined;
     record.detection = {
       packageManager: 'pnpm',
       installCommand: 'pnpm install',

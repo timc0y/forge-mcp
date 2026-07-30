@@ -32,7 +32,7 @@ Forge is a hosted MCP connector. Add it to your client and sign in with GitHub:
 - Then just ask: *"Review https://example.com with Parallax"*, or *"Start a
   task on owner/repo to fix X, then open a draft PR."*
 
-Self-hosting and local development are covered in
+Optional self-hosted browser evidence and local development are covered in
 [`docs/self-host.md`](docs/self-host.md) and
 [`docs/operations.md`](docs/operations.md).
 
@@ -82,7 +82,7 @@ Start at [`docs/README.md`](docs/README.md). The essentials:
 - [Connectors & setup](docs/connectors.md) — ChatGPT and Claude
 - [Operations](docs/operations.md) — deploy, migrations, runbook
 - [Security](docs/security/README.md) — approvals, capabilities, tenancy
-- [Self-hosting](docs/self-host.md)
+- [Self-hosted browser](docs/self-host.md)
 
 Vault secrets are tenant-scoped and encrypted at rest. See [credentials and secrets](docs/architecture/credentials.md) before configuring `FORGE_CREDENTIAL_ENCRYPTION_KEY` or migrating an installation.
 
@@ -95,7 +95,7 @@ For the GitHub durability and ephemeral-executor guarantees, see the [workspace 
 - `packages/application` — provider-independent use cases
 - `packages/mcp-core` — the tool catalog (source of truth for tool names)
 - `packages/mcp-adapter-v1` — production MCP SDK wiring
-- `packages/{sandbox,browser,git,artifacts}-*` — Cloudflare / self-hosted providers
+- `packages/{sandbox,browser,git,artifacts}-*` — Cloudflare providers plus the optional self-hosted browser
 - `packages/{task-core,insight,evidence,cost,policy,capabilities}` — domain logic
 - `migrations/d1` — database schema; `infra/wrangler` — deploy config
 

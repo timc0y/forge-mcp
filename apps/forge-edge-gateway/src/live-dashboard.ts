@@ -148,8 +148,7 @@ function renderList(data){
   if(!(data.workspaces||[]).length){ summary.innerHTML='<h3>Overview</h3><p class="meta">No live workspaces.</p>'; return; }
   summary.innerHTML='<h3>Active workspaces ('+data.workspaces.length+')</h3>'+(data.workspaces||[]).map(w=>{
     const task = w.task ? '<p><strong>Task</strong> '+esc(w.task.goal)+' <span class="pill">'+esc(w.task.state)+'</span></p>' : '';
-    const dirty = w.hasUnpushedWork ? '<span class="pill warn">unpushed</span>' : '<span class="pill ok">synced</span>';
-    return '<div style="margin:.75rem 0"><strong>'+esc(w.repository||w.workspaceId)+'</strong> '+dirty+
+    return '<div style="margin:.75rem 0"><strong>'+esc(w.repository||w.workspaceId)+'</strong> <span class="pill">ephemeral executor</span>'+
       '<div class="meta">'+esc(w.branch||'—')+' @ '+esc(w.head||'—')+' · slot '+w.slot+' · '+esc(w.state)+'</div>'+task+'</div>';
   }).join('');
   const tenantAct = document.getElementById('tenant-activity-list');

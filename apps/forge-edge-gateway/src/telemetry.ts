@@ -16,7 +16,7 @@ const DEFAULT_HOST = 'https://us.i.posthog.com';
 const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 const REPEAT_MAP_MAX = 200;
 
-export interface ToolCallEvent {
+interface ToolCallEvent {
   tool: string;
   distinctId: string;
   sessionId: string;

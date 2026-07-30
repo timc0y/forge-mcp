@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ForgeError, toForgeError } from '@forge/core';
-import { describeDurability, durabilityNextStep } from '../../apps/forge-edge-gateway/src/durability';
+import { describeDurability } from '../../apps/forge-edge-gateway/src/durability';
 
 describe('ForgeError across an RPC boundary', () => {
   it('rebuilds a serialized ForgeError instead of flattening it', () => {
@@ -44,33 +44,14 @@ describe('ForgeError across an RPC boundary', () => {
   });
 });
 
-describe('mutationOutcome separates the edit from its persistence', () => {
-  it('reports committed_local and tells the agent NOT to repeat the edit', () => {
-    // The edit succeeded; only the push failed. Reporting that as a plain
-    // failure is what made agents re-apply the edit and then hit a second,
-    // unrelated-looking "nothing to commit" fault.
-    const verdict = describeDurability({
-      branch: 'forge/x',
-      commit: 'a'.repeat(40),
-      hasUnpushedWork: true,
-      pushFailureReason: 'HTTP 403'
-    });
-
-    expect(verdict.mutationOutcome).toBe('committed_local');
-    expect(verdict.durability).toBe('local_only');
-    expect(durabilityNextStep(verdict)).toMatch(/do NOT repeat it/iu);
-    expect(durabilityNextStep(verdict)).toMatch(/LOCAL ONLY/u);
-  });
-
-  it('reports pushed_remote only against a verified remote', () => {
+describe('mutationOutcome reports GitHub durability', () => {
+  it('reports committed_remote only against a verified GitHub ref', () => {
     const verdict = describeDurability({
       branch: 'forge/x',
       commit: 'b'.repeat(40),
-      hasUnpushedWork: false,
-      pushVerified: true,
       remoteSha: 'b'.repeat(40)
     });
-    expect(verdict.mutationOutcome).toBe('pushed_remote');
+    expect(verdict.mutationOutcome).toBe('committed_remote');
     expect(verdict.on_remote).toBe(true);
   });
 
@@ -78,7 +59,6 @@ describe('mutationOutcome separates the edit from its persistence', () => {
     const verdict = describeDurability({
       branch: 'forge/x',
       commit: 'c'.repeat(40),
-      hasUnpushedWork: false,
       committed: false,
       remoteSha: 'c'.repeat(40)
     });

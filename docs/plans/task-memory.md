@@ -40,9 +40,9 @@ optimistic `revision` and timestamps.
 
 ### Compact summary
 
-`forge_task_summary` (`summarizeTask`) is the most important reconnect
-capability. It returns enough for a fresh turn to resume — goal, decisions,
-non-goals, base ref, branch, workspace/preview state, files read/changed, checks
+`forge_task_get` with `mode:summary` (backed by `summarizeTask`) is the most
+important reconnect capability. It returns enough for a fresh turn to resume —
+goal, decisions, non-goals, base ref, branch, workspace/preview state, files read/changed, checks
 and their status, evidence ids, outstanding work, known limitations, the next
 recommended action, state and updated timestamp — and deliberately **excludes**
 full source, complete logs, complete diffs, secrets and raw environment. Every
@@ -60,11 +60,11 @@ and mutations use optimistic revisions (`applyTaskPatch`).
 
 ## Tools
 
-`forge_task_start`, `forge_task_get`, `forge_task_summary`, `forge_task_list`,
-`forge_task_finish`. None create a container; all are cheap. The intended
-workflow is: start a task first, attach one workspace only when execution is
-needed, keep the task updated as the durable memory, and finish it (which leaves
-the record and evidence retrievable).
+`forge_task_create`, `forge_task_get`, `forge_task_list`, and `forge_task_update`.
+None allocate an executor; all are cheap. The intended workflow is: create a task
+first, attach one lightweight workspace for GitHub repository work, allocate the
+executor only when a runtime command is needed, and keep the task updated as the
+durable memory.
 
 ## Tests
 

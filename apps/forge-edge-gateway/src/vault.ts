@@ -4,7 +4,7 @@ import type { Env } from './env';
 
 export const MAX_SECRETS_PER_TENANT = 20;
 
-export interface VaultSecret {
+interface VaultSecret {
   id: SecretId;
   tenantId: TenantId;
   label: string;
@@ -17,11 +17,11 @@ export interface VaultSecret {
   updatedAt: string;
 }
 
-export interface StoredVaultSecret extends VaultSecret {
+interface StoredVaultSecret extends VaultSecret {
   encryptedVars: string;
 }
 
-export interface SecretAttachment {
+interface SecretAttachment {
   workspaceId: string;
   secretId: SecretId;
   tenantId: TenantId;

@@ -20,8 +20,8 @@ const read = (file: string): string => readFileSync(join(gatewaySrc, file), 'utf
  */
 describe('forge_access proves write capability instead of inferring it', () => {
   it('never derives can_write from a repository object', () => {
-    const session = read('mcp-session.ts');
-    const assignments = [...session.matchAll(/can_write:\s*([^,\n]+)/gu)].map((match) => match[1] ?? '');
+    const handlers = read('handlers/repository-workspace.ts');
+    const assignments = [...handlers.matchAll(/can_write:\s*([^,\n]+)/gu)].map((match) => match[1] ?? '');
 
     expect(assignments.length).toBeGreaterThan(0);
     for (const assignment of assignments) {
@@ -38,11 +38,11 @@ describe('forge_access proves write capability instead of inferring it', () => {
     // contents:write is write access demonstrated, not inferred.
     expect(github).toContain('export async function repositoryWriteProof');
     expect(github).toMatch(/permissions\.contents === 'write'/u);
-    expect(read('mcp-session.ts')).toContain('repositoryWriteProof(env, identity');
+    expect(read('handlers/repository-workspace.ts')).toContain('repositoryWriteProof(env, identity');
   });
 
   it('stops a caller re-checking access when access is fine', () => {
-    const session = read('mcp-session.ts');
+    const session = read('handlers/repository-workspace.ts');
     // The failure this closes: a real forge_merge fault read as a permissions
     // fault, sending the agent back round the same loop.
     expect(session).toMatch(/is NOT a permission problem/u);

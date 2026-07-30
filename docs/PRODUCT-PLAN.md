@@ -18,25 +18,6 @@ The product is deliberately narrow:
 
 ## The product users buy
 
-### Forge Local — free
-
-For a developer who already has the repository and toolchain on their own machine.
-
-- A small local MCP server opens only configured project roots.
-- A single-owner OAuth approval page connects ChatGPT or another remote MCP client.
-- Files, patches, shell commands, processes and local browser capture run on the user's machine.
-- Cloudflare Tunnel is optional transport, not the execution environment.
-- No Forge compute bill and no repository upload.
-
-### Forge Self-Hosted — open source
-
-For a team that wants remote workspaces in its own Cloudflare account.
-
-- The same Worker, MCP tools and Parallax adapter as Forge Cloud.
-- The user owns Cloudflare, GitHub App, domains, secrets, quotas and costs.
-- One documented Wrangler deployment with D1, R2, Browser Run, Durable Objects, Workflows and Sandbox.
-- No hosted Forge subscription.
-
 ### Forge Cloud — hosted product
 
 For a user who wants the workflow to work without a local checkout or Cloudflare setup.
@@ -47,6 +28,20 @@ For a user who wants the workflow to work without a local checkout or Cloudflare
 - Receive screenshots, accessibility evidence, logs, diff and a draft PR.
 - Workspaces stop automatically and retained evidence expires by policy.
 
+### Self-managed Forge — open source
+
+For a team that wants the same service in its own Cloudflare and GitHub accounts.
+
+- The same Worker, MCP tools and Parallax adapter as Forge Cloud.
+- The user owns Cloudflare, GitHub App, domains, secrets, quotas and costs.
+- GitHub remains the sole durable repository CRUD plane.
+- Cloudflare Sandbox remains the only command execution plane.
+- The optional self-hosted component renders browser evidence only; it never
+  receives a repository checkout or runs agent shell commands.
+
+Local development runs the Worker and its Cloudflare Sandbox integration for
+testing. There is no separate local-filesystem CRUD edition.
+
 ## One user journey
 
 ```text
@@ -54,15 +49,17 @@ Sign in to Forge
   → install GitHub App on selected repositories
   → connect Forge MCP in ChatGPT, Codex or Claude
   → ask “Run Parallax Review on owner/repo, mission:checkout”
-  → Forge creates one isolated workspace
-  → Forge loads the repository’s parallax/ contract and instructions
-  → Forge installs dependencies and starts one web service
+  → Forge creates a lightweight workspace session on a GitHub forge/* branch
+  → Forge reads the repository’s parallax/ contract and instructions from GitHub
+  → forge_edit commits any wanted source change directly to GitHub
+  → the first runtime check allocates an ephemeral executor
+  → Forge installs dependencies and starts one web service in that executor
   → Forge captures the required routes, states and viewports
   → the model receives inspectable images and accessibility evidence
   → Parallax applies readiness and review rules
-  → the model reports findings or applies a bounded patch
+  → the model reports findings or applies a bounded forge_edit
   → Forge runs the stored verification contract
-  → the user approves branch push and draft PR creation
+  → Forge opens a draft PR and returns the human approval link
   → Forge attaches evidence and destroys the workspace
 ```
 
@@ -70,16 +67,17 @@ The first public demo must show this whole journey. Separate architecture demos 
 
 ## KISS product rules
 
-1. One workspace is one repository checkout and one active web service.
+1. One workspace is one GitHub branch session with at most one active executor-backed web service.
 2. One workspace has one mutation owner; reads may remain concurrent.
 3. Public repositories work before private repositories are enabled.
-4. Private Git credentials stay behind the Forge credential proxy and never enter a sandbox.
+4. Private clone credentials are short-lived, injected only into the system clone,
+   removed immediately afterward, and never returned to agent commands.
 5. A review uses repository-declared setup when present and conservative detection otherwise.
 6. One MCP tool captures a bounded Parallax evidence packet; individual browser tools remain available for follow-up.
 7. Screenshots are returned as MCP image content and stored in R2 with hashes.
 8. Forge records limitations instead of converting unavailable interaction into a pass.
 9. Every external side effect is explicit, attributable and approval-gated.
-10. Workspaces are cold by default, stop after ten idle minutes and have a hard lifetime.
+10. Executors are absent by default, stop after ten idle minutes and have a hard lifetime.
 
 ## Public tool surface
 
@@ -92,37 +90,52 @@ Keep the default catalog compact. The model should not need provider-specific to
 - `forge_context_get`
 - `forge_workspace_destroy`
 
-### Files and execution
+### Repository files
 
 - `forge_files_read`
-- `forge_files_patch`
-- `forge_shell_exec`
-- `forge_process_start`
+- `forge_files_list`
+- `forge_edit`
+- `forge_diff_metadata`
+- `forge_context_get`
+
+These tools use the GitHub API and never allocate or inspect an executor. `forge_edit`
+is the only public file writer/deleter and commits directly to the selected branch.
+
+### Execution
+
+- `forge_shell`
+- `forge_process_list`
+- `forge_process_wait`
 - `forge_process_logs`
 - `forge_process_stop`
+- `forge_deps_install`
 
-Search and tree inspection may use bounded shell commands in the default catalog. Dedicated tools can remain available in an expanded mode.
+Execution tools allocate a Cloudflare Sandbox lazily. Their filesystem effects
+remain ephemeral and are never imported into GitHub; wanted changes must be
+recreated explicitly with `forge_edit`.
 
 ### Review evidence
 
 - `forge_preview_expose`
-- `forge_review_capture`
+- `forge_review`
+- `forge_preview`
 - `forge_artifact_get`
-- `forge_browser_screenshot`
-- `forge_browser_accessibility_tree`
 
-`forge_review_capture` accepts routes and named viewports derived from a Parallax run. It returns a Parallax-shaped packet containing repository commit, workspace revision, route, environment, state, requested and observed dimensions, screenshot artifact, accessibility evidence and limitations.
+`forge_review` captures a bounded evidence packet from an already deployed URL
+without an executor. `forge_preview` captures the equivalent bounded routes,
+states, and viewports from an executor-backed development service.
 
-### Git handoff
+### GitHub review
 
-- `forge_git_status`
-- `forge_git_diff`
-- `forge_git_branch_create`
-- `forge_git_commit`
-- `forge_git_push`
-- `forge_pull_request_create`
+- `forge_start`
+- `forge_history`
+- `forge_branches`
+- `forge_pr`
+- `forge_merge`
 
-Branch, push and PR tools require an approved `forge/<actor>/<task>` branch. Merge is not exposed.
+Branch, commit, history, diff, and PR operations use GitHub directly. There is
+no public commit/push pipeline: `forge_edit` creates guarded commits and
+`forge_merge` opens the human review flow.
 
 ## Parallax contract
 
@@ -177,22 +190,23 @@ ChatGPT / Codex / Claude / Parallax
                   │ OAuth 2.1 + Streamable HTTP MCP
                   ▼
           Forge Edge Worker
-     auth · MCP · policy · preview
-          │         │         │
-          │         │         └── Browser Run Quick Actions
-          │         └──────────── R2 evidence
+       auth · MCP · policy · preview
+          │            │          │
+          │            │          └── Browser Run evidence
+          │            └───────────── R2 artifacts
+          ├────────────────────────── GitHub API
           ▼
    Workspace Coordinator DO
    identity · revision · process state
-          │
+          │ allocate on first execution
           ▼
      Cloudflare Sandbox
- repository · shell · service · Git
-          │
-          └── Git credential proxy ── GitHub App
+ shell · install · build · test · service · deploy
 ```
 
-Cloudflare implementation details stay behind provider contracts. Forge Local implements the same contracts with local filesystem/process/browser adapters.
+Cloudflare implementation details stay behind provider contracts. Self-managed
+Forge deploys the same Worker and Sandbox integration in the operator's account;
+there is no local-filesystem repository adapter.
 
 ## Hosted tenancy
 
@@ -208,7 +222,7 @@ authenticated subject
   → approval when required
 ```
 
-Workspace IDs are not authorization. Every handler verifies tenant and project ownership. Repository access is rechecked for clone, fetch, push and PR operations.
+Workspace IDs are not authorization. Every handler verifies tenant and project ownership. Repository access is rechecked for GitHub reads, edits, branch operations, executor materialization, and PR operations.
 
 ## Authentication
 
@@ -246,8 +260,8 @@ The hosted default is the smallest container profile that can complete a represe
 - Eight screenshots in a standard review packet.
 - R2 evidence expiry: seven days free, thirty days paid.
 - No always-on containers.
-- Dependency cache keyed by runtime, package manager and lockfile hash.
-- Cache never contains credentials, `.env`, browser auth or production data.
+- Executors materialize a fresh checkout from GitHub when allocated or recovered;
+  Forge does not persist executor snapshots or dependency trees.
 
 Workers, Durable Objects and D1 stay near-zero while idle. Container and browser time are the billable dimensions and must be metered per operation.
 
@@ -269,8 +283,7 @@ Initial pricing to validate willingness to pay:
 
 | Offer | Price | Included |
 | --- | ---: | --- |
-| Forge Local | Free | Unlimited local execution; user supplies machine and tunnel |
-| Self-hosted Forge | Free software | User pays Cloudflare and GitHub costs |
+| Self-managed Forge | Free software | User pays Cloudflare and GitHub costs |
 | Forge Cloud Trial | Free | 3 review credits, public repositories, 7-day evidence |
 | Forge Cloud Pro | £29/month | 30 review credits, private repositories, PR handoff, 30-day evidence |
 | Forge Cloud Team | £99/month | 150 shared credits, 5 members, audit history and repository policy |
@@ -293,7 +306,7 @@ Primary actions:
 
 - Try Forge Cloud
 - Deploy to Cloudflare
-- Run Forge Local
+- Self-manage Forge
 
 The page shows the complete repository-to-PR demo and clearly labels current limits.
 
@@ -335,21 +348,22 @@ Parallax adds `forge` as an execution provider while retaining `live`, `artifact
 
 The product is ready only when all of these are true in one release:
 
-- Forge Local can expose an allowed repository to a remote MCP client with owner OAuth.
-- Forge Self-Hosted can be deployed from documented Wrangler configuration.
+- Self-managed Forge can be deployed from documented Wrangler configuration.
 - Forge Cloud is deployed on the `tims` Cloudflare account as a private pilot.
 - ChatGPT can discover OAuth and the MCP tool catalog.
-- A public repository can be cloned into an on-demand Sandbox.
+- A public repository can be read through GitHub without compute and materialized
+  into an on-demand Sandbox only for execution.
 - A representative Vite or Astro project installs and starts.
 - Forge returns a private preview.
-- `forge_review_capture` produces phone and desktop screenshots plus accessibility evidence.
+- `forge_review` and `forge_preview` produce bounded phone and desktop evidence.
 - `forge_artifact_get` returns each screenshot as MCP image content.
 - Parallax imports the packet and preserves evidence metadata and limitations.
-- The model can apply a patch, run a test and inspect the diff.
+- The model can commit an edit through `forge_edit`, run a test in the executor,
+  and inspect the GitHub diff.
 - Private GitHub access uses a GitHub App without exposing installation tokens.
-- Branch push and draft PR creation require explicit approval.
+- Raw executor pushes are blocked; draft PR creation enters the human approval flow.
 - Teardown revokes previews, capabilities and runtime.
-- The public docs explain Local, self-hosted and Cloud choices without overstating readiness.
+- The public docs explain hosted and self-managed choices without overstating readiness.
 
 ## Acceptance test
 
@@ -357,10 +371,11 @@ Use one public demo repository and one private test repository. From a clean Cha
 
 1. Connect Forge.
 2. Request a configured Parallax page or mission review.
-3. Observe workspace provisioning.
+3. Observe the lightweight workspace session remain executor-free until a runtime
+   check is requested.
 4. Inspect two returned screenshot images directly in the conversation.
 5. Receive a Parallax report with evidence-linked findings or an honest no-findings result.
-6. Approve one bounded patch.
+6. Apply one bounded `forge_edit` commit to the GitHub branch.
 7. Run the stored verification contract.
 8. Approve a draft PR for the private repository.
 9. Confirm the PR contains test and evidence links.

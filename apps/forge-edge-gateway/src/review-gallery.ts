@@ -27,7 +27,7 @@ const MAX_GALLERY_IMAGES = 24;
 const MAX_GALLERY_BYTES = 24_000_000;
 const GALLERY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-export interface GalleryCell {
+interface GalleryCell {
   route: unknown;
   viewport: unknown;
   state: unknown;
