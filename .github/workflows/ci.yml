@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - name: D1 migrations are sequentially numbered
+        run: pnpm migrations:check
+      - name: Adapter sets and D1 tables are wired
+        run: pnpm wiring:check
+      - run: pnpm check
+      - run: pnpm cf:typegen
+      - name: Generated files are committed
+        run: git diff --exit-code -- schemas feature-flags.json apps/forge-edge-gateway/src/worker-configuration.d.ts
+      - name: Wrangler build validation
+        run: pnpm --filter @forge/edge-gateway exec wrangler deploy --dry-run --config ../../infra/wrangler/forge.jsonc --outdir ../../dist/worker
