@@ -172,12 +172,10 @@ describe('Forge policy', () => {
   it('does not demand approval for honest compound commands', () => {
     const honest = [
       'npm test 2>&1',
-      'npm run build > build.log',
       'cd packages/core && npm test',
       'git status --short | head -20',
       'cat file.txt | grep error',
       'ls -la | wc -l',
-      'echo "hello" > out.txt',
       'npm run lint && npm test',
       'git status && git log -1 --oneline',
       'go test ./... 2>&1 | tail -50',
@@ -190,6 +188,21 @@ describe('Forge policy', () => {
       expect(decision.approvalRequired, command).toBe(false);
       expect(decision.allowed, command).toBe(true);
       expect(() => assertCommandAllowed(command, 'development', false), command).not.toThrow();
+    }
+  });
+
+  it('refuses shell file writes (redirects, sed -i, tee) so ChatGPT cannot fake a save', () => {
+    for (const command of [
+      'echo "hello" > out.txt',
+      'npm run build > build.log',
+      'cat a.txt > b.txt',
+      'sed -i "s/a/b/" file.ts',
+      'tee out.txt',
+      'perl -i -pe "s/a/b/" file.ts'
+    ]) {
+      const decision = classifyCommand(command, 'development');
+      expect(decision, command).toMatchObject({ classification: 'prohibited', allowed: false });
+      expect(decision.reason, command).toMatch(/forge_edit/);
     }
   });
 
@@ -215,9 +228,9 @@ describe('Forge policy', () => {
   it('keeps quoted operators out of the split', () => {
     // The && lives inside the quoted argument, so this is one ordinary command
     // (not a chain that would surface the destructive half).
-    const decision = classifyCommand('echo "fix a && rm -rf b" > note.txt', 'development');
+    const decision = classifyCommand('grep "fix a && rm -rf b" note.txt', 'development');
     expect(decision.approvalRequired).toBe(false);
-    expect(decision.classification).toBe('local_mutation');
+    expect(decision.classification).toBe('read_only');
     // git commit itself is prohibited, but the message must not be parsed as a
     // second command that would classify as destructive instead.
     const commit = classifyCommand('git commit -m "fix a && rm -rf b"', 'development');
@@ -225,13 +238,13 @@ describe('Forge policy', () => {
     expect(commit.reason).toMatch(/forge_edit/);
   });
 
-  it('treats sed -i as a mutation rather than read-only', () => {
-    expect(classifyCommand('sed -i "s/a/b/" file.ts', 'development').classification).toBe('local_mutation');
+  it('treats sed -i as a prohibited file write rather than local mutation', () => {
+    expect(classifyCommand('sed -i "s/a/b/" file.ts', 'development').classification).toBe('prohibited');
     expect(classifyCommand("sed 's/a/b/' file.ts", 'development').classification).toBe('read_only');
   });
 
   it('does not call a redirected write read-only', () => {
-    expect(classifyCommand('cat a.txt > b.txt', 'development').classification).toBe('local_mutation');
+    expect(classifyCommand('cat a.txt > b.txt', 'development').classification).toBe('prohibited');
     expect(classifyCommand('cat < a.txt', 'development').classification).toBe('read_only');
   });
 

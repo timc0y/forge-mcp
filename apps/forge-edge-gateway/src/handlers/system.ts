@@ -78,26 +78,27 @@ export function systemToolHandlers(
         ? await resolveWorkspaceId(env, actor, workspaceAddress(input))
         : undefined;
       const limit = input.limit === undefined ? 40 : Number(input.limit);
-      const since = input.since === undefined ? undefined : text(input.since);
-      if (input.payloads === true || input.errors_only === true) {
-        const calls = await recentToolCalls(env, {
-          tenantId: actor.tenantId,
+      // Complete activity = mcp_tool_calls with payloads. Counters-only was a
+      // parallel incomplete view; keep it only via payloads:false.
+      if (input.payloads === false && input.errors_only !== true) {
+        const activity = await listWorkspaceActivity(env, actor.tenantId, {
           workspaceId,
-          onlyErrors: input.errors_only === true,
-          limit: Number.isFinite(limit) ? limit : 40
+          limit: Number.isFinite(limit) ? limit : 40,
+          since: input.since === undefined ? undefined : text(input.since)
         });
-        return {
-          calls,
-          returned: calls.length,
-          note: 'Secret-shaped keys are redacted and long values previewed; request_bytes/response_bytes are the true sizes.'
-        };
+        return { activity, returned: activity.length };
       }
-      const activity = await listWorkspaceActivity(env, actor.tenantId, {
+      const calls = await recentToolCalls(env, {
+        tenantId: actor.tenantId,
         workspaceId,
-        limit: Number.isFinite(limit) ? limit : 40,
-        since
+        onlyErrors: input.errors_only === true,
+        limit: Number.isFinite(limit) ? limit : 40
       });
-      return { activity, returned: activity.length };
+      return {
+        calls,
+        returned: calls.length,
+        note: 'Secret-shaped keys are redacted and long values previewed; request_bytes/response_bytes are the true sizes.'
+      };
     },
     forge_secret_list: async () => {
       const actor = identity();

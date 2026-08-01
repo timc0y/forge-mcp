@@ -154,15 +154,3 @@ function mergeActivity(
   out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
   return out.slice(0, 80);
 }
-
-/**
- * Optional PostHog live embed. Only an explicit sharing URL is trusted —
- * auto-building `${POSTHOG_HOST}/embedded/${projectId}` mixed the ingestion
- * host with a numeric project id and produced a broken iframe on /app/live.
- * Activity logging does not need PostHog: use D1 mcp_tool_calls +
- * forge_observer_activity /app/live instead.
- */
-export function posthogLiveEmbedUrl(env: Env): string | null {
-  const explicit = (env as Env & { FORGE_POSTHOG_LIVE_EMBED_URL?: string }).FORGE_POSTHOG_LIVE_EMBED_URL?.trim();
-  return explicit || null;
-}

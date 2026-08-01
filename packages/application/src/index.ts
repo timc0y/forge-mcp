@@ -40,6 +40,7 @@ export {
   LAZY_REQUESTED_NEXT_ACTIONS,
   OBSERVATIONAL_WAIT_MS,
   observationalWaitNextStep,
+  durabilityNextStep,
   isDependencyInstallCommand,
   findActiveDependencyInstall,
   EXECUTOR_PROVISIONING_NEXT_STEP,

@@ -12,6 +12,7 @@ import { R2ArtifactStore } from '@forge/artifacts-r2';
 import type { BrowserActionStep } from '@forge/browser-core';
 import { selectBrowserProvider } from '../browser-router';
 import { classifyCommand } from '@forge/policy';
+import { durabilityNextStep } from '@forge/application';
 import { normalizeViewports, prepareInlineImages } from '../review-images';
 import { resolveWorkspaceId } from '../workspace-resolve';
 import { storeGallery } from '../review-gallery';
@@ -192,13 +193,9 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
           const executionPersistence = {
             remote_persisted: false as const,
             executor_filesystem: 'ephemeral' as const,
-            persistence_notice: readOnly
-              ? 'The command did not save repository content. GitHub remains the source of truth — use forge_files_read, not shell cat, for durable file contents.'
-              : 'Any files this command changed exist only in this executor session. They are not saved. Call forge_edit with the intended content to persist to GitHub before claiming progress or forge_merge.'
+            persistence_notice: durabilityNextStep(readOnly ? 'read_only' : 'mutating')
           };
-          const durabilityNextStep = readOnly
-            ? 'Continue with forge_files_read / forge_edit for repository changes, or forge_shell for verification only.'
-            : 'Executor files are ephemeral. Call forge_files_read on paths you changed, then forge_edit to save them to GitHub (commit_url). Do not claim the task is done from shell exit 0 alone.';
+          const next = durabilityNextStep(readOnly ? 'read_only' : 'mutating');
           if (compact) {
             return {
               ...rest,
@@ -215,8 +212,8 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
                 ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
                 : ['forge_files_read', 'forge_edit', 'forge_shell'],
               next_step: outputArtifactId
-                ? `Full output in ${outputArtifactId} (forge_artifact_get). ${durabilityNextStep}`
-                : durabilityNextStep
+                ? `Full output in ${outputArtifactId} (forge_artifact_get). ${next}`
+                : next
             };
           }
           return {
@@ -230,7 +227,7 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
             allowedNextActions: readOnly
               ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
               : ['forge_files_read', 'forge_edit', 'forge_shell'],
-            next_step: durabilityNextStep
+            next_step: next
           };
         } catch (error) {
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
@@ -284,16 +281,16 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
             ...waited,
             remote_persisted: false,
             executor_filesystem: 'ephemeral',
-            next_step: 'Process finished without saving repository content. Continue with forge_shell or forge_workspace_get.'
+            next_step: durabilityNextStep('read_only')
           };
         }
         return {
           ...waited,
           remote_persisted: false,
           executor_filesystem: 'ephemeral',
-          persistence_notice: 'Process filesystem changes remain only in this executor session. Forge never converts them into GitHub edits.',
+          persistence_notice: durabilityNextStep('process_done'),
           next_step: exitCode === 0
-            ? 'Process finished. Executor filesystem changes are not saved. Call forge_edit with the intended content before claiming progress or forge_merge — do not treat exit 0 as a GitHub commit.'
+            ? durabilityNextStep('process_done')
             : 'Inspect forge_process_logs. Any partial filesystem changes remain ephemeral; use forge_edit only for changes you deliberately want to save.'
         };
       },

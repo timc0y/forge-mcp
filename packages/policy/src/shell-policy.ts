@@ -315,11 +315,17 @@ export function splitCommandSegments(command: string): SplitResult {
         continue;
       }
       // Redirection: the rest up to the next separator is a target filename, not
-      // a command. `>`/`>>` mean this segment writes a file.
+      // a command. `>`/`>>` mean this segment writes a file. `2>&1` / `>&2` are
+      // fd-to-fd and must not count as file writes (or ChatGPT cannot run tests).
       if (char === '>' || char === '<') {
-        if (char === '>') writesFile = true;
         index += 1;
-        if (input[index] === '>' || input[index] === '&') index += 1;
+        if (input[index] === '&') {
+          index += 1;
+          while (index < input.length && /\d/.test(input[index]!)) index += 1;
+          continue;
+        }
+        if (char === '>') writesFile = true;
+        if (input[index] === '>') index += 1;
         // Consume the redirection target.
         while (index < input.length && /\s/.test(input[index]!)) index += 1;
         while (
@@ -491,6 +497,15 @@ function rawGitLocalWriteDecision(kind: 'commit' | 'add'): ShellDecision {
   );
 }
 
+function repoFileWriteDecision(): ShellDecision {
+  return decide(
+    'prohibited',
+    false,
+    false,
+    'Shell must not write repository files. Call forge_files_read, then forge_edit (commit_url). Redirects, sed -i, and tee only mutate the ephemeral executor.'
+  );
+}
+
 /** Classify one already-split command segment. */
 function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, depth: number): ShellDecision {
   const raw = segment.text.trim();
@@ -562,11 +577,15 @@ function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, dep
   }
   // `sed -i` mutates in place; plain `sed` is a read-only filter.
   if (SED.test(trimmed)) {
-    return SED_IN_PLACE.test(trimmed)
-      ? decide('local_mutation', true, false, 'In-place stream edit confined to the isolated workspace.')
-      : decide(segment.writesFile ? 'local_mutation' : 'read_only', true, false, 'Read-only stream filter.');
+    if (SED_IN_PLACE.test(trimmed) || segment.writesFile) return repoFileWriteDecision();
+    return decide('read_only', true, false, 'Read-only stream filter.');
   }
-  if (!segment.writesFile && readOnly.some((rule) => rule.test(trimmed))) {
+  // Redirects / tee write files. ChatGPT treats exit 0 as “saved”; refuse and
+  // force forge_edit. Capture output via stdout (Forge spills large logs).
+  if (segment.writesFile || /\btee\b/i.test(trimmed) || /\bperl\b[^\n]*\s-i\b/i.test(trimmed)) {
+    return repoFileWriteDecision();
+  }
+  if (readOnly.some((rule) => rule.test(trimmed))) {
     return decide('read_only', true, false, 'Read-only workspace command.');
   }
   return decide('local_mutation', true, false, 'Command is confined to the isolated workspace.');

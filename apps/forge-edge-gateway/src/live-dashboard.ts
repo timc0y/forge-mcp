@@ -1,7 +1,7 @@
 import { ForgeError } from '@forge/core';
 import type { Env } from './env';
 import { getWebSession, hasForgeAccess, type UserRow } from './github';
-import { buildLiveWorkspaceList, buildWorkspaceObserverDetail, posthogLiveEmbedUrl } from './observer-api';
+import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from './observer-api';
 import { listWorkspaceActivity } from './workspace-activity';
 import { escapeHtml, page } from './ui';
 
@@ -88,13 +88,8 @@ export async function liveDashboardPage(request: Request, env: Env): Promise<Res
   } catch {
     return Response.redirect(`${env.FORGE_PUBLIC_ORIGIN}/login/github?return_to=${encodeURIComponent('/app/live')}`, 302);
   }
-  const embedUrl = posthogLiveEmbedUrl(env);
-  const posthogSection = embedUrl
-    ? `<section class="card" id="posthog"><h3>Optional PostHog charts</h3>
-<iframe class="ph-embed" title="PostHog MCP analytics" src="${escapeHtml(embedUrl)}" loading="lazy"></iframe>
-<p class="meta">Optional product charts only. Complete activity is the D1 trail above and <code>forge_observer_activity</code> (<code>payloads:true</code>).</p></section>`
-    : `<section class="card" id="activity-source"><h3>Complete activity log</h3>
-<p class="meta">Source of truth: D1 <code>mcp_tool_calls</code> (redacted request/response per tool) and <code>workspace_activity</code>. Read via this page or MCP <code>forge_observer_activity</code> with <code>payloads:true</code>. PostHog is optional and not required — set <code>FORGE_POSTHOG_LIVE_EMBED_URL</code> only if you want a separate sharing embed.</p></section>`;
+  const activitySource = `<section class="card" id="activity-source"><h3>Complete activity log</h3>
+<p class="meta">Source of truth: D1 <code>mcp_tool_calls</code> (redacted request/response per tool). Read here or via MCP <code>forge_observer_activity</code>.</p></section>`;
 
   return page({
     title: 'Forge — live activity',
@@ -115,7 +110,6 @@ export async function liveDashboardPage(request: Request, env: Env): Promise<Res
 .toolbar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:1rem 0}
 .toolbar small{color:var(--muted)}
 select{min-height:44px;padding:.4rem .6rem;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
-.ph-embed{width:100%;min-height:280px;border:0;border-radius:8px;background:var(--bg)}
 .status-live{color:var(--ok);font-size:.85rem}
 `,
     body: `<h1>Live activity</h1>
@@ -128,7 +122,7 @@ select{min-height:44px;padding:.4rem .6rem;border-radius:8px;border:1px solid va
 <section class="card" id="activity"><h3>Workspace MCP tools</h3><ul class="activity" id="activity-list"></ul></section>
 <section class="card" id="processes"><h3>Processes</h3><div id="process-list" class="meta">—</div></section>
 <section class="card" id="logs"><h3>Log tail</h3><pre class="log" id="log-tail">—</pre></section>
-${posthogSection}
+${activitySource}
 </div>
 <script>
 let selected = new URLSearchParams(location.search).get('workspace_id') || '';

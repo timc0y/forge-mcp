@@ -104,6 +104,19 @@ export function findActiveDependencyInstall(
 export const EXECUTOR_PROVISIONING_NEXT_STEP =
   'Call forge_workspace_get; if state is still provisioning or bootstrapping, wait a few seconds and call forge_workspace_get again until ready, then retry the same execution tool. Do not create a second workspace.';
 
+/**
+ * One durability recipe for ChatGPT. Soft “continue on the executor” wording
+ * licensed claiming shell exit 0 as saved work — this is the only next_step.
+ */
+export function durabilityNextStep(kind: 'mutating' | 'read_only' | 'process_done' = 'mutating'): string {
+  if (kind === 'read_only') {
+    return 'Repository truth is forge_files_read / forge_edit. Use forge_shell only to verify.';
+  }
+  if (kind === 'process_done') {
+    return 'Process finished. Executor files are ephemeral. Call forge_files_read on changed paths, then forge_edit (commit_url) before claiming progress.';
+  }
+  return 'Executor files are ephemeral. Call forge_files_read on changed paths, then forge_edit (commit_url). Do not treat exit 0 as saved.';
+}
 
 export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): string[] {
   const active = Object.entries(record.processes).filter(([, entry]) => !entry.completedAt);
@@ -552,8 +565,8 @@ export class ManagedProcesses {
       workspaceRevision: record.workspace.revision,
       allowedNextActions: ['forge_shell', 'forge_workspace_get', 'forge_process_logs'],
       next_step: entry?.mutatesFilesystem
-        ? 'Process finished. Its filesystem changes remain only in this ephemeral executor session; call forge_edit to save deliberate changes to GitHub before claiming progress.'
-        : 'Process finished. Continue with shell commands or forge_workspace_get.'
+        ? durabilityNextStep('process_done')
+        : durabilityNextStep('read_only')
     };
   }
 

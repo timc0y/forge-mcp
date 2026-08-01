@@ -9,7 +9,7 @@ import {
   type WorkspaceId
 } from '@forge/core';
 import { registerForgeToolsV1, type ToolCallTelemetry } from '@forge/mcp-adapter-v1';
-import { ToolCallTracker, hashArgs } from './telemetry';
+import { hashArgs } from './telemetry';
 import type { ForgeToolHandlers } from '@forge/mcp-core';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { D1AuditStore } from '@forge/audit';
@@ -69,16 +69,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     // it; this exists only so sessions opened before the widget was removed
     // stop rendering an unresolved placeholder. See legacy-widget.ts.
     registerLegacyWidgetStub(this.server);
-    const tracker = new ToolCallTracker(this.env, {
-      waitUntil: (p) => (this.ctx as unknown as { waitUntil?: (p: Promise<unknown>) => void })?.waitUntil?.(p)
-    });
     registerForgeToolsV1(this.server, this.withRepeatDetection(this.handlers()), (event) => {
-      void this.onToolCallTelemetry(tracker, event);
+      void this.onToolCallTelemetry(event);
     });
     this.registerPrompts();
   }
 
-  private async onToolCallTelemetry(tracker: ToolCallTracker, event: ToolCallTelemetry): Promise<void> {
+  private async onToolCallTelemetry(event: ToolCallTelemetry): Promise<void> {
     let identity: SessionProps;
     try {
       identity = this.identity();
@@ -92,21 +89,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     } catch {
       clientName = undefined;
     }
-    tracker.capture(
-      {
-        tool: event.tool,
-        distinctId: identity.tenantId,
-        sessionId: `${identity.tenantId}:${identity.projectId}`,
-        clientName,
-        durationMs: event.durationMs,
-        status: event.status,
-        errorCode: event.errorCode,
-        errorMessage: event.errorMessage,
-        resultBytes: event.resultBytes,
-        argsHash: await hashArgs(event.input)
-      },
-      Date.now()
-    );
     // Most workspace-scoped tools no longer take workspace_id as input (see
     // workspace-resolve.ts) — they resolve it from owner/repo/branch instead —
     // so it is no longer reliably on event.input. It is on event.result
@@ -119,6 +101,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       ? event.input.workspace_id.trim()
       : workspaceIdFromResult(event.result);
     const waitUntil = (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil;
+    const argsHash = await hashArgs(event.input);
     // The payload trail. Written alongside the counter so a failure can be
     // diagnosed from exactly what the agent sent and exactly what it read
     // back, without waiting for someone to reproduce it.
@@ -141,8 +124,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           (event.schemaDrift ? `Fields off declared shape: ${event.schemaDrift.join(', ')}` : undefined),
         request: event.input,
         response: event.result,
-        argsHash: await hashArgs(event.input)
-      }).catch(() => undefined)
+        argsHash
+      }).catch((error) => {
+        console.error('forge_tool_call_log_failed', { name: error instanceof Error ? error.name : 'unknown' });
+      })
     );
     waitUntil?.(
       appendWorkspaceActivity(this.env, {
@@ -153,7 +138,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         status: event.status,
         durationMs: event.durationMs,
         errorCode: event.errorCode
-      }).catch(() => undefined)
+      }).catch((error) => {
+        console.error('forge_workspace_activity_failed', { name: error instanceof Error ? error.name : 'unknown' });
+      })
     );
     if (workspaceId) {
       waitUntil?.(
@@ -162,7 +149,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           status: event.status,
           durationMs: event.durationMs,
           errorCode: event.errorCode
-        }).catch(() => undefined)
+        }).catch((error) => {
+          console.error('forge_live_activity_failed', { name: error instanceof Error ? error.name : 'unknown' });
+        })
       );
     }
   }

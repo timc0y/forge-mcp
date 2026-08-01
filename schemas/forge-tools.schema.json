@@ -54,7 +54,7 @@
     },
     "forge_observer_activity": {
       "title": "Observer: tool activity",
-      "description": "Read-only trail of MCP tool calls for this account. payloads:true returns what each call actually sent and received (secrets redacted, large values previewed); errors_only:true narrows to failures. Use it to see why agents are failing rather than only that they failed.",
+      "description": "Complete read-only trail of MCP tool calls (redacted request/response). Default returns payloads from mcp_tool_calls. Pass payloads:false for counters only; errors_only:true narrows to failures.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -66,7 +66,7 @@
             "$ref": "#/$defs/__schema0"
           },
           "payloads": {
-            "default": false,
+            "default": true,
             "type": "boolean"
           },
           "errors_only": {

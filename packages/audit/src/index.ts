@@ -9,9 +9,7 @@ export interface AuditStore { append(event: ForgeEvent): Promise<void>; }
  * own self-reported account and can drift from reality (an agent claiming a
  * task "complete" whose branch was never actually pushed, for example).
  * Deliberately narrow: only mutating, consequential actions get logged here
- * (see call sites), not every tool call — high-volume per-call telemetry
- * High-volume MCP tool telemetry is first-party D1 (`mcp_tool_calls`),
- * not this table.
+ * (see call sites). High-volume per-call telemetry is D1 `mcp_tool_calls`.
  */
 export class D1AuditStore implements AuditStore {
   constructor(private readonly db: { prepare: (sql: string) => { bind: (...args: unknown[]) => { run: () => Promise<unknown> } } }) {}

@@ -268,8 +268,8 @@ describe('ChatGPT conversation simulations', () => {
 
   it('Conv P — instructions name the default order and the forbidden inversions', () => {
     expect(FORGE_MCP_INSTRUCTIONS).toMatch(/forge_task_create[\s\S]*forge_workspace_create[\s\S]*forge_edit[\s\S]*forge_merge/);
-    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/never forge_edit\/shell\/preview\/merge before forge_workspace_create/);
-    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Never forge_workspace_create a second time/);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Never forge_edit\/shell\/preview\/merge before forge_workspace_create/);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/never forge_workspace_create a second time/i);
   });
 
   it('Conv Q — multi-turn UI: truncated read must not license whole-file overwrite', () => {
@@ -397,13 +397,15 @@ describe('ChatGPT conversation simulations', () => {
     ).toBe(true);
   });
 
-  it('Conv AA — spiral: shell sed/redirect is ephemeral; next_step forces forge_edit', () => {
-    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Save\/persist\/commit always means forge_edit/);
-    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/never shell redirects, sed -i, git add\/commit\/push/);
+  it('Conv AA — spiral: shell sed/redirect is refused; durabilityNextStep forces forge_edit', () => {
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Save = forge_edit only/);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Never shell redirects, sed -i, git add\/commit\/push/);
+    expect(classifyCommand('sed -i "s/a/b/" README.md', 'development').allowed).toBe(false);
+    expect(classifyCommand('echo x > README.md', 'development').allowed).toBe(false);
     expect(
       sourceMentions(
-        'apps/forge-edge-gateway/src/handlers/execution.ts',
-        /Do not claim the task is done from shell exit 0 alone/
+        'packages/application/src/managed-processes.ts',
+        /Do not treat exit 0 as saved/
       )
     ).toBe(true);
     expect(
@@ -423,7 +425,7 @@ describe('ChatGPT conversation simulations', () => {
       classification: 'prohibited',
       allowed: false
     });
-    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Never git add\/commit\/push/);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/git add\/commit\/push/);
   });
 
   it('Conv AC — spiral: missing deps still advertise forge_edit, not shell-only authoring', () => {
@@ -435,13 +437,7 @@ describe('ChatGPT conversation simulations', () => {
     ).toBe(true);
   });
 
-  it('Conv AD — activity log is first-party D1; PostHog embed is optional explicit URL only', () => {
-    expect(
-      sourceMentions(
-        'apps/forge-edge-gateway/src/observer-api.ts',
-        /return explicit \|\| null/
-      )
-    ).toBe(true);
+  it('Conv AD — activity log is D1 only; PostHog is gone', () => {
     expect(
       sourceMentions(
         'apps/forge-edge-gateway/src/live-dashboard.ts',
@@ -450,8 +446,14 @@ describe('ChatGPT conversation simulations', () => {
     ).toBe(true);
     expect(
       sourceMentions(
-        'apps/forge-edge-gateway/src/observer-api.ts',
-        /FORGE_POSTHOG_PROJECT_ID/
+        'apps/forge-edge-gateway/src/telemetry.ts',
+        /ToolCallTracker|posthog|POSTHOG/
+      )
+    ).toBe(false);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/env.ts',
+        /POSTHOG/
       )
     ).toBe(false);
   });

@@ -74,19 +74,16 @@ these next:
 
 | Spiral | Agent invention | Fix |
 | --- | --- | --- |
-| `sed` / redirects / heredoc via shell | “Done” without GitHub | Sync shell always `next_step` → `forge_edit`; no “continue with shell” escape hatch |
-| `git commit` / `git add` in shell | “Committed” | Prohibited like push; steer `forge_edit` + `commit_url` |
-| Green tests on executor-only edits | Feature shipped | Guidance: require `forge_edit` `commit_url` for code changes |
+| `sed` / redirects / `tee` via shell | “Done” without GitHub | **Hard refuse** → forge_edit |
+| `git commit` / `git add` in shell | “Committed” | Prohibited like push |
+| Green tests on executor-only edits | Feature shipped | Guidance: require `forge_edit` `commit_url` |
 | Missing deps → shell-only `allowedNextActions` | Author via shell while installing | Always include `forge_files_read` / `forge_edit` |
-| Shell `cat` as repo truth | Invented contents | Guidance: truth is `forge_files_read` / `forge_diff_metadata` |
+| Soft “continue with ephemeral files” | Skip forge_edit | Single `durabilityNextStep()` recipe |
 
-## Activity logging (PostHog)
+## Activity logging
 
-PostHog’s auto-embed (`POSTHOG_HOST` + numeric project id) was broken and is
-removed. Complete activity is first-party D1 (`mcp_tool_calls` with redacted
-payloads + `workspace_activity`), surfaced on `/app/live` and
-`forge_observer_activity`. PostHog capture remains optional metadata only;
-embed only if `FORGE_POSTHOG_LIVE_EMBED_URL` is an explicit sharing URL.
+PostHog removed. Complete activity is D1 `mcp_tool_calls` (default for
+`forge_observer_activity`) + `/app/live`.
 
 ## Still open (not fixed here)
 
@@ -94,7 +91,5 @@ embed only if `FORGE_POSTHOG_LIVE_EMBED_URL` is an explicit sharing URL.
   “not ready” rather than a success receipt with `operation_id` + poll interval.
 - ~140 allowlisted `ForgeError` sites without cause + next action.
 - Large tools/list catalog cost.
-- Soft allow of non-git file mutations via shell (still ephemeral + steered;
-  hard refuse of all redirects would also block legitimate test fixtures).
 
 Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–AD).

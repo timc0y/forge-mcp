@@ -511,7 +511,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         // conservative and flags shell constructs that only ever print, so an
         // agent meets this for a harmless command and has no way to know the
         // fix is simply to drop the parameter.
-        message: 'This command was classified as possibly mutating, so mode:read_only was refused. Nothing ran. If it is safe to let it write, call forge_shell again without mode. Any files it changes will remain only in the ephemeral executor until you deliberately save them with forge_edit.',
+        message: 'This command was classified as possibly mutating, so mode:read_only was refused. Nothing ran. Drop mode:read_only only for verification commands you intend to run; never use forge_shell to write repository files — call forge_files_read then forge_edit.',
         retryable: false,
         details: { classification: shellDecision.classification, allowedNextActions: ['forge_shell'] }
       });
