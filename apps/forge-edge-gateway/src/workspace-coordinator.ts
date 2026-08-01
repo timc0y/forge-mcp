@@ -2,7 +2,9 @@ import { DurableObject } from 'cloudflare:workers';
 import {
   ForgeApplicationService,
   dependencyStateView,
+  EXECUTOR_PROVISIONING_NEXT_STEP,
   managedProcessStatus,
+  observationalWaitNextStep,
   workspaceAllowedNextActions,
   type CreateWorkspaceInput,
   type WorkspaceRuntimeRecord
@@ -33,7 +35,7 @@ function nextStepForWorkspace(
     return 'GitHub branch is ready. Use forge_files_read and forge_edit now; the first forge_shell starts the ephemeral executor.';
   }
   if (state === 'provisioning' || state === 'bootstrapping') {
-    return 'The ephemeral executor is still starting. Retry forge_workspace_get until state is ready, then retry the execution tool.';
+    return `The ephemeral executor is still starting. ${EXECUTOR_PROVISIONING_NEXT_STEP}`;
   }
   if (state === 'failed') {
     return 'Workspace provisioning failed. Call forge_workspace_create again; this is not a repository permission problem.';
@@ -570,7 +572,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           },
           next_step: entry?.completedAt
             ? `Managed process ${processId} already finished with exit ${entry.exitCode ?? 1}.`
-            : `Call forge_process_wait with process_id ${processId} (use a timeout_ms of at least 600000 for large installs), then continue with shell commands.`,
+            : observationalWaitNextStep(processId),
           allowedNextActions: entry?.completedAt
             ? ['forge_process_list', 'forge_shell', 'forge_workspace_get']
             : ['forge_process_wait', 'forge_process_logs', 'forge_process_list']

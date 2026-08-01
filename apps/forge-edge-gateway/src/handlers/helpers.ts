@@ -4,6 +4,7 @@ import { D1TaskStore } from '@forge/metadata-d1';
 import type { BrowserActionStep } from '@forge/browser-core';
 import type { CommandClass } from '@forge/policy';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
+import { EXECUTOR_PROVISIONING_NEXT_STEP } from '@forge/application';
 import type { Env } from '../env';
 import { workspaceOperations, type WorkspaceOperations } from '../workspace-operations';
 import type { HandlerIdentity } from './types';
@@ -364,12 +365,13 @@ export async function executorCoordinator(
     }
     throw new ForgeError({
       code: 'FORGE_WORKSPACE_NOT_READY',
-      message: 'The ephemeral executor is starting because this is the first execution tool used for the workspace. No command ran; retry this same tool after forge_workspace_get reports ready.',
+      message: `The ephemeral executor is starting because this is the first execution tool used for the workspace. No command ran. Call forge_workspace_get; if state is still provisioning or bootstrapping, wait a few seconds and call forge_workspace_get again until ready, then retry the same execution tool. Do not create a second workspace.`,
       retryable: true,
       details: {
         workspace_id: workspaceId,
         operation_id: binding.operationId,
         state: 'provisioning',
+        next_step: EXECUTOR_PROVISIONING_NEXT_STEP,
         allowedNextActions: ['forge_workspace_get']
       }
     });
@@ -378,15 +380,21 @@ export async function executorCoordinator(
   if (binding.state === 'provisioning' || binding.state === 'bootstrapping') {
     throw new ForgeError({
       code: 'FORGE_WORKSPACE_NOT_READY',
-      message: `The ephemeral executor cannot run this tool because it is still ${binding.state}. No command ran; retry after forge_workspace_get reports ready.`,
+      message: `The ephemeral executor cannot run this tool because it is still ${binding.state}. No command ran. Call forge_workspace_get; if state is still provisioning or bootstrapping, wait a few seconds and call forge_workspace_get again until ready, then retry the same execution tool. Do not create a second workspace.`,
       retryable: true,
-      details: { workspace_id: workspaceId, operation_id: binding.operationId, state: binding.state, allowedNextActions: ['forge_workspace_get'] }
+      details: {
+        workspace_id: workspaceId,
+        operation_id: binding.operationId,
+        state: binding.state,
+        next_step: EXECUTOR_PROVISIONING_NEXT_STEP,
+        allowedNextActions: ['forge_workspace_get']
+      }
     });
   }
 
   throw new ForgeError({
     code: 'FORGE_WORKSPACE_NOT_READY',
-    message: `The ephemeral executor cannot run this tool because the workspace is ${binding.state}. No command ran; inspect forge_workspace_get before retrying.`,
+    message: `The ephemeral executor cannot run this tool because the workspace is ${binding.state}. No command ran; inspect forge_workspace_get before retrying. Do not create a second workspace.`,
     retryable: false,
     details: { workspace_id: workspaceId, operation_id: binding.operationId, state: binding.state, allowedNextActions: ['forge_workspace_get'] }
   });

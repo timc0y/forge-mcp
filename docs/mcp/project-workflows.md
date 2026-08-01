@@ -61,6 +61,14 @@ existing workspace — do not open a second one for the same repository task.
 `forge_workspace_create` returning `requested` / `executor_state: not_loaded` is
 healthy. Read and edit immediately; compute starts on the first execution tool.
 
+If the first shell/install/preview says the executor is still starting, poll
+`forge_workspace_get` every few seconds until `ready`, then retry **that same**
+tool. Do not open a second workspace.
+
+Installs and long commands: each `forge_process_wait` observes for at most 30s.
+`timedOut:true` means call wait again with the same `process_id` — never raise
+the wait toward 600000 or restart the process.
+
 ## Related
 
 - [Agent execution playbook](./agent-execution-playbook.md)

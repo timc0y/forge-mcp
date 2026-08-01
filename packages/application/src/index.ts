@@ -26,6 +26,7 @@ import {
   ManagedProcesses,
   dependencyStateView,
   managedProcessStatus,
+  observationalWaitNextStep,
   workspaceAllowedNextActions
 } from './managed-processes.js';
 import { RepositoryInspection, type RepositoryInspectionResult } from './repository-inspection.js';
@@ -36,6 +37,9 @@ export {
   managedProcessStatus,
   workspaceAllowedNextActions,
   LAZY_REQUESTED_NEXT_ACTIONS,
+  OBSERVATIONAL_WAIT_MS,
+  observationalWaitNextStep,
+  EXECUTOR_PROVISIONING_NEXT_STEP,
   type DependencyStateView
 } from './managed-processes.js';
 
@@ -621,7 +625,7 @@ export class ForgeApplicationService {
             },
             next_step: entry.completedAt
               ? `Managed process ${processId} already finished with exit ${entry.exitCode ?? 1}.`
-              : `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for large installs).`,
+              : observationalWaitNextStep(processId),
             allowedNextActions: entry.completedAt
               ? ['forge_process_list', 'forge_shell', 'forge_workspace_get']
               : ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
@@ -841,7 +845,7 @@ export class ForgeApplicationService {
         operationId: prior?.operationId ?? record.idempotency[input.idempotencyKey]?.operationId ?? ids.operation(),
         workspaceRevision: record.workspace.revision,
         allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
-        next_step: `An install is already running as ${activeProcessId}. Call forge_process_wait with timeout_ms >= 600000 — do not start another install.`
+        next_step: observationalWaitNextStep(activeProcessId, { alreadyRunning: true })
       };
     }
 

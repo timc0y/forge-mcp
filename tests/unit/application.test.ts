@@ -1091,7 +1091,9 @@ describe('Forge application service', () => {
       reusedActiveProcess: true,
       processId: first.value.id
     });
-    expect(second.next_step).toMatch(/do not start another install/i);
+    expect(second.next_step).toMatch(/do not start another install|already running/i);
+    expect(second.next_step).not.toMatch(/600000/);
+    expect(second.next_step).toMatch(/at most 30000/);
   });
 
   it('returns host-safe running status when deps install outlives the short wait', async () => {

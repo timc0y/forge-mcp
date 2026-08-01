@@ -54,6 +54,35 @@ export const LAZY_REQUESTED_NEXT_ACTIONS = [
   'forge_workspace_get'
 ] as const;
 
+/** Host transport aborts near 60s; each wait observes at most this long. */
+export const OBSERVATIONAL_WAIT_MS = 30_000;
+
+/**
+ * ChatGPT previously treated install start guidance that said
+ * `timeout_ms >= 600000` as a single long wait. That exceeds the MCP transport
+ * and contradicts forge_process_wait's 30s max — agents then restarted installs
+ * or invented larger waits. One shared recipe only.
+ */
+export function observationalWaitNextStep(
+  processId: string,
+  options: { alreadyRunning?: boolean; suggestedTimeoutMs?: number } = {}
+): string {
+  const budget = options.suggestedTimeoutMs ?? OBSERVATIONAL_WAIT_MS;
+  const prefix = options.alreadyRunning
+    ? `An install is already running as ${processId}. Do not start another install. `
+    : '';
+  return (
+    `${prefix}Call forge_process_wait with process_id ${processId} and timeout_ms at most ${budget}. ` +
+    `If timedOut:true, call forge_process_wait again with the same process_id — each call only observes; ` +
+    `never restart the process or raise the wait above ${budget}.`
+  );
+}
+
+/** First-execution wake / mid-provision poll recipe. Avoids duplicate workspaces. */
+export const EXECUTOR_PROVISIONING_NEXT_STEP =
+  'Call forge_workspace_get; if state is still provisioning or bootstrapping, wait a few seconds and call forge_workspace_get again until ready, then retry the same execution tool. Do not create a second workspace.';
+
+
 export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): string[] {
   const active = Object.entries(record.processes).filter(([, entry]) => !entry.completedAt);
   if (active.length > 0) {

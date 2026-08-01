@@ -49,6 +49,13 @@ lazy-create outcome. Agents should read and edit through GitHub immediately;
 only shell, install, build, test, preview, or deploy calls allocate the
 ephemeral executor. Do not treat that receipt as a hung provisioner.
 
+When the first execution tool wakes the executor, Forge may return
+`FORGE_WORKSPACE_NOT_READY` with a shared poll recipe: call
+`forge_workspace_get` until `ready`, then retry **that same** tool. Do not open
+a second workspace. Long installs never ask for a single multi-minute
+`forge_process_wait` — each wait observes at most 30 seconds; `timedOut:true`
+means observe again with the same `process_id`.
+
 The first shell, install, build, test, dev, preview, or deploy call allocates an
 ephemeral executor and materializes the selected GitHub commit. Managed process
 waits are bounded observations; `timedOut:true` never stops or restarts the
