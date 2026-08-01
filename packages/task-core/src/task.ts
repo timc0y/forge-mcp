@@ -111,8 +111,6 @@ export interface Task {
   remoteBranchSha?: string;
   /** ISO timestamp when work was staged for deferred review (forge/staged). */
   submittedAt?: string;
-  /** @deprecated Use remoteBranchSha — kept for older task documents. */
-  pushedAt?: string;
   /** Structured handoff note saved by an agent to allow a fresh session to resume. */
   handoff?: TaskHandoff;
   state: TaskState;

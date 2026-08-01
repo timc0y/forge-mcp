@@ -271,20 +271,23 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
           // tenant, so a cross-tenant read is already impossible — but the key
           // carries no project, so a same-tenant caller in a different project
           // could otherwise read a url_review artifact by guessing the (random)
-          // workspace and artifact ids. If a binding was recorded at review
-          // time, it is authoritative: assert both tenant AND project match.
+          // workspace and artifact ids. A binding recorded at review time is
+          // required: assert both tenant AND project match.
           const owner = await lookupUrlReviewOwner(env, workspaceId);
-          if (owner && (owner.tenantId !== identity.tenantId || owner.projectId !== identity.projectId)) {
+          if (!owner) {
+            throw new ForgeError({
+              code: 'FORGE_PERMISSION_DENIED',
+              message: 'This url_review workspace has no project binding. Call forge_review again from this project — it mints a fresh workspace and artifacts you can fetch.',
+              retryable: false
+            });
+          }
+          if (owner.tenantId !== identity.tenantId || owner.projectId !== identity.projectId) {
             throw new ForgeError({
               code: 'FORGE_PERMISSION_DENIED',
               message: 'This url_review artifact belongs to a different project. Call forge_review again from this project — it mints a fresh workspace and artifacts you can fetch.',
               retryable: false
             });
           }
-          // owner === null means no binding on record (pre-migration workspace or
-          // a best-effort write that did not land): fall back to the tenant-scoped
-          // R2 key path. Residual risk: same-tenant cross-project reads of such
-          // legacy/unbound workspaces remain key-shape authorized only.
         }
         const object = await env.ARTIFACTS.get(
           `tenant/${identity.tenantId}/workspace/${workspaceId}/artifacts/${artifactId}`

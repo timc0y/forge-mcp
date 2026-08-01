@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { REMOVED_TOOLS, forgeTools } from '@forge/mcp-core';
+import { forgeTools } from '@forge/mcp-core';
 import { branchPolicyFor, isAgentForgeBranch } from '../../packages/policy/src/branch-policy';
 
 describe('branch policy for agents', () => {
@@ -24,7 +24,6 @@ describe('branch policy for agents', () => {
     expect(named.length).toBeGreaterThan(0);
     const live = new Set(forgeTools.map((tool) => tool.name));
     for (const tool of named) {
-      expect(REMOVED_TOOLS, `${tool} is a tombstone`).not.toHaveProperty(tool);
       expect(live, `${tool} is not in the catalog`).toContain(tool);
     }
   });

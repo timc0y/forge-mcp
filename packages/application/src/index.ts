@@ -838,22 +838,6 @@ export class ForgeApplicationService {
     // install continues as a managed process; the agent finishes with process_wait.
     const hostSafeWaitMs = Math.min(input.hostSafeWaitMs ?? 25_000, timeoutMs, 45_000);
     const prior = record.idempotency[input.idempotencyKey];
-    // Legacy sync-install idempotency entries have no processId; return the
-    // recorded dependency state instead of starting a second install.
-    if (prior && !prior.processId) {
-      return {
-        replay: true,
-        replayed: true,
-        idempotencyKey: input.idempotencyKey,
-        originalOperationId: prior.operationId,
-        workspaceId: record.workspace.id,
-        operationId: prior.operationId,
-        dependencyState: dependencyStateView(record.dependencyState),
-        workspaceRevision: record.workspace.revision,
-        allowedNextActions: workspaceAllowedNextActions(record),
-        next_step: 'Dependencies install already recorded. Inspect forge_workspace_get before starting another install.'
-      };
-    }
 
     await this.syncProcessLifecycle(record).catch(() => undefined);
     const activeInstall = findActiveDependencyInstall(record);

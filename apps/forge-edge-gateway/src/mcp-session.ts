@@ -29,7 +29,6 @@ import type { Env } from './env';
 import { workspaceOperations } from './workspace-operations';
 import { credentialService } from './credentials';
 import { reclaimStaleSlots, slotTtlMs } from './capacity';
-import { registerLegacyWidgetStub } from './legacy-widget';
 import {
   completeApproval,
   markApprovalApproved,
@@ -47,6 +46,7 @@ import { executionToolHandlers } from './handlers/execution';
 import type { HandlerIdentity as SessionProps, SessionHandlerDependencies } from './handlers/types';
 import { sha256 } from './handlers/helpers';
 import { FORGE_MCP_INSTRUCTIONS, FORGE_PROMPT_HINTS } from './mcp-guidance';
+import { isWorkspaceId } from './workspace-resolve';
 
 const SELECTED_CREDENTIAL_PROFILE_KEY = 'selected-credential-profile';
 const PROGRESS_POTENTIAL_KEY = 'forge_progress_potential_v1';
@@ -91,10 +91,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   );
 
   async init(): Promise<void> {
-    // Resolves the retired widget URI to an empty document. No tool advertises
-    // it; this exists only so sessions opened before the widget was removed
-    // stop rendering an unresolved placeholder. See legacy-widget.ts.
-    registerLegacyWidgetStub(this.server);
     registerForgeToolsV1(
       this.server,
       this.withProgressPotential(this.withRepeatDetection(this.handlers())),
@@ -119,16 +115,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     } catch {
       clientName = undefined;
     }
-    // Most workspace-scoped tools no longer take workspace_id as input (see
-    // workspace-resolve.ts) — they resolve it from owner/repo/branch instead —
-    // so it is no longer reliably on event.input. It is on event.result
-    // instead: every workspace-scoped handler still returns workspace_id or
-    // workspaceId to the caller as a receipt (see invariant A's allowlist
-    // decision), and this audit trail is exactly what forge_observer_activity
-    // filters by workspace, so losing that association here would make that
-    // tool worse at the one job it exists for.
-    const workspaceId = (typeof event.input.workspace_id === 'string' && event.input.workspace_id.trim())
-      ? event.input.workspace_id.trim()
+    // Workspace-scoped tools address via `workspace` (owner/repo#branch, bare
+    // branch, or a ws_ id) — not a dedicated workspace_id input. Prefer a ws_
+    // locator when the caller passed one; otherwise recover from the result
+    // receipt (every workspace-scoped handler still returns workspace_id /
+    // workspaceId). That association is what forge_observer_activity filters by.
+    const rawWorkspace = typeof event.input.workspace === 'string' ? event.input.workspace.trim() : '';
+    const workspaceId = (rawWorkspace && isWorkspaceId(rawWorkspace))
+      ? rawWorkspace
       : workspaceIdFromResult(event.result);
     const waitUntil = (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil;
     const argsHash = await hashArgs(event.input);

@@ -268,7 +268,7 @@ export function taskToolHandlers(env: Env, deps: TaskHandlerDependencies): Pick<
             outcome: updated.state,
             forced: force,
             note: input.note ? text(input.note) : undefined,
-            pushedAt: updated.pushedAt,
+            remoteBranchSha: updated.remoteBranchSha,
             changedFileCount: updated.changedFiles.length
           },
           { workspaceId: updated.workspaceId }

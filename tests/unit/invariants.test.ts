@@ -54,7 +54,6 @@ describe('invariant B (schema defaults resolve to somewhere real)', () => {
 describe('invariant D (no agent-facing string names a dead or unknown tool)', () => {
   it('is still covered by tests/unit/guidance-integrity.test.ts, not duplicated here', () => {
     const source = readFileSync(join(process.cwd(), 'tests/unit/guidance-integrity.test.ts'), 'utf8');
-    expect(source).toContain('never sends an agent to a tool that no longer exists');
     expect(source).toContain('only ever names tools that are actually in the catalog');
   });
 });

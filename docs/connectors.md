@@ -60,21 +60,12 @@ Session-JWT signing can be split from capability-token signing via the
 No tool carries `_meta.ui` or `_meta['openai/outputTemplate']`, so tool results
 render as the host's own plain text/structured output.
 
-One `ui://` resource still resolves — `ui://forge/workspace-console`, an empty
-document (`legacy-widget.ts`). Nothing advertises it. It exists because ChatGPT
-caches tool metadata for the life of a connection: a session opened while the
-widget was still advertised keeps requesting that URI on every tool result, and
-once the resource was deleted the host sat on an unresolved skeleton card — one
-per tool call. Answering with an empty document collapses it to nothing, which
-is what a fresh session shows. Safe to delete once no client can still hold
-metadata from before the widget was dropped.
-
-There was previously a `ui://forge/workspace-console` widget that shape-detected
-the last tool's output and drew repository cards, Parallax evidence galleries,
-diff viewers and scorecards. It was removed: it rendered unreliably across
-hosts, and where it did render it showed a large amount of chrome around
-information the model was already stating in chat. The only `_meta` the adapter
-still emits is:
+There was previously an in-chat MCP Apps widget that shape-detected the last
+tool's output and drew repository cards, Parallax evidence galleries, diff
+viewers and scorecards. It was removed: it rendered unreliably across hosts,
+and where it did render it showed a large amount of chrome around information
+the model was already stating in chat. The only `_meta` the adapter still emits
+is:
 
 - `_meta['openai/toolInvocation/{invoking,invoked}']` — short (≤64 char) status
   strings, plain text, no component.

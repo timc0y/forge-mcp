@@ -19,8 +19,6 @@ import type { Env } from './env';
 import { repositoryCloneSource } from './github';
 
 const RECORD_KEY = 'workspace-runtime';
-// Legacy key from a removed mutation-lease mechanism; still cleared on destroy.
-const LEASE_KEY = 'mutation-lease';
 // How long a healthy checkout probe result stays trusted before repoRecord()
 // re-runs the `test -d .git` container round-trip. During bursts of repo-scoped
 // tool calls this collapses the redundant PRE-probe; the downstream self-heal
@@ -1308,9 +1306,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
-        const value = await this.app.completeDestroy(record);
-        await this.ctx.storage.delete(LEASE_KEY);
-        return value;
+        return await this.app.completeDestroy(record);
       } finally {
         await this.save(record);
       }

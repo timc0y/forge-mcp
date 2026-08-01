@@ -190,8 +190,7 @@ export async function lookupUrlReviewOwner(
     if (!row) return null;
     return { tenantId: row.tenant_id, projectId: row.project_id };
   } catch (error) {
-    // Table not migrated yet, or a transient DB error: fall back to the
-    // (already tenant-scoped) R2 key path rather than failing every read.
+    // Table missing or transient DB error: treat as unbound so the caller denies.
     console.warn('forge_url_review_binding_read_failed', {
       workspaceId,
       reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
@@ -487,7 +486,6 @@ export async function recordTaskRemoteSha(env: Env, workspaceId: WorkspaceId, re
     await new D1TaskStore(env.METADATA).put({
       ...task,
       remoteBranchSha: remoteSha,
-      pushedAt: now,
       updatedAt: now
     });
   }).catch(() => undefined);

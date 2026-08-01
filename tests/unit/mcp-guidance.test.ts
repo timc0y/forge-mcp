@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { forgeTools, REMOVED_TOOLS } from '@forge/mcp-core';
+import { forgeTools } from '@forge/mcp-core';
 import {
   FORGE_MCP_INSTRUCTIONS,
   FORGE_PROMPT_HINTS,
@@ -30,7 +30,6 @@ describe('mcp project-workflow guidance', () => {
 
   it('keeps server instructions and prompt recipes on live tools only', () => {
     const live = new Set(forgeTools.map((tool) => tool.name));
-    const removed = new Set(Object.keys(REMOVED_TOOLS));
     const samples = [
       FORGE_MCP_INSTRUCTIONS,
       ...PROMPT_NAMES.map((name) =>
@@ -50,7 +49,7 @@ describe('mcp project-workflow guidance', () => {
     const offences: string[] = [];
     for (const sample of samples) {
       for (const named of namedTools(sample)) {
-        if (removed.has(named) || !live.has(named)) offences.push(named);
+        if (!live.has(named)) offences.push(named);
       }
     }
     expect(offences).toEqual([]);
