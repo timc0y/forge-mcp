@@ -56,7 +56,6 @@ export {
   extendWitnessChain,
   shannonEntropyBits,
   emptyProgressStreak,
-  normalizeProgressStreak,
   phiFromReceipt,
   witnessIdFromReceipt,
   observeProgressEvent,

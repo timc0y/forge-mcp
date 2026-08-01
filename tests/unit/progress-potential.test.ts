@@ -205,7 +205,7 @@ describe('Durable Progress Potential (Φ-gate)', () => {
     expect(phiFromReceipt({ exitCode: 0 })).toBeUndefined();
 
     expect(
-      witnessIdFromReceipt('forge_edit', { remoteSha: 'deadbeef' })
+      witnessIdFromReceipt('forge_edit', { remote_sha: 'deadbeef' })
     ).toBe('deadbeef');
     expect(
       witnessIdFromReceipt('forge_cloudflare_deploy', {
@@ -260,24 +260,5 @@ describe('Durable Progress Potential (Φ-gate)', () => {
     expect(view.witness_depth).toBe(1);
     expect(view.witness_tip).toBe(state.witnessTip);
     expect(view.phi).toBe('cccccccc');
-  });
-
-  it('normalizes legacy session payloads missing verify/witness fields', () => {
-    const legacy = {
-      phi: 'aaaaaaaa',
-      streak: 2,
-      recent: ['forge_shell:x'],
-      updatedAt: '2026-01-01T00:00:00.000Z'
-    } as ReturnType<typeof emptyProgressStreak>;
-    const next = observeProgressEvent(legacy, {
-      tool: 'forge_shell',
-      durableWitness: false,
-      argsHash: 'y',
-      status: 'success'
-    });
-    expect(next.verifyBudget).toBe(0);
-    expect(next.witnessDepth).toBe(0);
-    expect(next.streak).toBe(3);
-    expect(progressGate(legacy, 'forge_shell').allow).toBe(true);
   });
 });

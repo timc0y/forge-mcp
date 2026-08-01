@@ -177,31 +177,6 @@ export function emptyProgressStreak(now = new Date().toISOString()): ProgressStr
   };
 }
 
-/** Coerce session DO payloads written before verify-budget / causal chain. */
-export function normalizeProgressStreak(
-  raw: ProgressStreakState | null | undefined,
-  now = new Date().toISOString()
-): ProgressStreakState {
-  if (!raw) return emptyProgressStreak(now);
-  return {
-    phi: typeof raw.phi === 'string' ? raw.phi : '',
-    streak: typeof raw.streak === 'number' && Number.isFinite(raw.streak) ? raw.streak : 0,
-    verifyBudget:
-      typeof raw.verifyBudget === 'number' && Number.isFinite(raw.verifyBudget)
-        ? Math.max(0, raw.verifyBudget)
-        : 0,
-    witnessTip: typeof raw.witnessTip === 'string' ? raw.witnessTip : '',
-    witnessDepth:
-      typeof raw.witnessDepth === 'number' && Number.isFinite(raw.witnessDepth)
-        ? Math.max(0, raw.witnessDepth)
-        : 0,
-    recent: Array.isArray(raw.recent)
-      ? raw.recent.filter((item): item is string => typeof item === 'string')
-      : [],
-    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now
-  };
-}
-
 function unwrapStructured(result: unknown): Record<string, unknown> {
   if (!result || typeof result !== 'object') return {};
   const record = result as Record<string, unknown>;
@@ -220,14 +195,10 @@ export function phiFromReceipt(result: unknown): string | undefined {
   const deps =
     s.dependencyState && typeof s.dependencyState === 'object'
       ? (s.dependencyState as { status?: string }).status
-      : typeof s.depsStatus === 'string'
-        ? s.depsStatus
-        : undefined;
+      : undefined;
   const head =
     (typeof s.currentCommit === 'string' && s.currentCommit) ||
-    (typeof s.remoteSha === 'string' && s.remoteSha) ||
     (typeof s.remote_sha === 'string' && s.remote_sha) ||
-    (typeof s.head === 'string' && s.head) ||
     undefined;
   const branch =
     (typeof s.currentBranch === 'string' && s.currentBranch) ||
@@ -250,7 +221,7 @@ export function phiFromReceipt(result: unknown): string | undefined {
 export function witnessIdFromReceipt(tool: string, result: unknown): string | undefined {
   const s = unwrapStructured(result);
   if (tool === 'forge_edit') {
-    const id = s.remoteSha ?? s.remote_sha ?? s.commit_url;
+    const id = s.remote_sha ?? s.commit_url;
     return typeof id === 'string' ? id : undefined;
   }
   if (tool === 'forge_merge') {
@@ -292,7 +263,7 @@ export function observeProgressEvent(
   event: ProgressObservation,
   now = new Date().toISOString()
 ): ProgressStreakState {
-  const state = normalizeProgressStreak(prev, now);
+  const state = prev ?? emptyProgressStreak(now);
   const kind = classifyToolProgress(event.tool);
   const phiMoved = Boolean(event.phiNow && state.phi && event.phiNow !== state.phi);
   const witness = event.durableWitness || phiMoved;
@@ -353,17 +324,17 @@ export function progressGate(
   const kind = classifyToolProgress(tool);
   if (kind === 'observational') return { allow: true };
 
-  const normalized = normalizeProgressStreak(state);
+  const s = state ?? emptyProgressStreak();
 
   // Verify-budget means the last witness bought legitimate follow-up work.
-  if (normalized.verifyBudget > 0) return { allow: true };
+  if (s.verifyBudget > 0) return { allow: true };
 
   const limit = options.limit ?? PROGRESS_STREAK_LIMIT;
   const thrashBits = options.thrashBits ?? PROGRESS_ENTROPY_THRASH_BITS;
-  const streak = normalized.streak;
-  const entropy = shannonEntropyBits(normalized.recent);
+  const streak = s.streak;
+  const entropy = shannonEntropyBits(s.recent);
   const thrash =
-    normalized.recent.length >= PROGRESS_ENTROPY_WINDOW &&
+    s.recent.length >= PROGRESS_ENTROPY_WINDOW &&
     entropy >= thrashBits &&
     streak >= Math.max(2, limit - 1);
 
@@ -376,8 +347,8 @@ export function progressGate(
       next_step:
         `Progress potential Φ has not moved for ${streak} progress-seeking calls` +
         (thrash ? ` (tool-stream entropy ${entropy.toFixed(2)} bits)` : '') +
-        (normalized.witnessDepth
-          ? ` (causal certificate depth ${normalized.witnessDepth}, tip ${normalized.witnessTip || '∅'})`
+        (s.witnessDepth
+          ? ` (causal certificate depth ${s.witnessDepth}, tip ${s.witnessTip || '∅'})`
           : ' (no durable witness yet in this session)') +
         `. ${durabilityNextStep('mutating')} Do not repeat forge_shell/preview/merge until forge_edit returns commit_url.`
     };
@@ -403,7 +374,7 @@ export function detectDurableWitness(tool: string, result: unknown): boolean {
   const structured = unwrapStructured(result);
 
   if (tool === 'forge_edit') {
-    if (structured.commit_url || structured.remoteSha || structured.remote_sha) return true;
+    if (structured.commit_url || structured.remote_sha) return true;
     if (structured.on_remote === true) return true;
   }
   if (tool === 'forge_merge' && (structured.submitted === true || structured.submission_receipt)) return true;
@@ -435,7 +406,7 @@ export function progressPotentialView(state: ProgressStreakState | null): {
   witness_tip: string;
   witness_depth: number;
 } {
-  const s = normalizeProgressStreak(state);
+  const s = state ?? emptyProgressStreak();
   return {
     streak: s.streak,
     limit: PROGRESS_STREAK_LIMIT,
