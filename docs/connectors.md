@@ -108,6 +108,12 @@ Official docs: <https://claude.com/docs/connectors>,
 4. Authorize the GitHub App (`forge-mcp-cloud` in the hosted pilot) against
    the repositories you want Forge to work on.
 
+Once connected, use the recipes in
+[project workflows](mcp/project-workflows.md) — plan, iterate UI, fix bugs, and
+resume after a compressed ChatGPT session. The MCP server also exposes prompts
+`plan-work`, `iterate-ui`, `fix-bug`, `resume-task`, `start-task`,
+`review-live-url`, and `prepare-draft-pr`.
+
 ## Environment variables referenced
 
 - `FORGE_PUBLIC_ORIGIN` — canonical origin (issuer, approval/preview URLs).

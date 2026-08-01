@@ -38,6 +38,7 @@ import { repositoryWorkspaceToolHandlers } from './handlers/repository-workspace
 import { executionToolHandlers } from './handlers/execution';
 import type { HandlerIdentity as SessionProps, SessionHandlerDependencies } from './handlers/types';
 import { sha256 } from './handlers/helpers';
+import { FORGE_MCP_INSTRUCTIONS, FORGE_PROMPT_HINTS } from './mcp-guidance';
 
 const SELECTED_CREDENTIAL_PROFILE_KEY = 'selected-credential-profile';
 
@@ -59,15 +60,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   server = new McpServer(
     { name: 'Forge MCP', version: '0.1.0' },
     {
-      instructions: [
-        'Forge has two planes. GitHub is the durable repository: forge_edit commits straight to your branch. The optional executor runs commands; files those commands change are local-only and disposable until you deliberately recreate them with forge_edit.',
-        '1. forge_workspace_create — it cuts your branch for you. You never choose, create or switch branches. Optional: call forge_start first and pass its branch as ref — it creates the branch on GitHub before any workspace exists, so it is real on origin from the moment it exists at all.',
-        '2. Read with forge_context_get / forge_files_read / forge_files_list. Edit with forge_edit (one call, many files; content:null deletes). Each call returns commit_url — that IS the durable record.',
-        '3. Run checks with forge_shell. The first execution call starts the ephemeral executor. Later commands share its local files, but those files never save themselves to GitHub.',
-        '4. When the work is good, ask the human, then forge_merge — it opens the pull request and returns one approval link. Echo the link only.',
-        '5. Never run git push in the executor. If a command produced a wanted file change, apply it with forge_edit. If forge_edit reports a conflict, re-read those paths and edit again.',
-        '6. Deploys: forge_cloudflare_deploy → echo deploy_receipt.verified_url only. Never invent URLs.'
-      ].join(' ')
+      instructions: FORGE_MCP_INSTRUCTIONS
     }
   );
 
@@ -174,9 +167,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     }
   }
 
-  // Slash-command style entry points that mirror the server workflow in the
-  // instructions block: each prompt renders one concise user turn that steers
-  // the model down the intended Forge path (URL review, coding task, draft PR).
+  // Slash-command style entry points for project work in ChatGPT/Claude.
+  // Prompt bodies live in mcp-guidance.ts so integrity tests can sweep them.
   private registerPrompts(): void {
     const userText = (text: string) => ({
       messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }]
@@ -192,12 +184,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           notes: z.string().optional().describe('Optional focus areas, routes or states to prioritise')
         }
       },
-      ({ url, notes }) =>
-        userText(
-          `Review the deployed site at ${url} with Parallax. Call forge_review first — it captures screenshots without starting a container — covering the key routes at phone and desktop viewports. Inspect every returned screenshot before reaching a verdict, and resolve or explicitly accept any structureSummary heading defects.${
-            notes ? ` Focus on: ${notes}.` : ''
-          }`
-        )
+      ({ url, notes }) => userText(FORGE_PROMPT_HINTS['review-live-url']({ url, notes }))
     );
 
     this.server.registerPrompt(
@@ -210,10 +197,59 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           task: z.string().describe('What the task should accomplish')
         }
       },
-      ({ repository, task }) =>
-        userText(
-          `Start a coding task on ${repository}: ${task}. Prefer forge_task_create, then forge_workspace_create and reuse workspace_id. Read and edit through GitHub immediately. The first execution tool starts the ephemeral executor; if it reports provisioning, check forge_workspace_get once before retrying the command. Read repository instructions and any parallax/ files before changes. Implement and verify, inspect with forge_diff_metadata, then forge_merge. Tell me it is submitted and where to approve it, then destroy the workspace.`
-        )
+      ({ repository, task }) => userText(FORGE_PROMPT_HINTS['start-task']({ repository, task }))
+    );
+
+    this.server.registerPrompt(
+      'plan-work',
+      {
+        title: 'Plan work on a repository',
+        description: 'Create a durable Forge task plan without allocating an executor or writing code yet.',
+        argsSchema: {
+          repository: z.string().describe('The repository to plan against, e.g. owner/name'),
+          goal: z.string().describe('What the plan should accomplish')
+        }
+      },
+      ({ repository, goal }) => userText(FORGE_PROMPT_HINTS['plan-work']({ repository, goal }))
+    );
+
+    this.server.registerPrompt(
+      'iterate-ui',
+      {
+        title: 'Iterate on UI or design',
+        description: 'Edit UI, verify with screenshots, and refine until phone and desktop look right.',
+        argsSchema: {
+          repository: z.string().describe('The repository to change, e.g. owner/name'),
+          change: z.string().describe('The UI or design change to iterate on')
+        }
+      },
+      ({ repository, change }) => userText(FORGE_PROMPT_HINTS['iterate-ui']({ repository, change }))
+    );
+
+    this.server.registerPrompt(
+      'fix-bug',
+      {
+        title: 'Fix a bug',
+        description: 'Reproduce cheaply, fix code and test together, verify narrowly, then submit a draft PR.',
+        argsSchema: {
+          repository: z.string().describe('The repository that has the bug, e.g. owner/name'),
+          bug: z.string().describe('What is broken and how to recognise a fix')
+        }
+      },
+      ({ repository, bug }) => userText(FORGE_PROMPT_HINTS['fix-bug']({ repository, bug }))
+    );
+
+    this.server.registerPrompt(
+      'resume-task',
+      {
+        title: 'Resume a Forge task',
+        description: 'Pick up after context compression or reconnect using the durable task handoff.',
+        argsSchema: {
+          task_id: z.string().optional().describe('Existing task id, if known'),
+          repository: z.string().optional().describe('Repository to find the open task on, e.g. owner/name')
+        }
+      },
+      ({ task_id, repository }) => userText(FORGE_PROMPT_HINTS['resume-task']({ task_id, repository }))
     );
 
     this.server.registerPrompt(
@@ -225,12 +261,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           workspace_id: z.string().optional().describe('The workspace whose branch should become a draft PR')
         }
       },
-      ({ workspace_id }) =>
-        userText(
-          `Submit the current work for review${
-            workspace_id ? ` in workspace ${workspace_id}` : ''
-          } once tests pass. Run the tests and confirm they are green, inspect the outgoing change with forge_diff_metadata, then call forge_merge. It opens the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
-        )
+      ({ workspace_id }) => userText(FORGE_PROMPT_HINTS['prepare-draft-pr']({ workspace_id }))
     );
   }
 

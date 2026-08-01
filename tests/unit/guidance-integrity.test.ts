@@ -43,6 +43,15 @@ function agentFacingStrings(source: string): string[] {
   for (const match of source.matchAll(/allowedNextActions\s*:\s*\[([^\]]*)\]/gu)) {
     found.push(match[1] as string);
   }
+  // mcp-guidance.ts holds the MCP instructions and prompt recipes as long
+  // string literals / template bodies. Sweep every prose-shaped literal there
+  // so a dead tool name in a ChatGPT prompt cannot land unnoticed.
+  if (source.includes('FORGE_MCP_INSTRUCTIONS') || source.includes('FORGE_PROMPT_HINTS')) {
+    for (const literal of source.matchAll(/(['"`])((?:\\.|(?!\1)[^\\])*?)\1/gu)) {
+      const text = literal[2] as string;
+      if (text.includes(' ') && /forge_[a-z_]+/u.test(text)) found.push(text);
+    }
+  }
   return found;
 }
 

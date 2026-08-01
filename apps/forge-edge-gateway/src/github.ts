@@ -17,6 +17,7 @@ import {
   listPendingDeferredActions,
   type DeferredAction
 } from './deferred-actions';
+import { dashboardFirstPrompts } from './mcp-guidance';
 
 const GITHUB_API_VERSION = '2026-03-10';
 const SESSION_SECONDS = 60 * 60 * 24 * 14;
@@ -886,9 +887,8 @@ ${accessSection}${reviewSection}
 <code class="block" id="mcp">${escapeHtml(mcpUrl)}</code>
 <button class="primary" type="button" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied'">Copy MCP URL</button></section>
 <section class="section"><h2>Good first prompts</h2>
-<div class="prompt">Screenshot ${escapeHtml(user.github_login)}.com on phone and desktop and tell me what looks wrong.</div>
-<div class="prompt">Open one of my repositories, run the checks, and explain the architecture. Change nothing yet.</div>
-<div class="prompt">Fix the most important issue you found, verify it with screenshots, then submit it for my review.</div></section>
+${dashboardFirstPrompts(user.github_login).map((prompt) => `<div class="prompt">${escapeHtml(prompt)}</div>`).join('')}
+<p class="note">In ChatGPT or Claude you can also use Forge prompts: plan-work, iterate-ui, fix-bug, resume-task, start-task, review-live-url, prepare-draft-pr.</p></section>
 </div><aside>
 <section class="section"><h2>Workspace capacity</h2>
 <p class="note"><a href="/app/live">Open live activity</a> — read-only view of running workspaces, MCP tools, and log tails.</p>

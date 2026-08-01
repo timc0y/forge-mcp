@@ -32,6 +32,9 @@ Forge is a hosted MCP connector. Add it to your client and sign in with GitHub:
 - Then just ask: *"Review https://example.com with Parallax"*, or *"Start a
   task on owner/repo to fix X, then open a draft PR."*
 
+Recipes for planning, UI iteration, bug fixes, and resuming a compressed
+ChatGPT session: [`docs/mcp/project-workflows.md`](docs/mcp/project-workflows.md).
+
 Optional self-hosted browser evidence and local development are covered in
 [`docs/self-host.md`](docs/self-host.md) and
 [`docs/operations.md`](docs/operations.md).
