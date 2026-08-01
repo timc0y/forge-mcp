@@ -3,6 +3,7 @@ import {
   ForgeApplicationService,
   dependencyStateView,
   EXECUTOR_PROVISIONING_NEXT_STEP,
+  findActiveDependencyInstall,
   managedProcessStatus,
   observationalWaitNextStep,
   workspaceAllowedNextActions,
@@ -46,6 +47,28 @@ function nextStepForWorkspace(
   return allowedNextActions[0]
     ? `Next safe tool: ${allowedNextActions[0]}`
     : 'Inspect forge_workspace_get for details.';
+}
+
+/**
+ * Refuse forge_shell / forge_preview / process starts that race a live install.
+ * deps_install reuses the active process; shell/preview must wait instead.
+ */
+function assertNoActiveDependencyInstall(record: WorkspaceRuntimeRecord, tool: string): void {
+  const active = findActiveDependencyInstall(record);
+  if (!active) return;
+  throw new ForgeError({
+    code: 'FORGE_WORKSPACE_CONFLICT',
+    message:
+      `A dependency install is still running as ${active.processId}, so ${tool} was refused to avoid racing the package tree. ` +
+      observationalWaitNextStep(active.processId, { alreadyRunning: true }),
+    retryable: true,
+    details: {
+      processId: active.processId,
+      command: active.command.slice(0, 120),
+      next_step: observationalWaitNextStep(active.processId, { alreadyRunning: true }),
+      allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list', 'forge_process_stop']
+    }
+  });
 }
 
 export class WorkspaceCoordinator extends DurableObject<Env> {
@@ -522,6 +545,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const touchesRepo = normalizedCwd === '/workspace/repo' || normalizedCwd.startsWith('/workspace/repo/');
       const record = touchesRepo ? await this.repoRecord() : await this.getRecord();
       await this.prepareExecution(record);
+      assertNoActiveDependencyInstall(record, 'forge_shell');
       const before = record.workspace.revision;
       const updatedAt = record.workspace.updatedAt;
       const divergenceAt = record.lastGitDivergence?.observedAt;
@@ -692,6 +716,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const record = await this.getRecord();
       try {
         await this.prepareExecution(record);
+        assertNoActiveDependencyInstall(record, 'forge_shell');
         return await this.app.startProcess(record, input);
       } finally {
         await this.save(record);
@@ -1170,6 +1195,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const record = await this.getRecord();
       try {
         await this.prepareExecution(record);
+        assertNoActiveDependencyInstall(record, 'forge_preview');
         if (record.workspace.state !== 'ready') {
           return { ready: false as const, reason: `workspace is ${record.workspace.state}` };
         }

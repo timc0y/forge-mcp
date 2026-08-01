@@ -52,6 +52,24 @@ executor wake errors, workspace get `next_step`, and MCP instructions/prompts.
 | invented `process_id` | Restarts install | PROCESS_NOT_FOUND → `forge_process_list` |
 | merge with empty diff | No-op edit loop | Steer read → edit → merge |
 
+## Flaw 4 — Multi-turn real use (high)
+
+Deeper ChatGPT sessions (UI iteration, bugfix, PR submit, reconnect) hit
+these next:
+
+| Real-use trap | Agent invention | Fix |
+| --- | --- | --- |
+| Truncated `forge_files_read` | Whole-file `content` overwrite | Skip `rememberReads` when truncated; `next_step` forbids rewrite |
+| `FORGE_FILE_CONFLICT` | Retry same replace + key | Re-read path + fresh `idempotency_key` |
+| `forge_context_get` paths only | Invent file contents | `next_step`: read before edit |
+| `forge_diff_metadata` | Invented `suggestedChecks` | `next_step` names real `riskAreas` / `suggestedHunks` |
+| Re-call `forge_merge` while pending | Duplicate deferred rows | Replay existing receipt (`replayed: true`) |
+| Approval still pending | Poll merge/PR in a loop | Echo URL; stop; retry once after human confirms |
+| Dropped `task_id` after compression | Orphan task / new create | `forge_task_create` keeps `task_id` |
+| Full `forge_workspace_get` dump | Burns context window | Default `compact: true` |
+| `forge_shell` / `forge_preview` during install | Race `node_modules` | Hard refuse; wait the same install process |
+| `forge_process_stop` mid-install | Start two installs | Steer list → one `forge_deps_install` |
+
 ## Still open (not fixed here)
 
 - First-execution provision can still take minutes; wake returns an error-shaped
@@ -59,4 +77,4 @@ executor wake errors, workspace get `next_step`, and MCP instructions/prompts.
 - ~140 allowlisted `ForgeError` sites without cause + next action.
 - Large tools/list catalog cost.
 
-Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–P).
+Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–Z).

@@ -548,7 +548,7 @@
     },
     "forge_workspace_get": {
       "title": "Get workspace",
-      "description": "Compact workspace summary including branch_policy (must be on forge/). Prefer compact:true in ChatGPT.",
+      "description": "Compact workspace summary including branch_policy (must be on forge/). Defaults to compact:true for ChatGPT — pass compact:false only when you need the full dump.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -560,9 +560,13 @@
             "$ref": "#/$defs/__schema0"
           },
           "compact": {
+            "default": true,
             "type": "boolean"
           }
         },
+        "required": [
+          "compact"
+        ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
@@ -955,7 +959,7 @@
     },
     "forge_shell": {
       "title": "Run command",
-      "description": "Allocate an ephemeral executor on first use and run a command for up to 30 seconds. Set async:true for known-long work; otherwise a long-running command returns process_id. Command-created or modified files remain executor-only, are never auto-committed, and report remote_persisted:false. Use forge_edit separately for wanted repository changes.",
+      "description": "Allocate an ephemeral executor on first use and run a command for up to 30 seconds. Set async:true for known-long work; otherwise a long-running command returns process_id. Refused while a dependency install is still running — wait that process first. Command-created or modified files remain executor-only, are never auto-committed, and report remote_persisted:false. Use forge_edit separately for wanted repository changes.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -1502,7 +1506,7 @@
     },
     "forge_merge": {
       "title": "Merge for review",
-      "description": "Ask the human to merge your work. Opens a pull request from your branch and returns one approval link — echo the link, do not invent URLs. Your branch is already on GitHub; nothing is pushed here.",
+      "description": "Ask the human to merge your work. Opens a pull request from your branch and returns one approval link — echo the link, do not invent URLs. Your branch is already on GitHub; nothing is pushed here. Do not call again while the same submission is pending.",
       "sideEffect": "external",
       "approval": "deferred",
       "inputSchema": {
@@ -1817,7 +1821,7 @@
     },
     "forge_preview": {
       "title": "Preview capture",
-      "description": "Screenshot a workspace app. Omit preview_id to start/expose its server; optional steps drive interactions.",
+      "description": "Screenshot a workspace app. Omit preview_id to start/expose its server; optional steps drive interactions. Refused while a dependency install is still running — forge_deps_install → forge_process_wait first.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   EXECUTOR_PROVISIONING_NEXT_STEP,
+  findActiveDependencyInstall,
   ForgeApplicationService,
   OBSERVATIONAL_WAIT_MS,
   observationalWaitNextStep
@@ -268,5 +269,130 @@ describe('ChatGPT conversation simulations', () => {
     expect(FORGE_MCP_INSTRUCTIONS).toMatch(/forge_task_create[\s\S]*forge_workspace_create[\s\S]*forge_edit[\s\S]*forge_merge/);
     expect(FORGE_MCP_INSTRUCTIONS).toMatch(/never forge_edit\/shell\/preview\/merge before forge_workspace_create/);
     expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Never forge_workspace_create a second time/);
+  });
+
+  it('Conv Q — multi-turn UI: truncated read must not license whole-file overwrite', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /isCompleteRead && !result\.truncated/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /never rewrite the whole file via content from a truncated read/
+      )
+    ).toBe(true);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Truncated forge_files_read/);
+  });
+
+  it('Conv R — multi-turn edit: FORGE_FILE_CONFLICT steers re-read + fresh key', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /fresh idempotency_key — do not retry the same replace payload/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv S — multi-turn PR: re-calling forge_merge while pending replays receipt', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /Already submitted — echo only submission_receipt/
+      )
+    ).toBe(true);
+    const merge = forgeTools.find((tool) => tool.name === 'forge_merge');
+    expect(merge?.description).toMatch(/Do not call again while the same submission is pending/);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/do not poll or re-call forge_merge/);
+  });
+
+  it('Conv T — reconnect: task_create keeps task_id; resume forbids duplicate workspace', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/tasks.ts',
+        /Keep this task_id for the session/
+      )
+    ).toBe(true);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Keep task_id/);
+  });
+
+  it('Conv U — approval pending: stop and echo URL, do not poll', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/github.ts',
+        /do not poll forge_pr or forge_merge/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv V — workspace_get defaults to compact for ChatGPT context', () => {
+    const get = forgeTools.find((tool) => tool.name === 'forge_workspace_get');
+    expect(get?.description).toMatch(/Defaults to compact:true/);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /input\.compact !== false/
+      )
+    ).toBe(true);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/forge_workspace_get defaults to compact/i);
+  });
+
+  it('Conv W — shell/preview while install runs is refused; wait the same process', () => {
+    const { record } = seededService();
+    const processId = 'proc_sim_install_race';
+    record.processes[processId] = {
+      command: 'pnpm install --frozen-lockfile',
+      startedAt: new Date().toISOString(),
+      mutatesFilesystem: true
+    };
+    expect(findActiveDependencyInstall(record)?.processId).toBe(processId);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/workspace-coordinator.ts',
+        /assertNoActiveDependencyInstall/
+      )
+    ).toBe(true);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/only wait\/logs\/list\/stop/);
+  });
+
+  it('Conv X — process_stop mid-install steers a single reinstall, not two', () => {
+    expect(
+      sourceMentions(
+        'packages/application/src/managed-processes.ts',
+        /never start two installs/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv Y — context_get / diff_metadata steer read-before-edit and real field names', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /do not invent file contents from paths alone/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /Inspect riskAreas and suggestedHunks/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /suggestedChecks/
+      )
+    ).toBe(false);
+  });
+
+  it('Conv Z — multi-turn bugfix: edit next_step names diff_metadata before merge', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /forge_diff_metadata before forge_merge/
+      )
+    ).toBe(true);
   });
 });

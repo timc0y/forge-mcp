@@ -28,7 +28,7 @@ import {
   requestApproval,
   githubRequestForWorkspace
 } from '../github';
-import { createDeferredAction } from '../deferred-actions';
+import { createDeferredAction, listDeferredActionsForWorkspace } from '../deferred-actions';
 import { commitFilesToBranch, createBranchRef, RemoteCommitConflict } from '@forge/git-github';
 import { describeDurability } from '../durability';
 import { normalizeRepoPath, toContainerPath } from '../repo-paths';
@@ -370,7 +370,8 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
       forge_workspace_get: async (input) => {
         const identity = deps.identity();
         return asRecord(await (await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)))).getState({
-          compact: Boolean(input.compact)
+          // Default compact for ChatGPT — a full dump burns the context window.
+          compact: input.compact !== false
         }));
       },
       forge_operation_get: async (input) => {
@@ -475,13 +476,26 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
               relativePath,
               readOne
             );
-            if (isCompleteRead) {
+            if (isCompleteRead && !result.truncated) {
               // The blob sha GitHub just reported for this exact path — not a
               // re-hash of decoded content, which is what this whole change
               // exists to stop being wrong on CRLF and binary files.
+              // Truncated reads must not license forge_edit whole-file overwrite.
               await workspace.rememberReads({ entries: [{ path: relativePath, sha: result.blobSha }] });
             }
-            return { path: relativePath, content: result.content, sizeBytes: result.sizeBytes, truncated: result.truncated, source: 'github' as const };
+            return {
+              path: relativePath,
+              content: result.content,
+              sizeBytes: result.sizeBytes,
+              truncated: result.truncated,
+              source: 'github' as const,
+              ...(result.truncated
+                ? {
+                    next_step:
+                      'This read was truncated. Use start_line/end_line for the region you need, or forge_edit with replace:[{old,new}] — do not raise max_bytes past the schema max and never rewrite the whole file via content from a truncated read.'
+                  }
+                : {})
+            };
           } catch (error) {
             if (error instanceof GitHubReadUnavailable) {
               throw new ForgeError({
@@ -642,9 +656,14 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             if (error instanceof ReplacementFailed) {
               throw new ForgeError({
                 code: 'FORGE_FILE_CONFLICT',
-                message: error.message,
+                message: `${error.message} Call forge_files_read on ${error.path}, then forge_edit with a fresh idempotency_key — do not retry the same replace payload.`,
                 retryable: false,
-                details: { path: error.path, reason: error.reason }
+                details: {
+                  path: error.path,
+                  reason: error.reason,
+                  next_step: `Call forge_files_read on ${error.path}, then forge_edit with a fresh idempotency_key.`,
+                  allowedNextActions: ['forge_files_read', 'forge_edit']
+                }
               });
             }
             throw error;
@@ -671,11 +690,17 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         } catch (error) {
           if (error instanceof RemoteCommitConflict) {
             await workspace.cancelGitHubEdit({ token: editGate.token }).catch(() => undefined);
+            const paths = error.conflictingPaths?.join(', ') ?? 'the edited paths';
             throw new ForgeError({
               code: 'FORGE_FILE_CONFLICT',
-              message: error.message,
+              message: `${error.message} Call forge_files_read on ${paths}, then forge_edit with a fresh idempotency_key — do not retry the same replace payload.`,
               retryable: false,
-              details: { conflictingPaths: error.conflictingPaths, branch }
+              details: {
+                conflictingPaths: error.conflictingPaths,
+                branch,
+                next_step: `Call forge_files_read on ${paths}, then forge_edit with a fresh idempotency_key.`,
+                allowedNextActions: ['forge_files_read', 'forge_edit']
+              }
             });
           }
           throw error;
@@ -736,10 +761,10 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           next_step: !executorSync.recorded
             ? `Committed and verified on GitHub at ${result.remoteSha}, but Forge could not confirm the workspace handoff. Do not run executor commands in this workspace. Call forge_workspace_destroy, then forge_workspace_create on ${branch}.`
             : result.unchanged
-            ? 'Nothing changed — the files already had this content. Continue or call forge_merge.'
+            ? 'Nothing changed — the files already had this content. Call forge_diff_metadata, or continue editing.'
             : executorSync.executorSynced
-              ? `Committed to GitHub and synchronized the loaded executor to ${result.remoteSha}. Run checks with forge_shell, then forge_merge when ready.`
-              : `Committed to GitHub. The loaded executor will synchronize to ${result.remoteSha} before the next execution tool runs; call forge_process_wait or forge_process_stop for any active mutating process first.`
+              ? `Committed to GitHub and synchronized the loaded executor to ${result.remoteSha}. Run the narrowest check with forge_shell, inspect with forge_diff_metadata, then forge_merge when ready.`
+              : `Committed to GitHub. The loaded executor will synchronize to ${result.remoteSha} before the next execution tool runs; call forge_process_wait or forge_process_stop for any active mutating process first, then forge_diff_metadata before forge_merge.`
         };
         if (editIdempotencyKey && executorSync.recorded) {
           await workspace.recordRemoteMutation({
@@ -790,7 +815,11 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           status: body.status ?? 'unknown',
           ahead_by: body.ahead_by ?? 0,
           behind_by: body.behind_by ?? 0,
-          commits: body.total_commits ?? 0
+          commits: body.total_commits ?? 0,
+          next_step:
+            (body.ahead_by ?? 0) > 0
+              ? 'Inspect riskAreas and suggestedHunks, run the narrowest forge_shell checks, then forge_merge when ready.'
+              : 'No outgoing changes against this base — call forge_edit first, or fix the base ref.'
         });
       },
       forge_context_get: async (input) => {
@@ -818,7 +847,11 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           likelyPaths: (input.likely_paths as string[] | undefined) ?? [],
           maxResults: number(input.max_results)
         });
-        return asRecord(response);
+        return asRecord({
+          ...response,
+          next_step:
+            'Call forge_files_read on results[].path (and adjacentTests) before forge_edit — do not invent file contents from paths alone.'
+        });
       },
       forge_pr: async (input) => {
         const identity = deps.identity();
@@ -1417,6 +1450,34 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         const remoteHead = await verifyFeatureBranchOnOrigin(request, repository, branch);
         const staged = { ref: branch, commit: remoteHead, remote_sha: remoteHead };
 
+        // Wrong order / retry storm: agent re-calls forge_merge while the human
+        // still has the same submission pending. Approvals already dedupe, but
+        // deferred_actions used to insert again — return the existing receipt.
+        const pendingSame = (await listDeferredActionsForWorkspace(env, identity.tenantId, workspaceId))
+          .find((action) =>
+            action.state === 'awaiting_approval' &&
+            action.action === 'work.submit' &&
+            action.branch === branch &&
+            action.commitSha === staged.commit
+          );
+        if (pendingSame) {
+          const approvalUrl = `${env.FORGE_PUBLIC_ORIGIN}/approvals/${pendingSame.approvalId}`;
+          return {
+            submitted: true,
+            replayed: true,
+            submission_receipt: {
+              branch,
+              remote_sha: staged.remote_sha,
+              staged_ref: staged.ref,
+              approval_id: pendingSame.approvalId,
+              approval_url: approvalUrl,
+              files_changed: pendingSame.filesChanged,
+              feature_branch_on_origin: true
+            },
+            next_step: `Already submitted — echo only submission_receipt. Do not call forge_merge again and do not poll approval. Human reviews at ${approvalUrl}. Call forge_workspace_destroy when done.`
+          };
+        }
+
         let diffArtifactId: string | undefined;
         if (diff.trim() && utf8Bytes(diff) > 4_096) {
           const spilled = await spillTextArtifact(env, identity, workspaceId, 'submit-diff', diff, 'text/x-diff');
@@ -1440,30 +1501,34 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
               : { diff: diff.slice(0, 48_000), diffTotals: { files: filesChanged, additions: outgoing?.totalAdditions ?? 0, deletions: outgoing?.totalDeletions ?? 0 } })
           }
         );
-        await createDeferredAction(env, {
-          tenantId: identity.tenantId,
-          projectId: identity.projectId,
-          workspaceId,
-          approvalId: approval.approval_id,
-          taskId: taskIdInput,
-          action: 'work.submit',
-          repository: { provider: 'github', owner: state.repository.owner, name: state.repository.name },
-          // Pin the immutable id too: this submission may not be approved for
-          // days, and a GitHub rename in the meantime would leave the slug alone
-          // pointing at nothing.
-          githubRepositoryId: await env.METADATA.prepare(
-            "SELECT github_repository_id AS id FROM repositories WHERE tenant_id=?1 AND provider='github' AND owner=?2 AND name=?3 LIMIT 1"
-          ).bind(identity.tenantId, state.repository.owner, state.repository.name)
-            .first<{ id: string | null }>().then((row) => row?.id ?? null).catch(() => null),
-          branch,
-          base: prBase,
-          stagedRef: staged.ref,
-          commitSha: staged.commit,
-          title,
-          body,
-          summary: `${filesChanged} file${filesChanged === 1 ? '' : 's'} changed`,
-          filesChanged
-        });
+        const existingForApproval = await listDeferredActionsForWorkspace(env, identity.tenantId, workspaceId)
+          .then((actions) => actions.find((action) => action.approvalId === approval.approval_id && action.state === 'awaiting_approval'));
+        if (!existingForApproval) {
+          await createDeferredAction(env, {
+            tenantId: identity.tenantId,
+            projectId: identity.projectId,
+            workspaceId,
+            approvalId: approval.approval_id,
+            taskId: taskIdInput,
+            action: 'work.submit',
+            repository: { provider: 'github', owner: state.repository.owner, name: state.repository.name },
+            // Pin the immutable id too: this submission may not be approved for
+            // days, and a GitHub rename in the meantime would leave the slug alone
+            // pointing at nothing.
+            githubRepositoryId: await env.METADATA.prepare(
+              "SELECT github_repository_id AS id FROM repositories WHERE tenant_id=?1 AND provider='github' AND owner=?2 AND name=?3 LIMIT 1"
+            ).bind(identity.tenantId, state.repository.owner, state.repository.name)
+              .first<{ id: string | null }>().then((row) => row?.id ?? null).catch(() => null),
+            branch,
+            base: prBase,
+            stagedRef: staged.ref,
+            commitSha: staged.commit,
+            title,
+            body,
+            summary: `${filesChanged} file${filesChanged === 1 ? '' : 's'} changed`,
+            filesChanged
+          });
+        }
 
         await deps.recordAudit(
           'work.submit',
@@ -1486,14 +1551,9 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             approval_id: approval.approval_id,
             approval_url: approval.approval_url,
             files_changed: filesChanged,
-            // Asserted from the ref actually read back off origin, not
-            // hardcoded. verifyFeatureBranchOnOrigin already throws above when
-            // this would be false, so reaching here always means true — but
-            // the field still reads it off `remoteHead` rather than assuming
-            // it, in case that guard ever changes.
             feature_branch_on_origin: Boolean(remoteHead)
           },
-          next_step: `Echo only submission_receipt to the human. Approval is pinned to ${branch}@${staged.remote_sha} — do not forge_edit this branch further for this submission. Call forge_workspace_destroy when done. To change more after destroy, forge_workspace_create a new branch. Approve at ${approval.approval_url}.`
+          next_step: `Echo only submission_receipt to the human. Do not call forge_merge again and do not poll approval. Approval is pinned to ${branch}@${staged.remote_sha} — do not forge_edit this branch further for this submission. Call forge_workspace_destroy when done. To change more after destroy, forge_workspace_create a new branch. Approve at ${approval.approval_url}.`
         };
       },
       forge_workspace_destroy: async (input) => {

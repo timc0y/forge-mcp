@@ -78,6 +78,28 @@ export function observationalWaitNextStep(
   );
 }
 
+/** True when a managed process command looks like a package-manager install. */
+export function isDependencyInstallCommand(command: string): boolean {
+  return (
+    /\b(pnpm|npm|yarn|bun|pip|uv)\b/i.test(command) &&
+    /\b(install|ci|sync)\b/i.test(command)
+  );
+}
+
+/**
+ * Active dependency install, if any. ChatGPT often races forge_shell / forge_preview
+ * against an unfinished install; callers should wait (or stop) this process first.
+ */
+export function findActiveDependencyInstall(
+  record: Pick<WorkspaceRuntimeRecord, 'processes'>
+): { processId: string; command: string } | undefined {
+  const active = Object.entries(record.processes).find(
+    ([, entry]) => !entry.completedAt && isDependencyInstallCommand(entry.command)
+  );
+  if (!active) return undefined;
+  return { processId: active[0], command: active[1].command };
+}
+
 /** First-execution wake / mid-provision poll recipe. Avoids duplicate workspaces. */
 export const EXECUTOR_PROVISIONING_NEXT_STEP =
   'Call forge_workspace_get; if state is still provisioning or bootstrapping, wait a few seconds and call forge_workspace_get again until ready, then retry the same execution tool. Do not create a second workspace.';
@@ -653,6 +675,7 @@ export class ManagedProcesses {
     }
     await (await this.resolveHandle(record)).stopProcess(processId);
     const entry = record.processes[processId];
+    const wasInstall = Boolean(entry && isDependencyInstallCommand(entry.command));
     if (entry) {
       entry.completedAt = new Date().toISOString();
       entry.exitCode = 0;
@@ -667,7 +690,10 @@ export class ManagedProcesses {
       originalOperationId: operation.operationId,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell']
+      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell', 'forge_deps_install'],
+      next_step: wasInstall
+        ? 'Install was stopped incomplete. Call forge_process_list; only call forge_deps_install with a new idempotency_key when no install is running — never start two installs.'
+        : 'Process stopped. Call forge_process_list before starting related work again.'
     };
   }
 

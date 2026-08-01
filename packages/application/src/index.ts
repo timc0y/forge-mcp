@@ -25,6 +25,7 @@ import { ExecutorMaterialization } from './executor-materialization.js';
 import {
   ManagedProcesses,
   dependencyStateView,
+  findActiveDependencyInstall,
   managedProcessStatus,
   observationalWaitNextStep,
   workspaceAllowedNextActions
@@ -39,6 +40,8 @@ export {
   LAZY_REQUESTED_NEXT_ACTIONS,
   OBSERVATIONAL_WAIT_MS,
   observationalWaitNextStep,
+  isDependencyInstallCommand,
+  findActiveDependencyInstall,
   EXECUTOR_PROVISIONING_NEXT_STEP,
   type DependencyStateView
 } from './managed-processes.js';
@@ -831,27 +834,22 @@ export class ForgeApplicationService {
     }
 
     await this.syncProcessLifecycle(record).catch(() => undefined);
-    const activeInstall = Object.entries(record.processes).find(([, entry]) =>
-      !entry.completedAt &&
-      /\b(pnpm|npm|yarn|bun|pip|uv)\b/i.test(entry.command) &&
-      /\b(install|ci|sync)\b/i.test(entry.command)
-    );
-    if (activeInstall && (!prior?.processId || prior.processId !== activeInstall[0])) {
-      const [activeProcessId, entry] = activeInstall;
+    const activeInstall = findActiveDependencyInstall(record);
+    if (activeInstall && (!prior?.processId || prior.processId !== activeInstall.processId)) {
       return {
         started: true,
         success: false,
         status: 'running' as const,
         workspaceId: record.workspace.id,
-        processId: activeProcessId,
+        processId: activeInstall.processId,
         managedProcess: true,
-        command: entry.command,
+        command: activeInstall.command,
         dependencyState: dependencyStateView(record.dependencyState),
         reusedActiveProcess: true,
         operationId: prior?.operationId ?? record.idempotency[input.idempotencyKey]?.operationId ?? ids.operation(),
         workspaceRevision: record.workspace.revision,
         allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
-        next_step: observationalWaitNextStep(activeProcessId, { alreadyRunning: true })
+        next_step: observationalWaitNextStep(activeInstall.processId, { alreadyRunning: true })
       };
     }
 
