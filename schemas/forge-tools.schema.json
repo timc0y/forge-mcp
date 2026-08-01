@@ -959,7 +959,7 @@
     },
     "forge_shell": {
       "title": "Run command",
-      "description": "Allocate an ephemeral executor on first use and run a command for up to 30 seconds. Set async:true for known-long work; otherwise a long-running command returns process_id. Refused while a dependency install is still running — wait that process first. Command-created or modified files remain executor-only, are never auto-committed, and report remote_persisted:false. Use forge_edit separately for wanted repository changes.",
+      "description": "Allocate an ephemeral executor on first use and run a command for up to 30 seconds. Set async:true for known-long work; otherwise a long-running command returns process_id. Refused while a dependency install is still running — wait that process first. Never edit repo files via shell (sed/redirects/git add/commit/push) — use forge_edit. Command-created files remain executor-only and report remote_persisted:false.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {

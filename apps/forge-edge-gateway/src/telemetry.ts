@@ -1,9 +1,7 @@
-// Fire-and-forget PostHog telemetry for MCP tool usage: latency, errors, and
-// repeated identical calls (a proxy for an agent retrying/flailing). Emits via
-// PostHog's HTTP capture API directly — no SDK — since a Worker/Durable Object
-// request has no long-lived process to run posthog-node's internal batch queue.
-// Disabled (no-op) whenever POSTHOG_API_KEY is unset, so it's safe to leave off
-// in local/dev environments.
+// Fire-and-forget optional PostHog product analytics for MCP tool usage.
+// Complete activity logging is first-party D1 (mcp_tool_calls with redacted
+// payloads + workspace_activity) — PostHog is not required for a full trail.
+// Disabled (no-op) whenever POSTHOG_API_KEY is unset.
 
 import type { Env } from './env';
 

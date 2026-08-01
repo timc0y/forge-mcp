@@ -188,13 +188,17 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
           }
           const base = asRecord(result);
           const { stdout: _s, stderr: _e, ...rest } = base;
+          const readOnly = input.mode === 'read_only' || rest.mode === 'read_only';
           const executionPersistence = {
-            remote_persisted: false,
-            executor_filesystem: 'ephemeral',
-            persistence_notice: input.mode === 'read_only'
-              ? 'The command did not save repository content. GitHub remains the source of truth.'
-              : 'Any files this command changed exist only in this executor session. Re-apply deliberate code changes with forge_edit to save them to GitHub.'
+            remote_persisted: false as const,
+            executor_filesystem: 'ephemeral' as const,
+            persistence_notice: readOnly
+              ? 'The command did not save repository content. GitHub remains the source of truth — use forge_files_read, not shell cat, for durable file contents.'
+              : 'Any files this command changed exist only in this executor session. They are not saved. Call forge_edit with the intended content to persist to GitHub before claiming progress or forge_merge.'
           };
+          const durabilityNextStep = readOnly
+            ? 'Continue with forge_files_read / forge_edit for repository changes, or forge_shell for verification only.'
+            : 'Executor files are ephemeral. Call forge_files_read on paths you changed, then forge_edit to save them to GitHub (commit_url). Do not claim the task is done from shell exit 0 alone.';
           if (compact) {
             return {
               ...rest,
@@ -207,12 +211,12 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
               // only thing the agent has.
               stdout_tail: tailBytes(stdout, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
               stderr_tail: tailBytes(stderr, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
-              ...(outputArtifactId
-                ? {
-                    output_artifact_id: outputArtifactId,
-                    next_step: `Full output in ${outputArtifactId} (forge_artifact_get). Do not invent missing log lines from the tails.`
-                  }
-                : {})
+              allowedNextActions: readOnly
+                ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
+                : ['forge_files_read', 'forge_edit', 'forge_shell'],
+              next_step: outputArtifactId
+                ? `Full output in ${outputArtifactId} (forge_artifact_get). ${durabilityNextStep}`
+                : durabilityNextStep
             };
           }
           return {
@@ -222,7 +226,11 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
             compact: false,
             stdout,
             stderr,
-            ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {})
+            ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {}),
+            allowedNextActions: readOnly
+              ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
+              : ['forge_files_read', 'forge_edit', 'forge_shell'],
+            next_step: durabilityNextStep
           };
         } catch (error) {
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
@@ -285,7 +293,7 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
           executor_filesystem: 'ephemeral',
           persistence_notice: 'Process filesystem changes remain only in this executor session. Forge never converts them into GitHub edits.',
           next_step: exitCode === 0
-            ? 'Re-apply any deliberate repository changes with forge_edit to save them. Otherwise continue with forge_shell; the same executor session retains its ephemeral files.'
+            ? 'Process finished. Executor filesystem changes are not saved. Call forge_edit with the intended content before claiming progress or forge_merge — do not treat exit 0 as a GitHub commit.'
             : 'Inspect forge_process_logs. Any partial filesystem changes remain ephemeral; use forge_edit only for changes you deliberately want to save.'
         };
       },

@@ -29,9 +29,11 @@ pnpm run deploy:worker       # Worker only; still migrates D1, skips image build
 ```
 
 **Live operator view:** signed-in owners open [`/app/live`](https://forge.timcoy.uk/app/live)
-for a read-only window: workspace list, D1 + in-DO MCP tool trail, process log tails,
-SSE updates (~4s), and an optional PostHog embed (`FORGE_POSTHOG_LIVE_EMBED_URL` or
-`FORGE_POSTHOG_PROJECT_ID` + `POSTHOG_API_KEY`). Observer MCP tools:
+for a read-only window: workspace list, D1 + in-DO MCP tool trail (complete activity),
+process log tails, and SSE updates (~4s). Full redacted request/response history is in
+D1 `mcp_tool_calls`, also readable via `forge_observer_activity` with `payloads:true`.
+PostHog is optional and **not required** for activity logging — only an explicit
+`FORGE_POSTHOG_LIVE_EMBED_URL` sharing embed is shown if set. Observer MCP tools:
 `forge_observer_workspaces`, `forge_observer_workspace`, `forge_observer_activity`.
 Deploy with `pnpm run deploy:worker` to avoid disturbing running sandboxes. It
 still applies pending D1 migrations before publishing the Worker.

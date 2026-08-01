@@ -155,11 +155,14 @@ function mergeActivity(
   return out.slice(0, 80);
 }
 
+/**
+ * Optional PostHog live embed. Only an explicit sharing URL is trusted —
+ * auto-building `${POSTHOG_HOST}/embedded/${projectId}` mixed the ingestion
+ * host with a numeric project id and produced a broken iframe on /app/live.
+ * Activity logging does not need PostHog: use D1 mcp_tool_calls +
+ * forge_observer_activity /app/live instead.
+ */
 export function posthogLiveEmbedUrl(env: Env): string | null {
   const explicit = (env as Env & { FORGE_POSTHOG_LIVE_EMBED_URL?: string }).FORGE_POSTHOG_LIVE_EMBED_URL?.trim();
-  if (explicit) return explicit;
-  const host = env.POSTHOG_HOST?.replace(/\/+$/, '') ?? (env.POSTHOG_API_KEY ? 'https://us.i.posthog.com' : null);
-  const project = (env as Env & { FORGE_POSTHOG_PROJECT_ID?: string }).FORGE_POSTHOG_PROJECT_ID?.trim();
-  if (!host || !project) return null;
-  return `${host}/embedded/${project}`;
+  return explicit || null;
 }

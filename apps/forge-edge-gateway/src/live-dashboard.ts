@@ -90,11 +90,11 @@ export async function liveDashboardPage(request: Request, env: Env): Promise<Res
   }
   const embedUrl = posthogLiveEmbedUrl(env);
   const posthogSection = embedUrl
-    ? `<section class="card" id="posthog"><h3>Tool latency &amp; errors (PostHog)</h3>
+    ? `<section class="card" id="posthog"><h3>Optional PostHog charts</h3>
 <iframe class="ph-embed" title="PostHog MCP analytics" src="${escapeHtml(embedUrl)}" loading="lazy"></iframe>
-<p class="meta">Set <code>FORGE_POSTHOG_LIVE_EMBED_URL</code> or <code>FORGE_POSTHOG_PROJECT_ID</code> on the Worker. Events: <code>mcp_tool_call</code>.</p></section>`
-    : `<section class="card" id="posthog"><h3>Tool latency &amp; errors (PostHog)</h3>
-<p class="meta">Optional: set Worker secret <code>POSTHOG_API_KEY</code> and var <code>FORGE_POSTHOG_PROJECT_ID</code> (or <code>FORGE_POSTHOG_LIVE_EMBED_URL</code>) to embed analytics here.</p></section>`;
+<p class="meta">Optional product charts only. Complete activity is the D1 trail above and <code>forge_observer_activity</code> (<code>payloads:true</code>).</p></section>`
+    : `<section class="card" id="activity-source"><h3>Complete activity log</h3>
+<p class="meta">Source of truth: D1 <code>mcp_tool_calls</code> (redacted request/response per tool) and <code>workspace_activity</code>. Read via this page or MCP <code>forge_observer_activity</code> with <code>payloads:true</code>. PostHog is optional and not required — set <code>FORGE_POSTHOG_LIVE_EMBED_URL</code> only if you want a separate sharing embed.</p></section>`;
 
   return page({
     title: 'Forge — live activity',

@@ -409,8 +409,8 @@ function shellTokenValue(token: string | undefined): string {
     : value;
 }
 
-/** Recognise visible raw pushes through common exec/env wrappers and Git global options. */
-function isRawGitPush(command: string): boolean {
+/** Recognise visible raw git subcommands through common exec/env wrappers and Git global options. */
+function isRawGitSubcommand(command: string, subcommand: string): boolean {
   const tokens = command.trim().split(/\s+/u).filter(Boolean);
   let index = 0;
 
@@ -454,11 +454,23 @@ function isRawGitPush(command: string): boolean {
   index += 1;
   while (index < tokens.length) {
     const token = shellTokenValue(tokens[index]);
-    if (token === 'push') return true;
+    if (token === subcommand) return true;
     if (!token.startsWith('-')) return false;
     index += GIT_GLOBAL_OPTIONS_WITH_ARGUMENT.has(token) ? 2 : 1;
   }
   return false;
+}
+
+function isRawGitPush(command: string): boolean {
+  return isRawGitSubcommand(command, 'push');
+}
+
+function isRawGitCommit(command: string): boolean {
+  return isRawGitSubcommand(command, 'commit');
+}
+
+function isRawGitAdd(command: string): boolean {
+  return isRawGitSubcommand(command, 'add');
 }
 
 function rawGitPushDecision(): ShellDecision {
@@ -467,6 +479,15 @@ function rawGitPushDecision(): ShellDecision {
     false,
     false,
     'Raw git push bypasses Forge\'s guarded, verified GitHub write path. Use forge_edit to commit file changes and forge_merge to merge the pull request; Forge performs the required remote writes.'
+  );
+}
+
+function rawGitLocalWriteDecision(kind: 'commit' | 'add'): ShellDecision {
+  return decide(
+    'prohibited',
+    false,
+    false,
+    `Raw git ${kind} only mutates the ephemeral executor checkout. Call forge_files_read on the paths you changed, then forge_edit (it returns commit_url on GitHub). Do not claim work is saved until forge_edit succeeds.`
   );
 }
 
@@ -492,6 +513,8 @@ function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, dep
   }
 
   if (isRawGitPush(raw) || isRawGitPush(trimmed)) return rawGitPushDecision();
+  if (isRawGitCommit(raw) || isRawGitCommit(trimmed)) return rawGitLocalWriteDecision('commit');
+  if (isRawGitAdd(raw) || isRawGitAdd(trimmed)) return rawGitLocalWriteDecision('add');
 
   // These builtins execute their arguments (or the contents of a file) as
   // shell code. We intentionally do not pretend to parse that second shell

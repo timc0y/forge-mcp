@@ -70,11 +70,31 @@ these next:
 | `forge_shell` / `forge_preview` during install | Race `node_modules` | Hard refuse; wait the same install process |
 | `forge_process_stop` mid-install | Start two installs | Steer list → one `forge_deps_install` |
 
+## Flaw 5 — Local executor spiral (high)
+
+| Spiral | Agent invention | Fix |
+| --- | --- | --- |
+| `sed` / redirects / heredoc via shell | “Done” without GitHub | Sync shell always `next_step` → `forge_edit`; no “continue with shell” escape hatch |
+| `git commit` / `git add` in shell | “Committed” | Prohibited like push; steer `forge_edit` + `commit_url` |
+| Green tests on executor-only edits | Feature shipped | Guidance: require `forge_edit` `commit_url` for code changes |
+| Missing deps → shell-only `allowedNextActions` | Author via shell while installing | Always include `forge_files_read` / `forge_edit` |
+| Shell `cat` as repo truth | Invented contents | Guidance: truth is `forge_files_read` / `forge_diff_metadata` |
+
+## Activity logging (PostHog)
+
+PostHog’s auto-embed (`POSTHOG_HOST` + numeric project id) was broken and is
+removed. Complete activity is first-party D1 (`mcp_tool_calls` with redacted
+payloads + `workspace_activity`), surfaced on `/app/live` and
+`forge_observer_activity`. PostHog capture remains optional metadata only;
+embed only if `FORGE_POSTHOG_LIVE_EMBED_URL` is an explicit sharing URL.
+
 ## Still open (not fixed here)
 
 - First-execution provision can still take minutes; wake returns an error-shaped
   “not ready” rather than a success receipt with `operation_id` + poll interval.
 - ~140 allowlisted `ForgeError` sites without cause + next action.
 - Large tools/list catalog cost.
+- Soft allow of non-git file mutations via shell (still ephemeral + steered;
+  hard refuse of all redirects would also block legitimate test fixtures).
 
-Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–Z).
+Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–AD).

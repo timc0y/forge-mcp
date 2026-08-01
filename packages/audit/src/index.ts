@@ -10,7 +10,8 @@ export interface AuditStore { append(event: ForgeEvent): Promise<void>; }
  * task "complete" whose branch was never actually pushed, for example).
  * Deliberately narrow: only mutating, consequential actions get logged here
  * (see call sites), not every tool call — high-volume per-call telemetry
- * belongs in PostHog, not this table.
+ * High-volume MCP tool telemetry is first-party D1 (`mcp_tool_calls`),
+ * not this table.
  */
 export class D1AuditStore implements AuditStore {
   constructor(private readonly db: { prepare: (sql: string) => { bind: (...args: unknown[]) => { run: () => Promise<unknown> } } }) {}

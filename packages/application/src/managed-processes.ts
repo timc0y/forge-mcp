@@ -136,13 +136,18 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   }
   const deps = dependencyStateView(record.dependencyState);
   if (deps.status !== 'ready') {
+    // Deps missing must not hide GitHub authoring — ChatGPT otherwise patches
+    // via forge_shell while "waiting for install" and never forge_edits.
     return [
+      'forge_files_read',
+      'forge_edit',
       'forge_deps_install',
       'forge_shell',
       'forge_workspace_get'
     ];
   }
   return [
+    'forge_files_read',
     'forge_edit',
     'forge_shell',
     'forge_merge',
@@ -547,7 +552,7 @@ export class ManagedProcesses {
       workspaceRevision: record.workspace.revision,
       allowedNextActions: ['forge_shell', 'forge_workspace_get', 'forge_process_logs'],
       next_step: entry?.mutatesFilesystem
-        ? 'Process finished. Its filesystem changes remain only in this ephemeral executor session; use forge_edit to save deliberate changes to GitHub.'
+        ? 'Process finished. Its filesystem changes remain only in this ephemeral executor session; call forge_edit to save deliberate changes to GitHub before claiming progress.'
         : 'Process finished. Continue with shell commands or forge_workspace_get.'
     };
   }

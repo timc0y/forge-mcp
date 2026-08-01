@@ -9,6 +9,7 @@ import {
   observationalWaitNextStep
 } from '@forge/application';
 import { forgeTools } from '@forge/mcp-core';
+import { classifyCommand } from '@forge/policy';
 import { FORGE_MCP_INSTRUCTIONS, FORGE_PROMPT_HINTS } from '../../apps/forge-edge-gateway/src/mcp-guidance';
 import { parseWorkspaceAddress, resolveWorkspaceId } from '../../apps/forge-edge-gateway/src/workspace-resolve';
 import type { Env } from '../../apps/forge-edge-gateway/src/env';
@@ -394,5 +395,64 @@ describe('ChatGPT conversation simulations', () => {
         /forge_diff_metadata before forge_merge/
       )
     ).toBe(true);
+  });
+
+  it('Conv AA — spiral: shell sed/redirect is ephemeral; next_step forces forge_edit', () => {
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Save\/persist\/commit always means forge_edit/);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/never shell redirects, sed -i, git add\/commit\/push/);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/execution.ts',
+        /Do not claim the task is done from shell exit 0 alone/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/execution.ts',
+        /Otherwise continue with forge_shell; the same executor session retains/
+      )
+    ).toBe(false);
+  });
+
+  it('Conv AB — spiral: git commit/add in shell is prohibited like push', () => {
+    expect(classifyCommand('git commit -m "fix"', 'development')).toMatchObject({
+      classification: 'prohibited',
+      allowed: false
+    });
+    expect(classifyCommand('git add .', 'development')).toMatchObject({
+      classification: 'prohibited',
+      allowed: false
+    });
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Never git add\/commit\/push/);
+  });
+
+  it('Conv AC — spiral: missing deps still advertise forge_edit, not shell-only authoring', () => {
+    expect(
+      sourceMentions(
+        'packages/application/src/managed-processes.ts',
+        /'forge_files_read',\s*'forge_edit',\s*'forge_deps_install'/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv AD — activity log is first-party D1; PostHog embed is optional explicit URL only', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/observer-api.ts',
+        /return explicit \|\| null/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/live-dashboard.ts',
+        /Complete activity log/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/observer-api.ts',
+        /FORGE_POSTHOG_PROJECT_ID/
+      )
+    ).toBe(false);
   });
 });

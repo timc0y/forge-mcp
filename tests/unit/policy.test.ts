@@ -93,13 +93,35 @@ describe('Forge policy', () => {
     }
   });
 
+  it('blocks raw git commit and git add so ChatGPT cannot fake a durable save', () => {
+    const blocked = [
+      'git commit -m "fix"',
+      'git commit --amend --no-edit',
+      'git -C /workspace/repo commit -am "x"',
+      'HOME=/tmp git commit -m "x"',
+      'sh -c "git commit -m fix"',
+      'git add .',
+      'git add README.md',
+      'git status && git add src/app.ts',
+      'env git add -A'
+    ];
+    for (const command of blocked) {
+      const decision = classifyCommand(command, 'development');
+      expect(decision, command).toMatchObject({ classification: 'prohibited', allowed: false });
+      expect(decision.reason, command).toMatch(/forge_edit/);
+      expect(decision.reason, command).toMatch(/commit_url|ephemeral/);
+    }
+  });
+
   it('does not mistake other git commands or arguments containing push for raw git push', () => {
     for (const command of [
       'git status',
-      'git commit -m "document git push behavior"',
       'git branch push-fix',
+      'git log --oneline',
+      'git diff',
       'echo git push',
-      'printf "git push"'
+      'printf "git push"',
+      'echo "git commit -m fake"'
     ]) {
       expect(classifyCommand(command, 'development').allowed, command).toBe(true);
     }
@@ -157,7 +179,7 @@ describe('Forge policy', () => {
       'ls -la | wc -l',
       'echo "hello" > out.txt',
       'npm run lint && npm test',
-      'git add . && git commit -m "fix: a && b"',
+      'git status && git log -1 --oneline',
       'go test ./... 2>&1 | tail -50',
       'make build || make clean',
       'grep -rn "foo" src/ | head',
@@ -191,10 +213,16 @@ describe('Forge policy', () => {
   });
 
   it('keeps quoted operators out of the split', () => {
-    // The && lives inside the commit message, so this is one ordinary command.
-    const decision = classifyCommand('git commit -m "fix a && rm -rf b"', 'development');
+    // The && lives inside the quoted argument, so this is one ordinary command
+    // (not a chain that would surface the destructive half).
+    const decision = classifyCommand('echo "fix a && rm -rf b" > note.txt', 'development');
     expect(decision.approvalRequired).toBe(false);
     expect(decision.classification).toBe('local_mutation');
+    // git commit itself is prohibited, but the message must not be parsed as a
+    // second command that would classify as destructive instead.
+    const commit = classifyCommand('git commit -m "fix a && rm -rf b"', 'development');
+    expect(commit.classification).toBe('prohibited');
+    expect(commit.reason).toMatch(/forge_edit/);
   });
 
   it('treats sed -i as a mutation rather than read-only', () => {
