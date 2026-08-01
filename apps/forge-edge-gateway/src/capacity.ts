@@ -26,12 +26,16 @@ const DEFAULT_PER_TENANT_CAP = 5;
 // which workspaces are "live" candidates for owner/repo/branch resolution —
 // one definition of "terminal", not two that can drift apart.
 export const TERMINAL_STATES = ['failed', 'destroying', 'destroyed'];
-// Non-terminal provisioning states. A workspace should march through these in
-// well under a minute; sitting in one for longer than STUCK_PROVISION_MS means
-// the provision workflow died mid-run (timed out / evicted before its JS catch)
-// and the slot is leaking. Such a slot is reclaimable on the short bound below
-// instead of the generous idle TTL, and the scheduled watchdog force-fails it.
-const PROVISIONING_STATES = ['requested', 'provisioning', 'bootstrapping'];
+// States where a provision Workflow is actively running. Sitting in one longer
+// than STUCK_PROVISION_MS means the workflow died mid-run (timed out / evicted
+// before its JS catch) and the slot is leaking. Reclaimable on the short bound
+// below instead of the generous idle TTL; the scheduled watchdog force-fails it.
+//
+// `requested` is intentionally excluded: lazy create parks there with a GitHub
+// branch and no executor until the first execution tool. That can last far
+// longer than STUCK_PROVISION_MS and must use the normal idle TTL, not the
+// wedged-provisioner reaper.
+const ACTIVE_PROVISIONING_STATES = ['provisioning', 'bootstrapping'];
 const STUCK_PROVISION_MS = 15 * 60_000;
 
 interface WorkspaceCaps {
@@ -144,7 +148,7 @@ export async function listSlotOccupants(
     // and other live states keep the generous idle TTL below.
     const stuckProvisioning =
       row.state !== null &&
-      PROVISIONING_STATES.includes(row.state) &&
+      ACTIVE_PROVISIONING_STATES.includes(row.state) &&
       idle !== null &&
       idle >= STUCK_PROVISION_MS / 60_000;
     const stale = terminal || stuckProvisioning || idleExpired;

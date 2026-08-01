@@ -219,6 +219,27 @@ describe('workspace slot capacity (per-tenant)', () => {
     expect(db.slots.map((s) => s.workspace_id)).toEqual(['wsp_fresh']);
   });
 
+  it('does not treat a lazy requested workspace as stuck provisioning', async () => {
+    // Lazy create parks in requested with no executor until the first shell.
+    // That is healthy control-plane state, not a wedged provision Workflow.
+    const db = fakeD1(
+      [
+        { slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_lazy', claimed_at: minutesAgo(45) },
+        { slot: 2, tenant_id: 'ten_a', workspace_id: 'wsp_wedged', claimed_at: minutesAgo(45) }
+      ],
+      {
+        wsp_lazy: { state: 'requested', updated_at: minutesAgo(45) },
+        wsp_wedged: { state: 'provisioning', updated_at: minutesAgo(45) }
+      }
+    );
+    const occupants = await listSlotOccupants(db, slotTtlMs({}), NOW);
+    expect(occupants.find((o) => o.workspaceId === 'wsp_lazy')?.stuckProvisioning).toBe(false);
+    expect(occupants.find((o) => o.workspaceId === 'wsp_wedged')?.stuckProvisioning).toBe(true);
+    const reclaimed = await reclaimStaleSlots(db, slotTtlMs({}), NOW);
+    expect(reclaimed.map((r) => r.workspaceId)).toEqual(['wsp_wedged']);
+    expect(db.slots.map((s) => s.workspace_id)).toEqual(['wsp_lazy']);
+  });
+
   it('reaps an idle executor even when its checkout changed', async () => {
     const db = fakeD1(
       [{ slot: 1, tenant_id: 'ten_a', workspace_id: 'wsp_dirty', claimed_at: minutesAgo(600) }],

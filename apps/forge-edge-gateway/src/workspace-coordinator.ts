@@ -24,6 +24,21 @@ const LEASE_KEY = 'mutation-lease';
 // still fires if a checkout vanishes within the window.
 const CHECKOUT_PROBE_TTL_MS = 60_000;
 
+function nextStepForWorkspace(
+  record: WorkspaceRuntimeRecord,
+  allowedNextActions: string[]
+): string {
+  if (record.workspace.state === 'requested') {
+    return 'GitHub branch is ready. Use forge_files_read and forge_edit now; the first forge_shell starts the ephemeral executor.';
+  }
+  if (!isAgentForgeBranch(record.workspace.currentBranch)) {
+    return branchPolicyFor(record.workspace.currentBranch).next_step;
+  }
+  return allowedNextActions[0]
+    ? `Next safe tool: ${allowedNextActions[0]}`
+    : 'Inspect forge_workspace_get for details.';
+}
+
 export class WorkspaceCoordinator extends DurableObject<Env> {
   private readonly app: ForgeApplicationService;
   private readonly metadata: D1MetadataStore;
@@ -413,11 +428,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           previewCount: Object.keys(record.previews).length,
           allowedNextActions,
           branch_policy: branchPolicyFor(record.workspace.currentBranch),
-          next_step: !isAgentForgeBranch(record.workspace.currentBranch)
-            ? branchPolicyFor(record.workspace.currentBranch).next_step
-            : allowedNextActions[0]
-              ? `Next safe tool: ${allowedNextActions[0]}`
-              : 'Inspect forge_workspace_get for details.'
+          next_step: nextStepForWorkspace(record, allowedNextActions)
         };
       }
       return {
@@ -442,9 +453,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         dependencyState,
         activeProcessIds,
         allowedNextActions,
-        next_step: allowedNextActions[0]
-          ? `Next safe tool: ${allowedNextActions[0]}`
-          : 'Inspect forge_workspace_get for details.',
+        next_step: nextStepForWorkspace(record, allowedNextActions),
       };
     });
   }

@@ -93,14 +93,16 @@ Browser Run, Workers AI).
 ## Provisioning watchdog
 
 A provision Workflow can die or time out mid-run (evicted before its catch
-runs), leaving a workspace stuck in a non-terminal provisioning state forever
+runs), leaving a workspace stuck in `provisioning` or `bootstrapping` forever
 — never `failed`, never past its idle TTL — which leaks its D1 capacity slot.
 The scheduled cron (`*/5 * * * *`, `infra/wrangler/forge.jsonc`) runs
 `reapStuckProvisioning` (`apps/forge-edge-gateway/src/index.ts`), which force-fails
-any workspace wedged past `STUCK_PROVISION_MS` via the coordinator's
-`markProvisioningExhausted` path and releases its slot. The same cron also
-drives a global idle-workspace reaper independent of new workspace creation.
-Both are best-effort: one failure never aborts the rest of the sweep.
+any workspace wedged in those active provision states past `STUCK_PROVISION_MS`
+via the coordinator's `markProvisioningExhausted` path and releases its slot.
+Lazy `requested` sessions (GitHub branch ready, executor not yet started) are
+not treated as stuck; they use the normal idle TTL. The same cron also drives a
+global idle-workspace reaper independent of new workspace creation. Both are
+best-effort: one failure never aborts the rest of the sweep.
 
 ## Bootstrap and lockfile drift
 

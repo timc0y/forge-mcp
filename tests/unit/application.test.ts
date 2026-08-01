@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { ForgeApplicationService, type WorkspaceRuntimeRecord } from '@forge/application';
+import {
+  ForgeApplicationService,
+  workspaceAllowedNextActions,
+  type WorkspaceRuntimeRecord
+} from '@forge/application';
 import { ForgeError, ids } from '@forge/core';
 import type {
   CreateSandboxInput,
@@ -270,6 +274,30 @@ function ready(record: WorkspaceRuntimeRecord): void {
   record.workspace.currentCommit = 'abcdef';
   record.workspace.currentBranch = 'main';
 }
+
+describe('workspaceAllowedNextActions', () => {
+  it('steers lazy requested workspaces to GitHub tools instead of only polling get', () => {
+    const service = new ForgeApplicationService(new FakeProvider());
+    const record = initialized(service);
+    record.workspace.currentBranch = 'forge/lazy-guidance';
+    expect(record.workspace.state).toBe('requested');
+    expect(workspaceAllowedNextActions(record)).toEqual([
+      'forge_files_read',
+      'forge_files_list',
+      'forge_edit',
+      'forge_shell',
+      'forge_workspace_get'
+    ]);
+  });
+
+  it('keeps provisioning workspaces on forge_workspace_get only', () => {
+    const service = new ForgeApplicationService(new FakeProvider());
+    const record = initialized(service);
+    record.workspace.state = 'provisioning';
+    record.workspace.currentBranch = 'forge/lazy-guidance';
+    expect(workspaceAllowedNextActions(record)).toEqual(['forge_workspace_get']);
+  });
+});
 
 describe('Forge application service', () => {
   it('records a caller-supplied workspace operation receipt for timed-out initialize recovery', () => {

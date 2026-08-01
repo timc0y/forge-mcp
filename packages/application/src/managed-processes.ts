@@ -56,7 +56,23 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
       'forge_process_stop'
     ];
   }
-  if (!['ready', 'busy'].includes(record.workspace.state)) {
+  const state = record.workspace.state;
+  // Lazy create parks here with a GitHub branch and no executor. Agents that
+  // only see forge_workspace_get treat this as a hang and never call the
+  // GitHub-backed tools that already work.
+  if (state === 'requested') {
+    return [
+      'forge_files_read',
+      'forge_files_list',
+      'forge_edit',
+      'forge_shell',
+      'forge_workspace_get'
+    ];
+  }
+  if (state === 'provisioning' || state === 'bootstrapping') {
+    return ['forge_workspace_get'];
+  }
+  if (!['ready', 'busy'].includes(state)) {
     return ['forge_workspace_get'];
   }
   if (!isAgentForgeBranch(record.workspace.currentBranch)) {
