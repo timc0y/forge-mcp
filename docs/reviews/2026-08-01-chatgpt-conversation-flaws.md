@@ -38,23 +38,25 @@ and coordinator receipts.
 retry the **same** execution tool, never create a second workspace. Wired into
 executor wake errors, workspace get `next_step`, and MCP instructions/prompts.
 
-## Flaw 3 — Duplicate workspace after ambiguity / compression (mitigated)
+## Flaw 3 — Wrong order / edge cases (high)
 
-**Transcript**
-
-1. Context compresses mid-task.
-2. Agent loses `workspace_id`, calls create again for the same repo.
-3. Quota / two slots on one branch.
-
-**Mitigation:** resume prompt + instructions forbid duplicate create; wake
-errors name “do not create a second workspace.” Hard enforcement (refuse
-second live slot per repo/branch) is still a follow-up.
+| Wrong order | Agent invention | Fix |
+| --- | --- | --- |
+| edit/shell before create | Invents branch slug | Empty-open message: create first, do not invent branch |
+| create twice for same repo | Three ready slots | `FORGE_WORKSPACE_CONFLICT` listing live addresses |
+| `forge_start` while live | Opens second workspace | `next_step` steers reuse of existing addresses |
+| merge then keep editing | Human approves old SHA | Merge `next_step`: no further edit; destroy |
+| tools after destroy | “GitHub App is read-only” | Destroyed message: create again; keep commits |
+| ambiguous `owner/repo` | Creates a third workspace | Ambiguity message forbids duplicate create |
+| preview before deps / stale `preview_id` | Restarts server forever | Steer deps install; omit preview_id |
+| invented `process_id` | Restarts install | PROCESS_NOT_FOUND → `forge_process_list` |
+| merge with empty diff | No-op edit loop | Steer read → edit → merge |
 
 ## Still open (not fixed here)
 
 - First-execution provision can still take minutes; wake returns an error-shaped
   “not ready” rather than a success receipt with `operation_id` + poll interval.
-- ~147 allowlisted `ForgeError` sites without cause + next action.
+- ~140 allowlisted `ForgeError` sites without cause + next action.
 - Large tools/list catalog cost.
 
-Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts`.
+Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–P).

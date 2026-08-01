@@ -556,8 +556,8 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
               throw new ForgeError({
                 code: 'FORGE_PREVIEW_UNAVAILABLE',
                 message: lastReason.includes('no dev server command')
-                  ? 'No dev server command was detected for this project, so there is nothing to screenshot. Start the server with forge_shell async:true, then call forge_preview again (omit preview_id) or pass preview_id once exposed.'
-                  : `The preview was not ready inside this call's host-safe startup budget (${lastReason}). Check forge_process_logs, then retry forge_preview; do not restart an already-running server.`,
+                  ? 'No dev server command was detected for this project, so there is nothing to screenshot. If dependencies are missing call forge_deps_install and forge_process_wait first; otherwise start the server with forge_shell async:true, then call forge_preview again (omit preview_id). Do not open a second workspace.'
+                  : `The preview was not ready inside this call's host-safe startup budget (${lastReason}). If node_modules is missing call forge_deps_install then forge_process_wait; otherwise check forge_process_logs and retry forge_preview without restarting an already-running server or opening a second workspace.`,
                 retryable: true
               });
             }

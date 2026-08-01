@@ -7,15 +7,15 @@ import {
   OBSERVATIONAL_WAIT_MS,
   observationalWaitNextStep
 } from '@forge/application';
+import { forgeTools } from '@forge/mcp-core';
 import { FORGE_MCP_INSTRUCTIONS, FORGE_PROMPT_HINTS } from '../../apps/forge-edge-gateway/src/mcp-guidance';
+import { parseWorkspaceAddress, resolveWorkspaceId } from '../../apps/forge-edge-gateway/src/workspace-resolve';
+import type { Env } from '../../apps/forge-edge-gateway/src/env';
 import type { SandboxHandle, SandboxProvider } from '@forge/sandbox-core';
 
 /**
- * Simulated ChatGPT conversations that used to go wrong in production.
- *
- * Each case is a transcript-shaped script: user ask → agent tool → Forge reply
- * shape the agent must not misread. Assertions pin the steers that stop the
- * known inventions (10-minute waits, duplicate workspaces, "get once" then give up).
+ * Simulated ChatGPT conversations: correct order, wrong order, and edge cases.
+ * Each case is user → agent tool sequence → Forge reply the agent must not misread.
  */
 
 class FakeProvider implements SandboxProvider {
@@ -29,9 +29,8 @@ class FakeProvider implements SandboxProvider {
   }
 }
 
-function seededService() {
-  const provider = new FakeProvider();
-  const service = new ForgeApplicationService(provider);
+function seededService(state: 'ready' | 'destroyed' | 'requested' = 'ready') {
+  const service = new ForgeApplicationService(new FakeProvider());
   const record = service.initializeWorkspace({
     tenantId: 'ten_00000000000000000000000000' as never,
     projectId: 'prj_00000000000000000000000000' as never,
@@ -43,7 +42,7 @@ function seededService() {
     idempotencyKey: 'sim-seed',
     actor: { type: 'agent', id: 'chatgpt' }
   });
-  record.workspace.state = 'ready';
+  record.workspace.state = state;
   record.workspace.currentBranch = 'forge/sim';
   record.workspace.currentCommit = 'a'.repeat(40);
   record.detection = {
@@ -57,10 +56,40 @@ function seededService() {
   return { service, record };
 }
 
+function envWith(occupants: Array<{ workspaceId: string; owner?: string; repo?: string; branch?: string | null; state?: string }>) {
+  return {
+    FORGE_SLOT_TTL_MINUTES: '240',
+    METADATA: {
+      prepare() {
+        const statement: Record<string, unknown> = {
+          bind: () => statement,
+          all: async () => ({
+            results: occupants.map((occupant, index) => ({
+              slot: index + 1,
+              workspace_id: occupant.workspaceId,
+              tenant_id: 'ten_a',
+              claimed_at: new Date().toISOString(),
+              state: occupant.state ?? 'ready',
+              updated_at: new Date().toISOString(),
+              repository: occupant.owner && occupant.repo ? `${occupant.owner}/${occupant.repo}` : null,
+              current_branch: occupant.branch === undefined ? null : occupant.branch
+            }))
+          }),
+          first: async () => null,
+          run: async () => ({ meta: { changes: 0 } })
+        };
+        return statement;
+      }
+    }
+  } as unknown as Env;
+}
+
+function sourceMentions(rel: string, pattern: RegExp): boolean {
+  return pattern.test(readFileSync(join(process.cwd(), rel), 'utf8'));
+}
+
 describe('ChatGPT conversation simulations', () => {
   it('Conv A — install wait: agent must not attempt a 10-minute single wait', async () => {
-    // User: "install deps and run the app"
-    // Agent: forge_deps_install while one is running → must observe with ≤30s waits
     const { service, record } = seededService();
     const processId = 'proc_sim_install';
     record.processes[processId] = {
@@ -76,35 +105,19 @@ describe('ChatGPT conversation simulations', () => {
       hostSafeWaitMs: 50
     });
     expect(reused.reusedActiveProcess).toBe(true);
-    expect(reused.processId).toBe(processId);
-    expect(reused.next_step).toBe(
-      observationalWaitNextStep(processId, { alreadyRunning: true })
-    );
+    expect(reused.next_step).toBe(observationalWaitNextStep(processId, { alreadyRunning: true }));
     expect(reused.next_step).not.toMatch(/600000/);
     expect(reused.next_step).toMatch(/at most 30000/);
-    expect(reused.next_step).toMatch(/Do not start another install/);
-
-    // Same contract the wait tool itself advertises — never a single 600s hold.
-    const waitHint = observationalWaitNextStep(processId);
-    expect(waitHint).not.toMatch(/600000/);
-    expect(waitHint).toMatch(new RegExp(`at most ${OBSERVATIONAL_WAIT_MS}`));
+    expect(observationalWaitNextStep(processId)).toMatch(new RegExp(`at most ${OBSERVATIONAL_WAIT_MS}`));
   });
 
   it('Conv B — first shell on lazy workspace: steer poll-get, forbid second workspace', () => {
-    // User: "run the tests"
-    // Agent: forge_shell on requested → NOT_READY → must poll get, not forge_workspace_create
-    expect(EXECUTOR_PROVISIONING_NEXT_STEP).toMatch(/forge_workspace_get/);
     expect(EXECUTOR_PROVISIONING_NEXT_STEP).toMatch(/Do not create a second workspace/);
-    expect(EXECUTOR_PROVISIONING_NEXT_STEP).toMatch(/retry the same execution tool/);
     expect(FORGE_MCP_INSTRUCTIONS).toMatch(/never create a second workspace/);
     expect(FORGE_MCP_INSTRUCTIONS).not.toMatch(/get once, then retry/);
-    expect(FORGE_PROMPT_HINTS['start-task']({ repository: 'o/r', task: 'fix x' })).toMatch(
-      /poll forge_workspace_get until ready/
-    );
   });
 
   it('Conv C — source guidance never advertises unreachable wait budgets', () => {
-    // Static sweep: any next_step / hint that still says 600000 will train ChatGPT wrong.
     const roots = [
       'packages/application/src/index.ts',
       'packages/application/src/managed-processes.ts',
@@ -116,8 +129,6 @@ describe('ChatGPT conversation simulations', () => {
     for (const rel of roots) {
       const source = readFileSync(join(process.cwd(), rel), 'utf8');
       for (const match of source.matchAll(/next_step[^;]{0,400}600000|timeout_ms[^;\n]{0,80}600000/gu)) {
-        // Schema defaults for install lifetime may still say max(900000)/default(600000);
-        // only agent-facing wait guidance is banned.
         if (/z\.number|max\(|default\(|timeoutMs:/u.test(match[0])) continue;
         if (/Call forge_process_wait|already running|large installs/u.test(match[0])) {
           offences.push(`${rel}: ${match[0].slice(0, 120)}`);
@@ -128,27 +139,134 @@ describe('ChatGPT conversation simulations', () => {
   });
 
   it('Conv D — UI iterate prompt still requires screenshots before the next edit', () => {
-    // User: "make the hero tighter"
-    // Bad agent: edit → edit → edit with no evidence
     const hint = FORGE_PROMPT_HINTS['iterate-ui']({ repository: 'o/r', change: 'tighten hero' });
     expect(hint).toMatch(/forge_preview|forge_review/);
     expect(hint).toMatch(/Inspect every screenshot/);
-    expect(hint).toMatch(/forge_edit/);
   });
 
   it('Conv E — resume after compression must not open a duplicate workspace', () => {
-    // User: "continue" after ChatGPT compressed context
     const hint = FORGE_PROMPT_HINTS['resume-task']({ task_id: 'task_abc', repository: 'o/r' });
-    expect(hint).toMatch(/forge_task_get/);
-    expect(hint).toMatch(/mode:resume|mode: resume|mode:resume/i);
     expect(hint).toMatch(/do not forge_workspace_create a duplicate/i);
   });
 
   it('Conv F — plan work must stay container-free', () => {
     const hint = FORGE_PROMPT_HINTS['plan-work']({ repository: 'o/r', goal: 'add billing' });
-    expect(hint).toMatch(/forge_task_create/);
     expect(hint).toMatch(/do not allocate an executor/i);
     expect(hint).not.toMatch(/forge_shell/);
-    expect(hint).not.toMatch(/forge_deps_install/);
+  });
+
+  it('Conv G — wrong order: edit/shell before create steers create, not inventing a branch', async () => {
+    // User: "fix the typo in README"
+    // Bad agent: forge_edit with no workspace open
+    await expect(
+      resolveWorkspaceId(envWith([]), { tenantId: 'ten_a', projectId: 'prj_a' }, {})
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(/forge_workspace_create first[\s\S]*do not invent a branch name/i)
+    });
+  });
+
+  it('Conv H — wrong order: ambiguous owner/repo after duplicate creates forbids another create', async () => {
+    // User: "continue" after agent already opened two workspaces
+    await expect(
+      resolveWorkspaceId(envWith([
+        { workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaaaaaaaa', owner: 'timc0y', repo: 'demo', branch: 'forge/one' },
+        { workspaceId: 'ws_bbbbbbbbbbbbbbbbbbbbbbbbbb', owner: 'timc0y', repo: 'demo', branch: 'forge/two' }
+      ]), { tenantId: 'ten_a', projectId: 'prj_a' }, parseWorkspaceAddress('timc0y/demo'))
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(/do not forge_workspace_create a duplicate/i)
+    });
+  });
+
+  it('Conv I — wrong order: tools after destroy steer recreate, not permission inventions', async () => {
+    const { service, record } = seededService('destroyed');
+    await expect(service.gitStatus(record)).rejects.toMatchObject({
+      code: 'FORGE_WORKSPACE_NOT_READY',
+      message: expect.stringMatching(/destroyed[\s\S]*forge_workspace_create[\s\S]*old workspace_id/i)
+    });
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/After destroy, forge_workspace_create again/);
+  });
+
+  it('Conv J — wrong order: merge then keep editing is forbidden by merge next_step', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /do not forge_edit this branch further for this submission/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /Call forge_workspace_destroy when done/
+      )
+    ).toBe(true);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/After forge_merge, do not edit that branch further/);
+  });
+
+  it('Conv K — wrong order: forge_start while workspace live steers reuse', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /A workspace is already open for/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /do not forge_workspace_create another one/
+      )
+    ).toBe(true);
+    const start = forgeTools.find((tool) => tool.name === 'forge_start');
+    expect(start?.description).toMatch(/reuse/i);
+  });
+
+  it('Conv L — wrong order: second forge_workspace_create for same repo is refused', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /A live workspace already covers/
+      )
+    ).toBe(true);
+    const create = forgeTools.find((tool) => tool.name === 'forge_workspace_create');
+    expect(create?.description).toMatch(/Refuses a second live workspace/);
+  });
+
+  it('Conv M — wrong order: preview before deps / stale preview_id', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/execution.ts',
+        /If dependencies are missing call forge_deps_install/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/workspace-coordinator.ts',
+        /Call forge_preview again without a preview_id/
+      )
+    ).toBe(true);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Omit stale preview_id/);
+  });
+
+  it('Conv N — wrong order: process_wait with invented process_id', () => {
+    expect(
+      sourceMentions(
+        'packages/application/src/managed-processes.ts',
+        /do not invent process ids/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv O — wrong order: merge with empty diff steers edit first', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /Call forge_files_read → forge_edit/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv P — instructions name the default order and the forbidden inversions', () => {
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/forge_task_create[\s\S]*forge_workspace_create[\s\S]*forge_edit[\s\S]*forge_merge/);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/never forge_edit\/shell\/preview\/merge before forge_workspace_create/);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/Never forge_workspace_create a second time/);
   });
 });

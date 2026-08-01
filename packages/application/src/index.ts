@@ -424,8 +424,14 @@ export class ForgeApplicationService {
     ) {
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_NOT_READY',
-        message: 'Workspace is not available.',
-        retryable: false
+        message:
+          'This workspace is destroyed or destroying. GitHub commits on its forge/* branch are kept. Call forge_workspace_create with the same repository (and ref pointing at that forge/* branch if you still need it); do not retry tools against the old workspace_id.',
+        retryable: false,
+        details: {
+          state: record.workspace.state,
+          next_step:
+            'Call forge_workspace_create for the same repository; do not retry tools against the old workspace_id.'
+        }
       });
     }
     if (!['ready', 'busy'].includes(record.workspace.state)) {
@@ -1023,8 +1029,10 @@ export class ForgeApplicationService {
     if (!record.processes[input.processId]) {
       throw new ForgeError({
         code: 'FORGE_PROCESS_NOT_FOUND',
-        message: 'The preview process was not found.',
-        retryable: false
+        message:
+          'The preview process was not found. Call forge_process_list and pass a running process_id, or call forge_preview without preview_id so Forge starts the app first.',
+        retryable: false,
+        details: { processId: input.processId, allowedNextActions: ['forge_process_list', 'forge_preview'] }
       });
     }
     const operation = this.beginMutation(

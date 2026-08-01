@@ -187,13 +187,14 @@ export async function resolveWorkspaceId(env: Env, identity: Identity, address: 
     if (owner === undefined && repo === undefined && branch === undefined) {
       throw new ForgeError({
         code: 'FORGE_VALIDATION_FAILED',
-        message: 'No workspace is open. Call forge_workspace_create first — it returns one ready to use — then future calls find it automatically, or by workspace: "owner/repo#branch".',
+        message:
+          'No workspace is open. Call forge_workspace_create first — it cuts a forge/* branch for you (do not invent a branch name). Prefer forge_task_create → forge_workspace_create before any read, edit, or shell. Future calls find the workspace automatically, or by workspace: "owner/repo#branch".',
         retryable: false
       });
     }
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',
-      message: `No live workspace matches ${describeAddress(owner, repo, branch)}. Call forge_observer_workspaces to see what is actually open, or forge_workspace_create to start one.`,
+      message: `No live workspace matches ${describeAddress(owner, repo, branch)}. Call forge_observer_workspaces to see what is actually open, or forge_workspace_create to start one. Do not invent a branch name.`,
       retryable: false,
       details: { owner: owner ?? null, repo: repo ?? null, branch: branch ?? null }
     });
@@ -201,7 +202,7 @@ export async function resolveWorkspaceId(env: Env, identity: Identity, address: 
 
   throw new ForgeError({
     code: 'FORGE_VALIDATION_FAILED',
-    message: `Several workspaces are open, so this is ambiguous. Pass workspace as "owner/repo#branch" to say which — one of: ${candidates.map(candidateLabel).join(', ')}.`,
+    message: `Several workspaces are open, so this is ambiguous. Pass workspace as "owner/repo#branch" to say which — one of: ${candidates.map(candidateLabel).join(', ')}. Reuse one of those addresses; do not forge_workspace_create a duplicate for this repository.`,
     retryable: false,
     details: { workspaces: candidates.map((occupant) => ({ owner: occupant.repository?.owner ?? null, repo: occupant.repository?.name ?? null, branch: occupant.currentBranch ?? null })) }
   });

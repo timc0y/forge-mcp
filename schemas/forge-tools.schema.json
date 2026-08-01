@@ -400,7 +400,7 @@
     },
     "forge_start": {
       "title": "Start a branch",
-      "description": "Create forge/<slug> on GitHub from base_ref (default: the repository’s own default branch) — before any workspace exists, no container. Pass the returned branch as ref to forge_workspace_create: it adopts an already-existing forge/ branch instead of cutting a new one, so the branch is on origin from the moment it exists at all.",
+      "description": "Create forge/<slug> on GitHub from base_ref (default: the repository’s own default branch) — before any workspace exists, no container. Pass the returned branch as ref to forge_workspace_create: it adopts an already-existing forge/ branch instead of cutting a new one, so the branch is on origin from the moment it exists at all. If a live workspace already covers this repository, next_step steers you to reuse it instead of creating another.",
       "sideEffect": "external",
       "approval": "none",
       "inputSchema": {
@@ -454,7 +454,7 @@
     },
     "forge_workspace_create": {
       "title": "Create workspace",
-      "description": "Create a lightweight control-plane coding session and return workspace_id + operation_id immediately. No executor is provisioned here; the first shell, install, build, test, dev, preview, or deploy call allocates an ephemeral executor using the requested runtime/bootstrap settings.",
+      "description": "Create a lightweight control-plane coding session and return workspace_id + operation_id immediately. No executor is provisioned here; the first shell, install, build, test, dev, preview, or deploy call allocates an ephemeral executor using the requested runtime/bootstrap settings. Refuses a second live workspace for the same repository — reuse owner/repo#branch instead.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {

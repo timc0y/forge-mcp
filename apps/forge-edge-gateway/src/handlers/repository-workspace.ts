@@ -116,6 +116,37 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
 
         const creation = await createBranchRef(request, { owner, repo, branch, baseSha });
 
+        // Wrong order: forge_start after a workspace is already open. Creating
+        // another workspace for the same repo is how ChatGPT ends up with three
+        // ready slots on one branch. Prefer continuing the live one.
+        const occupants = await listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), identity.tenantId);
+        const liveForRepo = occupants.filter(
+          (occupant) =>
+            occupant.repository?.owner.toLowerCase() === owner.toLowerCase() &&
+            occupant.repository.name.toLowerCase() === repo.toLowerCase() &&
+            occupant.state !== null &&
+            !TERMINAL_STATES.includes(occupant.state)
+        );
+        if (liveForRepo.length > 0) {
+          const addresses = liveForRepo
+            .map((occupant) => `${owner}/${repo}${occupant.currentBranch ? `#${occupant.currentBranch}` : ''}`)
+            .join(', ');
+          return {
+            owner,
+            repo,
+            branch,
+            base_ref: baseRef,
+            base_sha: baseSha,
+            created: creation.created,
+            existing_workspaces: liveForRepo.map((occupant) => ({
+              workspace_id: occupant.workspaceId,
+              branch: occupant.currentBranch,
+              state: occupant.state
+            })),
+            next_step: `A workspace is already open for ${owner}/${repo}: ${addresses}. Continue with forge_files_read / forge_edit on that address — do not forge_workspace_create another one. ${branch} was still cut on GitHub if you later need a fresh workspace with ref:'${branch}'.`
+          };
+        }
+
         return {
           owner,
           repo,
@@ -131,10 +162,43 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         const credentialProfileId = await deps.selectedCredentialProfileId(identity);
         const repository = input.repository as { provider: 'github'; owner: string; name: string };
         const idempotencyKey = idempotency(input.idempotency_key);
+
+        // Wrong order / compressed session: create again while a live workspace
+        // already covers this repo. Refuse before burning another slot — unless
+        // this idempotency key already owns one of those slots (create replay).
+        const occupants = await listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), identity.tenantId);
+        const liveForRepo = occupants.filter(
+          (occupant) =>
+            occupant.repository?.owner.toLowerCase() === repository.owner.toLowerCase() &&
+            occupant.repository.name.toLowerCase() === repository.name.toLowerCase() &&
+            occupant.state !== null &&
+            !TERMINAL_STATES.includes(occupant.state)
+        );
         const workspaceId = await workspaceIdFromIdempotency(
           `${identity.tenantId}:${identity.projectId}`,
           idempotencyKey
         );
+        if (liveForRepo.length > 0 && !liveForRepo.some((occupant) => occupant.workspaceId === workspaceId)) {
+          const addresses = liveForRepo
+            .map((occupant) =>
+              `${repository.owner}/${repository.name}${occupant.currentBranch ? `#${occupant.currentBranch}` : ''}`
+            )
+            .join(', ');
+          throw new ForgeError({
+            code: 'FORGE_WORKSPACE_CONFLICT',
+            message: `A live workspace already covers ${repository.owner}/${repository.name}: ${addresses}. Reuse workspace:"owner/repo#branch" (or call forge_observer_workspaces). Do not forge_workspace_create a duplicate for this repository.`,
+            retryable: false,
+            details: {
+              existing: liveForRepo.map((occupant) => ({
+                workspace_id: occupant.workspaceId,
+                branch: occupant.currentBranch,
+                state: occupant.state
+              })),
+              next_step: 'Reuse one of the listed workspace addresses; do not create another.',
+              allowedNextActions: ['forge_observer_workspaces', 'forge_files_read', 'forge_edit', 'forge_workspace_get']
+            }
+          });
+        }
         const operationId = `op_${workspaceId.replace(/^ws_/u, '')}` as OperationId;
         // Claim a slot on the fast path with no reaper cost. Only if the claim
         // hits the quota do we reclaim stale slots (missing, terminal, or idle
@@ -484,7 +548,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           if (hasContent === hasReplace) {
             throw new ForgeError({
               code: 'FORGE_VALIDATION_FAILED',
-              message: `${file.path}: send either content (whole file, or null to delete) or replace (fragments), not both and not neither.`,
+              message: `${file.path}: send either content (whole file, or null to delete) or replace (fragments), not both and not neither. For a new file use content; for an existing file prefer replace:[{old,new}].`,
               retryable: false
             });
           }
@@ -1319,7 +1383,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         if (filesChanged === 0) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `There is nothing to submit: ${branch} has no changes against ${comparisonRef}. Make the change first, then submit.`,
+            message: `There is nothing to submit: ${branch} has no changes against ${comparisonRef}. Call forge_files_read → forge_edit to make a real change (or confirm the base with forge_diff_metadata), then forge_merge again.`,
             retryable: false,
             details: {
               comparisonRef,
@@ -1429,7 +1493,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             // it, in case that guard ever changes.
             feature_branch_on_origin: Boolean(remoteHead)
           },
-          next_step: `Echo only submission_receipt to the human. Branch ${branch}@${staged.remote_sha} is verified on origin; approve at ${approval.approval_url}.`
+          next_step: `Echo only submission_receipt to the human. Approval is pinned to ${branch}@${staged.remote_sha} — do not forge_edit this branch further for this submission. Call forge_workspace_destroy when done. To change more after destroy, forge_workspace_create a new branch. Approve at ${approval.approval_url}.`
         };
       },
       forge_workspace_destroy: async (input) => {

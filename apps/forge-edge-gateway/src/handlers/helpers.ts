@@ -394,9 +394,12 @@ export async function executorCoordinator(
 
   throw new ForgeError({
     code: 'FORGE_WORKSPACE_NOT_READY',
-    message: `The ephemeral executor cannot run this tool because the workspace is ${binding.state}. No command ran; inspect forge_workspace_get before retrying. Do not create a second workspace.`,
+    message:
+      binding.state === 'destroyed' || binding.state === 'destroying'
+        ? `The ephemeral executor cannot run this tool because the workspace is ${binding.state}. GitHub commits on the forge/* branch are kept. Call forge_workspace_create with the same repository (and that forge/* ref if needed); do not retry tools against the old workspace_id.`
+        : `The ephemeral executor cannot run this tool because the workspace is ${binding.state}. No command ran; inspect forge_workspace_get before retrying. Do not create a second workspace while this one is still live.`,
     retryable: false,
-    details: { workspace_id: workspaceId, operation_id: binding.operationId, state: binding.state, allowedNextActions: ['forge_workspace_get'] }
+    details: { workspace_id: workspaceId, operation_id: binding.operationId, state: binding.state, allowedNextActions: ['forge_workspace_get', 'forge_workspace_create', 'forge_observer_workspaces'] }
   });
 }
 

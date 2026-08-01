@@ -79,7 +79,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (!record) {
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_NOT_FOUND',
-        message: 'Workspace was not found.',
+        message:
+          'Workspace was not found (destroyed or never existed). Call forge_observer_workspaces to see what is open, or forge_workspace_create to start a new one for the repository — do not retry tools against this workspace_id.',
         retryable: false
       });
     }
@@ -1250,8 +1251,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (!preview) {
       throw new ForgeError({
         code: 'FORGE_PREVIEW_UNAVAILABLE',
-        message: 'Preview was not found.',
-        retryable: false
+        message:
+          'Preview was not found (expired or never existed). Call forge_preview again without a preview_id so Forge starts a fresh one; do not reuse the old preview_id.',
+        retryable: true
       });
     }
     return { workspace: record.workspace, preview, providerId: record.providerId };

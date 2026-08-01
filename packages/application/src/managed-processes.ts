@@ -361,7 +361,15 @@ export class ManagedProcesses {
   async processGet(record: WorkspaceRuntimeRecord, processId: ProcessId) {
     const handle = await this.resolveHandle(record, { allowRecreate: false });
     const process = await handle.getProcess(processId);
-    if (!process) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
+    if (!process) {
+      throw new ForgeError({
+        code: 'FORGE_PROCESS_NOT_FOUND',
+        message:
+          'The managed process was not found in this workspace. Call forge_process_list and reuse a returned process_id, or start work with forge_shell / forge_deps_install — do not invent process ids.',
+        retryable: false,
+        details: { processId, allowedNextActions: ['forge_process_list', 'forge_shell', 'forge_deps_install'] }
+      });
+    }
     const entry = record.processes[processId];
     if (entry && !entry.completedAt && process.status !== 'running' && process.status !== 'starting') {
       entry.completedAt = process.completedAt ?? new Date().toISOString();
@@ -475,7 +483,15 @@ export class ManagedProcesses {
         process = await handle.processWait({ processId, timeoutMs: requestedTimeoutMs });
       } else {
         const current = await handle.getProcess(processId);
-        if (!current) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
+        if (!current) {
+          throw new ForgeError({
+            code: 'FORGE_PROCESS_NOT_FOUND',
+            message:
+              'The managed process was not found in this workspace. Call forge_process_list and reuse a returned process_id, or start work with forge_shell / forge_deps_install — do not invent process ids.',
+            retryable: false,
+            details: { processId, allowedNextActions: ['forge_process_list', 'forge_shell', 'forge_deps_install'] }
+          });
+        }
         process = current;
       }
     } catch (error) {
@@ -558,9 +574,10 @@ export class ManagedProcesses {
     if (!record.processes[processId]) {
       throw new ForgeError({
         code: 'FORGE_PROCESS_NOT_FOUND',
-        message: 'The process is not owned by this workspace.',
+        message:
+          'The process is not owned by this workspace. Call forge_process_list and reuse a returned process_id — do not invent process ids.',
         retryable: false,
-        details: { processId }
+        details: { processId, allowedNextActions: ['forge_process_list'] }
       });
     }
     const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
@@ -614,9 +631,10 @@ export class ManagedProcesses {
     if (!record.processes[processId]) {
       throw new ForgeError({
         code: 'FORGE_PROCESS_NOT_FOUND',
-        message: 'The process is not owned by this workspace.',
+        message:
+          'The process is not owned by this workspace. Call forge_process_list and reuse a returned process_id — do not invent process ids.',
         retryable: false,
-        details: { processId }
+        details: { processId, allowedNextActions: ['forge_process_list'] }
       });
     }
     const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
