@@ -79,7 +79,9 @@ these next:
 | Green tests on executor-only edits | Feature shipped | Guidance: require `forge_edit` `commit_url` |
 | Missing deps → shell-only `allowedNextActions` | Author via shell while installing | Always include `forge_files_read` / `forge_edit` |
 | Soft “continue with ephemeral files” | Skip forge_edit | Single `durabilityNextStep()` recipe |
-| Success loops with no GitHub change | Busy forever | **Φ-gate** (discrete Lyapunov): refuse after \(K\) progress-seeking successes without durable witness |
+| Success loops with no GitHub change | Busy forever | **Φ-gate** (discrete Lyapunov): refuse after \(K\) successes without durable witness |
+| Edit→test false positive on Φ-gate | Refuse mid-verify | Verify-budget \(B=6\) dwell credit after each witness |
+| “Done” with no durable trail | Claim success from exit 0 | Causal witness chain tip/depth on receipts |
 
 ## Activity logging
 
@@ -88,8 +90,8 @@ Complete activity is D1 `mcp_tool_calls` (default for `forge_observer_activity`)
 
 ## Theory (experimental)
 
-See `docs/research/progress-potential.md` — Durable Progress Potential / Shannon
-thrash on tool streams.
+See `docs/research/progress-potential.md` — Durable Progress Potential, verify
+budget, causal witness chain, Shannon thrash on tool streams.
 
 ## Still open (not fixed here)
 
@@ -97,6 +99,7 @@ thrash on tool streams.
   “not ready” rather than a success receipt with `operation_id` + poll interval.
 - ~140 allowlisted `ForgeError` sites without cause + next action.
 - Large tools/list catalog cost.
-- Φ-gate \(K\) may need production tuning against legitimate long verify loops.
+- Φ still receipt-derived; bind to workspace DO fingerprint next.
+- Φ-gate \(K\)/\(B\) may need production tuning against long verify loops.
 
 Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–AE).

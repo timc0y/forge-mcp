@@ -1,5 +1,5 @@
 /**
- * Durable Progress Potential (Φ-gate)
+ * Durable Progress Potential (Φ-gate) + causal witness chain
  *
  * Discrete Lyapunov / monotone-potential control for agent tool trajectories.
  * ChatGPT spirals are paths that keep calling progress-seeking tools while the
@@ -7,15 +7,22 @@
  *
  *   Φ_t   = durable workspace fingerprint
  *   ΔΦ_t  = 1[Φ_t ≠ Φ_{t-1}]  ∨  durableWitness_t
- *   S_t   = 0 if ΔΦ_t else S_{t-1}+1  (only for progress-seeking successes)
+ *   S_t   = 0 if ΔΦ_t else S_{t-1}+1  (only for progress-seeking successes
+ *           after verify-budget is exhausted)
  *   trip  ⇔  S_t ≥ K before the next progress-seeking call
  *
- * This is unproven as a general agent-control law, but it is the standard
- * “no progress ⇒ stuck” certificate from nonlinear control, applied to MCP
- * tool streams. Compose with identical-failure detection; do not replace it.
+ * Verify-budget: after a durable witness, allow B verify calls (tests/shell)
+ * without incrementing S — a dwell-credit barrier so legitimate
+ * edit→test→edit loops are not false positives.
  *
- * Shannon entropy of the recent (tool, argsHash) window is an optional
- * thrash signal: high novelty with zero witnesses also trips (A↔B↔C loops).
+ * Causal certificate: each witness extends a hash chain tip. Receipts expose
+ * tip + depth so “done” claims can be checked against an unbroken chain.
+ *
+ * Shannon entropy of the recent (tool, argsHash) window is a thrash signal:
+ * high novelty with zero witnesses also trips (A↔B↔C loops).
+ *
+ * Unproven as a general agent-control law; classical nonlinear control
+ * applied to MCP tool streams. Compose with identical-failure detection.
  */
 
 import { durabilityNextStep } from './managed-processes.js';
@@ -28,6 +35,12 @@ export const PROGRESS_ENTROPY_WINDOW = 8;
 
 /** Bits of Shannon entropy (base 2) over the window that count as thrashing. */
 export const PROGRESS_ENTROPY_THRASH_BITS = 2.5;
+
+/**
+ * After a durable witness, this many progress-seeking successes may run
+ * without incrementing the zero-progress streak (edit → test → preview).
+ */
+export const PROGRESS_VERIFY_BUDGET = 6;
 
 export type ToolProgressClass = 'observational' | 'progress_seeking';
 
@@ -64,6 +77,12 @@ export interface ProgressStreakState {
   phi: string;
   /** Consecutive progress-seeking successes without durable witness. */
   streak: number;
+  /** Remaining verify credits after the last witness. */
+  verifyBudget: number;
+  /** Causal witness-chain tip (hex); empty until first witness. */
+  witnessTip: string;
+  /** Number of durable witnesses in this session chain. */
+  witnessDepth: number;
   /** Recent intent keys for entropy thrash (tool:argsHash). */
   recent: string[];
   updatedAt: string;
@@ -77,6 +96,8 @@ export interface ProgressObservation {
   phiNow?: string;
   /** Intent hash for entropy (omit for observational). */
   argsHash?: string;
+  /** Stable id for the causal chain (commit sha, task id, workspace id…). */
+  witnessId?: string;
   status: 'success' | 'error';
 }
 
@@ -117,6 +138,19 @@ export function durableFingerprint(parts: {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+/** Extend the causal witness chain: tip' = H(tip ‖ tool ‖ id ‖ at). */
+export function extendWitnessChain(
+  prevTip: string,
+  witness: { tool: string; id: string; at: string }
+): string {
+  return durableFingerprint({
+    headSha: `${prevTip || 'genesis'}|${witness.tool}|${witness.id}|${witness.at}`,
+    depsStatus: '',
+    branch: '',
+    activeProcessIds: []
+  });
+}
+
 /** Shannon entropy H = -Σ p log2 p over the multiset (bits). */
 export function shannonEntropyBits(items: readonly string[]): number {
   if (items.length === 0) return 0;
@@ -132,19 +166,133 @@ export function shannonEntropyBits(items: readonly string[]): number {
 }
 
 export function emptyProgressStreak(now = new Date().toISOString()): ProgressStreakState {
-  return { phi: '', streak: 0, recent: [], updatedAt: now };
+  return {
+    phi: '',
+    streak: 0,
+    verifyBudget: 0,
+    witnessTip: '',
+    witnessDepth: 0,
+    recent: [],
+    updatedAt: now
+  };
+}
+
+/** Coerce session DO payloads written before verify-budget / causal chain. */
+export function normalizeProgressStreak(
+  raw: ProgressStreakState | null | undefined,
+  now = new Date().toISOString()
+): ProgressStreakState {
+  if (!raw) return emptyProgressStreak(now);
+  return {
+    phi: typeof raw.phi === 'string' ? raw.phi : '',
+    streak: typeof raw.streak === 'number' && Number.isFinite(raw.streak) ? raw.streak : 0,
+    verifyBudget:
+      typeof raw.verifyBudget === 'number' && Number.isFinite(raw.verifyBudget)
+        ? Math.max(0, raw.verifyBudget)
+        : 0,
+    witnessTip: typeof raw.witnessTip === 'string' ? raw.witnessTip : '',
+    witnessDepth:
+      typeof raw.witnessDepth === 'number' && Number.isFinite(raw.witnessDepth)
+        ? Math.max(0, raw.witnessDepth)
+        : 0,
+    recent: Array.isArray(raw.recent)
+      ? raw.recent.filter((item): item is string => typeof item === 'string')
+      : [],
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now
+  };
+}
+
+function unwrapStructured(result: unknown): Record<string, unknown> {
+  if (!result || typeof result !== 'object') return {};
+  const record = result as Record<string, unknown>;
+  if (record.structuredContent && typeof record.structuredContent === 'object') {
+    return record.structuredContent as Record<string, unknown>;
+  }
+  return record;
+}
+
+/**
+ * Best-effort Φ from a tool receipt (compact workspace get, edit, deps…).
+ * Missing fields yield a partial fingerprint — still useful for ΔΦ.
+ */
+export function phiFromReceipt(result: unknown): string | undefined {
+  const s = unwrapStructured(result);
+  const deps =
+    s.dependencyState && typeof s.dependencyState === 'object'
+      ? (s.dependencyState as { status?: string }).status
+      : typeof s.depsStatus === 'string'
+        ? s.depsStatus
+        : undefined;
+  const head =
+    (typeof s.currentCommit === 'string' && s.currentCommit) ||
+    (typeof s.remoteSha === 'string' && s.remoteSha) ||
+    (typeof s.remote_sha === 'string' && s.remote_sha) ||
+    (typeof s.head === 'string' && s.head) ||
+    undefined;
+  const branch =
+    (typeof s.currentBranch === 'string' && s.currentBranch) ||
+    (typeof s.branch === 'string' && s.branch) ||
+    (typeof s.current_branch === 'string' && s.current_branch) ||
+    undefined;
+  const procs = Array.isArray(s.activeProcessIds)
+    ? (s.activeProcessIds as unknown[]).filter((id): id is string => typeof id === 'string')
+    : undefined;
+  if (!head && !deps && !branch && !procs?.length) return undefined;
+  return durableFingerprint({
+    headSha: head,
+    depsStatus: deps,
+    branch,
+    activeProcessIds: procs
+  });
+}
+
+/** Stable id for the causal chain when a witness fires. */
+export function witnessIdFromReceipt(tool: string, result: unknown): string | undefined {
+  const s = unwrapStructured(result);
+  if (tool === 'forge_edit') {
+    const id = s.remoteSha ?? s.remote_sha ?? s.commit_url;
+    return typeof id === 'string' ? id : undefined;
+  }
+  if (tool === 'forge_merge') {
+    const receipt = s.submission_receipt;
+    if (receipt && typeof receipt === 'object') {
+      const remote = (receipt as { remote_sha?: string; approval_id?: string }).remote_sha
+        ?? (receipt as { approval_id?: string }).approval_id;
+      if (typeof remote === 'string') return remote;
+    }
+    if (typeof s.approval_id === 'string') return s.approval_id;
+  }
+  if (tool === 'forge_task_create' && typeof s.task_id === 'string') return s.task_id;
+  if (tool === 'forge_workspace_create' && typeof s.workspace_id === 'string') return s.workspace_id;
+  if (tool === 'forge_start' && typeof s.branch === 'string') return s.branch;
+  if (tool === 'forge_deps_install') {
+    const deps = s.dependencyState;
+    if (deps && typeof deps === 'object') {
+      const hash = (deps as { lockfileHash?: string }).lockfileHash;
+      if (typeof hash === 'string') return hash;
+    }
+  }
+  if (tool === 'forge_cloudflare_deploy') {
+    const receipt = s.deploy_receipt;
+    if (receipt && typeof receipt === 'object') {
+      const url = (receipt as { verified_url?: string }).verified_url;
+      if (typeof url === 'string') return url;
+    }
+  }
+  return undefined;
 }
 
 /**
  * Update streak after a tool call. Errors do not advance the zero-progress
- * streak (identical-failure detection owns that); successes without a witness do.
+ * streak (identical-failure detection owns that); successes without a witness
+ * consume verify-budget first, then increment S.
  */
 export function observeProgressEvent(
   prev: ProgressStreakState | null,
   event: ProgressObservation,
   now = new Date().toISOString()
 ): ProgressStreakState {
-  const state = prev ?? emptyProgressStreak(now);
+  const state = normalizeProgressStreak(prev, now);
   const kind = classifyToolProgress(event.tool);
   const phiMoved = Boolean(event.phiNow && state.phi && event.phiNow !== state.phi);
   const witness = event.durableWitness || phiMoved;
@@ -155,9 +303,14 @@ export function observeProgressEvent(
   }
 
   if (witness) {
+    const id = event.witnessId ?? event.phiNow ?? event.tool;
+    const tip = extendWitnessChain(state.witnessTip, { tool: event.tool, id, at: now });
     return {
       phi: event.phiNow ?? state.phi,
       streak: 0,
+      verifyBudget: PROGRESS_VERIFY_BUDGET,
+      witnessTip: tip,
+      witnessDepth: state.witnessDepth + 1,
       recent: [],
       updatedAt: now
     };
@@ -165,14 +318,26 @@ export function observeProgressEvent(
 
   if (event.status !== 'success' || kind === 'observational') {
     return {
+      ...state,
       phi: event.phiNow ?? state.phi,
-      streak: state.streak,
+      recent,
+      updatedAt: now
+    };
+  }
+
+  // Dwell credit: verify loops after forge_edit do not count as spirals.
+  if (state.verifyBudget > 0) {
+    return {
+      ...state,
+      phi: event.phiNow ?? state.phi,
+      verifyBudget: state.verifyBudget - 1,
       recent,
       updatedAt: now
     };
   }
 
   return {
+    ...state,
     phi: event.phiNow ?? state.phi,
     streak: state.streak + 1,
     recent,
@@ -188,12 +353,17 @@ export function progressGate(
   const kind = classifyToolProgress(tool);
   if (kind === 'observational') return { allow: true };
 
+  const normalized = normalizeProgressStreak(state);
+
+  // Verify-budget means the last witness bought legitimate follow-up work.
+  if (normalized.verifyBudget > 0) return { allow: true };
+
   const limit = options.limit ?? PROGRESS_STREAK_LIMIT;
   const thrashBits = options.thrashBits ?? PROGRESS_ENTROPY_THRASH_BITS;
-  const streak = state?.streak ?? 0;
-  const entropy = shannonEntropyBits(state?.recent ?? []);
+  const streak = normalized.streak;
+  const entropy = shannonEntropyBits(normalized.recent);
   const thrash =
-    (state?.recent.length ?? 0) >= PROGRESS_ENTROPY_WINDOW &&
+    normalized.recent.length >= PROGRESS_ENTROPY_WINDOW &&
     entropy >= thrashBits &&
     streak >= Math.max(2, limit - 1);
 
@@ -206,6 +376,9 @@ export function progressGate(
       next_step:
         `Progress potential Φ has not moved for ${streak} progress-seeking calls` +
         (thrash ? ` (tool-stream entropy ${entropy.toFixed(2)} bits)` : '') +
+        (normalized.witnessDepth
+          ? ` (causal certificate depth ${normalized.witnessDepth}, tip ${normalized.witnessTip || '∅'})`
+          : ' (no durable witness yet in this session)') +
         `. ${durabilityNextStep('mutating')} Do not repeat forge_shell/preview/merge until forge_edit returns commit_url.`
     };
   }
@@ -227,11 +400,7 @@ export function progressGate(
  */
 export function detectDurableWitness(tool: string, result: unknown): boolean {
   if (!result || typeof result !== 'object') return false;
-  const record = result as Record<string, unknown>;
-  const structured =
-    record.structuredContent && typeof record.structuredContent === 'object'
-      ? (record.structuredContent as Record<string, unknown>)
-      : record;
+  const structured = unwrapStructured(result);
 
   if (tool === 'forge_edit') {
     if (structured.commit_url || structured.remoteSha || structured.remote_sha) return true;
@@ -247,6 +416,12 @@ export function detectDurableWitness(tool: string, result: unknown): boolean {
   }
   if (tool === 'forge_start' && typeof structured.branch === 'string') return true;
   if (tool === 'forge_workspace_create' && typeof structured.workspace_id === 'string') return true;
+  if (tool === 'forge_cloudflare_deploy') {
+    const receipt = structured.deploy_receipt;
+    if (receipt && typeof receipt === 'object' && (receipt as { verified_url?: string }).verified_url) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -254,14 +429,20 @@ export function detectDurableWitness(tool: string, result: unknown): boolean {
 export function progressPotentialView(state: ProgressStreakState | null): {
   streak: number;
   limit: number;
+  verify_budget: number;
   entropy_bits: number;
   phi: string;
+  witness_tip: string;
+  witness_depth: number;
 } {
-  const s = state ?? emptyProgressStreak();
+  const s = normalizeProgressStreak(state);
   return {
     streak: s.streak,
     limit: PROGRESS_STREAK_LIMIT,
+    verify_budget: s.verifyBudget,
     entropy_bits: Number(shannonEntropyBits(s.recent).toFixed(3)),
-    phi: s.phi
+    phi: s.phi,
+    witness_tip: s.witnessTip,
+    witness_depth: s.witnessDepth
   };
 }

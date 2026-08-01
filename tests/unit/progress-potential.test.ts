@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   PROGRESS_STREAK_LIMIT,
   PROGRESS_ENTROPY_WINDOW,
+  PROGRESS_VERIFY_BUDGET,
   classifyToolProgress,
   detectDurableWitness,
   durableFingerprint,
   emptyProgressStreak,
+  extendWitnessChain,
   observeProgressEvent,
+  phiFromReceipt,
   progressGate,
-  shannonEntropyBits
+  progressPotentialView,
+  shannonEntropyBits,
+  witnessIdFromReceipt
 } from '@forge/application';
 
 describe('Durable Progress Potential (Φ-gate)', () => {
@@ -56,6 +61,7 @@ describe('Durable Progress Potential (Φ-gate)', () => {
       });
     }
     expect(state.streak).toBe(3);
+    expect(state.verifyBudget).toBe(0);
 
     state = observeProgressEvent(state, {
       tool: 'forge_process_wait',
@@ -68,10 +74,46 @@ describe('Durable Progress Potential (Φ-gate)', () => {
       tool: 'forge_edit',
       durableWitness: true,
       argsHash: 'edit',
+      witnessId: 'sha-abc',
       status: 'success'
     });
     expect(state.streak).toBe(0);
+    expect(state.verifyBudget).toBe(PROGRESS_VERIFY_BUDGET);
+    expect(state.witnessDepth).toBe(1);
+    expect(state.witnessTip).toMatch(/^[0-9a-f]{8}$/);
     expect(state.recent).toEqual([]);
+  });
+
+  it('spends verify-budget before incrementing zero-progress streak', () => {
+    let state = emptyProgressStreak();
+    state = observeProgressEvent(state, {
+      tool: 'forge_edit',
+      durableWitness: true,
+      witnessId: 'sha-1',
+      status: 'success'
+    });
+    expect(state.verifyBudget).toBe(PROGRESS_VERIFY_BUDGET);
+
+    for (let i = 0; i < PROGRESS_VERIFY_BUDGET; i += 1) {
+      state = observeProgressEvent(state, {
+        tool: 'forge_shell',
+        durableWitness: false,
+        argsHash: `verify-${i}`,
+        status: 'success'
+      });
+      expect(state.streak).toBe(0);
+      expect(state.verifyBudget).toBe(PROGRESS_VERIFY_BUDGET - i - 1);
+      expect(progressGate(state, 'forge_shell').allow).toBe(true);
+    }
+
+    state = observeProgressEvent(state, {
+      tool: 'forge_shell',
+      durableWitness: false,
+      argsHash: 'after-budget',
+      status: 'success'
+    });
+    expect(state.streak).toBe(1);
+    expect(state.verifyBudget).toBe(0);
   });
 
   it('refuses the next progress-seeking call after Φ streak hits the limit', () => {
@@ -114,6 +156,9 @@ describe('Durable Progress Potential (Φ-gate)', () => {
     const state = {
       phi: '',
       streak: PROGRESS_STREAK_LIMIT - 1,
+      verifyBudget: 0,
+      witnessTip: '',
+      witnessDepth: 0,
       recent: Array.from({ length: PROGRESS_ENTROPY_WINDOW }, (_, i) => `forge_shell:unique-${i}`),
       updatedAt: new Date().toISOString()
     };
@@ -123,10 +168,116 @@ describe('Durable Progress Potential (Φ-gate)', () => {
     if (!gate.allow) expect(gate.reason).toBe('entropy_thrash');
   });
 
-  it('detects durable witnesses from forge_edit / merge receipts', () => {
+  it('does not thrash-trip while verify-budget remains', () => {
+    const state = {
+      phi: '',
+      streak: PROGRESS_STREAK_LIMIT - 1,
+      verifyBudget: 2,
+      witnessTip: 'deadbeef',
+      witnessDepth: 1,
+      recent: Array.from({ length: PROGRESS_ENTROPY_WINDOW }, (_, i) => `forge_shell:unique-${i}`),
+      updatedAt: new Date().toISOString()
+    };
+    expect(progressGate(state, 'forge_shell').allow).toBe(true);
+  });
+
+  it('detects durable witnesses from forge_edit / merge / deploy receipts', () => {
     expect(detectDurableWitness('forge_edit', { commit_url: 'https://github.com/o/r/commit/abc' })).toBe(true);
     expect(detectDurableWitness('forge_edit', { exitCode: 0, remote_persisted: false })).toBe(false);
     expect(detectDurableWitness('forge_merge', { submitted: true, submission_receipt: {} })).toBe(true);
     expect(detectDurableWitness('forge_shell', { exitCode: 0 })).toBe(false);
+    expect(
+      detectDurableWitness('forge_cloudflare_deploy', {
+        deploy_receipt: { verified_url: 'https://example.workers.dev' }
+      })
+    ).toBe(true);
+    expect(detectDurableWitness('forge_cloudflare_deploy', { deploy_receipt: {} })).toBe(false);
+  });
+
+  it('derives Φ and witness ids from live receipts', () => {
+    expect(
+      phiFromReceipt({
+        currentCommit: 'abc123',
+        currentBranch: 'forge/x',
+        dependencyState: { status: 'ready' }
+      })
+    ).toMatch(/^[0-9a-f]{8}$/);
+    expect(phiFromReceipt({ exitCode: 0 })).toBeUndefined();
+
+    expect(
+      witnessIdFromReceipt('forge_edit', { remoteSha: 'deadbeef' })
+    ).toBe('deadbeef');
+    expect(
+      witnessIdFromReceipt('forge_cloudflare_deploy', {
+        deploy_receipt: { verified_url: 'https://example.workers.dev' }
+      })
+    ).toBe('https://example.workers.dev');
+  });
+
+  it('extends a causal witness chain tip', () => {
+    const tip1 = extendWitnessChain('', { tool: 'forge_edit', id: 'sha-1', at: 't1' });
+    const tip2 = extendWitnessChain(tip1, { tool: 'forge_edit', id: 'sha-2', at: 't2' });
+    expect(tip1).toMatch(/^[0-9a-f]{8}$/);
+    expect(tip2).not.toBe(tip1);
+    expect(extendWitnessChain('', { tool: 'forge_edit', id: 'sha-1', at: 't1' })).toBe(tip1);
+  });
+
+  it('moves Φ when phiNow differs without an explicit witness flag', () => {
+    let state = emptyProgressStreak();
+    state = observeProgressEvent(state, {
+      tool: 'forge_workspace_get',
+      durableWitness: false,
+      phiNow: 'aaaaaaaa',
+      status: 'success'
+    });
+    expect(state.phi).toBe('aaaaaaaa');
+    expect(state.streak).toBe(0);
+
+    state = observeProgressEvent(state, {
+      tool: 'forge_shell',
+      durableWitness: false,
+      phiNow: 'bbbbbbbb',
+      argsHash: 'moved',
+      status: 'success'
+    });
+    expect(state.streak).toBe(0);
+    expect(state.verifyBudget).toBe(PROGRESS_VERIFY_BUDGET);
+    expect(state.witnessDepth).toBe(1);
+    expect(state.phi).toBe('bbbbbbbb');
+  });
+
+  it('exposes verify_budget and witness tip in the compact view', () => {
+    let state = emptyProgressStreak();
+    state = observeProgressEvent(state, {
+      tool: 'forge_edit',
+      durableWitness: true,
+      witnessId: 'sha',
+      phiNow: 'cccccccc',
+      status: 'success'
+    });
+    const view = progressPotentialView(state);
+    expect(view.verify_budget).toBe(PROGRESS_VERIFY_BUDGET);
+    expect(view.witness_depth).toBe(1);
+    expect(view.witness_tip).toBe(state.witnessTip);
+    expect(view.phi).toBe('cccccccc');
+  });
+
+  it('normalizes legacy session payloads missing verify/witness fields', () => {
+    const legacy = {
+      phi: 'aaaaaaaa',
+      streak: 2,
+      recent: ['forge_shell:x'],
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    } as ReturnType<typeof emptyProgressStreak>;
+    const next = observeProgressEvent(legacy, {
+      tool: 'forge_shell',
+      durableWitness: false,
+      argsHash: 'y',
+      status: 'success'
+    });
+    expect(next.verifyBudget).toBe(0);
+    expect(next.witnessDepth).toBe(0);
+    expect(next.streak).toBe(3);
+    expect(progressGate(legacy, 'forge_shell').allow).toBe(true);
   });
 });

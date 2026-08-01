@@ -467,8 +467,26 @@ describe('ChatGPT conversation simulations', () => {
     ).toBe(true);
     expect(
       sourceMentions(
+        'packages/application/src/progress-potential.ts',
+        /PROGRESS_VERIFY_BUDGET/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'packages/application/src/progress-potential.ts',
+        /extendWitnessChain/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
         'apps/forge-edge-gateway/src/mcp-session.ts',
         /withProgressPotential/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/mcp-session.ts',
+        /phiFromReceipt/
       )
     ).toBe(true);
   });

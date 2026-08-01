@@ -12,8 +12,10 @@ import { registerForgeToolsV1, type ToolCallTelemetry } from '@forge/mcp-adapter
 import {
   detectDurableWitness,
   observeProgressEvent,
+  phiFromReceipt,
   progressGate,
   progressPotentialView,
+  witnessIdFromReceipt,
   type ProgressStreakState
 } from '@forge/application';
 import type { ForgeToolHandlers } from '@forge/mcp-core';
@@ -495,9 +497,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         }
         const result = await original(input);
         const argsHash = await hashArgs(input);
+        const durableWitness = detectDurableWitness(tool, result);
         const next = observeProgressEvent(prev, {
           tool,
-          durableWitness: detectDurableWitness(tool, result),
+          durableWitness,
+          phiNow: phiFromReceipt(result),
+          witnessId: durableWitness ? witnessIdFromReceipt(tool, result) : undefined,
           argsHash,
           status: 'success'
         });
