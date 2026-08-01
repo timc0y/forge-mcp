@@ -513,9 +513,8 @@ export class ManagedProcesses {
     // Never replace an executor while waiting; this call is observational.
     const handle = await this.resolveHandle(record, { allowRecreate: false });
     // This method is reached through an HTTP tool call whose transport expires
-    // at roughly 60 seconds. Keep a generous response/ingestion margin even
-    // when an older client asks to wait for several minutes: waiting is
-    // observational, so another short call is always safe.
+    // at roughly 60 seconds. Cap the wait below that as a transport safety
+    // margin: waiting is observational, so another short call is always safe.
     const requestedTimeoutMs = Math.max(250, Math.min(timeoutMs ?? 30_000, 30_000));
     let process: ProcessRecord;
     try {

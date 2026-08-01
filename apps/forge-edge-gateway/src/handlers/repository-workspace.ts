@@ -682,8 +682,9 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             message,
             files,
             expectedBlobs: { ...(await workspace.seenBlobs({ paths: files.map((file) => file.path) })), ...resolvedBlobs },
-            // Legacy workspaces may still need the branch created from their
-            // recorded base; current workspaces create it on GitHub up front.
+            // First-edit branch creation from baseSha: workspaces whose branch
+            // was never cut on origin (non-forge_start paths) need this so the
+            // remote commit does not 404. forge_start creates the ref up front.
             baseSha: state.baseCommit ?? state.currentCommit,
             requireKnownBase: true
           });
@@ -1369,18 +1370,14 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           });
         }
         assertForgeBranch(branch);
-        const prBase = input.pr_base !== undefined
-          ? text(input.pr_base)
-          : (input.base !== undefined ? text(input.base) : 'main');
+        const prBase = input.pr_base !== undefined ? text(input.pr_base) : 'main';
         const taskIdInput = input.task_id ? text(input.task_id) : null;
         let title = input.title === undefined ? '' : text(input.title);
         let body = input.body === undefined ? '' : text(input.body);
 
-        const comparisonRef = input.base !== undefined
-          ? text(input.base)
-          : state.requestedRef.startsWith('forge/')
-            ? prBase
-            : state.requestedRef;
+        const comparisonRef = state.requestedRef.startsWith('forge/')
+          ? prBase
+          : state.requestedRef;
         const repository = state.repository as RepositoryRef;
         const request = await githubRequestForWorkspace(env, identity, { repository });
         const compared = await request(

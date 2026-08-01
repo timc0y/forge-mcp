@@ -19,7 +19,7 @@ the recovery path, so no provider snapshot is required for correctness.
 The existing seam is suitable, but needs one intentional narrowing: retain
 `create`, `get`, `destroy`, `exec`, process/log and port methods; make
 `readFile`, `writeFile`, `applyPatch`, `listFiles`, `snapshot`, and `restore`
-legacy Cloudflare capabilities rather than requirements of a new provider.
+Cloudflare-only capabilities rather than requirements of a new provider.
 See [the current contract](../architecture/runtime.md) and
 [`SandboxProvider`](../../packages/sandbox-core/src/contracts.ts).
 

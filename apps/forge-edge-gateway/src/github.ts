@@ -423,8 +423,8 @@ export async function installGitHubApp(request: Request, env: Env): Promise<Resp
 /**
  * A slug freed by a rename can immediately be taken by a different repository.
  * Clear any row squatting on this (owner, name) that is not this repository, so
- * the legacy UNIQUE(provider, owner, name, tenant_id) cannot reject the upsert
- * below. GitHub is the source of truth for what exists.
+ * the UNIQUE(provider, owner, name, tenant_id) constraint cannot reject the
+ * upsert below. GitHub is the source of truth for what exists.
  *
  * Exported so the rename regression test drives the real statement.
  */

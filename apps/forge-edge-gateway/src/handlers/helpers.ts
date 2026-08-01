@@ -259,10 +259,6 @@ export async function mapWithConcurrency<T, R>(
 // How many captured screenshots to inline into the tool response. The rest stay
 // retrievable via forge_artifact_get, keeping response size (Worker CPU + client
 // tokens) bounded on large review grids.
-// How many screenshots to inline as data: URIs into the widget-only _meta
-// gallery. Kept small so the _meta payload (never seen by the model) stays
-// bounded on large review grids.
-export const MAX_GALLERY_IMAGES = 6;
 export const REVIEW_CAPTURE_CONCURRENCY = 3;
 
 // Roll a single evidence cell's heading-defect count up from its accessibility

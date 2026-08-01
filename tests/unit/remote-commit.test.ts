@@ -325,12 +325,11 @@ describe('a truncated tree read fails closed instead of open', () => {
 });
 
 describe('a branch GitHub has never seen', () => {
-  // Most agent branches now exist on GitHub before any edit — forge_start (or
+  // Most agent branches exist on GitHub before any edit — forge_start (or
   // forge_workspace_create adopting a pre-created ref) creates them up front.
-  // But an agent branch can still be cut without going through forge_start (a
-  // legacy forge_workspace_create call on the default ref, say), so the first
-  // edit of a session like that still targets a ref GitHub has never heard
-  // of. Without this the whole remote-first path fails on call one.
+  // A branch can still be opened without that cut (forge_workspace_create on
+  // the default ref), so the first edit still targets a ref GitHub has never
+  // heard of. Without this the whole remote-first path fails on call one.
   it('creates the ref from the base commit instead of 404ing', async () => {
     const gh = fakeGitHub({ head: 'base-sha', treeOf: { 'base-sha': 'tree0' }, branchMissingUntilCreated: true });
 

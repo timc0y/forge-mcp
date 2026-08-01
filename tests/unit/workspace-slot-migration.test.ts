@@ -3,12 +3,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 
 // Production applied 0019 with a workspace_slots table that accidentally lost
-// tenant_id. This test runs the forward-only repair against that exact legacy
-// shape so a future schema change cannot reintroduce a deployment where every
-// workspace create fails at runtime.
+// tenant_id. This test runs the forward-only repair against that exact
+// pre-repair schema so a future schema change cannot reintroduce a deployment
+// where every workspace create fails at runtime.
 const REPAIR = readFileSync('migrations/d1/0022_repair_workspace_slot_tenants.sql', 'utf8');
 
-function legacyDatabase() {
+function preRepairDatabase() {
   const database = new DatabaseSync(':memory:');
   database.exec(`
     CREATE TABLE workspaces (
@@ -34,7 +34,7 @@ function legacyDatabase() {
 
 describe('workspace slot tenant repair migration', () => {
   it('restores per-tenant capacity while preserving real held slots', () => {
-    const database = legacyDatabase();
+    const database = preRepairDatabase();
     database.exec(REPAIR);
 
     expect(database.prepare('PRAGMA table_info(workspace_slots)').all().map((row) => (row as { name: string }).name))

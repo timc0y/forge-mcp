@@ -11,7 +11,7 @@ import { isTextualArtifact } from '../artifact-content';
 import { workspaceOperations } from '../workspace-operations';
 import {
   recordUrlReviewOwner, lookupWorkspaceOwner, withDeadline, lookupUrlReviewOwner,
-  summarizeStructure, mapWithConcurrency, MAX_GALLERY_IMAGES, REVIEW_CAPTURE_CONCURRENCY,
+  summarizeStructure, mapWithConcurrency, REVIEW_CAPTURE_CONCURRENCY,
   findingCountOf, base64, text, number, workspaceAddress
 } from './helpers';
 import type { ReviewArtifactHandlerDependencies } from './types';
@@ -106,11 +106,6 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
             }
           }
         );
-        // Widget-only screenshot gallery: small JPEG data: URIs the console can
-        // render inline. Reuses the same inline bytes the model receives via
-        // MCP content, capped so the _meta payload stays bounded. This never
-        // enters structuredContent (base64 stays out of what the model reads).
-        const screenshots: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; dataUri: string }> = [];
         const captured: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; inline?: { base64: string; contentType: string } }> = [];
         for (const outcome of outcomes) {
           if (outcome.kind === 'evidence') {
@@ -122,15 +117,6 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
               findingCount: findingCountOf(outcome.value),
               inline: outcome.inline
             });
-            if (outcome.inline && screenshots.length < MAX_GALLERY_IMAGES) {
-              screenshots.push({
-                route: outcome.value.route,
-                viewport: outcome.value.observedViewport ?? outcome.value.requestedViewport,
-                state: outcome.value.state,
-                findingCount: findingCountOf(outcome.value),
-                dataUri: `data:${outcome.inline.contentType};base64,${outcome.inline.base64}`
-              });
-            }
           } else if (outcome.kind === 'failure') {
             failures.push(outcome.value);
           } else {
@@ -156,9 +142,7 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
           evidence as Array<{ accessibility?: { structure?: { findingCount?: number; countsByKind?: Record<string, number>; truncated?: boolean } }; route?: unknown; environment?: unknown }>
         );
         // Concise per-cell rows for structuredContent: what the model needs to
-        // reason about the review, with no base64 and no heavy accessibility
-        // trees. The full evidence (screenshot refs, accessibility structure)
-        // moves into _meta["forge/widget"] for the component to render.
+        // reason about the review, with no base64 and no heavy accessibility trees.
         const evidenceCells = evidence.map((cell) => ({
           selection: cell.selection,
           route: cell.route,
@@ -192,17 +176,6 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
           limitations: ['A static screenshot only proves what it shows — it does not prove that any unexecuted interaction works.'],
           inlineImageCount: inlineCells.length,
           omittedImageCount: omittedImages,
-          _meta: {
-            'forge/widget': {
-              schemaVersion: 1,
-              executionMode: 'url_review',
-              screenshots,
-              evidence,
-              failures,
-              skipped,
-              structureSummary
-            }
-          },
           // Deliberately does not send the caller off to fetch artifacts one by
           // one. The images are already attached; a chat client that cannot
           // reliably chain a second call would otherwise be told its screenshots
