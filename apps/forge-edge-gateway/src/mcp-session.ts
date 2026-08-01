@@ -9,6 +9,13 @@ import {
   type WorkspaceId
 } from '@forge/core';
 import { registerForgeToolsV1, type ToolCallTelemetry } from '@forge/mcp-adapter-v1';
+import {
+  detectDurableWitness,
+  observeProgressEvent,
+  progressGate,
+  progressPotentialView,
+  type ProgressStreakState
+} from '@forge/application';
 import type { ForgeToolHandlers } from '@forge/mcp-core';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { D1AuditStore } from '@forge/audit';
@@ -40,6 +47,7 @@ import { sha256 } from './handlers/helpers';
 import { FORGE_MCP_INSTRUCTIONS, FORGE_PROMPT_HINTS } from './mcp-guidance';
 
 const SELECTED_CREDENTIAL_PROFILE_KEY = 'selected-credential-profile';
+const PROGRESS_POTENTIAL_KEY = 'forge_progress_potential_v1';
 
 // Best-effort recovery of a successful call's workspace id from its own
 // result, for the audit trail only (see onToolCallTelemetry) — never used to
@@ -55,6 +63,23 @@ function workspaceIdFromResult(result: unknown): string | undefined {
   return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : undefined;
 }
 
+function annotateProgressPotential(result: unknown, state: ProgressStreakState, warning?: string): unknown {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  if (!warning && state.streak === 0) return result;
+  const view = progressPotentialView(state);
+  const record = { ...(result as Record<string, unknown>) };
+  if (warning) {
+    record.next_step = typeof record.next_step === 'string' ? `${warning} ${record.next_step}` : warning;
+  }
+  return {
+    ...record,
+    progress_potential: {
+      ...view,
+      ...(warning ? { warning } : {})
+    }
+  };
+}
+
 export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   server = new McpServer(
     { name: 'Forge MCP', version: '0.1.0' },
@@ -68,9 +93,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     // it; this exists only so sessions opened before the widget was removed
     // stop rendering an unresolved placeholder. See legacy-widget.ts.
     registerLegacyWidgetStub(this.server);
-    registerForgeToolsV1(this.server, this.withRepeatDetection(this.handlers()), (event) => {
-      void this.onToolCallTelemetry(event);
-    });
+    registerForgeToolsV1(
+      this.server,
+      this.withProgressPotential(this.withRepeatDetection(this.handlers())),
+      (event) => {
+        void this.onToolCallTelemetry(event);
+      }
+    );
     this.registerPrompts();
   }
 
@@ -434,6 +463,49 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       });
     }
     return task;
+  }
+
+  /**
+   * Durable Progress Potential (Φ-gate): refuse progress-seeking tools when
+   * the session has had too many successes without a durable witness
+   * (forge_edit commit_url, merge submit, deps ready). Discrete Lyapunov
+   * control for MCP tool streams — see packages/application progress-potential.
+   */
+  private withProgressPotential(handlers: ForgeToolHandlers): ForgeToolHandlers {
+    const wrapped = {} as ForgeToolHandlers;
+    for (const name of Object.keys(handlers) as Array<keyof ForgeToolHandlers>) {
+      const original = handlers[name];
+      wrapped[name] = (async (input: Record<string, unknown>) => {
+        const tool = String(name);
+        const prev = (await this.ctx.storage.get<ProgressStreakState>(PROGRESS_POTENTIAL_KEY)) ?? null;
+        const gate = progressGate(prev, tool);
+        if (!gate.allow) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: gate.next_step,
+            retryable: false,
+            details: {
+              progress_potential: progressPotentialView(prev),
+              reason: gate.reason,
+              allowedNextActions: gate.allowedNextActions,
+              next_step: gate.next_step,
+              stopRepeating: true
+            }
+          });
+        }
+        const result = await original(input);
+        const argsHash = await hashArgs(input);
+        const next = observeProgressEvent(prev, {
+          tool,
+          durableWitness: detectDurableWitness(tool, result),
+          argsHash,
+          status: 'success'
+        });
+        await this.ctx.storage.put(PROGRESS_POTENTIAL_KEY, next);
+        return annotateProgressPotential(result, next, 'warning' in gate ? gate.warning : undefined);
+      }) as ForgeToolHandlers[typeof name];
+    }
+    return wrapped;
   }
 
   /**

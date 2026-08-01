@@ -79,11 +79,17 @@ these next:
 | Green tests on executor-only edits | Feature shipped | Guidance: require `forge_edit` `commit_url` |
 | Missing deps → shell-only `allowedNextActions` | Author via shell while installing | Always include `forge_files_read` / `forge_edit` |
 | Soft “continue with ephemeral files” | Skip forge_edit | Single `durabilityNextStep()` recipe |
+| Success loops with no GitHub change | Busy forever | **Φ-gate** (discrete Lyapunov): refuse after \(K\) progress-seeking successes without durable witness |
 
 ## Activity logging
 
 Complete activity is D1 `mcp_tool_calls` (default for `forge_observer_activity`)
 + `/app/live`. No third-party analytics embed.
+
+## Theory (experimental)
+
+See `docs/research/progress-potential.md` — Durable Progress Potential / Shannon
+thrash on tool streams.
 
 ## Still open (not fixed here)
 
@@ -91,5 +97,6 @@ Complete activity is D1 `mcp_tool_calls` (default for `forge_observer_activity`)
   “not ready” rather than a success receipt with `operation_id` + poll interval.
 - ~140 allowlisted `ForgeError` sites without cause + next action.
 - Large tools/list catalog cost.
+- Φ-gate \(K\) may need production tuning against legitimate long verify loops.
 
-Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–AD).
+Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–AE).

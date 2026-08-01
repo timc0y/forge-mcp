@@ -46,6 +46,23 @@ export {
   EXECUTOR_PROVISIONING_NEXT_STEP,
   type DependencyStateView
 } from './managed-processes.js';
+export {
+  PROGRESS_STREAK_LIMIT,
+  PROGRESS_ENTROPY_WINDOW,
+  PROGRESS_ENTROPY_THRASH_BITS,
+  classifyToolProgress,
+  durableFingerprint,
+  shannonEntropyBits,
+  emptyProgressStreak,
+  observeProgressEvent,
+  progressGate,
+  detectDurableWitness,
+  progressPotentialView,
+  type ToolProgressClass,
+  type ProgressStreakState,
+  type ProgressObservation,
+  type ProgressGateDecision
+} from './progress-potential.js';
 
 export interface WorkspaceRuntimeRecord {
   workspace: Workspace;

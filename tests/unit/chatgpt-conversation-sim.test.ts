@@ -457,4 +457,19 @@ describe('ChatGPT conversation simulations', () => {
       )
     ).toBe(true);
   });
+
+  it('Conv AE — Φ-gate refuses zero-progress success spirals', () => {
+    expect(
+      sourceMentions(
+        'packages/application/src/progress-potential.ts',
+        /Discrete Lyapunov/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/mcp-session.ts',
+        /withProgressPotential/
+      )
+    ).toBe(true);
+  });
 });
