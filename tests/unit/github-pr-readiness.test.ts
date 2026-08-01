@@ -6,10 +6,10 @@ function github(overrides: Record<string, { status: number; json: unknown }> = {
   const defaults: Record<string, { status: number; json: unknown }> = {
     '/repos/acme/app/pulls/7': { status: 200, json: { number: 7, title: 'Ready', state: 'open', mergeable: true, mergeable_state: 'clean', head: { sha: 'head' }, base: { ref: 'main' } } },
     '/repos/acme/app/commits/head/check-runs?per_page=100&page=1': { status: 200, json: { check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] } },
-    '/repos/acme/app/commits/head/statuses?per_page=100&page=1': { status: 200, json: [{ context: 'legacy-ci', state: 'success' }] },
+    '/repos/acme/app/commits/head/statuses?per_page=100&page=1': { status: 200, json: [{ context: 'required-ci', state: 'success' }] },
     '/repos/acme/app/pulls/7/reviews?per_page=100&page=1': { status: 200, json: [{ state: 'APPROVED', user: { login: 'reviewer' } }] },
     '/repos/acme/app/branches/main': { status: 200, json: { protected: true } },
-    '/repos/acme/app/branches/main/protection': { status: 200, json: { required_pull_request_reviews: { required_approving_review_count: 1 }, required_status_checks: { contexts: ['build', 'legacy-ci'] } } }
+    '/repos/acme/app/branches/main/protection': { status: 200, json: { required_pull_request_reviews: { required_approving_review_count: 1 }, required_status_checks: { contexts: ['build', 'required-ci'] } } }
   };
   return async (path) => overrides[path] ?? defaults[path] ?? { status: 404, json: {} };
 }
@@ -31,12 +31,12 @@ describe('readPullRequestReadiness', () => {
 
   it('blocks classic status failures and missing required reviews', async () => {
     const status = await readPullRequestReadiness(github({
-      '/repos/acme/app/commits/head/statuses?per_page=100&page=1': { status: 200, json: [{ context: 'legacy-ci', state: 'failure' }] },
+      '/repos/acme/app/commits/head/statuses?per_page=100&page=1': { status: 200, json: [{ context: 'required-ci', state: 'failure' }] },
       '/repos/acme/app/pulls/7/reviews?per_page=100&page=1': { status: 200, json: [] }
     }), '/repos/acme/app', 7);
     expect(status.safe_to_merge).toBe(false);
     expect(status.review_decision).toBe('REVIEW_REQUIRED');
-    expect(status.blockers.join(' ')).toMatch(/legacy-ci.*Requires 1 approving review/u);
+    expect(status.blockers.join(' ')).toMatch(/required-ci.*Requires 1 approving review/u);
   });
 
   it('uses only the newest classic status for each context', async () => {
@@ -44,8 +44,8 @@ describe('readPullRequestReadiness', () => {
       '/repos/acme/app/commits/head/statuses?per_page=100&page=1': {
         status: 200,
         json: [
-          { context: 'legacy-ci', state: 'success' },
-          { context: 'legacy-ci', state: 'failure' }
+          { context: 'required-ci', state: 'success' },
+          { context: 'required-ci', state: 'failure' }
         ]
       }
     }), '/repos/acme/app', 7);
