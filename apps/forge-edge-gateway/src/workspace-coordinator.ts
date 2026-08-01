@@ -59,7 +59,7 @@ function assertNoActiveDependencyInstall(record: WorkspaceRuntimeRecord, tool: s
   throw new ForgeError({
     code: 'FORGE_WORKSPACE_CONFLICT',
     message:
-      `A dependency install is still running as ${active.processId}, so ${tool} was refused to avoid racing the package tree. ` +
+      `A dependency install is still running as ${active.processId}, so ${tool} was refused to avoid racing the package tree. Call forge_process_wait with that process_id; do not start shell, preview, or another install. ` +
       observationalWaitNextStep(active.processId, { alreadyRunning: true }),
     retryable: true,
     details: {

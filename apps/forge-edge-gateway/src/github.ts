@@ -1090,7 +1090,7 @@ export async function requireApproval(
     throw new ForgeError({ code: 'FORGE_APPROVAL_EXPIRED', message: 'This approval expired. Request a new one and have it approved, then retry.', retryable: false });
   }
   if (row.state !== 'approved') {
-    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: row.state === 'pending' ? 'Approval is still pending. Echo the approval_url to the human and stop — do not poll forge_pr or forge_merge. Retry once only after they confirm approval, with the same approval_id and idempotency_key.' : 'This approval was already used. Request a new one.', retryable: false });
+    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: row.state === 'pending' ? 'Approval is still pending. Echo the approval_url to the human and stop — do not poll forge_pr or forge_merge. Retry once only after they confirm approval, with the same approval_id and idempotency_key.' : 'This approval was already used. Request a fresh approval_id and retry the same forge_* tool — do not reuse the spent id.', retryable: false });
   }
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
   const changed: Array<{ field: string; approved: unknown; current: unknown }> = [];

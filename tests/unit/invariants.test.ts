@@ -378,7 +378,6 @@ const ALLOWLIST_C: ReadonlyArray<{ file: string; message: string; note: string }
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'Repository authorization was revoked.', note: '37 chars — restates the failure; no cause, no next action.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'Git push capability is missing its approved branch or commit.', note: '61 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'Forge refused this push before it reached GitHub: ${cause}', note: '58 chars — explains what went wrong but names no next action or tool.' },
-  { file: 'apps/forge-edge-gateway/src/github.ts', message: 'Approval is still pending — wait for it to be approved in the browser, then retry. ‖ This approval was already used. Request a new one.', note: 'branching message — branch 1 (82c): fine; branch 2 (50c): no next action.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'The operation changed since it was approved: ${changed.map((c) => ', note: '66 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'This approval has already been used.', note: '36 chars — restates the failure; no cause, no next action.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'GitHub App authorization is required.', note: '37 chars — restates the failure; no cause, no next action.' },
