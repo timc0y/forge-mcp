@@ -8,6 +8,7 @@ import {
   type TenantId,
   type WorkspaceId
 } from '@forge/core';
+import { LAZY_REQUESTED_NEXT_ACTIONS } from '@forge/application';
 import { type ForgeToolHandlers, utf8Bytes } from '@forge/mcp-core';
 import { verifyFeatureBranchOnOrigin } from '../merge-guards';
 import { D1TaskStore } from '@forge/metadata-d1';
@@ -231,6 +232,8 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             operation_id: operationId,
             workspace_revision: 1,
             current_branch: workspaceRef,
+            executor_state: 'not_loaded',
+            allowedNextActions: [...LAZY_REQUESTED_NEXT_ACTIONS],
             next_step: `GitHub branch ${workspaceRef} is ready. Use forge_files_read and forge_edit now without a container. The first forge_shell or other execution tool will start the ephemeral executor.`
           };
         }
@@ -284,16 +287,20 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             }
           });
         }
+        const executorReady = state === 'ready';
         return {
           workspace_id: workspaceId,
           state,
           operation_id: result.operationId,
           workspace_revision: result.revision,
           current_branch: workspaceRef,
-          executor_state: state === 'ready' ? 'ready' : 'not_loaded',
-          next_step: state === 'ready'
+          executor_state: executorReady ? 'ready' : 'not_loaded',
+          ...(executorReady
+            ? {}
+            : { allowedNextActions: [...LAZY_REQUESTED_NEXT_ACTIONS] }),
+          next_step: executorReady
             ? `GitHub branch ${workspaceRef} and the existing executor are ready. forge_edit saves directly to GitHub.`
-            : `GitHub branch ${workspaceRef} is ready. Read and edit through GitHub now; the first execution tool will lazily start the ephemeral executor.`
+            : `GitHub branch ${workspaceRef} is ready. Use forge_files_read and forge_edit now; the first forge_shell starts the ephemeral executor.`
         };
       },
       forge_workspace_get: async (input) => {

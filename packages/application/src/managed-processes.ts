@@ -46,6 +46,14 @@ export function managedProcessStatus(
   return 'failed';
 }
 
+export const LAZY_REQUESTED_NEXT_ACTIONS = [
+  'forge_files_read',
+  'forge_files_list',
+  'forge_edit',
+  'forge_shell',
+  'forge_workspace_get'
+] as const;
+
 export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): string[] {
   const active = Object.entries(record.processes).filter(([, entry]) => !entry.completedAt);
   if (active.length > 0) {
@@ -61,13 +69,7 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   // only see forge_workspace_get treat this as a hang and never call the
   // GitHub-backed tools that already work.
   if (state === 'requested') {
-    return [
-      'forge_files_read',
-      'forge_files_list',
-      'forge_edit',
-      'forge_shell',
-      'forge_workspace_get'
-    ];
+    return [...LAZY_REQUESTED_NEXT_ACTIONS];
   }
   if (state === 'provisioning' || state === 'bootstrapping') {
     return ['forge_workspace_get'];

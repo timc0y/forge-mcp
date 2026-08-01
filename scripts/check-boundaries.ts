@@ -1,14 +1,16 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
+// Domain packages that must stay free of Cloudflare / MCP / UI SDKs.
+// Keep this list equal to packages that still exist under packages/*/src —
+// a deleted package left here fails the check with a clear message.
 const domainPackages = [
   'application',
   'artifacts-core',
   'browser-core',
   'core',
   'events',
-  'git-core',
   'insight',
   'policy',
   'project-detection',
@@ -39,6 +41,12 @@ async function files(path: string): Promise<string[]> {
 const violations: string[] = [];
 for (const name of domainPackages) {
   const source = resolve(root, 'packages', name, 'src');
+  try {
+    await access(source);
+  } catch {
+    violations.push(`packages/${name}/src: listed in check-boundaries but missing on disk`);
+    continue;
+  }
   for (const file of await files(source)) {
     const content = await readFile(file, 'utf8');
     for (const token of forbidden) {

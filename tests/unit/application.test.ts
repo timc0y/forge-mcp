@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ForgeApplicationService,
+  LAZY_REQUESTED_NEXT_ACTIONS,
   workspaceAllowedNextActions,
   type WorkspaceRuntimeRecord
 } from '@forge/application';
@@ -281,19 +282,21 @@ describe('workspaceAllowedNextActions', () => {
     const record = initialized(service);
     record.workspace.currentBranch = 'forge/lazy-guidance';
     expect(record.workspace.state).toBe('requested');
-    expect(workspaceAllowedNextActions(record)).toEqual([
-      'forge_files_read',
-      'forge_files_list',
-      'forge_edit',
-      'forge_shell',
-      'forge_workspace_get'
-    ]);
+    expect(workspaceAllowedNextActions(record)).toEqual([...LAZY_REQUESTED_NEXT_ACTIONS]);
   });
 
   it('keeps provisioning workspaces on forge_workspace_get only', () => {
     const service = new ForgeApplicationService(new FakeProvider());
     const record = initialized(service);
     record.workspace.state = 'provisioning';
+    record.workspace.currentBranch = 'forge/lazy-guidance';
+    expect(workspaceAllowedNextActions(record)).toEqual(['forge_workspace_get']);
+  });
+
+  it('keeps bootstrapping workspaces on forge_workspace_get only', () => {
+    const service = new ForgeApplicationService(new FakeProvider());
+    const record = initialized(service);
+    record.workspace.state = 'bootstrapping';
     record.workspace.currentBranch = 'forge/lazy-guidance';
     expect(workspaceAllowedNextActions(record)).toEqual(['forge_workspace_get']);
   });

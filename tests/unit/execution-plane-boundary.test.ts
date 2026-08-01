@@ -34,6 +34,15 @@ describe('GitHub and executor plane boundary', () => {
     expect(create).not.toContain('PROVISION_WORKFLOW');
   });
 
+  it('advertises GitHub tools on the lazy create receipt instead of only forge_workspace_get', () => {
+    const create = handler('forge_workspace_create', 'forge_workspace_get');
+    expect(create).toContain('LAZY_REQUESTED_NEXT_ACTIONS');
+    expect(create).toContain("executor_state: 'not_loaded'");
+    expect(create).toContain('allowedNextActions');
+    expect(create).toContain('forge_files_read');
+    expect(create).toContain('forge_edit');
+  });
+
   it('keeps GitHub CRUD independent from lazy executor provisioning', () => {
     const list = handler('forge_files_list', 'forge_files_read');
     const read = handler('forge_files_read', 'forge_edit');
@@ -72,5 +81,14 @@ describe('GitHub and executor plane boundary', () => {
     expect(ready).toContain('const ready = configured;');
     expect(ready).toContain('requiredForGitHubCrud: false');
     expect(ready).not.toContain('workspace_recovery');
+  });
+
+  it('excludes lazy requested from the stuck-provisioning watchdog states', () => {
+    const capacity = readFileSync(
+      new URL('../../apps/forge-edge-gateway/src/capacity.ts', import.meta.url),
+      'utf8'
+    );
+    expect(capacity).toMatch(/ACTIVE_PROVISIONING_STATES\s*=\s*\['provisioning',\s*'bootstrapping'\]/);
+    expect(capacity).not.toMatch(/ACTIVE_PROVISIONING_STATES\s*=\s*\[[^\]]*requested/);
   });
 });

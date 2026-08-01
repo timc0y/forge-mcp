@@ -35,6 +35,7 @@ export {
   dependencyStateView,
   managedProcessStatus,
   workspaceAllowedNextActions,
+  LAZY_REQUESTED_NEXT_ACTIONS,
   type DependencyStateView
 } from './managed-processes.js';
 

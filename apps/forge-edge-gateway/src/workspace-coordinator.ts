@@ -28,8 +28,15 @@ function nextStepForWorkspace(
   record: WorkspaceRuntimeRecord,
   allowedNextActions: string[]
 ): string {
-  if (record.workspace.state === 'requested') {
+  const state = record.workspace.state;
+  if (state === 'requested') {
     return 'GitHub branch is ready. Use forge_files_read and forge_edit now; the first forge_shell starts the ephemeral executor.';
+  }
+  if (state === 'provisioning' || state === 'bootstrapping') {
+    return 'The ephemeral executor is still starting. Retry forge_workspace_get until state is ready, then retry the execution tool.';
+  }
+  if (state === 'failed') {
+    return 'Workspace provisioning failed. Call forge_workspace_create again; this is not a repository permission problem.';
   }
   if (!isAgentForgeBranch(record.workspace.currentBranch)) {
     return branchPolicyFor(record.workspace.currentBranch).next_step;

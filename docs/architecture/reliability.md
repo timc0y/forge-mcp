@@ -43,6 +43,12 @@ NUL-containing paths before GitHub access or executor materialization.
 repository/branch and desired runtime/bootstrap settings, and immediately
 returns `workspace_id` plus `operation_id`. It does not provision an executor.
 
+A `requested` receipt with `executor_state: not_loaded` and
+`allowedNextActions` naming `forge_files_read` / `forge_edit` is the healthy
+lazy-create outcome. Agents should read and edit through GitHub immediately;
+only shell, install, build, test, preview, or deploy calls allocate the
+ephemeral executor. Do not treat that receipt as a hung provisioner.
+
 The first shell, install, build, test, dev, preview, or deploy call allocates an
 ephemeral executor and materializes the selected GitHub commit. Managed process
 waits are bounded observations; `timedOut:true` never stops or restarts the

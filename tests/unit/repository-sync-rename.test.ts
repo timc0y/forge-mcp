@@ -37,12 +37,28 @@ function harness() {
   db.exec(SCHEMA);
   // Mirrors github.ts: the row id is a pure function of tenant + immutable repo id.
   const rowId = (githubRepoId: number) => `repo_${TENANT}_${githubRepoId}`;
+  // node:sqlite binds numbered `?N` placeholders by object key, not position.
+  // Cloudflare D1's `.bind(a,b,c)` accepts the same SQL; this keeps the test on
+  // the real statements without rewriting them for a different host dialect.
   const sync = (owner: string, name: string, githubRepoId: number) => {
-    db.prepare(REPOSITORY_SLUG_CLEAR_SQL).run(TENANT, owner, name, rowId(githubRepoId));
-    db.prepare(REPOSITORY_UPSERT_SQL).run(
-      rowId(githubRepoId), TENANT, 'prj_1', owner, name, '555',
-      '2026-01-01T00:00:00.000Z', String(githubRepoId), 'private', 'main'
-    );
+    db.prepare(REPOSITORY_SLUG_CLEAR_SQL).run({
+      1: TENANT,
+      2: owner,
+      3: name,
+      4: rowId(githubRepoId)
+    });
+    db.prepare(REPOSITORY_UPSERT_SQL).run({
+      1: rowId(githubRepoId),
+      2: TENANT,
+      3: 'prj_1',
+      4: owner,
+      5: name,
+      6: '555',
+      7: '2026-01-01T00:00:00.000Z',
+      8: String(githubRepoId),
+      9: 'private',
+      10: 'main'
+    });
   };
   const slugs = () => db
     .prepare('SELECT owner, name FROM repositories ORDER BY owner, name')

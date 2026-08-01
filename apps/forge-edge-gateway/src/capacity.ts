@@ -53,9 +53,11 @@ export interface SlotOccupant {
   ageMinutes: number;
   idleMinutes: number | null;
   stale: boolean;
-  // True when the workspace is wedged in a non-terminal provisioning state past
-  // STUCK_PROVISION_MS. The watchdog reaps these via markProvisioningExhausted
-  // (force `failed`) rather than the normal destroy-workflow teardown.
+  // True when the workspace is wedged in an active provision Workflow state
+  // (`provisioning` / `bootstrapping`) past STUCK_PROVISION_MS. Lazy
+  // `requested` sessions are excluded. The watchdog reaps these via
+  // markProvisioningExhausted (force `failed`) rather than the normal
+  // destroy-workflow teardown.
   stuckProvisioning: boolean;
   // Which repository and branch this occupant's workspace is on, so
   // workspace-resolve.ts can answer "which workspace did the caller mean"
