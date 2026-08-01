@@ -82,8 +82,8 @@ these next:
 
 ## Activity logging
 
-PostHog removed. Complete activity is D1 `mcp_tool_calls` (default for
-`forge_observer_activity`) + `/app/live`.
+Complete activity is D1 `mcp_tool_calls` (default for `forge_observer_activity`)
++ `/app/live`. No third-party analytics embed.
 
 ## Still open (not fixed here)
 

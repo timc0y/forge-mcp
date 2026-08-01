@@ -9,7 +9,6 @@ import {
   type WorkspaceId
 } from '@forge/core';
 import { registerForgeToolsV1, type ToolCallTelemetry } from '@forge/mcp-adapter-v1';
-import { hashArgs } from './telemetry';
 import type { ForgeToolHandlers } from '@forge/mcp-core';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { D1AuditStore } from '@forge/audit';
@@ -28,7 +27,7 @@ import {
   requestApproval,
   requireApproval
 } from './github';
-import { recordToolCall, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
+import { hashArgs, recordToolCall, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
 import { appendWorkspaceActivity } from './workspace-activity';
 import { claimExternalMutation, readExternalMutationReceipt, recordExternalMutationReceipt } from './external-mutation-idempotency';
 import { systemToolHandlers } from './handlers/system';

@@ -437,7 +437,7 @@ describe('ChatGPT conversation simulations', () => {
     ).toBe(true);
   });
 
-  it('Conv AD — activity log is D1 only; PostHog is gone', () => {
+  it('Conv AD — activity log is D1 only; no PostHog remnants', () => {
     expect(
       sourceMentions(
         'apps/forge-edge-gateway/src/live-dashboard.ts',
@@ -446,15 +446,15 @@ describe('ChatGPT conversation simulations', () => {
     ).toBe(true);
     expect(
       sourceMentions(
-        'apps/forge-edge-gateway/src/telemetry.ts',
-        /ToolCallTracker|posthog|POSTHOG/
+        'apps/forge-edge-gateway/src/env.ts',
+        /POSTHOG|posthog/
       )
     ).toBe(false);
     expect(
       sourceMentions(
-        'apps/forge-edge-gateway/src/env.ts',
-        /POSTHOG/
+        'apps/forge-edge-gateway/src/tool-call-log.ts',
+        /hashArgs/
       )
-    ).toBe(false);
+    ).toBe(true);
   });
 });

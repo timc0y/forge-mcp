@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hashArgs } from '../../apps/forge-edge-gateway/src/telemetry';
+import { hashArgs } from '../../apps/forge-edge-gateway/src/tool-call-log';
 import { reserveWorkspaceSlot } from '../../apps/forge-edge-gateway/src/capacity';
 
 /**
