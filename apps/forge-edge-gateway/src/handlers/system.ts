@@ -274,7 +274,14 @@ export function systemToolHandlers(
           { secret_id: secretId, workspace_id: workspaceId, var_names: varNames }
         );
         if (approval.already_approved) {
+          // Same claim/consume protocol as shell/deploy — skipping it left the
+          // approval in 'approved' so every retry attached again without a new
+          // human decision.
+          await requireApproval(env, actor, approval.approval_id, workspaceId, 'secret.attach',
+            { secret_id: secretId, workspace_id: workspaceId }
+          );
           await vaultService(env).attach(actor.tenantId as TenantId, secretId, workspaceId);
+          await completeApproval(env, approval.approval_id, true);
           return { attached: true, secret_id: secretId, workspace_id: workspaceId };
         }
         throw new ForgeError({
