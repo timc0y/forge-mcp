@@ -1,6 +1,6 @@
 # Tool reference
 
-Forge currently exposes 41 MCP tools. The source of truth is
+Forge currently exposes 42 MCP tools. The source of truth is
 [`packages/mcp-core/src/index.ts`](../packages/mcp-core/src/index.ts), and the
 machine-readable schemas are generated into
 [`schemas/forge-tools.schema.json`](../schemas/forge-tools.schema.json).
@@ -108,7 +108,8 @@ for that exact mutation before changing GitHub.
 
 | Tool | What it does |
 | --- | --- |
-| `forge_cloudflare_deploy` | Runs approved Wrangler deployment with an attached Cloudflare secret. A stable idempotency key is required; slow deploys return a managed `process_id`, then the same key obtains the verified receipt without starting another deploy. |
+| `forge_deploy` | Picks a deploy workflow from attached vault env names (Cloudflare Wrangler when a token+account pair is present under `CLOUDFLARE_*` or `CF_*` aliases), runs it after approval, and returns a verified `deploy_receipt`. A stable idempotency key is required; slow deploys return a managed `process_id`, then the same key obtains the receipt without starting another deploy. |
+| `forge_cloudflare_deploy` | Alias of `forge_deploy` forced to Cloudflare Wrangler. Prefer `forge_deploy` so the agent can select from attached env names. |
 | `forge_review` | Captures screenshot/accessibility evidence from a public URL without a workspace, within a 40-second host-safe budget. |
 | `forge_preview_expose` | Exposes a running workspace process through an expiring private preview; public access needs approval. |
 | `forge_preview` | Starts/exposes the app for at most 30 seconds when needed and captures workspace screenshots, optionally after interactions. |

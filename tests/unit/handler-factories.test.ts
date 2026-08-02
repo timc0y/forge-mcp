@@ -23,9 +23,10 @@ describe('focused ForgeToolHandlers factories', () => {
     const handlers = Object.assign({}, ...groups) as ForgeToolHandlers;
 
     expect(new Set(names).size).toBe(names.length);
-    expect(Object.keys(handlers)).toHaveLength(41);
+    expect(Object.keys(handlers)).toHaveLength(42);
     expect(handlers.forge_edit).toBeTypeOf('function');
     expect(handlers.forge_shell).toBeTypeOf('function');
+    expect(handlers.forge_deploy).toBeTypeOf('function');
     expect(handlers.forge_task_update).toBeTypeOf('function');
   });
 });

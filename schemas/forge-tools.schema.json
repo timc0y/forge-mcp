@@ -1559,9 +1559,87 @@
         }
       }
     },
+    "forge_deploy": {
+      "title": "Deploy",
+      "description": "Deploy from attached vault env names. Picks Cloudflare Wrangler when a token+account pair is present (CLOUDFLARE_* or CF_* aliases). Requires idempotency_key; slow runs return process_id, then the same key yields a verified receipt.",
+      "sideEffect": "external",
+      "approval": "required",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "workflow": {
+            "default": "auto",
+            "description": "auto = choose from attached env names; cloudflare_wrangler forces Wrangler.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "command": {
+            "description": "Override the workflow default command (e.g. npx wrangler deploy).",
+            "$ref": "#/$defs/__schema2"
+          },
+          "cwd": {
+            "default": "/workspace/repo",
+            "description": "Working directory inside the workspace; must start with /workspace.",
+            "$ref": "#/$defs/__schema3"
+          },
+          "expected_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "include_output": {
+            "default": false,
+            "type": "boolean"
+          },
+          "approval_id": {
+            "type": "string",
+            "pattern": "^apr_.*"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200,
+            "description": "Stable key makes a retry safe. Fresh value per distinct call."
+          }
+        },
+        "required": [
+          "workflow",
+          "cwd",
+          "include_output",
+          "idempotency_key"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "__schema1": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "cloudflare_wrangler"
+            ]
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "__schema3": {
+            "type": "string",
+            "pattern": "^\\/workspace.*"
+          }
+        }
+      }
+    },
     "forge_cloudflare_deploy": {
       "title": "Deploy to Cloudflare",
-      "description": "Run approved Wrangler deploy as a managed process. idempotency_key is required: slow runs return process_id, then the same key reopens that process for a verified receipt.",
+      "description": "Alias of forge_deploy forced to Cloudflare Wrangler. Prefer forge_deploy. Accepts CLOUDFLARE_* or CF_* aliases.",
       "sideEffect": "external",
       "approval": "required",
       "inputSchema": {

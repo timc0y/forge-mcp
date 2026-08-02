@@ -84,6 +84,7 @@ describe('Forge MCP public contracts', () => {
     }
     expect(forgeTools.some((candidate) => candidate.name === 'forge_process_stop')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_observer_workspaces')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_deploy')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(true);
   });
 
@@ -210,6 +211,17 @@ describe('Forge MCP public contracts', () => {
     const deploy = tool('forge_cloudflare_deploy').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
     expect(deploy.idempotency_key.safeParse(undefined).success).toBe(false);
     expect(deploy.idempotency_key.safeParse('deploy-release-2026-07-29').success).toBe(true);
+  });
+
+  it('exposes forge_deploy that selects workflows from attached env names', () => {
+    const deploy = tool('forge_deploy');
+    expect(deploy.approval).toBe('required');
+    expect(deploy.sideEffect).toBe('external');
+    const schema = deploy.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean }; parse(value: unknown): unknown }>;
+    expect(schema.idempotency_key.safeParse(undefined).success).toBe(false);
+    expect(schema.workflow.parse(undefined)).toBe('auto');
+    expect(schema.workflow.safeParse('cloudflare_wrangler').success).toBe(true);
+    expect(schema.workflow.safeParse('vercel').success).toBe(false);
   });
 
   it('edits whole files and deletes by null content', () => {

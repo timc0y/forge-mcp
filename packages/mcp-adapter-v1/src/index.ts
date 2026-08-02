@@ -65,6 +65,7 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_observer_workspace: { invoking: 'Observing workspace…', invoked: 'Workspace observer ready' },
   forge_observer_activity: { invoking: 'Loading activity…', invoked: 'Activity ready' },
   forge_merge: { invoking: 'Submitting for review…', invoked: 'Submitted for review' },
+  forge_deploy: { invoking: 'Deploying…', invoked: 'Deploy finished' },
   forge_cloudflare_deploy: { invoking: 'Deploying to Cloudflare…', invoked: 'Cloudflare deploy finished' },
   forge_repository_list: { invoking: 'Listing repositories…', invoked: 'Repositories ready' },
   forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' },

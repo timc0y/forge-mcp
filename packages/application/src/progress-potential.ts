@@ -243,7 +243,7 @@ export function witnessIdFromReceipt(tool: string, result: unknown): string | un
       if (typeof hash === 'string') return hash;
     }
   }
-  if (tool === 'forge_cloudflare_deploy') {
+  if (tool === 'forge_cloudflare_deploy' || tool === 'forge_deploy') {
     const receipt = s.deploy_receipt;
     if (receipt && typeof receipt === 'object') {
       const url = (receipt as { verified_url?: string }).verified_url;
@@ -387,7 +387,7 @@ export function detectDurableWitness(tool: string, result: unknown): boolean {
   }
   if (tool === 'forge_start' && typeof structured.branch === 'string') return true;
   if (tool === 'forge_workspace_create' && typeof structured.workspace_id === 'string') return true;
-  if (tool === 'forge_cloudflare_deploy') {
+  if (tool === 'forge_cloudflare_deploy' || tool === 'forge_deploy') {
     const receipt = structured.deploy_receipt;
     if (receipt && typeof receipt === 'object' && (receipt as { verified_url?: string }).verified_url) {
       return true;

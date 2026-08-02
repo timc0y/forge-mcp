@@ -67,6 +67,16 @@ export {
   type ProgressObservation,
   type ProgressGateDecision
 } from './progress-potential.js';
+export {
+  DEPLOY_WORKFLOWS,
+  resolveCloudflareDeploy,
+  resolveDeployWorkflow,
+  deployCapabilitiesManifest,
+  type DeployWorkflowId,
+  type DeployWorkflowHint,
+  type ResolvedCloudflareDeploy,
+  type DeployResolveResult
+} from './deploy-resolve.js';
 
 export interface WorkspaceRuntimeRecord {
   workspace: Workspace;

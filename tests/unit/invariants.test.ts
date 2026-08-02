@@ -163,6 +163,8 @@ const ALLOWLIST_A: ReadonlyArray<{ tool: string; field: string; note: string }> 
   { tool: 'forge_branches', field: 'sha', note: 'Each branch’s head sha in a read-only listing; same reasoning as forge_history.sha.' },
   { tool: 'forge_merge', field: 'remote_sha', note: 'The commit sha now on the remote branch — a receipt like commit_sha/merge_sha; no input takes it back.' },
   { tool: 'forge_merge', field: 'staged_ref', note: 'The ref the merge was staged from, informational context on the submission receipt; not a follow-up parameter.' },
+  { tool: 'forge_deploy', field: 'account_id', note: 'The Cloudflare account the deploy used, informational context on the receipt; no input takes an account id back.' },
+  { tool: 'forge_deploy', field: 'output_artifact_id', note: 'Consumable as the `artifact_id` input to forge_artifact_get, qualified with "output" to say what kind of artifact it is — the same live workflow forge_deps_install’s spilled stdout/stderr artifacts already use.' },
   { tool: 'forge_cloudflare_deploy', field: 'account_id', note: 'The Cloudflare account the deploy used, informational context on the receipt; no input takes an account id back.' },
   { tool: 'forge_cloudflare_deploy', field: 'output_artifact_id', note: 'Consumable as the `artifact_id` input to forge_artifact_get, qualified with "output" to say what kind of artifact it is — the same live workflow forge_deps_install’s spilled stdout/stderr artifacts already use.' },
   // forge_start landed while this suite was being written — another session

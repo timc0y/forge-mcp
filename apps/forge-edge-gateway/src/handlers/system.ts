@@ -8,6 +8,7 @@ import { recentToolCalls } from '../tool-call-log';
 import { listWorkspaceActivity } from '../workspace-activity';
 import { vaultService } from '../vault';
 import { DURABILITY_STATES, MUTATION_OUTCOMES } from '../durability';
+import { deployCapabilitiesManifest } from '@forge/application';
 
 type Identity = { subject: string; tenantId: string; projectId: string };
 type SystemTool =
@@ -51,12 +52,7 @@ export function systemToolHandlers(
         branches: 'forge_branches_can_list_and_delete'
       },
       processes: { managed_status: true, persistent_logs: true, preview_requires_exact_process_id: true },
-      deployment: {
-        cloudflare_wrangler: 'forge_cloudflare_deploy_only',
-        ungated_wrangler_shell: 'blocked_requires_approval',
-        requires_attached_secret_keys: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID'],
-        live_claim_requires: 'deploy_receipt.verified_url'
-      },
+      deployment: deployCapabilitiesManifest(),
       claims: {
         never_invent_urls: true,
         echo_only_tool_receipts: ['submission_receipt', 'deploy_receipt', 'commit_url']

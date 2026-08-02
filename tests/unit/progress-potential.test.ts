@@ -192,6 +192,11 @@ describe('Durable Progress Potential (Φ-gate)', () => {
       })
     ).toBe(true);
     expect(detectDurableWitness('forge_cloudflare_deploy', { deploy_receipt: {} })).toBe(false);
+    expect(
+      detectDurableWitness('forge_deploy', {
+        deploy_receipt: { verified_url: 'https://example.workers.dev' }
+      })
+    ).toBe(true);
   });
 
   it('derives Φ and witness ids from live receipts', () => {
@@ -209,6 +214,11 @@ describe('Durable Progress Potential (Φ-gate)', () => {
     ).toBe('deadbeef');
     expect(
       witnessIdFromReceipt('forge_cloudflare_deploy', {
+        deploy_receipt: { verified_url: 'https://example.workers.dev' }
+      })
+    ).toBe('https://example.workers.dev');
+    expect(
+      witnessIdFromReceipt('forge_deploy', {
         deploy_receipt: { verified_url: 'https://example.workers.dev' }
       })
     ).toBe('https://example.workers.dev');
