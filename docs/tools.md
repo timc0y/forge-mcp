@@ -16,8 +16,8 @@ ephemeral and never a source of repository truth.
 | Tool | What it does |
 | --- | --- |
 | `forge_capabilities` | Returns the session's workspace, Git, secrets, preview, and approval capabilities. |
-| `forge_observer_workspaces` | Read-only snapshot of live workspace slots, tasks, and branches. |
-| `forge_observer_workspace` | Read-only process, log-tail, and merged MCP activity for one workspace. |
+| `forge_observer_workspaces` | Live slots with lifecycle/executor_state; `requested` + empty processes is healthy lazy create. |
+| `forge_observer_workspace` | Processes, logs, activity, plus lifecycle guidance; do not poll waiting for `requested`→`ready`. |
 | `forge_observer_activity` | Read-only account activity trail; payloads are redacted and bounded. |
 | `forge_repository_list` | Lists repositories authorized through the Forge GitHub App. |
 

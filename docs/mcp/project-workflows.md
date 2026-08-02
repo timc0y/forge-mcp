@@ -61,6 +61,11 @@ existing workspace — do not open a second one for the same repository task.
 `forge_workspace_create` returning `requested` / `executor_state: not_loaded` is
 healthy. Read and edit immediately; compute starts on the first execution tool.
 
+Observer tools that keep showing `state: requested` with empty processes are
+not a hang — that is the same lazy session. Proceed with `forge_files_read` /
+`forge_edit`. Only poll `forge_workspace_get` after an execution tool returned
+`FORGE_WORKSPACE_NOT_READY` and lifecycle is `executor_starting`.
+
 If the first shell/install/preview says the executor is still starting, poll
 `forge_workspace_get` every few seconds until `ready`, then retry **that same**
 tool. Do not open a second workspace.

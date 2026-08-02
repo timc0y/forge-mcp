@@ -136,12 +136,16 @@ and cleans them up.
    and Sandbox provider status.
 2. Locate by trace ID, operation ID, and workspace ID; never expose raw
    provider IDs in user-facing communication.
-3. For a stuck workspace: revoke previews, stop processes, persist redacted
+3. Distinguish healthy lazy `requested` (no executor yet — continue with
+   GitHub tools) from wedged `provisioning` / `bootstrapping` (stuck-provision
+   watchdog) before force-failing a session. See
+   [EasyRoads requested-state autopsy](reviews/2026-08-02-easyroads-requested-state-autopsy.md).
+4. For a stuck workspace: revoke previews, stop processes, persist redacted
    diagnostics, then destroy; a later execution materializes a fresh checkout
    from GitHub.
-4. For a GitHub App authorization change: revoke capabilities immediately and
+5. For a GitHub App authorization change: revoke capabilities immediately and
    reconcile installations.
-5. Never retrieve secrets from logs. Rotate signing keys and invalidate
+6. Never retrieve secrets from logs. Rotate signing keys and invalidate
    capabilities if leakage is suspected.
 
 ## Optional self-hosted browser

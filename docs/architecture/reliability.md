@@ -49,6 +49,14 @@ lazy-create outcome. Agents should read and edit through GitHub immediately;
 only shell, install, build, test, preview, or deploy calls allocate the
 ephemeral executor. Do not treat that receipt as a hung provisioner.
 
+Observer tools (`forge_observer_workspace` / `forge_observer_workspaces`)
+report the same distinction as `lifecycle: lazy_control_plane` with
+`expected_empty_processes` / `expected_empty_logs` when appropriate. Empty
+process lists and log tails while `requested` are expected — not evidence the
+session is stuck. Identical successful observer polls attach `stop_polling`
+guidance after the third repeat so agents stop waiting for a state change that
+will not happen without an execution tool.
+
 When the first execution tool wakes the executor, Forge may return
 `FORGE_WORKSPACE_NOT_READY` with a shared poll recipe: call
 `forge_workspace_get` until `ready`, then retry **that same** tool. Do not open

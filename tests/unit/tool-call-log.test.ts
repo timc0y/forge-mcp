@@ -56,3 +56,11 @@ describe('repeat-call steer', () => {
     expect(steer).toMatch(/different arguments|different tool|read the file first/u);
   });
 });
+
+describe('priorIdenticalSuccesses query shape', () => {
+  it('is exported beside priorIdenticalFailures for observer stop-polling', async () => {
+    const mod = await import('../../apps/forge-edge-gateway/src/tool-call-log');
+    expect(typeof mod.priorIdenticalSuccesses).toBe('function');
+    expect(typeof mod.priorIdenticalFailures).toBe('function');
+  });
+});

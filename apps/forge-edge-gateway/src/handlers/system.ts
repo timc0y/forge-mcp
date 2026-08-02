@@ -1,10 +1,10 @@
 import { ForgeError, type SecretId, type TenantId } from '@forge/core';
 import type { ForgeToolHandlers } from '@forge/mcp-core';
 import type { Env } from '../env';
-import { buildLiveWorkspaceList, buildWorkspaceObserverDetail } from '../observer-api';
+import { buildLiveWorkspaceList, buildWorkspaceObserverDetail, observerRepeatDiagnostic } from '../observer-api';
 import { completeApproval, requestApproval, requireApproval } from '../github';
 import { resolveWorkspaceId } from '../workspace-resolve';
-import { recentToolCalls } from '../tool-call-log';
+import { hashArgs, priorIdenticalSuccesses, recentToolCalls } from '../tool-call-log';
 import { listWorkspaceActivity } from '../workspace-activity';
 import { vaultService } from '../vault';
 import { DURABILITY_STATES, MUTATION_OUTCOMES } from '../durability';
@@ -61,14 +61,30 @@ export function systemToolHandlers(
       },
       observer: { read_only_tools: ['forge_observer_workspaces', 'forge_observer_workspace', 'forge_observer_activity'], live_portal: '/app/live' }
     }),
-    forge_observer_workspaces: async () => {
+    forge_observer_workspaces: async (input) => {
       const actor = identity();
-      return asRecord(await buildLiveWorkspaceList(env, actor.tenantId));
+      const list = await buildLiveWorkspaceList(env, actor.tenantId);
+      const argsHash = await hashArgs(input);
+      const prior = await priorIdenticalSuccesses(env, {
+        tenantId: actor.tenantId,
+        tool: 'forge_observer_workspaces',
+        argsHash
+      }).catch(() => 0);
+      const repeat = observerRepeatDiagnostic('forge_observer_workspaces', prior);
+      return asRecord(repeat ? { ...list, ...repeat } : list);
     },
     forge_observer_workspace: async (input) => {
       const actor = identity();
       const workspaceId = await resolveWorkspaceId(env, actor, workspaceAddress(input));
-      return asRecord(await buildWorkspaceObserverDetail(env, actor.tenantId, workspaceId));
+      const detail = await buildWorkspaceObserverDetail(env, actor.tenantId, workspaceId);
+      const argsHash = await hashArgs(input);
+      const prior = await priorIdenticalSuccesses(env, {
+        tenantId: actor.tenantId,
+        tool: 'forge_observer_workspace',
+        argsHash
+      }).catch(() => 0);
+      const repeat = observerRepeatDiagnostic('forge_observer_workspace', prior);
+      return asRecord(repeat ? { ...detail, ...repeat } : detail);
     },
     forge_observer_activity: async (input) => {
       const actor = identity();
