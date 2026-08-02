@@ -12,7 +12,12 @@ import { R2ArtifactStore } from '@forge/artifacts-r2';
 import type { BrowserActionStep } from '@forge/browser-core';
 import { selectBrowserProvider } from '../browser-router';
 import { classifyCommand } from '@forge/policy';
-import { durabilityNextStep } from '@forge/application';
+import {
+  durabilityNextStep,
+  resolveDeployWorkflow,
+  DEPLOY_WORKFLOWS,
+  type DeployWorkflowId
+} from '@forge/application';
 import { normalizeViewports, prepareInlineImages } from '../review-images';
 import { resolveWorkspaceId } from '../workspace-resolve';
 import { storeGallery } from '../review-gallery';
@@ -28,7 +33,240 @@ import {
 } from './helpers';
 import type { ExecutionHandlerDependencies } from './types';
 
-type WorkflowTool = 'forge_shell' | 'forge_process_logs' | 'forge_process_list' | 'forge_process_stop' | 'forge_process_wait' | 'forge_deps_install' | 'forge_cloudflare_deploy' | 'forge_preview_expose' | 'forge_preview';
+type WorkflowTool = 'forge_shell' | 'forge_process_logs' | 'forge_process_list' | 'forge_process_stop' | 'forge_process_wait' | 'forge_deps_install' | 'forge_deploy' | 'forge_preview_expose' | 'forge_preview';
+
+async function runEnvDrivenDeploy(
+  env: Env,
+  deps: ExecutionHandlerDependencies,
+  input: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const identity = deps.identity();
+  const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
+  const preferInput = input.workflow === undefined ? 'auto' : text(input.workflow);
+  const prefer: DeployWorkflowId | 'auto' =
+    preferInput === 'cloudflare_wrangler' ? 'cloudflare_wrangler' : 'auto';
+  const cwd = input.cwd === undefined ? '/workspace/repo' : text(input.cwd);
+  const expectedUrl = input.expected_url === undefined ? undefined : text(input.expected_url);
+  const defaultCommand =
+    DEPLOY_WORKFLOWS.find((w) => w.id === (prefer === 'auto' ? 'cloudflare_wrangler' : prefer))
+      ?.defaultCommand ?? 'npx wrangler deploy';
+  const command = input.command === undefined ? defaultCommand : text(input.command);
+  const mapEnv =
+    input.map_env && typeof input.map_env === 'object'
+      ? (input.map_env as Record<string, string>)
+      : undefined;
+
+  const decision = classifyCommand(command, 'development');
+  if (decision.classification !== 'external_side_effect') {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message:
+        'forge_deploy only runs provider deploy/publish/delete commands. Use forge_shell for probes (including --dry-run).',
+      retryable: false
+    });
+  }
+  if (/(^|\s)--dry-run(\s|$)/i.test(command)) {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: 'Dry-run is not a deploy. Use forge_shell with wrangler deploy --dry-run instead.',
+      retryable: false
+    });
+  }
+
+  const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
+  const resolved = resolveDeployWorkflow({
+    attachedVars: attached.vars,
+    mapEnv,
+    command,
+    prefer
+  });
+  if (!resolved.ok) {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message:
+        'forge_deploy could not build a deploy environment from the attached vault secrets. List secrets, pass map_env if your keys differ from the CLI names, then retry.',
+      retryable: false,
+      details: {
+        reason: resolved.reason,
+        attached_var_names: resolved.attached_var_names,
+        ...(resolved.missing_process_env ? { missing_process_env: resolved.missing_process_env } : {}),
+        ...(resolved.unknown_sources ? { unknown_sources: resolved.unknown_sources } : {}),
+        workflows: resolved.workflows.map((w) => ({
+          id: w.id,
+          label: w.label,
+          requires_process_env: w.requires_process_env
+        })),
+        next_step: resolved.next_step
+      }
+    });
+  }
+
+  const { resolution } = resolved;
+  const accountId = resolution.accountId;
+  const approvalAction = 'cloudflare.deploy' as const;
+  const approvalSummary = accountId
+    ? `Deploy (${resolution.workflow}) to Cloudflare account ${accountId}`
+    : `Deploy (${resolution.workflow}) with attached vault credentials`;
+  const approvalPayload = {
+    workflow: resolution.workflow,
+    command,
+    cwd,
+    accountId,
+    mapEnv: resolution.mapEnv,
+    expectedUrl: expectedUrl ?? null
+  };
+  let approvalId = input.approval_id ? text(input.approval_id) : undefined;
+  if (!approvalId) {
+    const approval = await requestApproval(
+      env,
+      identity,
+      workspaceId,
+      approvalAction,
+      approvalSummary,
+      approvalPayload
+    );
+    if (approval.already_approved) {
+      approvalId = approval.approval_id;
+      await requireApproval(env, identity, approvalId, workspaceId, approvalAction, approvalPayload);
+    } else {
+      const inline = await deps.tryResolveApprovalInline(identity, approval, approvalSummary);
+      if (!inline) {
+        throw new ForgeError({
+          code: 'FORGE_APPROVAL_REQUIRED',
+          message: 'Deploy needs human approval. Open the approval URL, approve, then retry with approval_id.',
+          retryable: false,
+          details: { kind: 'approval', action: approvalAction, workflow: resolution.workflow, ...approval }
+        });
+      }
+      approvalId = inline;
+      await requireApproval(env, identity, approvalId, workspaceId, approvalAction, approvalPayload);
+    }
+  } else {
+    await requireApproval(env, identity, approvalId, workspaceId, approvalAction, approvalPayload);
+  }
+
+  const workspace = await executorCoordinator(env, identity, workspaceId);
+  const started = asRecord(
+    await workspace.processStart({
+      command,
+      cwd,
+      environment: resolution.processEnv,
+      networkPolicy: 'development',
+      expectedRevision: undefined,
+      idempotencyKey: text(input.idempotency_key),
+      approved: true
+    })
+  );
+  const startedValue =
+    started.value && typeof started.value === 'object'
+      ? (started.value as Record<string, unknown>)
+      : started;
+  const processId = startedValue.id ?? started.processId ?? started.id;
+  if (typeof processId !== 'string' || !processId.startsWith('proc_')) {
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_CONFLICT',
+      message:
+        'The deploy process did not return a process id, so Forge cannot track its outcome. Call forge_process_list before retrying with a new idempotency key.',
+      retryable: false
+    });
+  }
+  const waited = await withDeadline(
+    workspace.processWait({
+      processId: processId as ProcessId,
+      timeoutMs: 15_000
+    }) as unknown as Promise<Record<string, unknown>>,
+    16_000
+  );
+  if (!waited || waited.timedOut) {
+    if (approvalId) await completeApproval(env, approvalId, true, { reusable: true });
+    return {
+      deployed: false,
+      accepted: true,
+      workflow: resolution.workflow,
+      process_id: processId,
+      approval_id: approvalId,
+      next_step: `Deploy is still running as ${processId}. Call forge_process_wait with that process_id; do not restart it. Then retry forge_deploy with the same idempotency_key and approval_id to obtain a verified deploy_receipt.`
+    };
+  }
+  const process = waited.process as { exitCode?: number };
+  const logs = asRecord(await workspace.processLogs({ processId: processId as ProcessId }));
+  const combined = String(logs.data ?? '');
+  const redacted = await vaultService(env).redactOutput(combined, identity.tenantId as TenantId, workspaceId);
+  if (process.exitCode !== 0) {
+    if (approvalId) await completeApproval(env, approvalId, false);
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: `Deploy failed (exit ${String(process.exitCode)}). Inspect forge_process_logs for ${processId}; do not claim the service is live.`,
+      retryable: true,
+      details: {
+        workflow: resolution.workflow,
+        process_id: processId,
+        exitCode: process.exitCode,
+        output_tail: redacted.slice(-4_000)
+      }
+    });
+  }
+  const workerName = parseWranglerWorkerName(redacted);
+  const publishedUrl = expectedUrl ?? parseWorkersDevUrl(redacted);
+  let httpStatus: number | null = null;
+  let verifiedUrl: string | null = null;
+  if (publishedUrl) {
+    try {
+      const probe = await fetch(publishedUrl, {
+        method: 'GET',
+        redirect: 'follow',
+        signal: AbortSignal.timeout(8_000)
+      });
+      httpStatus = probe.status;
+      verifiedUrl = publishedUrl;
+    } catch {
+      httpStatus = null;
+      verifiedUrl = null;
+    }
+  }
+  if (approvalId) await completeApproval(env, approvalId, true);
+  await deps.recordAudit(
+    'cloudflare.deploy',
+    identity.tenantId,
+    {
+      workflow: resolution.workflow,
+      accountId,
+      workerName,
+      verifiedUrl,
+      httpStatus,
+      command,
+      mapEnv: resolution.mapEnv
+    },
+    { workspaceId }
+  );
+  const deployReceipt = {
+    workflow: resolution.workflow,
+    account_id: accountId,
+    worker_name: workerName,
+    verified_url: verifiedUrl,
+    http_status: httpStatus,
+    command,
+    map_env: resolution.mapEnv
+  };
+  let outputArtifactId: string | undefined;
+  if (utf8Bytes(redacted) > AGENT_OUTPUT_SPILL_BYTES) {
+    const spilled = await spillTextArtifact(env, identity, workspaceId, 'deploy-output', redacted);
+    outputArtifactId = spilled.artifact_id;
+  }
+  const includeOutput = input.include_output === true;
+  return {
+    deployed: true,
+    accepted: true,
+    workflow: resolution.workflow,
+    process_id: processId,
+    deploy_receipt: deployReceipt,
+    ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {}),
+    ...(includeOutput ? { stdout_tail: redacted.slice(-3_000) } : {}),
+    next_step: verifiedUrl
+      ? `Only claim this URL is live: ${verifiedUrl} (HTTP ${httpStatus}). Echo deploy_receipt only.${outputArtifactId ? ` Full logs: ${outputArtifactId}.` : ''}`
+      : `Deploy succeeded but URL not verified. Do not invent a live URL.${outputArtifactId ? ` Inspect ${outputArtifactId} via forge_artifact_get.` : ' Pass expected_url.'}`
+  };
+}
 
 /** Focused execution workflows behind the ForgeToolHandlers seam. */
 export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependencies): Pick<ForgeToolHandlers, WorkflowTool> {
@@ -308,185 +546,7 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
         });
         return asRecord({ ...result, remote_persisted: false, executor_filesystem: 'ephemeral' });
       },
-      forge_cloudflare_deploy: async (input) => {
-        const identity = deps.identity();
-        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
-        const command = input.command === undefined ? 'npx wrangler deploy' : text(input.command);
-        const cwd = input.cwd === undefined ? '/workspace/repo' : text(input.cwd);
-        const expectedUrl = input.expected_url === undefined ? undefined : text(input.expected_url);
-        const decision = classifyCommand(command, 'development');
-        if (decision.classification !== 'external_side_effect') {
-          throw new ForgeError({
-            code: 'FORGE_VALIDATION_FAILED',
-            message: 'forge_cloudflare_deploy only runs wrangler deploy/publish/delete commands. Use forge_shell for probes (including --dry-run).',
-            retryable: false
-          });
-        }
-        if (/(^|\s)--dry-run(\s|$)/i.test(command)) {
-          throw new ForgeError({
-            code: 'FORGE_VALIDATION_FAILED',
-            message: 'Dry-run is not a deploy. Use forge_shell with wrangler deploy --dry-run instead.',
-            retryable: false
-          });
-        }
-        const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
-        const token = attached.vars.CLOUDFLARE_API_TOKEN?.trim();
-        const accountId = attached.vars.CLOUDFLARE_ACCOUNT_ID?.trim();
-        if (!token || !accountId) {
-          throw new ForgeError({
-            code: 'FORGE_VALIDATION_FAILED',
-            message: 'Attach a Cloudflare vault secret that includes both CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (forge_secret_attach), then retry. Account pinning prevents deploying to the wrong Cloudflare account.',
-            retryable: false,
-            details: {
-              has_token: Boolean(token),
-              has_account_id: Boolean(accountId),
-              next_step: 'Create the secret in /app/secrets or forge_secret_create, attach it, then call forge_cloudflare_deploy again.'
-            }
-          });
-        }
-        const approvalPayload = {
-          command,
-          cwd,
-          accountId,
-          expectedUrl: expectedUrl ?? null
-        };
-        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
-        if (!approvalId) {
-          const approval = await requestApproval(
-            env,
-            identity,
-            workspaceId,
-            'cloudflare.deploy',
-            `Deploy with wrangler to Cloudflare account ${accountId}`,
-            approvalPayload
-          );
-          if (approval.already_approved) {
-            approvalId = approval.approval_id;
-            await requireApproval(env, identity, approvalId, workspaceId, 'cloudflare.deploy', approvalPayload);
-          } else {
-            const inline = await deps.tryResolveApprovalInline(
-              identity,
-              approval,
-              `Deploy with wrangler to Cloudflare account ${accountId}`
-            );
-            if (!inline) {
-              throw new ForgeError({
-                code: 'FORGE_APPROVAL_REQUIRED',
-                message: 'Cloudflare deploy needs human approval. Open the approval URL, approve, then retry with approval_id.',
-                retryable: false,
-                details: { kind: 'approval', action: 'cloudflare.deploy', ...approval }
-              });
-            }
-            approvalId = inline;
-            await requireApproval(env, identity, approvalId, workspaceId, 'cloudflare.deploy', approvalPayload);
-          }
-        } else {
-          await requireApproval(env, identity, approvalId, workspaceId, 'cloudflare.deploy', approvalPayload);
-        }
-        const workspace = await executorCoordinator(env, identity, workspaceId);
-        const started = asRecord(await workspace.processStart({
-          command,
-          cwd,
-          environment: {
-            ...attached.vars,
-            CLOUDFLARE_API_TOKEN: token,
-            CLOUDFLARE_ACCOUNT_ID: accountId
-          },
-          networkPolicy: 'development',
-          expectedRevision: undefined,
-          idempotencyKey: text(input.idempotency_key),
-          approved: true,
-        }));
-        const startedValue = started.value && typeof started.value === 'object'
-          ? started.value as Record<string, unknown>
-          : started;
-        const processId = startedValue.id ?? started.processId ?? started.id;
-        if (typeof processId !== 'string' || !processId.startsWith('proc_')) {
-          throw new ForgeError({
-            code: 'FORGE_WORKSPACE_CONFLICT',
-            message: 'The deploy process did not return a process id, so Forge cannot track its outcome. Call forge_process_list before retrying with a new idempotency key.',
-            retryable: false
-          });
-        }
-        const waited = await withDeadline(
-          workspace.processWait({ processId: processId as ProcessId, timeoutMs: 15_000 }) as unknown as Promise<Record<string, unknown>>,
-          16_000
-        );
-        if (!waited || waited.timedOut) {
-          if (approvalId) await completeApproval(env, approvalId, true, { reusable: true });
-          return {
-            deployed: false,
-            accepted: true,
-            process_id: processId,
-            approval_id: approvalId,
-            next_step: `Deploy is still running as ${processId}. Call forge_process_wait with that process_id; do not restart it. Then retry forge_cloudflare_deploy with the same idempotency_key and approval_id to obtain a verified deploy_receipt.`
-          };
-        }
-        const process = waited.process as { exitCode?: number };
-        const logs = asRecord(await workspace.processLogs({ processId: processId as ProcessId }));
-        const combined = String(logs.data ?? '');
-        const redacted = await vaultService(env).redactOutput(combined, identity.tenantId as TenantId, workspaceId);
-        if (process.exitCode !== 0) {
-          if (approvalId) await completeApproval(env, approvalId, false);
-          throw new ForgeError({
-            code: 'FORGE_VALIDATION_FAILED',
-            message: `Wrangler deploy failed (exit ${String(process.exitCode)}). Inspect forge_process_logs for ${processId}; do not claim the Worker is live.`,
-            retryable: true,
-            details: { process_id: processId, exitCode: process.exitCode, output_tail: redacted.slice(-4_000) }
-          });
-        }
-        const workerName = parseWranglerWorkerName(redacted);
-        const publishedUrl = expectedUrl ?? parseWorkersDevUrl(redacted);
-        let httpStatus: number | null = null;
-        let verifiedUrl: string | null = null;
-        if (publishedUrl) {
-          try {
-            const probe = await fetch(publishedUrl, {
-              method: 'GET',
-              redirect: 'follow',
-              signal: AbortSignal.timeout(8_000)
-            });
-            httpStatus = probe.status;
-            // Any HTTP response from the hostname proves the Worker route exists;
-            // 404 app content still means the worker is deployed.
-            verifiedUrl = publishedUrl;
-          } catch {
-            httpStatus = null;
-            verifiedUrl = null;
-          }
-        }
-        if (approvalId) await completeApproval(env, approvalId, true);
-        await deps.recordAudit(
-          'cloudflare.deploy',
-          identity.tenantId,
-          { accountId, workerName, verifiedUrl, httpStatus, command },
-          { workspaceId }
-        );
-        const deployReceipt = {
-          account_id: accountId,
-          worker_name: workerName,
-          verified_url: verifiedUrl,
-          http_status: httpStatus,
-          command
-        };
-        let outputArtifactId: string | undefined;
-        if (utf8Bytes(redacted) > AGENT_OUTPUT_SPILL_BYTES) {
-          const spilled = await spillTextArtifact(env, identity, workspaceId, 'deploy-output', redacted);
-          outputArtifactId = spilled.artifact_id;
-        }
-        const includeOutput = input.include_output === true;
-        return {
-          deployed: true,
-          accepted: true,
-          process_id: processId,
-          deploy_receipt: deployReceipt,
-          ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {}),
-          ...(includeOutput ? { stdout_tail: redacted.slice(-3_000) } : {}),
-          next_step: verifiedUrl
-            ? `Only claim this URL is live: ${verifiedUrl} (HTTP ${httpStatus}). Echo deploy_receipt only.${outputArtifactId ? ` Full logs: ${outputArtifactId}.` : ''}`
-            : `Deploy succeeded but URL not verified. Do not invent workers.dev.${outputArtifactId ? ` Inspect ${outputArtifactId} via forge_artifact_get.` : ' Pass expected_url.'}`
-        };
-      },
+      forge_deploy: async (input) => runEnvDrivenDeploy(env, deps, input),
       forge_preview_expose: async (input) => {
         const identity = deps.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input)) as WorkspaceId;

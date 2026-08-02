@@ -187,11 +187,11 @@ describe('Durable Progress Potential (Φ-gate)', () => {
     expect(detectDurableWitness('forge_merge', { submitted: true, submission_receipt: {} })).toBe(true);
     expect(detectDurableWitness('forge_shell', { exitCode: 0 })).toBe(false);
     expect(
-      detectDurableWitness('forge_cloudflare_deploy', {
+      detectDurableWitness('forge_deploy', {
         deploy_receipt: { verified_url: 'https://example.workers.dev' }
       })
     ).toBe(true);
-    expect(detectDurableWitness('forge_cloudflare_deploy', { deploy_receipt: {} })).toBe(false);
+    expect(detectDurableWitness('forge_deploy', { deploy_receipt: {} })).toBe(false);
   });
 
   it('derives Φ and witness ids from live receipts', () => {
@@ -208,7 +208,7 @@ describe('Durable Progress Potential (Φ-gate)', () => {
       witnessIdFromReceipt('forge_edit', { remote_sha: 'deadbeef' })
     ).toBe('deadbeef');
     expect(
-      witnessIdFromReceipt('forge_cloudflare_deploy', {
+      witnessIdFromReceipt('forge_deploy', {
         deploy_receipt: { verified_url: 'https://example.workers.dev' }
       })
     ).toBe('https://example.workers.dev');

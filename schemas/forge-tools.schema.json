@@ -1559,9 +1559,9 @@
         }
       }
     },
-    "forge_cloudflare_deploy": {
-      "title": "Deploy to Cloudflare",
-      "description": "Run approved Wrangler deploy as a managed process. idempotency_key is required: slow runs return process_id, then the same key reopens that process for a verified receipt.",
+    "forge_deploy": {
+      "title": "Deploy",
+      "description": "Approved deploy using attached vault secrets. Call forge_secret_list, then pass map_env to rename your keys into what the CLI needs (e.g. { CLOUDFLARE_API_TOKEN: \"CF_KEY\" }). CLOUDFLARE_ACCOUNT_ID is optional but pins the account when present. Requires idempotency_key; slow runs return process_id, then the same key yields a verified receipt.",
       "sideEffect": "external",
       "approval": "required",
       "inputSchema": {
@@ -1572,16 +1572,26 @@
             "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
             "$ref": "#/$defs/__schema0"
           },
-          "command": {
-            "default": "npx wrangler deploy",
+          "workflow": {
+            "default": "auto",
             "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
+            "enum": [
+              "auto",
+              "cloudflare_wrangler"
+            ]
+          },
+          "command": {
+            "description": "Override default command (e.g. npx wrangler deploy).",
+            "$ref": "#/$defs/__schema1"
+          },
+          "map_env": {
+            "description": "Process env name → attached vault var name. Example: { \"CLOUDFLARE_API_TOKEN\": \"CF_KEY\" }.",
+            "$ref": "#/$defs/__schema2"
           },
           "cwd": {
             "default": "/workspace/repo",
             "description": "Working directory inside the workspace; must start with /workspace.",
-            "$ref": "#/$defs/__schema1"
+            "$ref": "#/$defs/__schema3"
           },
           "expected_url": {
             "type": "string",
@@ -1603,7 +1613,7 @@
           }
         },
         "required": [
-          "command",
+          "workflow",
           "cwd",
           "include_output",
           "idempotency_key"
@@ -1616,6 +1626,24 @@
             "maxLength": 400
           },
           "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "__schema2": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          },
+          "__schema3": {
             "type": "string",
             "pattern": "^\\/workspace.*"
           }
@@ -2105,6 +2133,38 @@
         "additionalProperties": false
       }
     },
+    "forge_secret_accounts": {
+      "title": "List provider accounts",
+      "description": "Use a stored API token to list Cloudflare accounts (id + name only). Pass token_var when the token is not named CLOUDFLARE_API_TOKEN (e.g. CF_KEY). Ask the user which account_id to keep, then forge_secret_update to set CLOUDFLARE_ACCOUNT_ID (env merges; token stays).",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "secret_id": {
+            "type": "string",
+            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Secret id (sec_...)."
+          },
+          "token_var": {
+            "description": "Vault env name holding the API token. Defaults to CLOUDFLARE_API_TOKEN, or the sole var on the secret.",
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        "required": [
+          "secret_id"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        }
+      }
+    },
     "forge_secret_create": {
       "title": "Create secret",
       "description": "Store env vars as a labeled secret. Encrypted at rest; values never returned.",
@@ -2157,7 +2217,7 @@
     },
     "forge_secret_update": {
       "title": "Update secret",
-      "description": "Update label, provider, or env vars.",
+      "description": "Update label/provider, or patch env vars (merged into existing — so you can add CLOUDFLARE_ACCOUNT_ID without re-sending the token). Optional unset_env removes keys.",
       "sideEffect": "external",
       "approval": "none",
       "inputSchema": {
@@ -2192,6 +2252,13 @@
               "$ref": "#/$defs/__schema1"
             },
             "description": "Environment variable key-value pairs to store."
+          },
+          "unset_env": {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema2"
+            }
           }
         },
         "required": [
@@ -2204,6 +2271,11 @@
           },
           "__schema1": {
             "type": "string"
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
           }
         }
       }

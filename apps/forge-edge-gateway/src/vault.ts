@@ -101,14 +101,32 @@ export class VaultService {
   async update(
     tenantId: TenantId,
     id: SecretId,
-    changes: { label?: string; provider?: 'cloudflare' | 'shopify' | 'generic'; env?: Record<string, string> }
+    changes: {
+      label?: string;
+      provider?: 'cloudflare' | 'shopify' | 'generic';
+      /** Patch: merged into existing vars. Values are write-only, so replace-all would force re-entering the token. */
+      env?: Record<string, string>;
+      /** Remove these keys from the stored env map. */
+      unsetEnv?: string[];
+    }
   ): Promise<VaultSecret> {
     const row = await this.require(tenantId, id);
     const currentVars = await this.decryptVars(row.encrypted_vars) ?? {};
     const label = changes.label !== undefined ? changes.label.trim() : row.label;
     if (!label || label.length > 100) throw new Error('Secret label must be between 1 and 100 characters.');
     const provider = changes.provider ?? row.provider;
-    const env = changes.env ?? currentVars;
+    const env: Record<string, string> = { ...currentVars };
+    if (changes.env) {
+      for (const [key, value] of Object.entries(changes.env)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          throw new Error(`Invalid environment variable name: "${key}".`);
+        }
+        env[key] = value;
+      }
+    }
+    if (changes.unsetEnv) {
+      for (const key of changes.unsetEnv) delete env[key];
+    }
     if (Object.keys(env).length === 0) throw new Error('At least one environment variable is required.');
     for (const key of Object.keys(env)) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
@@ -117,7 +135,7 @@ export class VaultService {
     }
     const now = new Date().toISOString();
     const encryptedVars = await this.cipher.encrypt(JSON.stringify(env));
-    const state = changes.env !== undefined ? 'unvalidated' : row.state;
+    const state = changes.env !== undefined || changes.unsetEnv !== undefined ? 'unvalidated' : row.state;
     await this.db.prepare(
       'UPDATE secrets SET label = ?, provider = ?, encrypted_vars = ?, state = ?, updated_at = ? WHERE tenant_id = ? AND id = ?'
     ).bind(label, provider, encryptedVars, state, now, tenantId, id).run();

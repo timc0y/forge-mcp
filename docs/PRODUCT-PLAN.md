@@ -109,10 +109,12 @@ is the only public file writer/deleter and commits directly to the selected bran
 - `forge_process_logs`
 - `forge_process_stop`
 - `forge_deps_install`
+- `forge_deploy`
 
 Execution tools allocate a Cloudflare Sandbox lazily. Their filesystem effects
 remain ephemeral and are never imported into GitHub; wanted changes must be
-recreated explicitly with `forge_edit`.
+recreated explicitly with `forge_edit`. `forge_deploy` uses attached vault
+secrets; the agent maps vault names to CLI names with `map_env` when they differ.
 
 ### Review evidence
 
