@@ -972,7 +972,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         if (!status.safe_to_merge && input.force !== true) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `#${number} is not safe to merge: ${status.blockers.join(' ')} Nothing was merged. Fix these, or pass force:true with a reason to merge anyway.`,
+            message: `#${number} is not safe to merge: ${status.blockers.join(' ')} Nothing was merged. Fix the blockers, then retry forge_pr action:status and merge. Do not invent force:true — only use force:true with a human-approved reason when the human explicitly asks to override the blockers.`,
             retryable: false,
             details: { number, blockers: status.blockers, head_sha: status.head_sha }
           });

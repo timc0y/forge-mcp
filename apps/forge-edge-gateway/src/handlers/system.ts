@@ -10,6 +10,8 @@ import { vaultService } from '../vault';
 import { DURABILITY_STATES, MUTATION_OUTCOMES } from '../durability';
 import { deployCapabilitiesManifest } from '@forge/application';
 import { listCloudflareAccounts, resolveCloudflareTokenVar } from '../cloudflare-accounts';
+import { asRecord, hasWorkspaceAddress, text, workspaceAddress } from './helpers';
+import { LAZY_REQUESTED_NEXT_ACTIONS } from '@forge/application';
 
 type Identity = { subject: string; tenantId: string; projectId: string };
 type SystemTool =
@@ -23,13 +25,6 @@ type SystemTool =
   | 'forge_secret_update'
   | 'forge_secret_delete'
   | 'forge_secret_attach';
-
-const text = (value: unknown): string => String(value);
-const workspaceAddress = (input: Record<string, unknown>): { workspace?: unknown } =>
-  input.workspace === undefined ? {} : { workspace: input.workspace };
-const hasWorkspaceAddress = (input: Record<string, unknown>): boolean =>
-  typeof input.workspace === 'string' && input.workspace.length > 0;
-const asRecord = (value: object): Record<string, unknown> => value as Record<string, unknown>;
 
 /** System inspection and secret-management workflows behind one handler interface. */
 export function systemToolHandlers(
@@ -94,13 +89,58 @@ export function systemToolHandlers(
       const limit = input.limit === undefined ? 40 : Number(input.limit);
       // Complete activity = mcp_tool_calls with payloads. Counters-only was a
       // parallel incomplete view; keep it only via payloads:false.
+      let lifecycleGuidance: Record<string, unknown> | undefined;
+      if (workspaceId) {
+        const detail = await buildWorkspaceObserverDetail(env, actor.tenantId, workspaceId).catch(() => null);
+        if (detail && 'lifecycle' in detail) {
+          lifecycleGuidance = {
+            lifecycle: detail.lifecycle,
+            executor_state: detail.executor_state,
+            healthy: detail.healthy,
+            guidance: detail.guidance,
+            next_step: detail.next_step,
+            allowedNextActions: detail.allowedNextActions,
+            durability: detail.durability
+          };
+          if (detail.lifecycle === 'lazy_control_plane') {
+            lifecycleGuidance.stop_polling = true;
+            lifecycleGuidance.guidance =
+              `${String(detail.guidance ?? '')} forge_observer_activity does not start the executor — empty activity while requested is expected. Proceed with forge_files_read / forge_edit.`;
+            lifecycleGuidance.allowedNextActions = [...LAZY_REQUESTED_NEXT_ACTIONS];
+          }
+        }
+      }
+      const recentObserverStorm = await recentToolCalls(env, {
+        tenantId: actor.tenantId,
+        workspaceId,
+        limit: 12
+      }).catch(() => [] as unknown[]);
+      const observerPollCount = recentObserverStorm.filter((row) => {
+        const tool = row && typeof row === 'object' && 'tool' in row ? String((row as { tool: unknown }).tool) : '';
+        return tool.startsWith('forge_observer_');
+      }).length;
+      const crossToolRepeat =
+        observerPollCount >= 4
+          ? {
+              stop_polling: true as const,
+              repeatedObserverPolls: observerPollCount,
+              guidance:
+                `You have made ${observerPollCount} recent forge_observer_* calls. Alternating observer_workspace and observer_activity will not change a healthy lazy_control_plane session. Stop polling; call forge_files_read or forge_edit (or forge_workspace_get only after an execution tool returned FORGE_WORKSPACE_NOT_READY).`,
+              allowedNextActions: [...LAZY_REQUESTED_NEXT_ACTIONS]
+            }
+          : null;
       if (input.payloads === false && input.errors_only !== true) {
         const activity = await listWorkspaceActivity(env, actor.tenantId, {
           workspaceId,
           limit: Number.isFinite(limit) ? limit : 40,
           since: input.since === undefined ? undefined : text(input.since)
         });
-        return { activity, returned: activity.length };
+        return {
+          activity,
+          returned: activity.length,
+          ...(lifecycleGuidance ?? {}),
+          ...(crossToolRepeat ?? {})
+        };
       }
       const calls = await recentToolCalls(env, {
         tenantId: actor.tenantId,
@@ -111,7 +151,9 @@ export function systemToolHandlers(
       return {
         calls,
         returned: calls.length,
-        note: 'Secret-shaped keys are redacted and long values previewed; request_bytes/response_bytes are the true sizes.'
+        note: 'Secret-shaped keys are redacted and long values previewed; request_bytes/response_bytes are the true sizes.',
+        ...(lifecycleGuidance ?? {}),
+        ...(crossToolRepeat ?? {})
       };
     },
     forge_secret_list: async () => {

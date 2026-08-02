@@ -100,7 +100,7 @@ export async function launchReviewPreview(
     await reserveWorkspaceSlot(env.METADATA, action.tenantId, workspaceId, caps);
   } catch (error) {
     const message = error instanceof ForgeError && error.code === 'FORGE_QUOTA_EXCEEDED'
-      ? 'No workspace slots are free right now. Destroy an idle workspace, or approve on the diff alone.'
+      ? 'No workspace slots are free right now. Destroy an idle workspace and retry the preview. Do not approve without visual evidence unless the human explicitly accepts a diff-only review.'
       : 'Could not reserve a workspace for the preview.';
     await setPreview(env, action.id, { state: 'failed', error: message });
     return { state: 'failed', error: message };

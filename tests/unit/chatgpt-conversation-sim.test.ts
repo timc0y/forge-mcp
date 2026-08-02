@@ -12,6 +12,11 @@ import { forgeTools } from '@forge/mcp-core';
 import { classifyCommand } from '@forge/policy';
 import { FORGE_MCP_INSTRUCTIONS, FORGE_PROMPT_HINTS } from '../../apps/forge-edge-gateway/src/mcp-guidance';
 import { parseWorkspaceAddress, resolveWorkspaceId } from '../../apps/forge-edge-gateway/src/workspace-resolve';
+import {
+  isWranglerDeployCommand,
+  workspaceAddress,
+  wranglerShellDeployNextStep
+} from '../../apps/forge-edge-gateway/src/handlers/helpers';
 import type { Env } from '../../apps/forge-edge-gateway/src/env';
 import type { SandboxHandle, SandboxProvider } from '@forge/sandbox-core';
 
@@ -489,5 +494,108 @@ describe('ChatGPT conversation simulations', () => {
         /phiFromReceipt/
       )
     ).toBe(true);
+  });
+
+  it('Conv AF — omitted screenshots must not invent evidence[].screenshot.artifactId', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/review-artifacts.ts',
+        /no screenshot\.artifactId field/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/execution.ts',
+        /no screenshot\.artifactId field/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/review-artifacts.ts',
+        /fetch them with forge_artifact_get on evidence\[\]\.screenshot\.artifactId/
+      )
+    ).toBe(false);
+  });
+
+  it('Conv AG — workspace_id alias is accepted as workspace', () => {
+    expect(workspaceAddress({ workspace_id: 'ws_aaaaaaaaaaaaaaaaaaaaaaaaaa' })).toEqual({
+      workspace: 'ws_aaaaaaaaaaaaaaaaaaaaaaaaaa'
+    });
+    expect(workspaceAddress({ workspace: 'owner/repo#forge/x', workspace_id: 'ws_ignored' })).toEqual({
+      workspace: 'owner/repo#forge/x'
+    });
+  });
+
+  it('Conv AH — blocked merge does not invite inventing force:true', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /Do not invent force:true/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /Fix these, or pass force:true with a reason to merge anyway/
+      )
+    ).toBe(false);
+  });
+
+  it('Conv AI — resume after dead workspace surfaces unavailable guidance', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/tasks.ts',
+        /workspace_unavailable: true/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/tasks.ts',
+        /remembered workspace is unavailable/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv AJ — observer_activity carries lazy stop-polling / cross-tool storm guidance', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/system.ts',
+        /Alternating observer_workspace and observer_activity/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/system.ts',
+        /forge_observer_activity does not start the executor/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv AK — wrangler via forge_shell steers to forge_deploy receipt', () => {
+    expect(isWranglerDeployCommand('npx wrangler deploy')).toBe(true);
+    expect(isWranglerDeployCommand('npx wrangler deploy --dry-run')).toBe(false);
+    expect(wranglerShellDeployNextStep()).toMatch(/deploy_receipt\.verified_url/);
+    expect(wranglerShellDeployNextStep()).toMatch(/Do not invent a workers\.dev URL/);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/execution.ts',
+        /Retry forge_deploy with the same idempotency_key/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv AL — review preview capacity does not default to silent diff-only approve', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/review-preview.ts',
+        /explicitly accepts a diff-only review/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/review-preview.ts',
+        /approve on the diff alone/
+      )
+    ).toBe(false);
   });
 });

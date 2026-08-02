@@ -103,3 +103,5 @@ budget, causal witness chain, Shannon thrash on tool streams.
 - Φ-gate \(K\)/\(B\) may need production tuning against long verify loops.
 
 Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` (Conv A–AE).
+Further edge cases after the EasyRoads observer autopsy:
+`docs/reviews/2026-08-02-chatgpt-edge-case-sims.md` (Conv AF–AL).

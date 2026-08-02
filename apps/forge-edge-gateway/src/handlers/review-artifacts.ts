@@ -184,7 +184,7 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
           nextStep: [
             `Inspect the ${inlineCells.length} image(s) attached to this result — they are the evidence.`,
             omittedImages > 0
-              ? `${omittedImages} further capture(s) did not fit in this response; fetch them with forge_artifact_get on evidence[].screenshot.artifactId, or re-run with fewer routes or one viewport.`
+              ? `${omittedImages} further capture(s) did not fit in this response; open galleryUrl or re-run with fewer routes or one viewport. Do not invent artifact ids — evidence rows in this result have no screenshot.artifactId field.`
               : '',
             complete ? '' : 'Some cells failed or were skipped (see failures and skipped) — re-run just those routes; fewer routes per call captures more reliably.',
             galleryUrl ? `Give the human this link to see them all in a browser: ${galleryUrl}` : '',
