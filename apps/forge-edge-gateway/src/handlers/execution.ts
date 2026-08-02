@@ -14,10 +14,18 @@ import { selectBrowserProvider } from '../browser-router';
 import { classifyCommand } from '@forge/policy';
 import {
   durabilityNextStep,
+  deployProfileCandidates,
+  hashDeployProfile,
+  planCloudflareDeployProfile,
   resolveDeployWorkflow,
   DEPLOY_WORKFLOWS,
+  type DeployEnvironment,
+  type DeployProfile,
+  type DeployProfileDraft,
   type DeployWorkflowId
 } from '@forge/application';
+import { deployProfileStore } from '../deploy-profiles';
+import { resolveBranchTree, readBlobFromTree } from '../github-reads';
 import { normalizeViewports, prepareInlineImages } from '../review-images';
 import { resolveWorkspaceId } from '../workspace-resolve';
 import { storeGallery } from '../review-gallery';
@@ -30,11 +38,126 @@ import {
   withDeadline, summarizeStructure, mapWithConcurrency,
   REVIEW_CAPTURE_CONCURRENCY, findingCountOf, toActionSteps, executorCoordinator,
   text, number, optionalNumber, asRecord, workspaceAddress, idempotency, sha256,
-  isWranglerDeployCommand, wranglerShellDeployNextStep
+  isWranglerDeployCommand, wranglerShellDeployNextStep, authorizedCoordinator
 } from './helpers';
 import type { ExecutionHandlerDependencies } from './types';
 
-type WorkflowTool = 'forge_shell' | 'forge_process_logs' | 'forge_process_list' | 'forge_process_stop' | 'forge_process_wait' | 'forge_deps_install' | 'forge_deploy' | 'forge_preview_expose' | 'forge_preview';
+type WorkflowTool = 'forge_shell' | 'forge_process_logs' | 'forge_process_list' | 'forge_process_stop' | 'forge_process_wait' | 'forge_deps_install' | 'forge_deploy_profiles' | 'forge_deploy_profile_plan' | 'forge_deploy_profile_approve' | 'forge_deploy' | 'forge_preview_expose' | 'forge_preview';
+
+function profileId(input: Record<string, unknown>): string | undefined {
+  return input.profile_id === undefined ? undefined : text(input.profile_id);
+}
+
+async function workspaceBinding(
+  env: Env,
+  identity: ReturnType<ExecutionHandlerDependencies['identity']>,
+  input: Record<string, unknown>
+) {
+  const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
+  const workspace = await authorizedCoordinator(env, identity, workspaceId);
+  const binding = await workspace.getAuthorizationBinding();
+  return { workspaceId, workspace, binding };
+}
+
+function deployProfileDraftFromInput(
+  repository: { provider: 'github'; owner: string; name: string },
+  input: Record<string, unknown>
+): DeployProfileDraft {
+  const mapEnv = input.map_env && typeof input.map_env === 'object'
+    ? input.map_env as Record<string, string>
+    : { CLOUDFLARE_API_TOKEN: 'CLOUDFLARE_API_TOKEN' };
+  const accountId = input.account_id === undefined ? undefined : text(input.account_id);
+  return {
+    label: text(input.label),
+    repository,
+    workflow: (input.workflow === undefined ? 'cloudflare_wrangler' : text(input.workflow)) as DeployWorkflowId,
+    environment: (input.environment === undefined ? 'preview' : text(input.environment)) as DeployEnvironment,
+    cwd: input.cwd === undefined ? '/workspace/repo' : text(input.cwd),
+    command: text(input.command),
+    ...(input.expected_url === undefined ? {} : { expected_url: text(input.expected_url) }),
+    ...(input.expected_worker_name === undefined ? {} : { expected_worker_name: text(input.expected_worker_name) }),
+    ...(accountId ? { account_id: accountId } : {}),
+    map_env: accountId && !('CLOUDFLARE_ACCOUNT_ID' in mapEnv)
+      ? { ...mapEnv, CLOUDFLARE_ACCOUNT_ID: 'CLOUDFLARE_ACCOUNT_ID' }
+      : mapEnv,
+    source_hint: input.source_hint === undefined ? 'agent-provided' : text(input.source_hint)
+  };
+}
+
+async function deployHintFiles(
+  env: Env,
+  identity: ReturnType<ExecutionHandlerDependencies['identity']>,
+  input: Record<string, unknown>
+) {
+  const { workspaceId, workspace, binding } = await workspaceBinding(env, identity, input);
+  const treeContext = await resolveBranchTree(env, identity, workspace);
+  const hintPaths = treeContext.tree.entries
+    .filter((entry) =>
+      entry.type === 'blob' &&
+      (/(^|\/)wrangler\.(toml|jsonc?)$/u.test(entry.path) ||
+        /(^|\/)package\.json$/u.test(entry.path) ||
+        entry.path === '.forge/deploy.json')
+    )
+    .map((entry) => entry.path)
+    .sort()
+    .slice(0, 40);
+  const files = [];
+  for (const path of hintPaths) {
+    try {
+      const result = await readBlobFromTree(
+        treeContext.request,
+        treeContext.repository.owner,
+        treeContext.repository.name,
+        treeContext.tree,
+        path,
+        { maxBytes: 80_000 }
+      );
+      if (!result.truncated) files.push({ path, content: result.content });
+    } catch {
+      // Hints are advisory; ignore files that cannot be decoded inside budget.
+    }
+  }
+  return { workspaceId, binding, files };
+}
+
+async function assertProfileHintCurrent(
+  env: Env,
+  identity: ReturnType<ExecutionHandlerDependencies['identity']>,
+  input: Record<string, unknown>,
+  profile: DeployProfile
+): Promise<void> {
+  if (profile.source_hint === 'agent-provided') return;
+  const { files } = await deployHintFiles(env, identity, input);
+  const { candidates } = deployProfileCandidates({
+    repository: profile.repository,
+    files,
+    environment: profile.environment
+  });
+  const matchingHint = candidates.find((candidate) =>
+    candidate.source_hint === profile.source_hint || candidate.label === profile.label
+  );
+  if (!matchingHint) {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: `Deploy profile ${profile.profile_id} was approved from ${profile.source_hint}, but that deploy hint no longer matches the repository. Call forge_deploy_profile_plan, approve the updated profile, then retry forge_deploy.`,
+      retryable: false,
+      details: { allowedNextActions: ['forge_deploy_profile_plan', 'forge_deploy_profile_approve'] }
+    });
+  }
+  const currentHash = await hashDeployProfile(matchingHint);
+  if (currentHash !== profile.profile_hash) {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: `Deploy profile ${profile.profile_id} changed since approval. Call forge_deploy_profile_plan, approve the updated command/cwd/target, then retry forge_deploy.`,
+      retryable: false,
+      details: {
+        approved_profile_hash: profile.profile_hash,
+        current_profile_hash: currentHash,
+        allowedNextActions: ['forge_deploy_profile_plan', 'forge_deploy_profile_approve']
+      }
+    });
+  }
+}
 
 async function runEnvDrivenDeploy(
   env: Env,
@@ -43,18 +166,43 @@ async function runEnvDrivenDeploy(
 ): Promise<Record<string, unknown>> {
   const identity = deps.identity();
   const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
-  const preferInput = input.workflow === undefined ? 'auto' : text(input.workflow);
+  const requestedProfileId = profileId(input);
+  const profile: DeployProfile | undefined = requestedProfileId
+    ? await deployProfileStore(env.METADATA).get(identity.tenantId as TenantId, requestedProfileId)
+    : undefined;
+  if (profile && profile.state !== 'approved') {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: `Deploy profile ${profile.profile_id} is ${profile.state}. Call forge_deploy_profile_plan, approve a fresh profile, then retry forge_deploy.`,
+      retryable: false,
+      details: { allowedNextActions: ['forge_deploy_profile_plan', 'forge_deploy_profile_approve'] }
+    });
+  }
+  if (profile) {
+    const workspace = await authorizedCoordinator(env, identity, workspaceId);
+    const binding = await workspace.getAuthorizationBinding();
+    if (binding.repository.owner !== profile.repository.owner || binding.repository.name !== profile.repository.name) {
+      throw new ForgeError({
+        code: 'FORGE_VALIDATION_FAILED',
+        message: `Deploy profile ${profile.profile_id} belongs to ${profile.repository.owner}/${profile.repository.name}, but this workspace is ${binding.repository.owner}/${binding.repository.name}. Call forge_deploy_profiles for this workspace, then retry with a matching profile_id.`,
+        retryable: false,
+        details: { allowedNextActions: ['forge_deploy_profiles'] }
+      });
+    }
+    await assertProfileHintCurrent(env, identity, input, profile);
+  }
+  const preferInput = profile ? profile.workflow : input.workflow === undefined ? 'auto' : text(input.workflow);
   const prefer: DeployWorkflowId | 'auto' =
     preferInput === 'cloudflare_wrangler' ? 'cloudflare_wrangler' : 'auto';
-  const cwd = input.cwd === undefined ? '/workspace/repo' : text(input.cwd);
-  const expectedUrl = input.expected_url === undefined ? undefined : text(input.expected_url);
+  const cwd = profile ? profile.cwd : input.cwd === undefined ? '/workspace/repo' : text(input.cwd);
+  const expectedUrl = profile?.expected_url ?? (input.expected_url === undefined ? undefined : text(input.expected_url));
   const defaultCommand =
     DEPLOY_WORKFLOWS.find((w) => w.id === (prefer === 'auto' ? 'cloudflare_wrangler' : prefer))
       ?.defaultCommand ?? 'npx wrangler deploy';
-  const command = input.command === undefined ? defaultCommand : text(input.command);
+  const command = profile ? profile.command : input.command === undefined ? defaultCommand : text(input.command);
   const mapEnv =
-    input.map_env && typeof input.map_env === 'object'
-      ? (input.map_env as Record<string, string>)
+    profile ? profile.map_env : input.map_env && typeof input.map_env === 'object'
+      ? input.map_env as Record<string, string>
       : undefined;
 
   const decision = classifyCommand(command, 'development');
@@ -75,6 +223,7 @@ async function runEnvDrivenDeploy(
   }
 
   const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
+  if (profile?.account_id) attached.vars.CLOUDFLARE_ACCOUNT_ID = profile.account_id;
   const resolved = resolveDeployWorkflow({
     attachedVars: attached.vars,
     mapEnv,
@@ -85,7 +234,7 @@ async function runEnvDrivenDeploy(
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',
       message:
-        'forge_deploy could not build a deploy environment from the attached vault secrets. List secrets, pass map_env if your keys differ from the CLI names, then retry.',
+        'forge_deploy could not build a deploy environment from the attached vault secrets. Call forge_deploy_profiles first; if no profile exists, call forge_deploy_profile_plan. Then attach the needed secret or pass map_env if running a direct deploy.',
       retryable: false,
       details: {
         reason: resolved.reason,
@@ -97,7 +246,8 @@ async function runEnvDrivenDeploy(
           label: w.label,
           requires_process_env: w.requires_process_env
         })),
-        next_step: resolved.next_step
+        next_step: `Call forge_deploy_profiles; if none fit, call forge_deploy_profile_plan. ${resolved.next_step}`,
+        allowedNextActions: ['forge_deploy_profiles', 'forge_deploy_profile_plan', 'forge_secret_list', 'forge_secret_attach']
       }
     });
   }
@@ -106,13 +256,18 @@ async function runEnvDrivenDeploy(
   const accountId = resolution.accountId;
   const approvalAction = 'cloudflare.deploy' as const;
   const approvalSummary = accountId
-    ? `Deploy (${resolution.workflow}) to Cloudflare account ${accountId}`
-    : `Deploy (${resolution.workflow}) with attached vault credentials`;
+    ? `${profile ? `Using approved deploy profile "${profile.label}". ` : ''}Deploy (${resolution.workflow}) to Cloudflare account ${accountId}`
+    : `${profile ? `Using approved deploy profile "${profile.label}". ` : ''}Deploy (${resolution.workflow}) with attached vault credentials`;
   const approvalPayload = {
+    profileId: profile?.profile_id ?? null,
+    profileLabel: profile?.label ?? null,
+    profileHash: profile?.profile_hash ?? null,
     workflow: resolution.workflow,
     command,
     cwd,
     accountId,
+    expectedWorkerName: profile?.expected_worker_name ?? null,
+    environment: profile?.environment ?? null,
     mapEnv: resolution.mapEnv,
     expectedUrl: expectedUrl ?? null
   };
@@ -247,7 +402,8 @@ async function runEnvDrivenDeploy(
     verified_url: verifiedUrl,
     http_status: httpStatus,
     command,
-    map_env: resolution.mapEnv
+    map_env: resolution.mapEnv,
+    ...(profile ? { profile_id: profile.profile_id, profile_label: profile.label } : {})
   };
   let outputArtifactId: string | undefined;
   if (utf8Bytes(redacted) > AGENT_OUTPUT_SPILL_BYTES) {
@@ -272,6 +428,108 @@ async function runEnvDrivenDeploy(
 /** Focused execution workflows behind the ForgeToolHandlers seam. */
 export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependencies): Pick<ForgeToolHandlers, WorkflowTool> {
   return {
+      forge_deploy_profiles: async (input) => {
+        const identity = deps.identity();
+        const { binding } = await workspaceBinding(env, identity, input);
+        const profiles = await deployProfileStore(env.METADATA).list(identity.tenantId as TenantId, binding.repository);
+        return {
+          repository: binding.repository,
+          profiles,
+          returned: profiles.length,
+          next_step: profiles.length > 0
+            ? 'Use profile_id with forge_deploy. If none match the intended environment/target, call forge_deploy_profile_plan.'
+            : 'No approved deploy profiles exist for this workspace. Call forge_deploy_profile_plan before guessing a deploy command.',
+          allowedNextActions: profiles.length > 0
+            ? ['forge_deploy', 'forge_deploy_profile_plan']
+            : ['forge_deploy_profile_plan']
+        };
+      },
+      forge_deploy_profile_plan: async (input) => {
+        const identity = deps.identity();
+        const { binding, files } = await deployHintFiles(env, identity, input);
+        return asRecord(await planCloudflareDeployProfile({
+          repository: binding.repository,
+          files,
+          ...(input.environment === undefined ? {} : { environment: text(input.environment) as DeployEnvironment })
+        }));
+      },
+      forge_deploy_profile_approve: async (input) => {
+        const identity = deps.identity();
+        const { workspaceId, binding } = await workspaceBinding(env, identity, input);
+        const draft = deployProfileDraftFromInput(binding.repository, input);
+        const decision = classifyCommand(draft.command, 'development');
+        if (decision.classification !== 'external_side_effect' || !/\bwrangler\b/i.test(draft.command)) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'Deploy profiles v1 only approve Cloudflare Wrangler deploy commands. Use forge_deploy directly for other provider commands.',
+            retryable: false,
+            details: { allowedNextActions: ['forge_deploy'] }
+          });
+        }
+        const profileHash = await hashDeployProfile(draft);
+        const approvalPayload = {
+          label: draft.label,
+          repository: `${draft.repository.owner}/${draft.repository.name}`,
+          branch: binding.currentBranch ?? binding.requestedRef,
+          workflow: draft.workflow,
+          environment: draft.environment,
+          command: draft.command,
+          cwd: draft.cwd,
+          accountId: draft.account_id ?? null,
+          expectedUrl: draft.expected_url ?? null,
+          expectedWorkerName: draft.expected_worker_name ?? null,
+          requiredEnv: Object.keys(draft.map_env).sort().join(','),
+          mapEnvHash: await sha256(JSON.stringify(Object.entries(draft.map_env).sort(([left], [right]) => left.localeCompare(right)))),
+          sourceHint: draft.source_hint,
+          profileHash
+        };
+        const reason = `Approve deploy profile "${draft.label}" for ${draft.repository.owner}/${draft.repository.name}`;
+        let approvalId = input.approval_id ? text(input.approval_id) : undefined;
+        if (!approvalId) {
+          const approval = await requestApproval(env, identity, workspaceId, 'deploy.profile', reason, approvalPayload);
+          if (approval.already_approved) {
+            approvalId = approval.approval_id;
+            await requireApproval(env, identity, approvalId, workspaceId, 'deploy.profile', approvalPayload);
+          } else {
+            const inline = await deps.tryResolveApprovalInline(identity, approval, reason);
+            if (!inline) {
+              throw new ForgeError({
+                code: 'FORGE_APPROVAL_REQUIRED',
+                message: 'Deploy profile approval is required. Open the approval URL, approve, then retry forge_deploy_profile_approve with approval_id.',
+                retryable: false,
+                details: { kind: 'approval', action: 'deploy.profile', profile_hash: profileHash, ...approval }
+              });
+            }
+            approvalId = inline;
+            await requireApproval(env, identity, approvalId, workspaceId, 'deploy.profile', approvalPayload);
+          }
+        } else {
+          await requireApproval(env, identity, approvalId, workspaceId, 'deploy.profile', approvalPayload);
+        }
+        const profile = await deployProfileStore(env.METADATA).saveApproved(
+          identity.tenantId as TenantId,
+          draft,
+          identity.subject
+        );
+        await completeApproval(env, approvalId, true);
+        await deps.recordAudit('deploy.profile', identity.tenantId, {
+          profile_id: profile.profile_id,
+          label: profile.label,
+          repository: `${profile.repository.owner}/${profile.repository.name}`,
+          command: profile.command,
+          cwd: profile.cwd,
+          environment: profile.environment,
+          profile_hash: profile.profile_hash
+        }, { workspaceId });
+        return {
+          accepted: true,
+          approval_id: approvalId,
+          profile,
+          profile_hash: profile.profile_hash,
+          next_step: `Deploy profile "${profile.label}" is approved. Call forge_deploy with profile_id: "${profile.profile_id}".`,
+          allowedNextActions: ['forge_deploy']
+        };
+      },
       forge_shell: async (input) => {
         const identity = deps.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));

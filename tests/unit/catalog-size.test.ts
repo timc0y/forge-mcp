@@ -46,10 +46,10 @@ describe('tools/list wire payload', () => {
     }
 
     const bytes = JSON.stringify({ tools: listed.tools }).length;
-    // Measured ~46k+ at 42 tools after forge_secret_accounts. The headroom is
-    // for a tool that earns its rent, not for schemas growing unwatched;
+    // Measured ~50k at 45 tools after deploy profiles. The headroom is for a
+    // tool that earns its rent, not for schemas growing unwatched;
     // `pnpm catalog:measure` shows where any increase went.
-    expect(bytes).toBeLessThanOrEqual(48_000);
+    expect(bytes).toBeLessThanOrEqual(51_000);
   });
 });
 

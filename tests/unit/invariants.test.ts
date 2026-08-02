@@ -165,6 +165,8 @@ const ALLOWLIST_A: ReadonlyArray<{ tool: string; field: string; note: string }> 
   { tool: 'forge_merge', field: 'staged_ref', note: 'The ref the merge was staged from, informational context on the submission receipt; not a follow-up parameter.' },
   { tool: 'forge_deploy', field: 'account_id', note: 'The Cloudflare account the deploy used, informational context on the receipt; no input takes an account id back.' },
   { tool: 'forge_deploy', field: 'output_artifact_id', note: 'Consumable as the `artifact_id` input to forge_artifact_get, qualified with "output" to say what kind of artifact it is — the same live workflow forge_deps_install’s spilled stdout/stderr artifacts already use.' },
+  { tool: 'forge_deploy_profile_plan', field: 'profile_hash', note: 'A fingerprint of the proposed deploy shape for approval/drift context; the agent never feeds it back as a handle.' },
+  { tool: 'forge_deploy_profile_approve', field: 'profile_hash', note: 'A receipt fingerprint of the approved deploy shape; follow-up deploys use profile_id, not this hash.' },
   // forge_start landed while this suite was being written — another session
   // was actively committing to this same checkout mid-task (observed via a
   // working tree that gained and lost this exact change more than once

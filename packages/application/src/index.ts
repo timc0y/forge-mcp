@@ -82,6 +82,17 @@ export {
   type ResolvedDeploy,
   type DeployResolveResult
 } from './deploy-resolve.js';
+export {
+  deployProfileFingerprint,
+  deployProfileCandidates,
+  hashDeployProfile,
+  planCloudflareDeployProfile,
+  type DeployEnvironment,
+  type DeployProfile,
+  type DeployProfileDraft,
+  type DeployProfileFile,
+  type DeployProfilePlanResult
+} from './deploy-profiles.js';
 
 export interface WorkspaceRuntimeRecord {
   workspace: Workspace;

@@ -33,7 +33,9 @@ const TRUE_READS = new Set([
   'forge_task_get',
   'forge_task_list',
   'forge_secret_list',
-  'forge_secret_accounts'
+  'forge_secret_accounts',
+  'forge_deploy_profiles',
+  'forge_deploy_profile_plan'
 ]);
 
 // Tools that reach the open world of arbitrary external URLs (not just the
@@ -66,6 +68,9 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_observer_workspace: { invoking: 'Observing workspace…', invoked: 'Workspace observer ready' },
   forge_observer_activity: { invoking: 'Loading activity…', invoked: 'Activity ready' },
   forge_merge: { invoking: 'Submitting for review…', invoked: 'Submitted for review' },
+  forge_deploy_profiles: { invoking: 'Listing deploy profiles…', invoked: 'Deploy profiles ready' },
+  forge_deploy_profile_plan: { invoking: 'Planning deploy profile…', invoked: 'Deploy profile planned' },
+  forge_deploy_profile_approve: { invoking: 'Approving deploy profile…', invoked: 'Deploy profile approved' },
   forge_deploy: { invoking: 'Deploying…', invoked: 'Deploy finished' },
   forge_repository_list: { invoking: 'Listing repositories…', invoked: 'Repositories ready' },
   forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' },

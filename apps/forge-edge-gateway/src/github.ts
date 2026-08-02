@@ -900,6 +900,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
     switch (action) {
       case 'shell.exec': return 'Shell command';
       case 'cloudflare.deploy': return 'Cloudflare deploy';
+      case 'deploy.profile': return 'Deploy profile';
       case 'pull_request.mutate': return 'Pull request change';
       case 'pull_request.create': return 'Open pull request';
       case 'secret.attach': return 'Attach secret';
@@ -1101,7 +1102,7 @@ export async function requestApproval(
   env: Env,
   identity: Pick<AuthenticatedContext, 'tenantId' | 'subject'>,
   workspaceId: string,
-  action: 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
+  action: 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy' | 'deploy.profile',
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string; already_approved: boolean }> {
@@ -1160,7 +1161,7 @@ export async function requireApproval(
   identity: Pick<AuthenticatedContext, 'tenantId'>,
   approvalId: string,
   workspaceId: string,
-  action: 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy',
+  action: 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy' | 'deploy.profile',
   expected: Record<string, unknown>,
   options: { consume?: boolean } = {}
 ): Promise<void> {

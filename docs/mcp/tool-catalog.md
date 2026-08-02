@@ -1,6 +1,6 @@
 # Tool catalog
 
-Forge exposes 42 MCP tools from `forgeTools` in `@forge/mcp-core`. GitHub's API
+Forge exposes 45 MCP tools from `forgeTools` in `@forge/mcp-core`. GitHub's API
 is the sole durable file/branch/diff/commit/history/PR plane; executor compute
 is lazy and ephemeral. Generated schemas live in
 `schemas/forge-tools.schema.json`.
@@ -74,7 +74,10 @@ for review.
 - `forge_branches` — bounded list or safe delete with immutable live-workspace
   and SHA guards; large lists report truncation
 - `forge_merge` — open the approval-backed review path from the remote branch
-- `forge_deploy` — approved managed deploy; agent maps attached vault env names via `map_env`; slow runs return `process_id`, and the same key returns the verified receipt
+- `forge_deploy_profiles` — list approved deploy command/cwd/profile snapshots
+- `forge_deploy_profile_plan` — inspect repo deploy hints and propose a profile
+- `forge_deploy_profile_approve` — approval-gated save/update of a deploy profile
+- `forge_deploy` — approved managed deploy; prefer `profile_id`, or map attached vault env names via `map_env`; slow runs return `process_id`, and the same key returns the verified receipt
 
 GitHub writes are durable only after the expected ref SHA is read back. An HTTP
 update response alone is not proof.

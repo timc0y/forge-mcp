@@ -1,6 +1,6 @@
 # Tool reference
 
-Forge currently exposes 42 MCP tools. The source of truth is
+Forge currently exposes 45 MCP tools. The source of truth is
 [`packages/mcp-core/src/index.ts`](../packages/mcp-core/src/index.ts), and the
 machine-readable schemas are generated into
 [`schemas/forge-tools.schema.json`](../schemas/forge-tools.schema.json).
