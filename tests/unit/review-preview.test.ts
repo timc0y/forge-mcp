@@ -36,7 +36,9 @@ function fakeEnv(row: PreviewFields) {
           async run() {
             if (sql.includes('SET preview_state=?1')) {
               row.preview_state = String(values[0]);
-              if (values[1] !== null) row.preview_workspace_id = String(values[1]);
+              // ?7 is the clearWorkspace flag (1 clears, else COALESCE-style keep/set).
+              if (values[6] === 1) row.preview_workspace_id = null;
+              else if (values[1] !== null) row.preview_workspace_id = String(values[1]);
               row.preview_id = values[2] === null ? null : String(values[2]);
               row.preview_expires_at = values[3] === null ? null : String(values[3]);
               row.preview_error = values[4] === null ? null : String(values[4]);
@@ -167,6 +169,57 @@ describe('review preview (on-demand, at approval time)', () => {
     // few slots for hours afterwards would starve the agent still working.
     expect(destroy).toHaveBeenCalledWith('ws_preview');
     expect(row.preview_state).toBe('none');
+    expect(row.preview_workspace_id).toBeNull();
+  });
+
+  it('still tears down when preview_state was soft-cleared to none', async () => {
+    // Regression: expiry used to set state=none without destroy; a later release
+    // then returned early and left the slot orphaned.
+    const row: PreviewFields = {
+      preview_workspace_id: 'ws_orphaned',
+      preview_state: 'none',
+      preview_id: null,
+      preview_expires_at: null,
+      preview_error: null
+    };
+    const destroy = vi.fn(async () => undefined);
+    await releaseReviewPreview(fakeEnv(row), action.id, destroy);
+    expect(destroy).toHaveBeenCalledWith('ws_orphaned');
+    expect(row.preview_workspace_id).toBeNull();
+  });
+
+  it('destroys the preview workspace when its TTL lapses', async () => {
+    const row: PreviewFields = {
+      preview_workspace_id: 'ws_preview',
+      preview_state: 'ready',
+      preview_id: 'prv_1',
+      preview_expires_at: new Date(Date.now() - 1_000).toISOString(),
+      preview_error: null
+    };
+    const destroyCalls: string[] = [];
+    const env = {
+      ...fakeEnv(row),
+      WORKSPACE_COORDINATORS: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          requestDestroy: async () => {
+            destroyCalls.push('requestDestroy');
+          }
+        })
+      },
+      DESTROY_WORKFLOW: {
+        create: async () => {
+          destroyCalls.push('workflow');
+        }
+      }
+    } as unknown as Env;
+    const status = await reviewPreviewStatus(env, action, stubFor('ready', {
+      ready: true, previewId: 'prv_1', port: 3000, expiresAt: row.preview_expires_at!
+    }).factory);
+    expect(status.state).toBe('none');
+    expect(row.preview_state).toBe('none');
+    expect(row.preview_workspace_id).toBeNull();
+    expect(destroyCalls).toEqual(['requestDestroy', 'workflow']);
   });
 
   it('is a no-op when no preview was ever launched', async () => {

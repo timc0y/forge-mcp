@@ -841,19 +841,28 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
   // Signing in is not the same as being allowed in.
   if (!hasForgeAccess(user)) return accessPendingPage(env, user, user.access_state ?? 'pending');
   const caps = workspaceCaps(env);
-  const pendingAccess = user.is_owner === 1
+  const pendingAccessResult = user.is_owner === 1
     ? await env.METADATA.prepare(
         `SELECT id, github_login, avatar_url, access_requested_at FROM users
           WHERE access_state='pending' ORDER BY access_requested_at ASC LIMIT 25`
       ).all<{ id: string; github_login: string; avatar_url: string | null; access_requested_at: string | null }>()
-        .then((result) => result.results ?? []).catch(() => [])
-    : [];
-  const [repositories, occupants, awaitingReview, pendingSync] = await Promise.all([
+        .then((result) => ({ ok: true as const, rows: result.results ?? [] }))
+        .catch(() => ({ ok: false as const, rows: [] as Array<{ id: string; github_login: string; avatar_url: string | null; access_requested_at: string | null }> }))
+    : { ok: true as const, rows: [] as Array<{ id: string; github_login: string; avatar_url: string | null; access_requested_at: string | null }> };
+  const pendingAccess = pendingAccessResult.rows;
+  const [repositories, occupants, awaitingReviewResult, pendingSyncResult] = await Promise.all([
     listAuthorizedRepositories(env, user.tenant_id),
     listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), user.tenant_id).catch(() => []),
-    listPendingDeferredActions(env, user.tenant_id).catch(() => [] as DeferredAction[]),
-    listPendingSyncApprovals(env, user.tenant_id).catch(() => [] as PendingSyncApproval[])
+    listPendingDeferredActions(env, user.tenant_id)
+      .then((rows) => ({ ok: true as const, rows }))
+      .catch(() => ({ ok: false as const, rows: [] as DeferredAction[] })),
+    listPendingSyncApprovals(env, user.tenant_id)
+      .then((rows) => ({ ok: true as const, rows }))
+      .catch(() => ({ ok: false as const, rows: [] as PendingSyncApproval[] }))
   ]);
+  const awaitingReview = awaitingReviewResult.rows;
+  const pendingSync = pendingSyncResult.rows;
+  const reviewQueueFailed = !awaitingReviewResult.ok || !pendingSyncResult.ok;
   const usedSlots = occupants.length;
   const ttlMinutes = Math.round(slotTtlMs(env) / 60_000);
   const occupantRow = (occupant: (typeof occupants)[number]) => {
@@ -907,14 +916,18 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
     ...awaitingReview.map(reviewRow),
     ...pendingSync.map(syncRow)
   ].join('');
-  const reviewSection = reviewCount
-    ? `<section class="section alert"><h2>Waiting for your review <span class="badge">${reviewCount}</span></h2><p>Agents finished this work and need a decision. Nothing is blocked — approve whenever suits you. Deferred submissions open the draft pull request; other approvals unlock the agent that asked.</p><ul class="list">${reviewItems}</ul></section>`
+  const reviewSection = reviewQueueFailed
+    ? `<section class="section alert"><h2>Waiting for your review</h2><p><strong>Could not load the review queue.</strong> Refresh in a moment — agents may still be waiting on approvals that are not listed here right now.</p></section>`
+    : reviewCount
+    ? `<section class="section alert"><h2>Waiting for your review <span class="badge">${reviewCount}</span></h2><p>Deferred submissions open the draft pull request when you approve — take your time. Sync approvals (shell, deploy, PR change, secret) unlock a live agent and expire in about two hours.</p><ul class="list">${reviewItems}</ul></section>`
     : '';
   const accessSection = pendingAccess.length
     ? `<section class="section alert"><h2>Access requests <span class="badge">${pendingAccess.length}</span></h2><p>These people signed in and are waiting for you. Until you approve them they cannot use Forge at all.</p><ul class="list">${
         pendingAccess.map((row) => `<li><span><strong>${escapeHtml(row.github_login)}</strong><small>asked ${escapeHtml(row.access_requested_at ? new Date(row.access_requested_at).toISOString().slice(0, 10) : 'recently')}</small></span><form class="row" method="post" action="${env.FORGE_PUBLIC_ORIGIN}/app/access"><input type="hidden" name="user_id" value="${escapeHtml(row.id)}"><button class="primary" name="decision" value="approved">Approve</button><button name="decision" value="denied">Decline</button></form></li>`).join('')
       }</ul></section>`
-    : '';
+    : !pendingAccessResult.ok && user.is_owner === 1
+      ? `<section class="section alert"><h2>Access requests</h2><p><strong>Could not load access requests.</strong> Refresh in a moment.</p></section>`
+      : '';
   // Reconnect outcome, so the button visibly does something either way.
   const reconnectParam = new URL(request.url).searchParams.get('reconnect');
   const reconnectNote = reconnectParam === 'ok'
@@ -1496,6 +1509,12 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   const deferredStillOpen = Boolean(
     deferredForGate && (deferredForGate.state === 'awaiting_approval' || deferredForGate.state === 'failed')
   );
+  // After a failed promote/PR step the approval is already 'approved' but the
+  // deferred row is 'failed'. The page used to claim "approving again retries"
+  // while refusing every POST — leave a real retry path.
+  const deferredRetryable = Boolean(
+    deferredForGate && deferredForGate.state === 'failed' && (row.state === 'approved' || row.state === 'pending')
+  );
   if (request.method === 'POST') {
     // Every refusal below renders a real page naming the cause. These used to
     // return bare one-line text — a reviewer pressing Approve got an unstyled
@@ -1524,18 +1543,6 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
         );
       }
     }
-    if (row.state !== 'pending') {
-      return decisionProblem(
-        env, 409, 'already_resolved', `Already ${escapeHtmlLocal(row.state)}`,
-        `Someone already resolved this approval, so nothing further was done. Reload the page to see the outcome.`
-      );
-    }
-    if (Date.parse(row.expires_at) <= Date.now() && !deferredStillOpen) {
-      return decisionProblem(
-        env, 409, 'expired', 'This approval has expired',
-        'Nothing was done. Approvals are deliberately short-lived; ask the agent to request this action again and a fresh link will be issued.'
-      );
-    }
     const body = new URLSearchParams(await request.text());
     const decision = body.get('decision');
     if (decision !== 'approved' && decision !== 'denied') {
@@ -1544,33 +1551,77 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
         'The form did not send a recognisable Approve or Deny. Reload the approval page and press the button again.'
       );
     }
-    await env.METADATA.prepare('UPDATE approvals SET state=?1, resolved_by=?2, resolved_at=?3 WHERE id=?4 AND state=\'pending\'')
-      .bind(decision, resolvedBy, new Date().toISOString(), approvalId).run();
+    const retryFailedDeferred = decision === 'approved' && deferredRetryable;
+    const denyFailedDeferred = decision === 'denied' && deferredForGate?.state === 'failed';
+    if (row.state !== 'pending' && !retryFailedDeferred && !denyFailedDeferred) {
+      return decisionProblem(
+        env, 409, 'already_resolved', `Already ${escapeHtmlLocal(row.state)}`,
+        `Someone already resolved this approval, so nothing further was done. Reload the page to see the outcome.`
+      );
+    }
+    if (row.state === 'pending' && Date.parse(row.expires_at) <= Date.now() && !deferredStillOpen) {
+      return decisionProblem(
+        env, 409, 'expired', 'This approval has expired',
+        'Nothing was done. Approvals are deliberately short-lived; ask the agent to request this action again and a fresh link will be issued.'
+      );
+    }
+    if (row.state === 'pending') {
+      await env.METADATA.prepare('UPDATE approvals SET state=?1, resolved_by=?2, resolved_at=?3 WHERE id=?4 AND state=\'pending\'')
+        .bind(decision, resolvedBy, new Date().toISOString(), approvalId).run();
+    }
     // A deferred submission has no agent waiting to redeem this approval — the
     // whole point is that the agent left hours ago. Forge does the work itself,
-    // here, the moment the human decides.
+    // here, the moment the human decides. Failed rows are claimed again by
+    // executeDeferredAction (state IN awaiting_approval, failed).
     const deferred = deferredForGate;
     if (deferred) {
       if (decision === 'approved') {
-        await executeDeferredAction(env, deferred, { promoteStagedRef, createDraftPullRequest }).catch(() => undefined);
+        const executed = await executeDeferredAction(env, deferred, { promoteStagedRef, createDraftPullRequest }).catch((error) => {
+          console.error('forge_deferred_execute_failed', {
+            deferredId: deferred.id,
+            name: error instanceof Error ? error.name : 'unknown'
+          });
+          return null;
+        });
+        if (!executed || executed.state === 'failed') {
+          // Leave the approval as approved so "Retry" still works; mark the
+          // deferred row failed if execute threw before it could.
+          if (!executed) {
+            await env.METADATA.prepare(
+              "UPDATE deferred_actions SET state='failed', error=?1, updated_at=?2 WHERE id=?3 AND state IN ('awaiting_approval','executing')"
+            ).bind(
+              'Could not open the pull request. Approve again to retry.',
+              new Date().toISOString(),
+              deferred.id
+            ).run().catch(() => undefined);
+          }
+        } else {
+          await releaseReviewPreview(env, deferred.id, async (workspaceId) => {
+            const destroyId = workflowInstanceId('destroy', workspaceId as WorkspaceId);
+            const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId)) as unknown as {
+              requestDestroy: (input: { idempotencyKey: string; force: boolean }) => Promise<unknown>;
+            };
+            await stub.requestDestroy({ idempotencyKey: `review-preview-${destroyId}`, force: true });
+            await env.DESTROY_WORKFLOW.create({
+              id: destroyId,
+              params: { workspaceId: workspaceId as WorkspaceId, idempotencyKey: `review-preview-${destroyId}`, preserveArtifacts: false, force: true }
+            });
+          });
+        }
       } else {
         await denyDeferredAction(env, deferred.id).catch(() => undefined);
-      }
-      // The preview existed to inform this decision. Now that it is made, give
-      // the workspace slot back instead of letting the idle reaper sit on it.
-      await releaseReviewPreview(env, deferred.id, async (workspaceId) => {
-        const destroyId = workflowInstanceId('destroy', workspaceId as WorkspaceId);
-        const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId)) as unknown as {
-          requestDestroy: (input: { idempotencyKey: string; force: boolean }) => Promise<unknown>;
-        };
-        // force: a review preview never holds work worth keeping — it is a
-        // throwaway checkout of an already-staged commit.
-        await stub.requestDestroy({ idempotencyKey: `review-preview-${destroyId}`, force: true });
-        await env.DESTROY_WORKFLOW.create({
-          id: destroyId,
-          params: { workspaceId: workspaceId as WorkspaceId, idempotencyKey: `review-preview-${destroyId}`, preserveArtifacts: false, force: true }
+        await releaseReviewPreview(env, deferred.id, async (workspaceId) => {
+          const destroyId = workflowInstanceId('destroy', workspaceId as WorkspaceId);
+          const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId)) as unknown as {
+            requestDestroy: (input: { idempotencyKey: string; force: boolean }) => Promise<unknown>;
+          };
+          await stub.requestDestroy({ idempotencyKey: `review-preview-${destroyId}`, force: true });
+          await env.DESTROY_WORKFLOW.create({
+            id: destroyId,
+            params: { workspaceId: workspaceId as WorkspaceId, idempotencyKey: `review-preview-${destroyId}`, preserveArtifacts: false, force: true }
+          });
         });
-      });
+      }
     }
     return Response.redirect(selfUrl, 303);
   }
@@ -1629,9 +1680,10 @@ poll();})();</script>`
     : '';
   // The POST path refuses an expired sync approval, so the page must not offer
   // a button that can only fail. Deferred submissions stay decidable while the
-  // queue row is still open — their expires_at is not the human deadline.
+  // queue row is still open — their expires_at is not the human deadline. Failed
+  // deferred rows stay retryable even after the approval flipped to 'approved'.
   const expired = row.state === 'pending' && Date.parse(row.expires_at) <= Date.now() && !deferredStillOpen;
-  const decidable = row.state === 'pending' && !expired;
+  const decidable = (row.state === 'pending' && !expired) || deferredRetryable;
   const expiredBlock = expired
     ? '<div class="outcome bad"><strong>This approval has expired.</strong> Nothing was done. Ask the agent to request it again — a fresh approval takes seconds and this link cannot be revived.</div>'
     : '';
@@ -1663,8 +1715,13 @@ poll();})();</script>`
     : metaRows === ''
       ? `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
       : '';
+  const approveLabel = deferredRetryable
+    ? 'Retry opening pull request'
+    : deferredAction
+      ? 'Approve &amp; open pull request'
+      : 'Approve once';
   return page({
-    title: `Forge — ${row.state === 'pending' ? 'approve' : row.state}`,
+    title: `Forge — ${decidable ? (deferredRetryable ? 'retry' : 'approve') : expired ? 'expired' : row.state}`,
     topRight: '<a href="/app">Portal</a>',
     css: `
 .stats{color:var(--ink);font-weight:600;margin:.9rem 0}
@@ -1701,10 +1758,10 @@ pre.body{background:var(--panel);border:1px solid var(--line);border-radius:12px
 form.decide{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1.5rem;position:sticky;bottom:0;z-index:2;background:var(--bg);border-top:1px solid var(--line);padding:.85rem 0 1rem}
 body{padding-bottom:5rem}
 @media(max-width:560px){form.decide{flex-direction:column}form.decide button{width:100%}}`,
-    body: `<h1>${decidable ? 'Approve Forge action' : expired ? 'Approval expired' : `Action ${escapeHtml(row.state)}`}</h1>
+    body: `<h1>${decidable ? (deferredRetryable ? 'Retry Forge submission' : 'Approve Forge action') : expired ? 'Approval expired' : `Action ${escapeHtml(row.state)}`}</h1>
 <p><strong>${escapeHtml(row.requested_action)}</strong> — ${escapeHtml(row.reason)}</p>
 ${expiredBlock}${outcomeBlock}${previewBlock}${statsLine}${partialLine}${handoffBlock}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
-${decidable ? `<form class="decide" method="post" action="${escapeHtml(selfUrl)}"><button class="primary" name="decision" value="approved">${deferredAction ? 'Approve &amp; open pull request' : 'Approve once'}</button><button name="decision" value="denied">Deny</button></form>` : ''}`
+${decidable ? `<form class="decide" method="post" action="${escapeHtml(selfUrl)}"><button class="primary" name="decision" value="approved">${approveLabel}</button><button name="decision" value="denied">Deny</button></form>` : ''}`
   });
 }
 

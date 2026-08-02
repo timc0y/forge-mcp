@@ -153,7 +153,8 @@ export async function getDeferredActionByApproval(
   const row = await env.METADATA.prepare(
     'SELECT * FROM deferred_actions WHERE approval_id=?1 AND tenant_id=?2'
   ).bind(approvalId, tenantId).first<Row>();
-  return row ? hydrate(row) : null;
+  if (!row) return null;
+  return recoverStaleExecutingDeferred(env, hydrate(row));
 }
 
 /** Everything still waiting on this human, newest first — the portal queue. */
@@ -167,7 +168,25 @@ export async function listPendingDeferredActions(
       WHERE tenant_id=?1 AND state IN ('awaiting_approval','executing','failed')
       ORDER BY created_at DESC LIMIT ?2`
   ).bind(tenantId, limit).all<Row>();
-  return (result.results ?? []).map(hydrate);
+  const actions = (result.results ?? []).map(hydrate);
+  // Crash/timeout after claim leaves rows in 'executing' with no worker. Flip
+  // those to 'failed' so the portal keeps a real Retry path instead of
+  // "opening pull request…" forever.
+  return Promise.all(actions.map((action) => recoverStaleExecutingDeferred(env, action)));
+}
+
+/** How long a deferred row may sit in 'executing' before we treat it as failed. */
+const STALE_EXECUTING_MS = 10 * 60_000;
+
+export async function recoverStaleExecutingDeferred(
+  env: Env,
+  action: DeferredAction
+): Promise<DeferredAction> {
+  if (action.state !== 'executing') return action;
+  if (Date.now() - Date.parse(action.updatedAt) < STALE_EXECUTING_MS) return action;
+  const error = 'Timed out while opening the pull request. Approve again to retry.';
+  await setState(env, action.id, 'failed', { error });
+  return { ...action, state: 'failed', error, updatedAt: new Date().toISOString() };
 }
 
 /**

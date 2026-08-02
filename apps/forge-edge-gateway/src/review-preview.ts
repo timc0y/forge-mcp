@@ -43,14 +43,16 @@ async function setPreview(
     previewId?: string | null;
     expiresAt?: string | null;
     error?: string | null;
+    /** Force preview_workspace_id to NULL (COALESCE alone cannot clear it). */
+    clearWorkspace?: boolean;
   }
 ): Promise<void> {
   await env.METADATA.prepare(
     `UPDATE deferred_actions
         SET preview_state=?1,
-            preview_workspace_id=COALESCE(?2, preview_workspace_id),
+            preview_workspace_id=CASE WHEN ?7=1 THEN NULL ELSE COALESCE(?2, preview_workspace_id) END,
             preview_id=?3, preview_expires_at=?4, preview_error=?5, updated_at=?6
-      WHERE id=?7`
+      WHERE id=?8`
   ).bind(
     fields.state,
     fields.workspaceId ?? null,
@@ -58,6 +60,7 @@ async function setPreview(
     fields.expiresAt ?? null,
     fields.error ?? null,
     new Date().toISOString(),
+    fields.clearWorkspace ? 1 : 0,
     id
   ).run();
 }
@@ -156,8 +159,17 @@ export async function releaseReviewPreview(
   try {
     const row = await previewRow(env, actionId);
     const workspaceId = row?.preview_workspace_id;
-    if (!workspaceId || row?.preview_state === 'none') return;
-    await setPreview(env, actionId, { state: 'none' });
+    // Destroy whenever a preview workspace id is still recorded — including
+    // after a prior soft-clear of preview_state to 'none' that forgot teardown.
+    // Returning early on state==='none' used to orphan the slot until idle TTL.
+    if (!workspaceId) return;
+    await setPreview(env, actionId, {
+      state: 'none',
+      previewId: null,
+      expiresAt: null,
+      error: null,
+      clearWorkspace: true
+    });
     await destroy(workspaceId);
   } catch (error) {
     console.error('forge_review_preview_release_failed', {
@@ -188,11 +200,37 @@ export async function reviewPreviewStatus(
   const workspaceId = row.preview_workspace_id;
   if (!workspaceId) return { state: 'none' };
 
-  // A ready preview that has since expired drops back to 'none' so the reviewer
-  // can simply launch a new one.
+  // A ready preview that has since expired must free its workspace slot. Setting
+  // state to 'none' alone used to leave the container (and the slot) until the
+  // idle reaper — a couple of expired previews could starve agents.
   if (row.preview_state === 'ready' && row.preview_id) {
     if (row.preview_expires_at && Date.parse(row.preview_expires_at) <= Date.now()) {
-      await setPreview(env, action.id, { state: 'none' });
+      await releaseReviewPreview(env, action.id, async (expiredWorkspaceId) => {
+        await releaseWorkspaceSlot(env.METADATA, expiredWorkspaceId).catch(() => undefined);
+        try {
+          const destroyId = workflowInstanceId('destroy', expiredWorkspaceId as WorkspaceId);
+          const stub = env.WORKSPACE_COORDINATORS.get(
+            env.WORKSPACE_COORDINATORS.idFromName(expiredWorkspaceId)
+          ) as unknown as {
+            requestDestroy: (input: { idempotencyKey: string; force: boolean }) => Promise<unknown>;
+          };
+          await stub.requestDestroy({ idempotencyKey: `review-preview-expired-${destroyId}`, force: true });
+          await env.DESTROY_WORKFLOW.create({
+            id: destroyId,
+            params: {
+              workspaceId: expiredWorkspaceId as WorkspaceId,
+              idempotencyKey: `review-preview-expired-${destroyId}`,
+              preserveArtifacts: false,
+              force: true
+            }
+          });
+        } catch (error) {
+          console.error('forge_review_preview_expire_destroy_failed', {
+            workspaceId: expiredWorkspaceId,
+            name: error instanceof Error ? error.name : 'unknown'
+          });
+        }
+      });
       return { state: 'none' };
     }
     return {

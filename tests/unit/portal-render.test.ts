@@ -159,6 +159,7 @@ describe('reviewer-facing pages', () => {
     expect(html).toContain('Waiting for your review');
     expect(html).toContain('Fix homepage typo');
     expect(html).toContain('/approvals/apr_aaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(html).toContain('Sync approvals');
     // Approving happens on a phone; keep the tap target at the page's own 44px.
     // Tap targets come from the shared sheet now, so every surface gets them.
     expect(html).toMatch(/\.btn,button\{[^}]*min-height:44px/);
@@ -174,6 +175,66 @@ describe('reviewer-facing pages', () => {
     expect(html).toContain('npm install');
     expect(html).toContain('/approvals/apr_bbbbbbbbbbbbbbbbbbbbbbbbbb');
     expect(html).toContain('badge">2<');
+  });
+
+  it('lets a failed deferred submission be retried after the approval was already spent', async () => {
+    const failedDeferred = { ...deferred, state: 'failed', error: 'GitHub rejected the push' };
+    const failedEnv = env('approved');
+    failedEnv.METADATA.prepare = (sql: string) => {
+      const statement: Record<string, unknown> = {
+        bind: () => statement,
+        first: async () => {
+          if (sql.includes('FROM web_sessions')) return user;
+          if (sql.includes('FROM approvals')) {
+            return {
+              requested_action: 'work.submit',
+              reason: 'Merge forge/fix into main',
+              request_payload: JSON.stringify({ branch: 'forge/fix', base: 'main', title: 'Fix homepage typo', diff: DIFF }),
+              state: 'approved',
+              expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+              workspace_id: 'ws_1'
+            };
+          }
+          if (sql.includes('FROM deferred_actions')) return failedDeferred;
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ meta: { changes: 1 } })
+      };
+      return statement as never;
+    };
+    const response = await approvalPage(request(APPROVAL_URL), failedEnv, 'apr_aaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const html = await response.text();
+    expect(html).toContain('Retry opening pull request');
+    expect(html).toContain('value="approved"');
+    expect(html).toContain('approving again retries');
+  });
+
+  it('shows a visible error when the review queue fails to load', async () => {
+    const broken = env();
+    broken.METADATA.prepare = (sql: string) => {
+      const statement: Record<string, unknown> = {
+        bind: () => statement,
+        first: async () => {
+          if (sql.includes('FROM web_sessions')) return user;
+          return null;
+        },
+        all: async () => {
+          if (sql.includes('deferred_actions') || sql.includes("requested_action != 'work.submit'")) {
+            throw new Error('d1 unavailable');
+          }
+          if (sql.includes('repositories')) {
+            return { results: [{ owner: 'octocat', name: 'site', visibility: 'private', default_branch: 'main' }] };
+          }
+          return { results: [] };
+        },
+        run: async () => ({ meta: { changes: 1 } })
+      };
+      return statement as never;
+    };
+    const response = await appDashboard(request('https://forge.test/app'), broken);
+    const html = await response.text();
+    expect(html).toContain('Could not load the review queue');
   });
 
   it('explains the private-App collaboration flow without linking collaborators to GitHub 404s', async () => {

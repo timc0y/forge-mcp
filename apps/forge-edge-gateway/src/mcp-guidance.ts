@@ -50,7 +50,7 @@ export const FORGE_PROMPT_HINTS: Record<
   'prepare-draft-pr': ({ workspace_id }) =>
     `Submit the current work for review${
       workspace_id ? ` in workspace ${workspace_id}` : ''
-    } once tests pass. Run the tests and confirm they are green, inspect the outgoing change with forge_diff_metadata, then call forge_merge. It opens the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
+    } once tests pass. Run the tests and confirm they are green, inspect the outgoing change with forge_diff_metadata, then call forge_merge. That queues a human approval — it does not open the pull request yet. Echo only submission_receipt.approval_url (or tell me to open the Forge portal review queue), do not poll or re-call forge_merge, and destroy the workspace.`
 };
 
 /** Copy-paste prompts shown on the signed-in Forge dashboard. */

@@ -6,6 +6,7 @@ import {
   getDeferredActionByApproval,
   listPendingDeferredActions,
   rebindDeferredApproval,
+  recoverStaleExecutingDeferred,
   type DeferredExecutors
 } from '../../apps/forge-edge-gateway/src/deferred-actions';
 import type { Env } from '../../apps/forge-edge-gateway/src/env';
@@ -291,5 +292,22 @@ describe('deferred actions (async approval)', () => {
     expect(stored?.id).toBe(action.id);
     expect(stored?.approvalId).toBe('apr_fresh');
     expect(await getDeferredActionByApproval(env, 'ten_a', 'apr_a')).toBeNull();
+  });
+
+  it('flips stale executing rows to failed so the portal can retry', async () => {
+    const rows: Row[] = [];
+    const env = envWith(rows);
+    const action = await createDeferredAction(env, submission);
+    const stuck = rows.find((row) => row.id === action.id)!;
+    stuck.state = 'executing';
+    stuck.updated_at = new Date(Date.now() - 11 * 60_000).toISOString();
+    const recovered = await recoverStaleExecutingDeferred(env, {
+      ...action,
+      state: 'executing',
+      updatedAt: String(stuck.updated_at)
+    });
+    expect(recovered.state).toBe('failed');
+    expect(recovered.error).toContain('Timed out');
+    expect(stuck.state).toBe('failed');
   });
 });
