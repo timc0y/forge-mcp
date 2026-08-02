@@ -69,12 +69,13 @@ export {
 } from './progress-potential.js';
 export {
   DEPLOY_WORKFLOWS,
-  resolveCloudflareDeploy,
+  applyDeployEnvMap,
+  detectDeployWorkflow,
   resolveDeployWorkflow,
   deployCapabilitiesManifest,
   type DeployWorkflowId,
   type DeployWorkflowHint,
-  type ResolvedCloudflareDeploy,
+  type ResolvedDeploy,
   type DeployResolveResult
 } from './deploy-resolve.js';
 

@@ -1,20 +1,19 @@
 /**
- * Env-driven deploy workflow selection.
+ * Agent-driven deploy env resolution.
  *
- * Vault secrets stay generic (arbitrary KEY=value). Deploy tools inspect the
- * attached env names and pick a known workflow — they do not require one
- * provider-specific secret shape. Values are normalized to the names the
- * underlying CLI expects (e.g. Wrangler wants CLOUDFLARE_API_TOKEN).
+ * Vault secrets stay generic (arbitrary KEY=value). Forge does not guess
+ * Cloudflare/provider aliases. The agent lists attached names via
+ * forge_secret_list, then passes map_env to rename them into whatever the
+ * deploy CLI expects (e.g. CF_KEY → CLOUDFLARE_API_TOKEN).
  */
 
 export type DeployWorkflowId = 'cloudflare_wrangler';
 
 export interface DeployWorkflowHint {
   id: DeployWorkflowId;
-  /** Human label for capabilities / errors. */
   label: string;
-  /** Env names accepted for each required credential (first match wins). */
-  accepts: Record<string, readonly string[]>;
+  /** Process env names the CLI expects after map_env (not vault aliases). */
+  requires_process_env: readonly string[];
   defaultCommand: string;
 }
 
@@ -22,81 +21,91 @@ export const DEPLOY_WORKFLOWS: readonly DeployWorkflowHint[] = [
   {
     id: 'cloudflare_wrangler',
     label: 'Cloudflare Wrangler',
-    accepts: {
-      api_token: ['CLOUDFLARE_API_TOKEN', 'CF_API_TOKEN', 'CLOUDFLARE_TOKEN', 'CF_TOKEN'],
-      account_id: ['CLOUDFLARE_ACCOUNT_ID', 'CF_ACCOUNT_ID', 'CLOUDFLARE_ACCOUNT']
-    },
+    requires_process_env: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID'],
     defaultCommand: 'npx wrangler deploy'
   }
 ] as const;
 
-export interface ResolvedCloudflareDeploy {
-  workflow: 'cloudflare_wrangler';
-  apiToken: string;
-  accountId: string;
-  /** Source env names that supplied the credentials (for audit / next_step). */
-  matched: { api_token: string; account_id: string };
-  /**
-   * Env to inject into the managed process: original attached vars plus
-   * canonical Wrangler names so the CLI always sees what it expects.
-   */
+export interface ResolvedDeploy {
+  workflow: DeployWorkflowId;
+  accountId: string | null;
+  /** Process env for the managed command (attached vars + agent map_env). */
   processEnv: Record<string, string>;
+  /** Agent-supplied processKey → attachedKey mapping that was applied. */
+  mapEnv: Record<string, string>;
 }
 
 export type DeployResolveResult =
-  | { ok: true; resolution: ResolvedCloudflareDeploy }
+  | { ok: true; resolution: ResolvedDeploy }
   | {
       ok: false;
-      reason: 'no_attached_vars' | 'no_matching_workflow' | 'incomplete_credentials';
+      reason:
+        | 'no_attached_vars'
+        | 'unknown_map_source'
+        | 'incomplete_credentials'
+        | 'no_matching_workflow';
       attached_var_names: string[];
       workflows: DeployWorkflowHint[];
-      partial?: { workflow: DeployWorkflowId; missing: string[]; found: string[] };
+      missing_process_env?: string[];
+      unknown_sources?: string[];
       next_step: string;
     };
 
-function firstPresent(
-  vars: Record<string, string>,
-  aliases: readonly string[]
-): { name: string; value: string } | null {
-  for (const name of aliases) {
-    const value = vars[name]?.trim();
-    if (value) return { name, value };
+/** map_env: process env name → attached vault var name. */
+export function applyDeployEnvMap(
+  attachedVars: Record<string, string>,
+  mapEnv: Record<string, string> | undefined
+): { ok: true; processEnv: Record<string, string>; mapEnv: Record<string, string> } | {
+  ok: false;
+  unknown_sources: string[];
+} {
+  const processEnv: Record<string, string> = { ...attachedVars };
+  const applied: Record<string, string> = {};
+  if (!mapEnv || Object.keys(mapEnv).length === 0) {
+    return { ok: true, processEnv, mapEnv: applied };
+  }
+  const unknown: string[] = [];
+  for (const [processKey, attachedKey] of Object.entries(mapEnv)) {
+    const source = attachedKey.trim();
+    const dest = processKey.trim();
+    if (!dest || !source) continue;
+    const value = attachedVars[source];
+    if (value === undefined) {
+      unknown.push(source);
+      continue;
+    }
+    processEnv[dest] = value;
+    applied[dest] = source;
+  }
+  if (unknown.length > 0) return { ok: false, unknown_sources: unknown.sort() };
+  return { ok: true, processEnv, mapEnv: applied };
+}
+
+export function detectDeployWorkflow(
+  command: string,
+  processEnv: Record<string, string>,
+  prefer?: DeployWorkflowId | 'auto'
+): DeployWorkflowId | null {
+  if (prefer && prefer !== 'auto') return prefer;
+  if (/\bwrangler\b/i.test(command)) return 'cloudflare_wrangler';
+  const cf = DEPLOY_WORKFLOWS.find((w) => w.id === 'cloudflare_wrangler');
+  if (cf && cf.requires_process_env.every((name) => Boolean(processEnv[name]?.trim()))) {
+    return 'cloudflare_wrangler';
   }
   return null;
 }
 
-/** Resolve a Cloudflare Wrangler deploy from attached env (aliases allowed). */
-export function resolveCloudflareDeploy(
-  attachedVars: Record<string, string>
-): ResolvedCloudflareDeploy | null {
-  const hint = DEPLOY_WORKFLOWS.find((w) => w.id === 'cloudflare_wrangler');
-  if (!hint) return null;
-  const token = firstPresent(attachedVars, hint.accepts.api_token!);
-  const account = firstPresent(attachedVars, hint.accepts.account_id!);
-  if (!token || !account) return null;
-  return {
-    workflow: 'cloudflare_wrangler',
-    apiToken: token.value,
-    accountId: account.value,
-    matched: { api_token: token.name, account_id: account.name },
-    processEnv: {
-      ...attachedVars,
-      CLOUDFLARE_API_TOKEN: token.value,
-      CLOUDFLARE_ACCOUNT_ID: account.value
-    }
-  };
-}
-
 /**
- * Pick a deploy workflow from attached env vars.
- * `prefer` forces one workflow (used by forge_cloudflare_deploy); otherwise
- * the first complete match wins.
+ * Resolve deploy process env from attached vault vars + optional agent map_env.
+ * Forge never invents Cloudflare alias names; the agent chooses the mapping.
  */
-export function resolveDeployWorkflow(
-  attachedVars: Record<string, string>,
-  prefer?: DeployWorkflowId
-): DeployResolveResult {
-  const names = Object.keys(attachedVars).sort();
+export function resolveDeployWorkflow(input: {
+  attachedVars: Record<string, string>;
+  mapEnv?: Record<string, string>;
+  command: string;
+  prefer?: DeployWorkflowId | 'auto';
+}): DeployResolveResult {
+  const names = Object.keys(input.attachedVars).sort();
   const workflows = [...DEPLOY_WORKFLOWS];
 
   if (names.length === 0) {
@@ -106,55 +115,68 @@ export function resolveDeployWorkflow(
       attached_var_names: names,
       workflows,
       next_step:
-        'Create a vault secret with the deploy credentials (forge_secret_create or /app/secrets), attach it with forge_secret_attach, then retry forge_deploy. Cloudflare accepts CLOUDFLARE_API_TOKEN+CLOUDFLARE_ACCOUNT_ID or aliases CF_API_TOKEN/CF_ACCOUNT_ID.'
+        'Create a vault secret with your deploy credentials (any env names), attach it with forge_secret_attach, then call forge_deploy. If the CLI needs different names than your vault keys, pass map_env (e.g. { "CLOUDFLARE_API_TOKEN": "CF_KEY", "CLOUDFLARE_ACCOUNT_ID": "CF_ACCOUNT" }).'
     };
   }
 
-  if (prefer === 'cloudflare_wrangler' || prefer === undefined) {
-    const cloudflare = resolveCloudflareDeploy(attachedVars);
-    if (cloudflare) return { ok: true, resolution: cloudflare };
+  const mapped = applyDeployEnvMap(input.attachedVars, input.mapEnv);
+  if (!mapped.ok) {
+    return {
+      ok: false,
+      reason: 'unknown_map_source',
+      attached_var_names: names,
+      workflows,
+      unknown_sources: mapped.unknown_sources,
+      next_step: `map_env references vault vars that are not attached: ${mapped.unknown_sources.join(', ')}. Call forge_secret_list, fix the source names, then retry.`
+    };
+  }
 
-    const hint = DEPLOY_WORKFLOWS.find((w) => w.id === 'cloudflare_wrangler')!;
-    const token = firstPresent(attachedVars, hint.accepts.api_token!);
-    const account = firstPresent(attachedVars, hint.accepts.account_id!);
-    if (prefer === 'cloudflare_wrangler' || token || account) {
-      const missing: string[] = [];
-      const found: string[] = [];
-      if (token) found.push(token.name);
-      else missing.push('api_token (CLOUDFLARE_API_TOKEN | CF_API_TOKEN | CLOUDFLARE_TOKEN | CF_TOKEN)');
-      if (account) found.push(account.name);
-      else missing.push('account_id (CLOUDFLARE_ACCOUNT_ID | CF_ACCOUNT_ID | CLOUDFLARE_ACCOUNT)');
-      return {
-        ok: false,
-        reason: 'incomplete_credentials',
-        attached_var_names: names,
-        workflows,
-        partial: { workflow: 'cloudflare_wrangler', missing, found },
-        next_step:
-          'Attached secrets are missing a complete Cloudflare credential pair. Update the secret so both an API token and account id are present (canonical or alias names), re-attach if needed, then retry forge_deploy.'
-      };
-    }
+  const workflow = detectDeployWorkflow(input.command, mapped.processEnv, input.prefer);
+  if (!workflow) {
+    return {
+      ok: false,
+      reason: 'no_matching_workflow',
+      attached_var_names: names,
+      workflows,
+      next_step:
+        `Could not select a deploy workflow from command "${input.command}" and attached vars (${names.join(', ')}). Pass workflow explicitly, use a wrangler deploy command, or map_env so the process env includes the CLI's required names.`
+    };
+  }
+
+  const hint = workflows.find((w) => w.id === workflow)!;
+  const missing = hint.requires_process_env.filter((name) => !mapped.processEnv[name]?.trim());
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: 'incomplete_credentials',
+      attached_var_names: names,
+      workflows,
+      missing_process_env: missing,
+      next_step:
+        `Workflow ${workflow} needs process env ${missing.join(' + ')}. Attached vault names: ${names.join(', ') || 'none'}. Pass map_env to rename them (example: { "${missing[0]}": "CF_KEY" }), or store the secret under the CLI names directly.`
+    };
   }
 
   return {
-    ok: false,
-    reason: 'no_matching_workflow',
-    attached_var_names: names,
-    workflows,
-    next_step:
-      `No known deploy workflow matches the attached env names (${names.join(', ') || 'none'}). Today forge_deploy supports Cloudflare Wrangler when a token+account pair is present. Add those vars or use forge_shell for a different provider after approval.`
+    ok: true,
+    resolution: {
+      workflow,
+      accountId: mapped.processEnv.CLOUDFLARE_ACCOUNT_ID?.trim() || null,
+      processEnv: mapped.processEnv,
+      mapEnv: mapped.mapEnv
+    }
   };
 }
 
-/** Capabilities / guidance payload describing env-driven deploy selection. */
+/** Capabilities / guidance payload — agent chooses env names via map_env. */
 export function deployCapabilitiesManifest(): {
   tool: 'forge_deploy';
-  selection: 'from_attached_secret_env_names';
-  alias_tools: { cloudflare_wrangler: 'forge_cloudflare_deploy' };
+  selection: 'agent_map_env_from_attached_secret_names';
+  map_env: 'process_env_name_to_attached_vault_var_name';
   workflows: Array<{
     id: DeployWorkflowId;
     label: string;
-    accepts_env: Record<string, readonly string[]>;
+    requires_process_env: readonly string[];
     default_command: string;
   }>;
   live_claim_requires: 'deploy_receipt.verified_url';
@@ -162,12 +184,12 @@ export function deployCapabilitiesManifest(): {
 } {
   return {
     tool: 'forge_deploy',
-    selection: 'from_attached_secret_env_names',
-    alias_tools: { cloudflare_wrangler: 'forge_cloudflare_deploy' },
+    selection: 'agent_map_env_from_attached_secret_names',
+    map_env: 'process_env_name_to_attached_vault_var_name',
     workflows: DEPLOY_WORKFLOWS.map((w) => ({
       id: w.id,
       label: w.label,
-      accepts_env: w.accepts,
+      requires_process_env: w.requires_process_env,
       default_command: w.defaultCommand
     })),
     live_claim_requires: 'deploy_receipt.verified_url',

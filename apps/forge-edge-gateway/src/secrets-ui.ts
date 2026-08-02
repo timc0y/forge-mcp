@@ -13,7 +13,7 @@ function flash(kind: 'ok' | 'bad', message: string): string {
 function addSecretForm(error?: string): string {
   return `<section class="section">
   <h2>Add secret</h2>
-  <p class="note">Store env vars for a workspace. Values are encrypted and never shown again. Attach from your agent with forge_secret_attach (requires approval). forge_deploy picks a workflow from the attached names — Cloudflare accepts CLOUDFLARE_API_TOKEN+CLOUDFLARE_ACCOUNT_ID or CF_API_TOKEN+CF_ACCOUNT_ID.</p>
+  <p class="note">Store env vars for a workspace. Values are encrypted and never shown again. Attach from your agent with forge_secret_attach (requires approval). Use any names you like (e.g. CF_KEY); the agent passes map_env on forge_deploy to rename them for the CLI.</p>
   ${error ? flash('bad', error) : ''}
   <form method="post" action="/app/secrets" class="secret-form">
     <input type="hidden" name="action" value="create" />
@@ -28,7 +28,7 @@ function addSecretForm(error?: string): string {
     <fieldset>
       <legend>Environment variables</legend>
       <p class="note">One KEY=value per line. Values are write-only.</p>
-      <textarea name="env_text" required rows="6" placeholder="CLOUDFLARE_API_TOKEN=&#10;CLOUDFLARE_ACCOUNT_ID=&#10;# or CF_API_TOKEN= / CF_ACCOUNT_ID=" spellcheck="false"></textarea>
+      <textarea name="env_text" required rows="6" placeholder="CF_KEY=&#10;CF_ACCOUNT=&#10;# any names — agent maps them on deploy" spellcheck="false"></textarea>
     </fieldset>
     <div class="row"><button type="submit" class="btn primary">Save secret</button></div>
   </form>

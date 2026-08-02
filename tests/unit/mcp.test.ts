@@ -85,7 +85,7 @@ describe('Forge MCP public contracts', () => {
     expect(forgeTools.some((candidate) => candidate.name === 'forge_process_stop')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_observer_workspaces')).toBe(true);
     expect(forgeTools.some((candidate) => candidate.name === 'forge_deploy')).toBe(true);
-    expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(true);
+    expect(forgeTools.some((candidate) => candidate.name === 'forge_cloudflare_deploy')).toBe(false);
   });
 
   it('commits remotely rather than mutating a workspace', () => {
@@ -207,13 +207,22 @@ describe('Forge MCP public contracts', () => {
     expect(list.process_id.safeParse('proc_abc').success).toBe(true);
   });
 
-  it('requires a stable key for managed Cloudflare deploy retries', () => {
-    const deploy = tool('forge_cloudflare_deploy').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+  it('requires a stable key and optional map_env for managed deploy', () => {
+    const deploy = tool('forge_deploy').inputSchema as Record<
+      string,
+      { safeParse(value: unknown): { success: boolean }; parse(value: unknown): unknown }
+    >;
     expect(deploy.idempotency_key.safeParse(undefined).success).toBe(false);
     expect(deploy.idempotency_key.safeParse('deploy-release-2026-07-29').success).toBe(true);
+    expect(
+      deploy.map_env.safeParse({
+        CLOUDFLARE_API_TOKEN: 'CF_KEY',
+        CLOUDFLARE_ACCOUNT_ID: 'CF_ACCOUNT'
+      }).success
+    ).toBe(true);
   });
 
-  it('exposes forge_deploy that selects workflows from attached env names', () => {
+  it('exposes forge_deploy that lets the agent map attached env names', () => {
     const deploy = tool('forge_deploy');
     expect(deploy.approval).toBe('required');
     expect(deploy.sideEffect).toBe('external');

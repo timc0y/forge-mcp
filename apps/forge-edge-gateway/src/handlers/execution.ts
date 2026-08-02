@@ -15,6 +15,7 @@ import { classifyCommand } from '@forge/policy';
 import {
   durabilityNextStep,
   resolveDeployWorkflow,
+  DEPLOY_WORKFLOWS,
   type DeployWorkflowId
 } from '@forge/application';
 import { normalizeViewports, prepareInlineImages } from '../review-images';
@@ -32,63 +33,35 @@ import {
 } from './helpers';
 import type { ExecutionHandlerDependencies } from './types';
 
-type WorkflowTool = 'forge_shell' | 'forge_process_logs' | 'forge_process_list' | 'forge_process_stop' | 'forge_process_wait' | 'forge_deps_install' | 'forge_deploy' | 'forge_cloudflare_deploy' | 'forge_preview_expose' | 'forge_preview';
-
-type DeployPrefer = 'auto' | DeployWorkflowId;
+type WorkflowTool = 'forge_shell' | 'forge_process_logs' | 'forge_process_list' | 'forge_process_stop' | 'forge_process_wait' | 'forge_deps_install' | 'forge_deploy' | 'forge_preview_expose' | 'forge_preview';
 
 async function runEnvDrivenDeploy(
   env: Env,
   deps: ExecutionHandlerDependencies,
-  input: Record<string, unknown>,
-  preferDefault: DeployPrefer
+  input: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
   const identity = deps.identity();
   const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
-  const preferInput = input.workflow === undefined ? preferDefault : text(input.workflow);
-  const prefer: DeployPrefer =
+  const preferInput = input.workflow === undefined ? 'auto' : text(input.workflow);
+  const prefer: DeployWorkflowId | 'auto' =
     preferInput === 'cloudflare_wrangler' ? 'cloudflare_wrangler' : 'auto';
   const cwd = input.cwd === undefined ? '/workspace/repo' : text(input.cwd);
   const expectedUrl = input.expected_url === undefined ? undefined : text(input.expected_url);
-  const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
-  const resolved = resolveDeployWorkflow(
-    attached.vars,
-    prefer === 'auto' ? undefined : prefer
-  );
-  if (!resolved.ok) {
-    throw new ForgeError({
-      code: 'FORGE_VALIDATION_FAILED',
-      message:
-        prefer === 'cloudflare_wrangler'
-          ? 'Attach a vault secret that includes a Cloudflare API token and account id (CLOUDFLARE_* or CF_* aliases), then retry.'
-          : 'No deploy workflow matched the attached vault env vars. forge_deploy chooses from those names — create/attach credentials first.',
-      retryable: false,
-      details: {
-        reason: resolved.reason,
-        attached_var_names: resolved.attached_var_names,
-        workflows: resolved.workflows.map((w) => ({
-          id: w.id,
-          label: w.label,
-          accepts_env: w.accepts
-        })),
-        ...(resolved.partial ? { partial: resolved.partial } : {}),
-        next_step: resolved.next_step
-      }
-    });
-  }
+  const defaultCommand =
+    DEPLOY_WORKFLOWS.find((w) => w.id === (prefer === 'auto' ? 'cloudflare_wrangler' : prefer))
+      ?.defaultCommand ?? 'npx wrangler deploy';
+  const command = input.command === undefined ? defaultCommand : text(input.command);
+  const mapEnv =
+    input.map_env && typeof input.map_env === 'object'
+      ? (input.map_env as Record<string, string>)
+      : undefined;
 
-  const { resolution } = resolved;
-  const command =
-    input.command === undefined
-      ? resolution.workflow === 'cloudflare_wrangler'
-        ? 'npx wrangler deploy'
-        : 'npx wrangler deploy'
-      : text(input.command);
   const decision = classifyCommand(command, 'development');
   if (decision.classification !== 'external_side_effect') {
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',
       message:
-        'forge_deploy only runs provider deploy/publish/delete commands selected from attached env. Use forge_shell for probes (including --dry-run).',
+        'forge_deploy only runs provider deploy/publish/delete commands. Use forge_shell for probes (including --dry-run).',
       retryable: false
     });
   }
@@ -100,15 +73,46 @@ async function runEnvDrivenDeploy(
     });
   }
 
+  const attached = await vaultService(env).attachedEnv(identity.tenantId as TenantId, workspaceId);
+  const resolved = resolveDeployWorkflow({
+    attachedVars: attached.vars,
+    mapEnv,
+    command,
+    prefer
+  });
+  if (!resolved.ok) {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message:
+        'forge_deploy could not build a deploy environment from the attached vault secrets. List secrets, pass map_env if your keys differ from the CLI names, then retry.',
+      retryable: false,
+      details: {
+        reason: resolved.reason,
+        attached_var_names: resolved.attached_var_names,
+        ...(resolved.missing_process_env ? { missing_process_env: resolved.missing_process_env } : {}),
+        ...(resolved.unknown_sources ? { unknown_sources: resolved.unknown_sources } : {}),
+        workflows: resolved.workflows.map((w) => ({
+          id: w.id,
+          label: w.label,
+          requires_process_env: w.requires_process_env
+        })),
+        next_step: resolved.next_step
+      }
+    });
+  }
+
+  const { resolution } = resolved;
   const accountId = resolution.accountId;
   const approvalAction = 'cloudflare.deploy' as const;
-  const approvalSummary = `Deploy (${resolution.workflow}) to Cloudflare account ${accountId}`;
+  const approvalSummary = accountId
+    ? `Deploy (${resolution.workflow}) to Cloudflare account ${accountId}`
+    : `Deploy (${resolution.workflow}) with attached vault credentials`;
   const approvalPayload = {
     workflow: resolution.workflow,
     command,
     cwd,
     accountId,
-    matchedEnv: resolution.matched,
+    mapEnv: resolution.mapEnv,
     expectedUrl: expectedUrl ?? null
   };
   let approvalId = input.approval_id ? text(input.approval_id) : undefined;
@@ -214,8 +218,6 @@ async function runEnvDrivenDeploy(
         signal: AbortSignal.timeout(8_000)
       });
       httpStatus = probe.status;
-      // Any HTTP response from the hostname proves the Worker route exists;
-      // 404 app content still means the worker is deployed.
       verifiedUrl = publishedUrl;
     } catch {
       httpStatus = null;
@@ -233,7 +235,7 @@ async function runEnvDrivenDeploy(
       verifiedUrl,
       httpStatus,
       command,
-      matchedEnv: resolution.matched
+      mapEnv: resolution.mapEnv
     },
     { workspaceId }
   );
@@ -244,7 +246,7 @@ async function runEnvDrivenDeploy(
     verified_url: verifiedUrl,
     http_status: httpStatus,
     command,
-    matched_env: resolution.matched
+    map_env: resolution.mapEnv
   };
   let outputArtifactId: string | undefined;
   if (utf8Bytes(redacted) > AGENT_OUTPUT_SPILL_BYTES) {
@@ -544,8 +546,7 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
         });
         return asRecord({ ...result, remote_persisted: false, executor_filesystem: 'ephemeral' });
       },
-      forge_deploy: async (input) => runEnvDrivenDeploy(env, deps, input, 'auto'),
-      forge_cloudflare_deploy: async (input) => runEnvDrivenDeploy(env, deps, input, 'cloudflare_wrangler'),
+      forge_deploy: async (input) => runEnvDrivenDeploy(env, deps, input),
       forge_preview_expose: async (input) => {
         const identity = deps.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input)) as WorkspaceId;

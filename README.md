@@ -53,7 +53,7 @@ ever starting a workspace. Full reference: [`docs/tools.md`](docs/tools.md).
 | Shell & processes | `forge_shell`, `forge_process_*`, `forge_deps_install` | yes |
 | GitHub review | `forge_pr`, `forge_access`, `forge_history`, `forge_branches`, `forge_merge` | no |
 | Preview & artifacts | `forge_review`, `forge_preview*`, `forge_artifact_*` | mixed |
-| Deployment & secrets | `forge_deploy` (env-driven; `forge_cloudflare_deploy` alias), `forge_secret_*` | mixed |
+| Deployment & secrets | `forge_deploy` (agent `map_env` from attached secrets), `forge_secret_*` | mixed |
 
 GitHub's API is the sole durable repository plane: file CRUD, branch reads and
 writes, diffs, commits, history, and pull requests all operate on GitHub.

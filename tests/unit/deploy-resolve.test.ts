@@ -1,105 +1,103 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEPLOY_WORKFLOWS,
+  applyDeployEnvMap,
   deployCapabilitiesManifest,
-  resolveCloudflareDeploy,
+  detectDeployWorkflow,
   resolveDeployWorkflow
 } from '@forge/application';
 
-describe('env-driven deploy resolution', () => {
-  it('matches canonical Cloudflare env names', () => {
-    const resolved = resolveCloudflareDeploy({
-      CLOUDFLARE_API_TOKEN: ' tok ',
+describe('agent-driven deploy resolution', () => {
+  it('injects attached vars as-is when map_env is omitted', () => {
+    const mapped = applyDeployEnvMap(
+      {
+        CLOUDFLARE_API_TOKEN: 'tok',
+        CLOUDFLARE_ACCOUNT_ID: 'acct'
+      },
+      undefined
+    );
+    expect(mapped.ok).toBe(true);
+    if (!mapped.ok) return;
+    expect(mapped.processEnv).toEqual({
+      CLOUDFLARE_API_TOKEN: 'tok',
       CLOUDFLARE_ACCOUNT_ID: 'acct'
     });
-    expect(resolved).toMatchObject({
-      workflow: 'cloudflare_wrangler',
-      apiToken: 'tok',
-      accountId: 'acct',
-      matched: {
-        api_token: 'CLOUDFLARE_API_TOKEN',
-        account_id: 'CLOUDFLARE_ACCOUNT_ID'
-      }
-    });
-    expect(resolved?.processEnv.CLOUDFLARE_API_TOKEN).toBe('tok');
-    expect(resolved?.processEnv.CLOUDFLARE_ACCOUNT_ID).toBe('acct');
+    expect(mapped.mapEnv).toEqual({});
   });
 
-  it('accepts CF_* aliases and normalizes them for Wrangler', () => {
+  it('lets the agent map CF_KEY onto the Wrangler process env names', () => {
     const resolved = resolveDeployWorkflow({
-      CF_API_TOKEN: 'alias-token',
-      CF_ACCOUNT_ID: 'alias-acct',
-      OTHER_KEY: 'keep-me'
+      attachedVars: {
+        CF_KEY: 'alias-token',
+        CF_ACCOUNT: 'alias-acct',
+        OTHER_KEY: 'keep-me'
+      },
+      mapEnv: {
+        CLOUDFLARE_API_TOKEN: 'CF_KEY',
+        CLOUDFLARE_ACCOUNT_ID: 'CF_ACCOUNT'
+      },
+      command: 'npx wrangler deploy'
     });
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
-    expect(resolved.resolution.matched).toEqual({
-      api_token: 'CF_API_TOKEN',
-      account_id: 'CF_ACCOUNT_ID'
+    expect(resolved.resolution.workflow).toBe('cloudflare_wrangler');
+    expect(resolved.resolution.mapEnv).toEqual({
+      CLOUDFLARE_API_TOKEN: 'CF_KEY',
+      CLOUDFLARE_ACCOUNT_ID: 'CF_ACCOUNT'
     });
     expect(resolved.resolution.processEnv).toMatchObject({
-      CF_API_TOKEN: 'alias-token',
-      CF_ACCOUNT_ID: 'alias-acct',
+      CF_KEY: 'alias-token',
+      CF_ACCOUNT: 'alias-acct',
       OTHER_KEY: 'keep-me',
       CLOUDFLARE_API_TOKEN: 'alias-token',
       CLOUDFLARE_ACCOUNT_ID: 'alias-acct'
     });
+    expect(resolved.resolution.accountId).toBe('alias-acct');
   });
 
-  it('prefers canonical names when both canonical and alias are present', () => {
-    const resolved = resolveCloudflareDeploy({
-      CLOUDFLARE_API_TOKEN: 'canonical',
-      CF_API_TOKEN: 'alias',
-      CLOUDFLARE_ACCOUNT_ID: 'acct-canonical',
-      CF_ACCOUNT_ID: 'acct-alias'
+  it('does not invent Cloudflare aliases without map_env', () => {
+    const resolved = resolveDeployWorkflow({
+      attachedVars: { CF_KEY: 'tok', CF_ACCOUNT: 'acct' },
+      command: 'npx wrangler deploy'
     });
-    expect(resolved?.matched).toEqual({
-      api_token: 'CLOUDFLARE_API_TOKEN',
-      account_id: 'CLOUDFLARE_ACCOUNT_ID'
-    });
-    expect(resolved?.apiToken).toBe('canonical');
-  });
-
-  it('reports incomplete credentials instead of inventing a workflow', () => {
-    const resolved = resolveDeployWorkflow({ CF_API_TOKEN: 'only-token' });
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
     expect(resolved.reason).toBe('incomplete_credentials');
-    expect(resolved.partial?.found).toEqual(['CF_API_TOKEN']);
-    expect(resolved.partial?.missing[0]).toMatch(/account_id/);
+    expect(resolved.missing_process_env).toEqual([
+      'CLOUDFLARE_API_TOKEN',
+      'CLOUDFLARE_ACCOUNT_ID'
+    ]);
+    expect(resolved.next_step).toMatch(/map_env/);
   });
 
-  it('refuses when attached vars match no known workflow', () => {
+  it('rejects map_env sources that are not attached', () => {
     const resolved = resolveDeployWorkflow({
-      SHOPIFY_STORE: 'x.myshopify.com',
-      SHOPIFY_ACCESS_TOKEN: 'shpat'
+      attachedVars: { CF_KEY: 'tok' },
+      mapEnv: {
+        CLOUDFLARE_API_TOKEN: 'CF_KEY',
+        CLOUDFLARE_ACCOUNT_ID: 'MISSING'
+      },
+      command: 'npx wrangler deploy'
     });
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
-    expect(resolved.reason).toBe('no_matching_workflow');
-    expect(resolved.attached_var_names).toEqual(['SHOPIFY_ACCESS_TOKEN', 'SHOPIFY_STORE']);
+    expect(resolved.reason).toBe('unknown_map_source');
+    expect(resolved.unknown_sources).toEqual(['MISSING']);
   });
 
-  it('forces Cloudflare when prefer is set even among other vars', () => {
-    const resolved = resolveDeployWorkflow(
-      {
-        SHOPIFY_ACCESS_TOKEN: 'shpat',
-        CLOUDFLARE_API_TOKEN: 'tok',
-        CLOUDFLARE_ACCOUNT_ID: 'acct'
-      },
+  it('detects wrangler from the command', () => {
+    expect(detectDeployWorkflow('pnpm exec wrangler deploy', {}, 'auto')).toBe(
       'cloudflare_wrangler'
     );
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect(resolved.resolution.workflow).toBe('cloudflare_wrangler');
+    expect(detectDeployWorkflow('echo hi', {}, 'auto')).toBeNull();
   });
 
-  it('advertises env-driven selection in the capabilities manifest', () => {
+  it('advertises agent map_env selection in capabilities', () => {
     const manifest = deployCapabilitiesManifest();
     expect(manifest.tool).toBe('forge_deploy');
-    expect(manifest.selection).toBe('from_attached_secret_env_names');
-    expect(manifest.alias_tools.cloudflare_wrangler).toBe('forge_cloudflare_deploy');
-    expect(DEPLOY_WORKFLOWS[0]?.accepts.api_token).toContain('CF_API_TOKEN');
-    expect(manifest.workflows[0]?.accepts_env.account_id).toContain('CF_ACCOUNT_ID');
+    expect(manifest.selection).toBe('agent_map_env_from_attached_secret_names');
+    expect(manifest).not.toHaveProperty('alias_tools');
+    expect(DEPLOY_WORKFLOWS[0]?.requires_process_env).toContain('CLOUDFLARE_API_TOKEN');
+    expect(manifest.workflows[0]?.requires_process_env).toContain('CLOUDFLARE_ACCOUNT_ID');
   });
 });
