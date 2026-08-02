@@ -9,6 +9,7 @@ import { listWorkspaceActivity } from '../workspace-activity';
 import { vaultService } from '../vault';
 import { DURABILITY_STATES, MUTATION_OUTCOMES } from '../durability';
 import { deployCapabilitiesManifest } from '@forge/application';
+import { listCloudflareAccounts, resolveCloudflareTokenVar } from '../cloudflare-accounts';
 
 type Identity = { subject: string; tenantId: string; projectId: string };
 type SystemTool =
@@ -17,6 +18,7 @@ type SystemTool =
   | 'forge_observer_workspace'
   | 'forge_observer_activity'
   | 'forge_secret_list'
+  | 'forge_secret_accounts'
   | 'forge_secret_create'
   | 'forge_secret_update'
   | 'forge_secret_delete'
@@ -104,6 +106,70 @@ export function systemToolHandlers(
       ]);
       return { secrets, attached: attachments };
     },
+    forge_secret_accounts: async (input) => {
+      const actor = identity();
+      const secretId = text(input.secret_id) as SecretId;
+      const secrets = await vaultService(env).list(actor.tenantId as TenantId);
+      const secret = secrets.find((candidate) => candidate.id === secretId);
+      if (!secret) {
+        throw new ForgeError({
+          code: 'FORGE_VALIDATION_FAILED',
+          message: 'Secret not found. Call forge_secret_list and pass a real secret_id.',
+          retryable: false,
+          details: { next_step: 'Call forge_secret_list and pass a real secret_id.' }
+        });
+      }
+      const tokenPick = resolveCloudflareTokenVar(
+        secret.varNames,
+        input.token_var === undefined ? undefined : text(input.token_var)
+      );
+      if (!tokenPick.ok) {
+        throw new ForgeError({
+          code: 'FORGE_VALIDATION_FAILED',
+          message: `Could not determine which vault env var holds the Cloudflare API token (${secret.varNames.join(', ') || 'none'}). Pass token_var naming the API token key (e.g. CF_KEY), or call forge_secret_list first.`,
+          retryable: false,
+          details: { var_names: secret.varNames, next_step: tokenPick.next_step }
+        });
+      }
+      const vars = await vaultService(env).decodeVars(actor.tenantId as TenantId, secretId);
+      const token = vars[tokenPick.token_var]?.trim();
+      if (!token) {
+        throw new ForgeError({
+          code: 'FORGE_VALIDATION_FAILED',
+          message: `Vault var ${tokenPick.token_var} is empty. forge_secret_update the secret with a non-empty API token, then retry forge_secret_accounts.`,
+          retryable: false,
+          details: {
+            next_step: 'forge_secret_update the secret with a non-empty API token, then retry forge_secret_accounts.'
+          }
+        });
+      }
+      const listed = await listCloudflareAccounts(token);
+      if (!listed.ok) {
+        throw new ForgeError({
+          code: 'FORGE_VALIDATION_FAILED',
+          message: `Could not list Cloudflare accounts: ${listed.message}. Check the API token permissions (Account Settings: Read), then retry forge_secret_accounts.`,
+          retryable: listed.status === 429 || listed.status >= 500,
+          details: {
+            http_status: listed.status || null,
+            token_var: tokenPick.token_var,
+            next_step:
+              'Check the API token permissions (Account Settings: Read is enough to list). Then retry forge_secret_accounts.'
+          }
+        });
+      }
+      return {
+        secret_id: secretId,
+        token_var: tokenPick.token_var,
+        accounts: listed.accounts,
+        returned: listed.accounts.length,
+        next_step:
+          listed.accounts.length === 0
+            ? 'This token sees no accounts. Use a different token or create an account in Cloudflare, then retry.'
+            : listed.accounts.length === 1
+              ? `Only one account: ${listed.accounts[0]!.name} (${listed.accounts[0]!.id}). Confirm with the user, then forge_secret_update with env: { CLOUDFLARE_ACCOUNT_ID: "${listed.accounts[0]!.id}" } (merges; token stays), attach, and forge_deploy with map_env if needed.`
+              : `Ask the user which Cloudflare account to use, then forge_secret_update with env: { CLOUDFLARE_ACCOUNT_ID: "<chosen id>" } (merges; token stays). Attach to the workspace and call forge_deploy (map_env e.g. { CLOUDFLARE_API_TOKEN: "${tokenPick.token_var}" } if the token is not already named CLOUDFLARE_API_TOKEN).`
+      };
+    },
     forge_secret_create: async (input) => {
       const actor = identity();
       const secret = await vaultService(env).create(
@@ -120,7 +186,8 @@ export function systemToolHandlers(
         {
           ...(input.label === undefined ? {} : { label: text(input.label) }),
           ...(input.provider === undefined ? {} : { provider: input.provider as 'cloudflare' | 'shopify' | 'generic' }),
-          ...(input.env === undefined ? {} : { env: input.env as Record<string, string> })
+          ...(input.env === undefined ? {} : { env: input.env as Record<string, string> }),
+          ...(input.unset_env === undefined ? {} : { unsetEnv: input.unset_env as string[] })
         }
       );
       return { secret };

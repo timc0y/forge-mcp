@@ -1,6 +1,6 @@
 # Tool reference
 
-Forge currently exposes 41 MCP tools. The source of truth is
+Forge currently exposes 42 MCP tools. The source of truth is
 [`packages/mcp-core/src/index.ts`](../packages/mcp-core/src/index.ts), and the
 machine-readable schemas are generated into
 [`schemas/forge-tools.schema.json`](../schemas/forge-tools.schema.json).
@@ -123,8 +123,9 @@ review journey passed without inspecting the returned evidence.
 | Tool | What it does |
 | --- | --- |
 | `forge_secret_list` | Lists labels, providers, and environment-variable names; never values. |
+| `forge_secret_accounts` | Uses a stored Cloudflare API token to list account id+name (never returns the token). Pass `token_var` when the key is not `CLOUDFLARE_API_TOKEN` (e.g. `CF_KEY`). |
 | `forge_secret_create` | Stores encrypted environment variables under a label. |
-| `forge_secret_update` | Updates the label, provider, or encrypted variables. |
+| `forge_secret_update` | Patches label/provider/env (env merges into existing vars so account id can be added without re-sending the token). `unset_env` removes keys. |
 | `forge_secret_delete` | Permanently deletes and detaches a secret. |
 | `forge_secret_attach` | Attaches an approved secret to one workspace, or detaches with `attached:false`. |
 

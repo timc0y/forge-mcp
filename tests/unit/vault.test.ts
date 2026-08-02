@@ -166,14 +166,28 @@ describe('vault secrets', () => {
     await expect(service.create(tenantId, 'Bad', 'generic', { '123BAD': 'value' })).rejects.toThrow('Invalid environment variable name');
   });
 
-  it('updates label and env vars', async () => {
+  it('updates label and merges env patches without dropping existing keys', async () => {
     const service = createService();
-    const secret = await service.create(tenantId, 'Old Label', 'generic', { MY_KEY: 'original' });
-    const updated = await service.update(tenantId, secret.id, { label: 'New Label', env: { MY_KEY: 'changed' } });
+    const secret = await service.create(tenantId, 'Old Label', 'generic', { CF_KEY: 'original' });
+    const updated = await service.update(tenantId, secret.id, {
+      label: 'New Label',
+      env: { CLOUDFLARE_ACCOUNT_ID: 'acc-123' }
+    });
     expect(updated.label).toBe('New Label');
-    expect(updated.varNames).toEqual(['MY_KEY']);
+    expect(updated.varNames.sort()).toEqual(['CF_KEY', 'CLOUDFLARE_ACCOUNT_ID']);
     const decoded = await service.decodeVars(tenantId, secret.id);
-    expect(decoded).toEqual({ MY_KEY: 'changed' });
+    expect(decoded).toEqual({ CF_KEY: 'original', CLOUDFLARE_ACCOUNT_ID: 'acc-123' });
+  });
+
+  it('unsets env keys without requiring the remaining values to be re-sent', async () => {
+    const service = createService();
+    const secret = await service.create(tenantId, 'Unset', 'generic', {
+      CF_KEY: 'tok',
+      TEMP: 'gone'
+    });
+    const updated = await service.update(tenantId, secret.id, { unsetEnv: ['TEMP'] });
+    expect(updated.varNames).toEqual(['CF_KEY']);
+    expect(await service.decodeVars(tenantId, secret.id)).toEqual({ CF_KEY: 'tok' });
   });
 
   it('deletes a secret', async () => {

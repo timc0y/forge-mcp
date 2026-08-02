@@ -13,7 +13,7 @@ function flash(kind: 'ok' | 'bad', message: string): string {
 function addSecretForm(error?: string): string {
   return `<section class="section">
   <h2>Add secret</h2>
-  <p class="note">Store env vars for a workspace. Values are encrypted and never shown again. Attach from your agent with forge_secret_attach (requires approval). Use any names you like (e.g. CF_KEY); the agent passes map_env on forge_deploy to rename them for the CLI.</p>
+  <p class="note">Store env vars for a workspace. Values are encrypted and never shown again. Attach from your agent with forge_secret_attach (requires approval). Use any names you like (e.g. CF_KEY); the agent can list Cloudflare accounts with forge_secret_accounts, ask which account_id to keep, then forge_secret_update (env merges) and forge_deploy.</p>
   ${error ? flash('bad', error) : ''}
   <form method="post" action="/app/secrets" class="secret-form">
     <input type="hidden" name="action" value="create" />

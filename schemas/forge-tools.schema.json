@@ -2133,6 +2133,38 @@
         "additionalProperties": false
       }
     },
+    "forge_secret_accounts": {
+      "title": "List provider accounts",
+      "description": "Use a stored API token to list Cloudflare accounts (id + name only). Pass token_var when the token is not named CLOUDFLARE_API_TOKEN (e.g. CF_KEY). Ask the user which account_id to keep, then forge_secret_update to set CLOUDFLARE_ACCOUNT_ID (env merges; token stays).",
+      "sideEffect": "none",
+      "approval": "none",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "secret_id": {
+            "type": "string",
+            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
+            "description": "Secret id (sec_...)."
+          },
+          "token_var": {
+            "description": "Vault env name holding the API token. Defaults to CLOUDFLARE_API_TOKEN, or the sole var on the secret.",
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        "required": [
+          "secret_id"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        }
+      }
+    },
     "forge_secret_create": {
       "title": "Create secret",
       "description": "Store env vars as a labeled secret. Encrypted at rest; values never returned.",
@@ -2185,7 +2217,7 @@
     },
     "forge_secret_update": {
       "title": "Update secret",
-      "description": "Update label, provider, or env vars.",
+      "description": "Update label/provider, or patch env vars (merged into existing — so you can add CLOUDFLARE_ACCOUNT_ID without re-sending the token). Optional unset_env removes keys.",
       "sideEffect": "external",
       "approval": "none",
       "inputSchema": {
@@ -2220,6 +2252,13 @@
               "$ref": "#/$defs/__schema1"
             },
             "description": "Environment variable key-value pairs to store."
+          },
+          "unset_env": {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema2"
+            }
           }
         },
         "required": [
@@ -2232,6 +2271,11 @@
           },
           "__schema1": {
             "type": "string"
+          },
+          "__schema2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
           }
         }
       }

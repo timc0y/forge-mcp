@@ -1,6 +1,6 @@
 # Tool catalog
 
-Forge exposes 41 MCP tools from `forgeTools` in `@forge/mcp-core`. GitHub's API
+Forge exposes 42 MCP tools from `forgeTools` in `@forge/mcp-core`. GitHub's API
 is the sole durable file/branch/diff/commit/history/PR plane; executor compute
 is lazy and ephemeral. Generated schemas live in
 `schemas/forge-tools.schema.json`.
@@ -90,8 +90,9 @@ update response alone is not proof.
 ## Secrets
 
 - `forge_secret_list` — metadata only; never values
+- `forge_secret_accounts` — list Cloudflare accounts via a stored API token (`token_var` when not `CLOUDFLARE_API_TOKEN`)
 - `forge_secret_create` — encrypt and store environment variables
-- `forge_secret_update` — replace metadata or encrypted variables
+- `forge_secret_update` — patch metadata/env (env merges); `unset_env` removes keys
 - `forge_secret_delete` — permanently delete and detach
 - `forge_secret_attach` — approved attach, or detach with `attached:false`
 

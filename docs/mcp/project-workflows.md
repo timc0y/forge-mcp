@@ -56,7 +56,7 @@ existing workspace — do not open a second one for the same repository task.
 | Live site look | `forge_review` (no container) |
 | Plan / read / edit | GitHub tools after `forge_workspace_create` |
 | Tests / install / dev server | First `forge_shell` / `forge_deps_install` / `forge_preview` |
-| Ship | `forge_deploy` (after attach) or `forge_merge` → human approval URL |
+| Ship | `forge_secret_accounts` → user picks account → `forge_secret_update` → `forge_deploy` (or `forge_merge` for PRs) |
 
 `forge_workspace_create` returning `requested` / `executor_state: not_loaded` is
 healthy. Read and edit immediately; compute starts on the first execution tool.

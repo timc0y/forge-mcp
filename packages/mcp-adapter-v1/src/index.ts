@@ -32,7 +32,8 @@ const TRUE_READS = new Set([
   'forge_artifact_get',
   'forge_task_get',
   'forge_task_list',
-  'forge_secret_list'
+  'forge_secret_list',
+  'forge_secret_accounts'
 ]);
 
 // Tools that reach the open world of arbitrary external URLs (not just the
@@ -75,6 +76,7 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_task_list: { invoking: 'Listing tasks…', invoked: 'Tasks ready' },
   forge_task_update: { invoking: 'Updating task…', invoked: 'Task updated' },
   forge_secret_list: { invoking: 'Listing secrets…', invoked: 'Secrets ready' },
+  forge_secret_accounts: { invoking: 'Listing provider accounts…', invoked: 'Accounts ready' },
   forge_secret_create: { invoking: 'Saving secret…', invoked: 'Secret saved' },
   forge_secret_update: { invoking: 'Updating secret…', invoked: 'Secret updated' },
   forge_secret_delete: { invoking: 'Deleting secret…', invoked: 'Secret deleted' },
