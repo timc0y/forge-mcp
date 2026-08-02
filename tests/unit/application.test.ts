@@ -302,6 +302,16 @@ describe('workspaceAllowedNextActions', () => {
   });
 });
 
+describe('describeWorkspaceLifecycle', () => {
+  it('exports the shared lazy-create view used by observer receipts', async () => {
+    const { describeWorkspaceLifecycle } = await import('../../packages/application/src/index');
+    const view = describeWorkspaceLifecycle('requested', { branch: 'forge/x', head: 'deadbeef' });
+    expect(view.lifecycle).toBe('lazy_control_plane');
+    expect(view.executor_state).toBe('not_loaded');
+    expect(view.allowedNextActions).toEqual([...LAZY_REQUESTED_NEXT_ACTIONS]);
+  });
+});
+
 describe('Forge application service', () => {
   it('records a caller-supplied workspace operation receipt for timed-out initialize recovery', () => {
     const service = new ForgeApplicationService(new FakeProvider());

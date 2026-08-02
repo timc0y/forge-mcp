@@ -109,6 +109,7 @@ export function taskToolHandlers(env: Env, deps: TaskHandlerDependencies): Pick<
         const targetWorkspaceId = hasWorkspaceAddress(input)
           ? await resolveWorkspaceId(env, identity, workspaceAddress(input))
           : task.workspaceId;
+        let workspaceUnavailable = false;
         if (targetWorkspaceId) {
           try {
             const workspace = await authorizedCoordinator(env, identity, targetWorkspaceId);
@@ -132,11 +133,15 @@ export function taskToolHandlers(env: Env, deps: TaskHandlerDependencies): Pick<
               branch: status.branch
             };
           } catch {
-            // Best effort workspace lookup
+            // Remembered workspace may have been destroyed or reaped.
+            workspaceUnavailable = true;
           }
         }
         const summary = summarizeTask(task);
         const compact = input.compact !== false;
+        const resumeNextStep = workspaceUnavailable
+          ? `The remembered workspace is unavailable. Call forge_observer_workspaces; reuse a live owner/repo#branch if one exists, otherwise forge_workspace_create with ref ${summary.branch ?? 'the forge/* branch from handoff'} — do not invent a new branch slug and do not assume the old workspace_id still works.`
+          : (task.handoff?.nextSteps?.[0] ?? summary.nextRecommendedAction);
         return {
           task: compact
             ? {
@@ -154,7 +159,14 @@ export function taskToolHandlers(env: Env, deps: TaskHandlerDependencies): Pick<
           workspace: workspaceState,
           git: gitSummary,
           handoff: task.handoff ?? null,
-          next_step: task.handoff?.nextSteps?.[0] ?? summary.nextRecommendedAction
+          ...(workspaceUnavailable
+            ? {
+                workspace_unavailable: true as const,
+                remembered_workspace_id: targetWorkspaceId,
+                remembered_branch: summary.branch ?? null
+              }
+            : {}),
+          next_step: resumeNextStep
         };
       },
       forge_task_list: async (input) => {

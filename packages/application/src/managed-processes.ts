@@ -54,6 +54,151 @@ export const LAZY_REQUESTED_NEXT_ACTIONS = [
   'forge_workspace_get'
 ] as const;
 
+/**
+ * Control-plane vs executor plane for observer receipts.
+ *
+ * Agents repeatedly mistook healthy `requested` (no executor yet) for a hung
+ * provisioner because observer showed empty processes and empty logs. Name the
+ * lifecycle explicitly so observer polling is not the "wait until ready" path.
+ */
+export type ExecutorPlaneState = 'not_loaded' | 'starting' | 'ready' | 'failed' | 'absent';
+export type ControlPlaneLifecycle =
+  | 'lazy_control_plane'
+  | 'executor_starting'
+  | 'executor_ready'
+  | 'executor_busy'
+  | 'failed'
+  | 'destroying'
+  | 'destroyed'
+  | 'unknown';
+
+export interface WorkspaceLifecycleView {
+  lifecycle: ControlPlaneLifecycle;
+  executor_state: ExecutorPlaneState;
+  healthy: boolean;
+  next_step: string;
+  allowedNextActions: string[];
+  guidance: string;
+  durability: {
+    plane: 'github';
+    statement: string;
+  };
+}
+
+const LAZY_REQUESTED_GUIDANCE =
+  'Healthy lazy create: the GitHub branch is ready and no executor exists yet. ' +
+  'Empty processes and empty logs are expected. Do not keep polling the observer for a state change. ' +
+  'Call forge_files_read / forge_edit now. The first forge_shell (or install/preview/deploy) starts the ephemeral executor.';
+
+export function describeWorkspaceLifecycle(
+  state: string,
+  options: { branch?: string | null; head?: string | null } = {}
+): WorkspaceLifecycleView {
+  const branch = options.branch?.trim() || null;
+  const head = options.head?.trim() || null;
+  const headLabel = head ? head.slice(0, 12) : null;
+  const durability = {
+    plane: 'github' as const,
+    statement: branch
+      ? headLabel
+        ? `Repository durability is GitHub: forge_edit commits straight to ${branch} (head ${headLabel}). Executor files are never durable.`
+        : `Repository durability is GitHub: forge_edit commits straight to ${branch}. Executor files are never durable.`
+      : 'Repository durability is GitHub via forge_edit. Executor files are never durable.'
+  };
+
+  if (state === 'requested') {
+    return {
+      lifecycle: 'lazy_control_plane',
+      executor_state: 'not_loaded',
+      healthy: true,
+      next_step:
+        'GitHub branch is ready. Use forge_files_read and forge_edit now; the first forge_shell starts the ephemeral executor.',
+      allowedNextActions: [...LAZY_REQUESTED_NEXT_ACTIONS],
+      guidance: LAZY_REQUESTED_GUIDANCE,
+      durability
+    };
+  }
+  if (state === 'provisioning' || state === 'bootstrapping') {
+    return {
+      lifecycle: 'executor_starting',
+      executor_state: 'starting',
+      healthy: true,
+      next_step: EXECUTOR_PROVISIONING_NEXT_STEP,
+      allowedNextActions: ['forge_workspace_get'],
+      guidance:
+        'The ephemeral executor is starting after the first execution tool. Poll forge_workspace_get until ready, then retry that same tool. Do not create a second workspace.',
+      durability
+    };
+  }
+  if (state === 'ready') {
+    return {
+      lifecycle: 'executor_ready',
+      executor_state: 'ready',
+      healthy: true,
+      next_step: 'Next safe tool: forge_files_read or forge_edit (GitHub); forge_shell for compute.',
+      allowedNextActions: [
+        'forge_files_read',
+        'forge_files_list',
+        'forge_edit',
+        'forge_shell',
+        'forge_workspace_get'
+      ],
+      guidance: 'Executor is ready. Prefer GitHub tools for edits; shell output is ephemeral.',
+      durability
+    };
+  }
+  if (state === 'busy') {
+    return {
+      lifecycle: 'executor_busy',
+      executor_state: 'ready',
+      healthy: true,
+      next_step: 'A managed process is active — forge_process_wait / forge_process_list before starting conflicting work.',
+      allowedNextActions: [
+        'forge_process_wait',
+        'forge_process_list',
+        'forge_process_logs',
+        'forge_process_stop'
+      ],
+      guidance: 'Executor is busy with a managed process. Wait or inspect that process; do not open another workspace.',
+      durability
+    };
+  }
+  if (state === 'failed') {
+    return {
+      lifecycle: 'failed',
+      executor_state: 'failed',
+      healthy: false,
+      next_step:
+        'Workspace provisioning failed. Call forge_workspace_create again; this is not a repository permission problem.',
+      allowedNextActions: ['forge_workspace_create', 'forge_observer_workspaces'],
+      guidance:
+        'This workspace failed. Do not poll for recovery — create again with the same repository/branch, or inspect forge_observer_workspaces for live slots.',
+      durability
+    };
+  }
+  if (state === 'destroying' || state === 'destroyed') {
+    return {
+      lifecycle: state,
+      executor_state: 'absent',
+      healthy: false,
+      next_step:
+        'Workspace is gone. Call forge_workspace_create for the repository; forge_edit commits on the forge/* branch remain on GitHub.',
+      allowedNextActions: ['forge_workspace_create', 'forge_observer_workspaces'],
+      guidance: 'Control-plane session ended. GitHub commits survive; executor files do not.',
+      durability
+    };
+  }
+  return {
+    lifecycle: 'unknown',
+    executor_state: 'absent',
+    healthy: false,
+    next_step: 'Inspect forge_workspace_get before retrying.',
+    allowedNextActions: ['forge_workspace_get', 'forge_observer_workspaces'],
+    guidance: `Unrecognized workspace state ${state}. Do not invent a workaround — inspect forge_workspace_get.`,
+    durability
+  };
+}
+
 /** Host transport aborts near 60s; each wait observes at most this long. */
 export const OBSERVATIONAL_WAIT_MS = 30_000;
 
@@ -137,6 +282,9 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   }
   if (state === 'provisioning' || state === 'bootstrapping') {
     return ['forge_workspace_get'];
+  }
+  if (state === 'destroyed' || state === 'destroying') {
+    return ['forge_workspace_create', 'forge_observer_workspaces'];
   }
   if (!['ready', 'busy'].includes(state)) {
     return ['forge_workspace_get'];
@@ -482,7 +630,46 @@ export class ManagedProcesses {
           : processStatus === 'cancelled'
             ? 'cancelled'
             : 'failed';
+    } else {
+      // Create/destroy and other processless control-plane ops used to stay
+      // "accepted" forever, so ChatGPT polled forge_operation_get instead of
+      // editing. Once the workspace has a terminal-ish control-plane state,
+      // the operation is done.
+      const workspaceState = record.workspace.state;
+      if (
+        workspaceState === 'requested' ||
+        workspaceState === 'ready' ||
+        workspaceState === 'busy' ||
+        workspaceState === 'destroyed' ||
+        workspaceState === 'failed'
+      ) {
+        status = workspaceState === 'failed' ? 'failed' : 'completed';
+      } else if (workspaceState === 'provisioning' || workspaceState === 'bootstrapping') {
+        status = 'active';
+      }
     }
+    const allowedNextActions =
+      status === 'active'
+        ? processId
+          ? ['forge_process_wait', 'forge_process_list', 'forge_process_logs']
+          : ['forge_workspace_get']
+        : status === 'completed' && !processId
+          ? record.workspace.state === 'destroyed'
+            ? ['forge_workspace_create', 'forge_observer_workspaces']
+            : [...LAZY_REQUESTED_NEXT_ACTIONS]
+          : ['forge_workspace_get', 'forge_process_list', 'forge_shell'];
+    const next_step =
+      status === 'active' && processId
+        ? observationalWaitNextStep(processId)
+        : status === 'active'
+          ? EXECUTOR_PROVISIONING_NEXT_STEP
+          : status === 'completed' && !processId && record.workspace.state === 'requested'
+            ? 'Control-plane create finished. Do not keep polling forge_operation_get. Use forge_files_read / forge_edit now; the first forge_shell starts the ephemeral executor.'
+            : status === 'completed' && !processId && record.workspace.state === 'destroyed'
+              ? 'Destroy finished. Call forge_workspace_create to continue; do not reuse the old workspace_id.'
+              : status === 'completed' && !processId
+                ? 'Operation finished. Continue with forge_files_read / forge_edit, or forge_workspace_get for status — do not poll forge_operation_get.'
+                : undefined;
     return {
       workspaceId: record.workspace.id,
       operationId,
@@ -503,9 +690,8 @@ export class ManagedProcesses {
         : null,
       dependencyState: dependencyStateView(record.dependencyState),
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: status === 'active'
-        ? ['forge_process_wait', 'forge_process_list', 'forge_process_logs']
-        : ['forge_workspace_get', 'forge_process_list', 'forge_shell']
+      allowedNextActions,
+      ...(next_step ? { next_step, ...(status === 'completed' && !processId ? { stop_polling: true as const } : {}) } : {})
     };
   }
 

@@ -37,6 +37,7 @@ export {
   dependencyStateView,
   managedProcessStatus,
   workspaceAllowedNextActions,
+  describeWorkspaceLifecycle,
   LAZY_REQUESTED_NEXT_ACTIONS,
   OBSERVATIONAL_WAIT_MS,
   observationalWaitNextStep,
@@ -44,7 +45,10 @@ export {
   isDependencyInstallCommand,
   findActiveDependencyInstall,
   EXECUTOR_PROVISIONING_NEXT_STEP,
-  type DependencyStateView
+  type DependencyStateView,
+  type ExecutorPlaneState,
+  type ControlPlaneLifecycle,
+  type WorkspaceLifecycleView
 } from './managed-processes.js';
 export {
   PROGRESS_STREAK_LIMIT,

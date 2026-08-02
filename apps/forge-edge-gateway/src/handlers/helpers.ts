@@ -326,6 +326,35 @@ export async function authorizedCoordinator(
 }
 
 /**
+ * GitHub CRUD against a destroyed control-plane session. The authorization
+ * cache above only proves tenant ownership once — without this live state
+ * check, ChatGPT keeps forge_edit'ing a ws_ id after destroy and thinks the
+ * session is still open.
+ */
+export async function liveControlPlaneCoordinator(
+  env: Env,
+  identity: HandlerIdentity,
+  workspaceId: string
+): Promise<WorkspaceOperations> {
+  const value = await authorizedCoordinator(env, identity, workspaceId);
+  const binding = await value.getAuthorizationBinding();
+  if (binding.state === 'destroyed' || binding.state === 'destroying') {
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_NOT_READY',
+      message: `Workspace is ${binding.state}. GitHub commits on the forge/* branch remain. Call forge_workspace_create with the same repository (and that forge/* ref if needed); do not retry tools against the old workspace_id.`,
+      retryable: false,
+      details: {
+        workspace_id: workspaceId,
+        state: binding.state,
+        allowedNextActions: ['forge_workspace_create', 'forge_observer_workspaces'],
+        next_step: 'forge_workspace_create'
+      }
+    });
+  }
+  return value;
+}
+
+/**
  * Resolve an execution-only tool against the optional executor lifecycle.
  * GitHub CRUD never calls this: only commands, installs, previews and deploys
  * are allowed to wake the sandbox.
@@ -425,12 +454,18 @@ export function asRecord(value: object): Record<string, unknown> {
   return value as unknown as Record<string, unknown>;
 }
 
-// The single `workspace` field ("owner/repo#branch", "owner/repo", or a bare
-// branch) a tool input carries instead of an opaque workspace_id (see
-// workspace-resolve.ts). Every workspace-scoped handler below passes this
-// straight to resolveWorkspaceId; forge_artifact_get is the one exception
-// that also threads workspace_id through (see its own handler).
+// The single `workspace` field ("owner/repo#branch", "owner/repo", bare
+// branch, or a ws_ id) a tool input carries. ChatGPT often invents
+// workspace_id from catalog wording — accept that alias rather than resolving
+// an empty address and opening a wrong/duplicate workspace. forge_artifact_get
+// still documents workspace_id explicitly for url-review screenshots.
 export function workspaceAddress(input: Record<string, unknown>): { workspace?: unknown } {
+  if (input.workspace !== undefined && input.workspace !== null && String(input.workspace).length > 0) {
+    return { workspace: input.workspace };
+  }
+  if (typeof input.workspace_id === 'string' && input.workspace_id.trim()) {
+    return { workspace: input.workspace_id.trim() };
+  }
   return { workspace: input.workspace };
 }
 
@@ -439,7 +474,18 @@ export function workspaceAddress(input: Record<string, unknown>): { workspace?: 
 // rather than "resolve one" — e.g. forge_observer_activity, which is happy to
 // report across every workspace when no address narrows it.
 export function hasWorkspaceAddress(input: Record<string, unknown>): boolean {
-  return input.workspace !== undefined;
+  if (input.workspace !== undefined && input.workspace !== null && String(input.workspace).length > 0) return true;
+  return typeof input.workspace_id === 'string' && input.workspace_id.trim().length > 0;
+}
+
+/** ChatGPT often runs wrangler via forge_shell and invents a deploy URL from stdout. */
+export function isWranglerDeployCommand(command: string): boolean {
+  return /\bwrangler\b/i.test(command) && /\b(deploy|publish|versions\s+deploy|containers\s+deploy|rollback)\b/i.test(command)
+    && !/(^|\s)--dry-run(\s|$)/i.test(command);
+}
+
+export function wranglerShellDeployNextStep(): string {
+  return 'Wrangler ran in the executor only — that is not a Forge deploy receipt. Call forge_secret_list → forge_secret_accounts → confirm account_id with the user → forge_secret_update if needed → forge_deploy with map_env, then echo only deploy_receipt.verified_url. Do not invent a workers.dev URL from shell stdout.';
 }
 
 export function shellQuote(value: string): string {

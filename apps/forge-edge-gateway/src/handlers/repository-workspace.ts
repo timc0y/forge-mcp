@@ -38,13 +38,23 @@ import { deleteGitHubBranchIfUnchanged, listGitHubBranchesWithinBudget, liveWork
 import { readFragmentSource, readPullRequestReadiness } from '../github-repository';
 import { forgeStartSlug } from '../forge-start-branch';
 import {
-  spillTextArtifact, withDeadline, authorizedCoordinator, text, number, optionalNumber,
+  spillTextArtifact, withDeadline, authorizedCoordinator, liveControlPlaneCoordinator, text, number, optionalNumber,
   asRecord, workspaceAddress, recordTaskRemoteSha, idempotency,
   gitBlobSha, sha256
 } from './helpers';
 import type { RepositoryWorkspaceHandlerDependencies } from './types';
 
 type WorkflowTool = 'forge_start' | 'forge_workspace_create' | 'forge_workspace_get' | 'forge_operation_get' | 'forge_files_list' | 'forge_files_read' | 'forge_edit' | 'forge_diff_metadata' | 'forge_context_get' | 'forge_pr' | 'forge_access' | 'forge_history' | 'forge_branches' | 'forge_merge' | 'forge_workspace_destroy';
+
+/** Docs/markdown-only edits should not push a basic ChatGPT session into full test installs. */
+function docsOnlyPaths(paths: string[]): boolean {
+  return paths.length > 0 && paths.every((path) =>
+    /(^|\/)readme(\.[^/]+)?$/iu.test(path) ||
+    path === 'LICENSE' ||
+    path.startsWith('docs/') ||
+    /\.(md|mdx|txt|rst)$/iu.test(path)
+  );
+}
 
 /** Focused repositoryWorkspace workflows behind the ForgeToolHandlers seam. */
 export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorkspaceHandlerDependencies): Pick<ForgeToolHandlers, WorkflowTool> {
@@ -114,11 +124,9 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         const branch = `forge/${slug}`;
         assertForgeBranch(branch);
 
-        const creation = await createBranchRef(request, { owner, repo, branch, baseSha });
-
         // Wrong order: forge_start after a workspace is already open. Creating
-        // another workspace for the same repo is how ChatGPT ends up with three
-        // ready slots on one branch. Prefer continuing the live one.
+        // another branch while a live session exists invites ChatGPT to open a
+        // second workspace — cut nothing; reuse the live address.
         const occupants = await listSlotOccupants(env.METADATA, slotTtlMs(env), Date.now(), identity.tenantId);
         const liveForRepo = occupants.filter(
           (occupant) =>
@@ -131,21 +139,24 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           const addresses = liveForRepo
             .map((occupant) => `${owner}/${repo}${occupant.currentBranch ? `#${occupant.currentBranch}` : ''}`)
             .join(', ');
+          const reuseBranch = liveForRepo[0]?.currentBranch ?? branch;
           return {
             owner,
             repo,
-            branch,
+            branch: reuseBranch,
             base_ref: baseRef,
             base_sha: baseSha,
-            created: creation.created,
+            created: false,
             existing_workspaces: liveForRepo.map((occupant) => ({
               workspace_id: occupant.workspaceId,
               branch: occupant.currentBranch,
               state: occupant.state
             })),
-            next_step: `A workspace is already open for ${owner}/${repo}: ${addresses}. Continue with forge_files_read / forge_edit on that address — do not forge_workspace_create another one. ${branch} was still cut on GitHub if you later need a fresh workspace with ref:'${branch}'.`
+            next_step: `A workspace is already open for ${owner}/${repo}: ${addresses}. Continue with forge_files_read / forge_edit on that address — do not forge_workspace_create another one and do not cut a fresh forge/* branch.`
           };
         }
+
+        const creation = await createBranchRef(request, { owner, repo, branch, baseSha });
 
         return {
           owner,
@@ -215,7 +226,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             throw reserveError;
           }
         }
-        let workspaceRef = text(input.ref);
+        let workspaceRef = input.ref === undefined ? '' : text(input.ref);
         try {
           // Installed repositories get a durable forge/* branch before any
           // executor exists. Public repositories without an installation can
@@ -224,17 +235,45 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           const installation = await authorizeRepository(env, identity, repository);
           if (installation && !workspaceRef.startsWith('forge/')) {
             const request = await githubRequestForWorkspace(env, identity, { repository });
+            if (!workspaceRef) {
+              const repoInfo = await request(`/repos/${repository.owner}/${repository.name}`);
+              if (repoInfo.status !== 200) {
+                throw new ForgeError({
+                  code: 'FORGE_PROVIDER_UNAVAILABLE',
+                  message: `GitHub returned HTTP ${repoInfo.status} reading ${repository.owner}/${repository.name}, so Forge could not resolve its default branch. Pass ref explicitly, or check the repository with forge_access.`,
+                  retryable: repoInfo.status >= 500,
+                  details: { repository, status: repoInfo.status }
+                });
+              }
+              workspaceRef = String((repoInfo.json as { default_branch?: string }).default_branch ?? 'main');
+            }
             const encodedRef = workspaceRef.split('/').map(encodeURIComponent).join('/');
             const base = await request(
               `/repos/${repository.owner}/${repository.name}/git/ref/heads/${encodedRef}`
             );
-            const baseSha = base.status === 200
+            let baseSha = base.status === 200
               ? (base.json as { object?: { sha?: string } }).object?.sha
               : undefined;
+            // Schema historically defaulted ref to "main". On repos whose
+            // default branch is not main, resolve the real default once before
+            // failing a basic "fix the typo" session.
+            if (!baseSha && workspaceRef === 'main') {
+              const repoInfo = await request(`/repos/${repository.owner}/${repository.name}`);
+              const defaultBranch = String((repoInfo.json as { default_branch?: string } | null)?.default_branch ?? '');
+              if (defaultBranch && defaultBranch !== 'main') {
+                const fallback = await request(
+                  `/repos/${repository.owner}/${repository.name}/git/ref/heads/${defaultBranch.split('/').map(encodeURIComponent).join('/')}`
+                );
+                if (fallback.status === 200) {
+                  baseSha = (fallback.json as { object?: { sha?: string } }).object?.sha;
+                  if (baseSha) workspaceRef = defaultBranch;
+                }
+              }
+            }
             if (!baseSha) {
               throw new ForgeError({
                 code: base.status === 404 ? 'FORGE_FILE_NOT_FOUND' : 'FORGE_PROVIDER_UNAVAILABLE',
-                message: `GitHub could not resolve branch ${workspaceRef} on ${repository.owner}/${repository.name} because GitHub returned HTTP ${base.status}. Nothing was provisioned; check the branch with forge_branches before retrying.`,
+                message: `GitHub could not resolve branch ${workspaceRef} on ${repository.owner}/${repository.name} because GitHub returned HTTP ${base.status}. Nothing was provisioned; check the branch with forge_branches, or omit ref to use the repository default branch.`,
                 retryable: base.status >= 500,
                 details: { repository, ref: workspaceRef, status: base.status }
               });
@@ -250,6 +289,8 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             workspaceRef = branch;
           } else if (workspaceRef.startsWith('forge/')) {
             assertForgeBranch(workspaceRef);
+          } else if (!workspaceRef) {
+            workspaceRef = 'main';
           }
         } catch (error) {
           await releaseWorkspaceSlot(env.METADATA, workspaceId).catch(() => undefined);
@@ -262,7 +303,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             projectId: identity.projectId as ProjectId,
             repository,
             agentBranch: workspaceRef,
-            ref: text(input.ref),
+            ref: workspaceRef,
             ...(credentialProfileId ? { credentialProfileId: credentialProfileId as CredentialProfileId } : {}),
             runtimeProfile: text(input.runtime) as
               | 'node-22'
@@ -382,7 +423,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
       },
       forge_files_list: async (input) => {
         const identity = deps.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
+        const workspace = await liveControlPlaneCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         const containerRoot = toContainerPath(text(input.path));
         const relativeRoot = normalizeRepoPath(text(input.path));
         const depth = number(input.depth);
@@ -399,8 +440,19 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             ? (tree.truncated
                 ? 'GitHub could not return this repository\'s whole file tree in one call, so some entries are missing regardless of limit. Narrow with a deeper path.'
                 : 'Listing truncated at the limit. Narrow with a deeper path or raise limit.')
-            : undefined;
-          return asRecord({ root: containerRoot, entries, truncated, source: 'github', ...(hint ? { hint } : {}) });
+            : relativeRoot
+              ? `Entry path values are repo-relative (ready for forge_files_read / forge_edit). Do not strip the ${relativeRoot}/ prefix.`
+              : undefined;
+          return asRecord({
+            root: containerRoot,
+            entries,
+            truncated,
+            source: 'github',
+            next_step: relativeRoot
+              ? `Use entries[].path as-is with forge_files_read (they already include the ${relativeRoot}/ prefix).`
+              : 'Use entries[].path as-is with forge_files_read / forge_edit.',
+            ...(hint ? { hint } : {})
+          });
         } catch (error) {
           if (!(error instanceof GitHubReadUnavailable)) throw error;
           throw new ForgeError({
@@ -442,7 +494,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           });
         }
         const readWorkspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
-        const workspace = await authorizedCoordinator(env, identity, readWorkspaceId);
+        const workspace = await liveControlPlaneCoordinator(env, identity, readWorkspaceId);
         const readOne = {
           startLine: optionalNumber(input.start_line),
           endLine: optionalNumber(input.end_line),
@@ -530,7 +582,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
       forge_edit: async (input) => {
         const identity = deps.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
-        const workspace = await authorizedCoordinator(env, identity, workspaceId);
+        const workspace = await liveControlPlaneCoordinator(env, identity, workspaceId);
         const state = await withDeadline(
           (async () => (await workspace.getAuthorizationBinding()) as { repository: RepositoryRef; requestedRef: string; currentBranch?: string; baseCommit?: string; currentCommit?: string })(),
           15_000
@@ -763,6 +815,8 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             ? `Committed and verified on GitHub at ${result.remoteSha}, but Forge could not confirm the workspace handoff. Do not run executor commands in this workspace. Call forge_workspace_destroy, then forge_workspace_create on ${branch}.`
             : result.unchanged
             ? 'Nothing changed — the files already had this content. Call forge_diff_metadata, or continue editing.'
+            : docsOnlyPaths(result.paths)
+              ? `Committed to GitHub (${result.remoteSha}). Docs-only change — skip forge_shell tests unless the repo requires them. Call forge_diff_metadata, then forge_merge when ready.`
             : executorSync.executorSynced
               ? `Committed to GitHub and synchronized the loaded executor to ${result.remoteSha}. Run the narrowest check with forge_shell, inspect with forge_diff_metadata, then forge_merge when ready.`
               : `Committed to GitHub. The loaded executor will synchronize to ${result.remoteSha} before the next execution tool runs; call forge_process_wait or forge_process_stop for any active mutating process first, then forge_diff_metadata before forge_merge.`
@@ -779,7 +833,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
       },
       forge_diff_metadata: async (input) => {
         const identity = deps.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
+        const workspace = await liveControlPlaneCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         const binding = await workspace.getAuthorizationBinding();
         const branch = binding.currentBranch ?? binding.requestedRef;
         const base = input.base === undefined ? binding.requestedRef : text(input.base);
@@ -825,7 +879,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
       },
       forge_context_get: async (input) => {
         const identity = deps.identity();
-        const workspace = await authorizedCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
+        const workspace = await liveControlPlaneCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
         let files: string[];
         try {
           const { tree } = await resolveBranchTree(env, identity, workspace);
@@ -972,7 +1026,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         if (!status.safe_to_merge && input.force !== true) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `#${number} is not safe to merge: ${status.blockers.join(' ')} Nothing was merged. Fix these, or pass force:true with a reason to merge anyway.`,
+            message: `#${number} is not safe to merge: ${status.blockers.join(' ')} Nothing was merged. Fix the blockers, then retry forge_pr action:status and merge. Do not invent force:true — only use force:true with a human-approved reason when the human explicitly asks to override the blockers.`,
             retryable: false,
             details: { number, blockers: status.blockers, head_sha: status.head_sha }
           });
@@ -1339,7 +1393,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
       forge_merge: async (input) => {
         const identity = deps.identity();
         const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
-        const coordinator = await authorizedCoordinator(env, identity, workspaceId);
+        const coordinator = await liveControlPlaneCoordinator(env, identity, workspaceId);
         const state = await coordinator.getAuthorizationBinding();
         // The branch is Forge's, not the agent's, so it does not have to know
         // or repeat it. If one is supplied it must be the workspace's own —
@@ -1541,6 +1595,8 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
 
         return {
           submitted: true,
+          approval_required: true,
+          pr_url: null,
           submission_receipt: {
             branch,
             remote_sha: staged.remote_sha,
@@ -1550,7 +1606,7 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             files_changed: filesChanged,
             feature_branch_on_origin: Boolean(remoteHead)
           },
-          next_step: `Echo only submission_receipt to the human. Do not call forge_merge again and do not poll approval. Approval is pinned to ${branch}@${staged.remote_sha} — do not forge_edit this branch further for this submission. Call forge_workspace_destroy when done. To change more after destroy, forge_workspace_create a new branch. Approve at ${approval.approval_url}.`
+          next_step: `Submitted for human PR approval — this is not an opened pull-request URL yet (pr_url is null). Echo only submission_receipt.approval_url to the human. Do not call forge_merge again and do not poll approval. Approval is pinned to ${branch}@${staged.remote_sha} — do not forge_edit this branch further for this submission. Call forge_workspace_destroy when done. To change more after destroy, forge_workspace_create a new branch. Approve at ${approval.approval_url}.`
         };
       },
       forge_workspace_destroy: async (input) => {
@@ -1589,7 +1645,12 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           state: request.state,
           operation_id: request.operationId,
           workspace_revision: request.workspaceRevision,
-          replay: request.replay
+          replay: request.replay,
+          next_step:
+            request.state === 'destroyed'
+              ? 'Workspace ended. GitHub commits on the forge/* branch remain. To continue, call forge_workspace_create with the same repository (and that forge/* ref if needed) — do not retry tools against this workspace_id.'
+              : 'Destroy is in progress. Wait briefly, then forge_observer_workspaces / forge_workspace_create — do not retry tools against this workspace_id.',
+          allowedNextActions: ['forge_workspace_create', 'forge_observer_workspaces']
         };
       },
 

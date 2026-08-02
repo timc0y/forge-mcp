@@ -142,6 +142,26 @@ export async function priorIdenticalFailures(
   return Number(row?.n ?? 0);
 }
 
+/**
+ * How many times this exact call has already succeeded, recently.
+ *
+ * Observer tools succeed while reporting an unchanged healthy lazy receipt.
+ * Failure-only repeat detection never fires, so agents keep polling forever.
+ * Count successes for those tools and attach stop-polling guidance on the
+ * receipt instead of turning a success into an error.
+ */
+export async function priorIdenticalSuccesses(
+  env: Env,
+  input: { tenantId: string; tool: string; argsHash: string; withinMinutes?: number }
+): Promise<number> {
+  const since = new Date(Date.now() - (input.withinMinutes ?? 10) * 60_000).toISOString();
+  const row = await env.METADATA.prepare(
+    `SELECT COUNT(*) AS n FROM mcp_tool_calls
+      WHERE tenant_id = ?1 AND tool = ?2 AND args_hash = ?3 AND status = 'success' AND occurred_at > ?4`
+  ).bind(input.tenantId, input.tool, input.argsHash, since).first<{ n: number }>();
+  return Number(row?.n ?? 0);
+}
+
 /** The steer attached once a call is provably looping. */
 export function repeatCallGuidance(tool: string, attempts: number): string {
   return (

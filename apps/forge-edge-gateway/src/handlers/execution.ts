@@ -29,7 +29,8 @@ import {
   mayAutoApproveShell, parseWorkersDevUrl, parseWranglerWorkerName, spillTextArtifact,
   withDeadline, summarizeStructure, mapWithConcurrency,
   REVIEW_CAPTURE_CONCURRENCY, findingCountOf, toActionSteps, executorCoordinator,
-  text, number, optionalNumber, asRecord, workspaceAddress, idempotency, sha256
+  text, number, optionalNumber, asRecord, workspaceAddress, idempotency, sha256,
+  isWranglerDeployCommand, wranglerShellDeployNextStep
 } from './helpers';
 import type { ExecutionHandlerDependencies } from './types';
 
@@ -375,7 +376,9 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
                     escalated_reason: `timeout_ms ${requestedTimeout}ms exceeds the ${HOST_SAFE_SYNC_MS}ms a client will hold a request open, so this runs as a managed process instead of failing the transport.`
                   }
                 : {}),
-              next_step: `Running in the background as ${processId}. Call forge_process_wait with that process_id; each call observes for at most 30000ms, or use forge_process_logs to inspect output. Do not re-run the command.`
+              next_step: isWranglerDeployCommand(command)
+                ? `Running wrangler in the background as ${processId}. Call forge_process_wait with that process_id; when it finishes, retry forge_deploy with the same idempotency_key/approval_id for deploy_receipt.verified_url â€” do not invent a URL from logs.`
+                : `Running in the background as ${processId}. Call forge_process_wait with that process_id; each call observes for at most 30000ms, or use forge_process_logs to inspect output. Do not re-run the command.`
             };
           }
           const result = await workspace.shellExec({
@@ -428,12 +431,17 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
           const base = asRecord(result);
           const { stdout: _s, stderr: _e, ...rest } = base;
           const readOnly = input.mode === 'read_only' || rest.mode === 'read_only';
+          const wranglerDeploy = isWranglerDeployCommand(command);
           const executionPersistence = {
             remote_persisted: false as const,
             executor_filesystem: 'ephemeral' as const,
-            persistence_notice: durabilityNextStep(readOnly ? 'read_only' : 'mutating')
+            persistence_notice: wranglerDeploy
+              ? wranglerShellDeployNextStep()
+              : durabilityNextStep(readOnly ? 'read_only' : 'mutating')
           };
-          const next = durabilityNextStep(readOnly ? 'read_only' : 'mutating');
+          const next = wranglerDeploy
+            ? wranglerShellDeployNextStep()
+            : durabilityNextStep(readOnly ? 'read_only' : 'mutating');
           if (compact) {
             return {
               ...rest,
@@ -446,9 +454,11 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
               // only thing the agent has.
               stdout_tail: tailBytes(stdout, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
               stderr_tail: tailBytes(stderr, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
-              allowedNextActions: readOnly
-                ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
-                : ['forge_files_read', 'forge_edit', 'forge_shell'],
+              allowedNextActions: wranglerDeploy
+                ? ['forge_secret_list', 'forge_secret_accounts', 'forge_deploy', 'forge_files_read']
+                : readOnly
+                  ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
+                  : ['forge_files_read', 'forge_edit', 'forge_shell'],
               next_step: outputArtifactId
                 ? `Full output in ${outputArtifactId} (forge_artifact_get). ${next}`
                 : next
@@ -462,9 +472,11 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
             stdout,
             stderr,
             ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {}),
-            allowedNextActions: readOnly
-              ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
-              : ['forge_files_read', 'forge_edit', 'forge_shell'],
+            allowedNextActions: wranglerDeploy
+              ? ['forge_secret_list', 'forge_secret_accounts', 'forge_deploy', 'forge_files_read']
+              : readOnly
+                ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
+                : ['forge_files_read', 'forge_edit', 'forge_shell'],
             next_step: next
           };
         } catch (error) {
@@ -512,6 +524,19 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
         const process = waited.process && typeof waited.process === 'object'
           ? waited.process as Record<string, unknown>
           : {};
+        const command = typeof process.command === 'string' ? process.command : '';
+        if (isWranglerDeployCommand(command)) {
+          return {
+            ...waited,
+            remote_persisted: false,
+            executor_filesystem: 'ephemeral',
+            next_step:
+              process.exitCode === 0
+                ? `Deploy process ${text(input.process_id)} finished in the executor. Retry forge_deploy with the same idempotency_key and approval_id to obtain deploy_receipt.verified_url - do not invent a URL from process logs.`
+                : `Deploy process ${text(input.process_id)} is not a verified receipt. Inspect forge_process_logs, fix the failure, then retry forge_deploy (not forge_shell wrangler).`,
+            allowedNextActions: ['forge_deploy', 'forge_process_logs', 'forge_secret_list']
+          };
+        }
         const mutatesFilesystem = process.mutatesFilesystem === true;
         const exitCode = typeof process.exitCode === 'number' ? process.exitCode : undefined;
         if (!mutatesFilesystem) {
@@ -722,7 +747,7 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
         }
         // This tool used to attach nothing at all: it stored every screenshot and
         // told the caller to fetch them back one at a time. For the flow this
-        // exists to serve — looking at your own app while designing it — that
+        // exists to serve - looking at your own app while designing it - that
         // meant the model never saw a single image without a second call per
         // shot. Attach them, and hand over a page for the rest, same as the
         // live-URL path.
@@ -737,7 +762,7 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
         );
         // Strip transient inline bytes so no base64 leaks into structuredContent.
         const fullEvidence = evidence.map(({ _inline: _drop, ...rest }) => rest);
-        // Concise per-cell rows for structuredContent — no base64, no heavy
+        // Concise per-cell rows for structuredContent - no base64, no heavy
         // accessibility trees. Images travel as MCP content; the gallery URL
         // covers the rest.
         const evidenceCells = fullEvidence.map((cell) => ({
@@ -771,8 +796,10 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
           inlineImageCount: inlineCells.length,
           omittedImageCount: omittedImages,
           nextStep: [
-            `Inspect the ${inlineCells.length} image(s) attached to this result — they are the evidence.`,
-            omittedImages > 0 ? `${omittedImages} further capture(s) did not fit; fetch them with forge_artifact_get on evidence[].screenshot.artifactId.` : '',
+            `Inspect the ${inlineCells.length} image(s) attached to this result - they are the evidence.`,
+            omittedImages > 0
+              ? `${omittedImages} further capture(s) did not fit; open galleryUrl or re-run with fewer routes or one viewport. Do not invent artifact ids - evidence rows in this result have no screenshot.artifactId field.`
+              : '',
             captureGalleryUrl ? `Give the human this link to see them all in a browser: ${captureGalleryUrl}` : '',
             'Then mark that evidence inspected in Parallax, resolving or explicitly accepting any structureSummary heading defects.'
           ].filter(Boolean).join(' ')
