@@ -1561,7 +1561,7 @@
     },
     "forge_deploy": {
       "title": "Deploy",
-      "description": "Approved deploy using attached vault secrets. Call forge_secret_list, then pass map_env to rename your keys into what the CLI needs (e.g. { CLOUDFLARE_API_TOKEN: \"CF_KEY\", CLOUDFLARE_ACCOUNT_ID: \"CF_ACCOUNT\" }). Requires idempotency_key; slow runs return process_id, then the same key yields a verified receipt.",
+      "description": "Approved deploy using attached vault secrets. Call forge_secret_list, then pass map_env to rename your keys into what the CLI needs (e.g. { CLOUDFLARE_API_TOKEN: \"CF_KEY\" }). CLOUDFLARE_ACCOUNT_ID is optional but pins the account when present. Requires idempotency_key; slow runs return process_id, then the same key yields a verified receipt.",
       "sideEffect": "external",
       "approval": "required",
       "inputSchema": {

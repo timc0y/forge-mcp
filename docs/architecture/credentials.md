@@ -26,20 +26,23 @@ attached vault var name — for example:
 
 ```json
 {
-  "CLOUDFLARE_API_TOKEN": "CF_KEY",
-  "CLOUDFLARE_ACCOUNT_ID": "CF_ACCOUNT"
+  "CLOUDFLARE_API_TOKEN": "CF_KEY"
 }
 ```
 
+Optionally also map `CLOUDFLARE_ACCOUNT_ID` when you store an account id.
+
 Forge does not maintain a Cloudflare alias list; the agent chooses the mapping
 after `forge_secret_list`. For Cloudflare Wrangler, the process env must end up
-with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (via storage names or
-`map_env`) so the account is pinned and a multi-account token cannot silently
-publish under the wrong `*.workers.dev` subdomain. Every call requires a stable
-idempotency key. A slow run returns its `process_id` inside the host deadline;
-after waiting, the same key reopens that process, probes the published URL, and
-returns `deploy_receipt` without starting a second deploy. Agents must not claim
-a Worker is live without `deploy_receipt.verified_url`. Ungated `wrangler deploy`
+with `CLOUDFLARE_API_TOKEN` (via storage names or `map_env`).
+`CLOUDFLARE_ACCOUNT_ID` is optional: when present it pins the account in the
+approval and receipt so a multi-account token cannot silently publish under the
+wrong `*.workers.dev` subdomain; when absent Wrangler uses the account from
+wrangler config or the token default. Every call requires a stable idempotency
+key. A slow run returns its `process_id` inside the host deadline; after waiting,
+the same key reopens that process, probes the published URL, and returns
+`deploy_receipt` without starting a second deploy. Agents must not claim a
+Worker is live without `deploy_receipt.verified_url`. Ungated `wrangler deploy`
 via `forge_shell` is classified as `external_side_effect` and requires approval.
 
 Create the secret with `forge_secret_create` (provider may be `cloudflare` or

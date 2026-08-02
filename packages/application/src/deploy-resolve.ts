@@ -12,8 +12,10 @@ export type DeployWorkflowId = 'cloudflare_wrangler';
 export interface DeployWorkflowHint {
   id: DeployWorkflowId;
   label: string;
-  /** Process env names the CLI expects after map_env (not vault aliases). */
+  /** Process env names required after map_env (not vault aliases). */
   requires_process_env: readonly string[];
+  /** Useful when present (e.g. account pinning) but not required to start. */
+  optional_process_env?: readonly string[];
   defaultCommand: string;
 }
 
@@ -21,7 +23,11 @@ export const DEPLOY_WORKFLOWS: readonly DeployWorkflowHint[] = [
   {
     id: 'cloudflare_wrangler',
     label: 'Cloudflare Wrangler',
-    requires_process_env: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID'],
+    // Token is required. Account id is optional: when present Forge pins the
+    // deploy in approval/receipt; when absent Wrangler uses account from
+    // wrangler config / the token's default account.
+    requires_process_env: ['CLOUDFLARE_API_TOKEN'],
+    optional_process_env: ['CLOUDFLARE_ACCOUNT_ID'],
     defaultCommand: 'npx wrangler deploy'
   }
 ] as const;
@@ -115,7 +121,7 @@ export function resolveDeployWorkflow(input: {
       attached_var_names: names,
       workflows,
       next_step:
-        'Create a vault secret with your deploy credentials (any env names), attach it with forge_secret_attach, then call forge_deploy. If the CLI needs different names than your vault keys, pass map_env (e.g. { "CLOUDFLARE_API_TOKEN": "CF_KEY", "CLOUDFLARE_ACCOUNT_ID": "CF_ACCOUNT" }).'
+        'Create a vault secret with your deploy credentials (any env names), attach it with forge_secret_attach, then call forge_deploy. If the CLI needs different names than your vault keys, pass map_env (e.g. { "CLOUDFLARE_API_TOKEN": "CF_KEY" }). CLOUDFLARE_ACCOUNT_ID is optional — when set it pins the account in approval.'
     };
   }
 
@@ -177,6 +183,7 @@ export function deployCapabilitiesManifest(): {
     id: DeployWorkflowId;
     label: string;
     requires_process_env: readonly string[];
+    optional_process_env?: readonly string[];
     default_command: string;
   }>;
   live_claim_requires: 'deploy_receipt.verified_url';
@@ -190,6 +197,7 @@ export function deployCapabilitiesManifest(): {
       id: w.id,
       label: w.label,
       requires_process_env: w.requires_process_env,
+      ...(w.optional_process_env ? { optional_process_env: w.optional_process_env } : {}),
       default_command: w.defaultCommand
     })),
     live_claim_requires: 'deploy_receipt.verified_url',

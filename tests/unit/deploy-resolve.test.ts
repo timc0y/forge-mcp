@@ -55,6 +55,19 @@ describe('agent-driven deploy resolution', () => {
     expect(resolved.resolution.accountId).toBe('alias-acct');
   });
 
+  it('allows token-only deploy when account id is omitted', () => {
+    const resolved = resolveDeployWorkflow({
+      attachedVars: { CF_KEY: 'tok-only' },
+      mapEnv: { CLOUDFLARE_API_TOKEN: 'CF_KEY' },
+      command: 'npx wrangler deploy'
+    });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.resolution.accountId).toBeNull();
+    expect(resolved.resolution.processEnv.CLOUDFLARE_API_TOKEN).toBe('tok-only');
+    expect(resolved.resolution.processEnv.CLOUDFLARE_ACCOUNT_ID).toBeUndefined();
+  });
+
   it('does not invent Cloudflare aliases without map_env', () => {
     const resolved = resolveDeployWorkflow({
       attachedVars: { CF_KEY: 'tok', CF_ACCOUNT: 'acct' },
@@ -63,10 +76,7 @@ describe('agent-driven deploy resolution', () => {
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
     expect(resolved.reason).toBe('incomplete_credentials');
-    expect(resolved.missing_process_env).toEqual([
-      'CLOUDFLARE_API_TOKEN',
-      'CLOUDFLARE_ACCOUNT_ID'
-    ]);
+    expect(resolved.missing_process_env).toEqual(['CLOUDFLARE_API_TOKEN']);
     expect(resolved.next_step).toMatch(/map_env/);
   });
 
@@ -98,6 +108,7 @@ describe('agent-driven deploy resolution', () => {
     expect(manifest.selection).toBe('agent_map_env_from_attached_secret_names');
     expect(manifest).not.toHaveProperty('alias_tools');
     expect(DEPLOY_WORKFLOWS[0]?.requires_process_env).toContain('CLOUDFLARE_API_TOKEN');
-    expect(manifest.workflows[0]?.requires_process_env).toContain('CLOUDFLARE_ACCOUNT_ID');
+    expect(DEPLOY_WORKFLOWS[0]?.requires_process_env).not.toContain('CLOUDFLARE_ACCOUNT_ID');
+    expect(manifest.workflows[0]?.optional_process_env).toContain('CLOUDFLARE_ACCOUNT_ID');
   });
 });

@@ -564,7 +564,7 @@ function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, dep
       'external_side_effect',
       ['development', 'custom_allowlist', 'unrestricted_with_approval'].includes(networkPolicy),
       true,
-      'Wrangler deploy/publish/delete reaches a live Cloudflare account and requires approval. Use forge_deploy with attached vault secrets; pass map_env if your keys differ from CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID so the account is pinned and the URL is verified.'
+      'Wrangler deploy/publish/delete reaches a live Cloudflare account and requires approval. Use forge_deploy with an attached API token (map_env if your key is not CLOUDFLARE_API_TOKEN). CLOUDFLARE_ACCOUNT_ID is optional but pins the account when present.'
     );
   }
   if (network.some((rule) => rule.test(trimmed))) {
