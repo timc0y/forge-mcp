@@ -18,7 +18,7 @@
     },
     "forge_observer_workspaces": {
       "title": "Observer: list workspaces",
-      "description": "Read-only snapshot of live workspace slots, tasks, and branch state for operator visibility. Does not mutate sandboxes.",
+      "description": "Read-only snapshot of live workspace slots, tasks, and branch state. Includes lifecycle/executor_state — state:requested with empty processes is healthy lazy create (use forge_files_read/forge_edit), not a hung provisioner. Repeated identical polls attach stop_polling guidance.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -30,7 +30,7 @@
     },
     "forge_observer_workspace": {
       "title": "Observer: workspace detail",
-      "description": "Read-only observer bundle: processes, merged MCP tool trail, log tail. Same data as /app/live for one workspace.",
+      "description": "Read-only observer bundle: processes, merged MCP tool trail, log tail, plus lifecycle guidance. Empty processes/logs while state is requested are expected. Do not poll this tool waiting for requested→ready; that transition happens only after an execution tool starts the executor.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
