@@ -99,3 +99,5 @@ explicitly accepts.
 | AQ — Long `forge_deploy` then only `process_wait` | med | Start receipt already steers retry deploy; wait-on-shell path now covered; pure deploy wait still depends on process command metadata |
 
 Executable sims: `tests/unit/chatgpt-conversation-sim.test.ts` Conv AF–AL.
+Basic short-session traps (destroy-continue, operation poll, nested list paths):
+`docs/reviews/2026-08-02-basic-chatgpt-session-traps.md` (Conv AM–AS).

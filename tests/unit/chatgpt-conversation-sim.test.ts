@@ -598,4 +598,97 @@ describe('ChatGPT conversation simulations', () => {
       )
     ).toBe(false);
   });
+
+  it('Conv AM — destroy then continue refuses the old workspace_id', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/helpers.ts',
+        /liveControlPlaneCoordinator/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /do not retry tools against this workspace_id/
+      )
+    ).toBe(true);
+    expect(FORGE_MCP_INSTRUCTIONS).toMatch(/After destroy, forge_workspace_create again/);
+  });
+
+  it('Conv AN — processless create operations complete instead of accepted-forever', async () => {
+    const { service, record } = seededService('requested');
+    const operationId = Object.values(record.idempotency)[0]?.operationId;
+    expect(operationId).toBeTruthy();
+    const op = await service.operationGet(record, operationId!);
+    expect(op.status).toBe('completed');
+    expect(op).toMatchObject({ stop_polling: true });
+    expect(String(op.next_step)).toMatch(/Do not keep polling forge_operation_get/);
+    expect(op.allowedNextActions).toEqual(expect.arrayContaining(['forge_files_read', 'forge_edit']));
+  });
+
+  it('Conv AO — nested files_list paths stay repo-relative', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/github-repository.ts',
+        /Always repo-relative so forge_files_read/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /Do not strip the/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv AP — forge_start with live workspace does not cut a stray branch', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /Detect live occupants \*before\* `createBranchRef`|cut nothing; reuse the live address|do not cut a fresh forge\/\* branch/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /was still cut on GitHub if you later need a fresh workspace/
+      )
+    ).toBe(false);
+  });
+
+  it('Conv AQ — workspace_create ref is optional and falls back from main', () => {
+    const create = forgeTools.find((tool) => tool.name === 'forge_workspace_create');
+    const ref = (create?.inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>).ref;
+    expect(ref.safeParse(undefined).success).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /omit ref to use the repository default branch/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv AR — docs-only edits skip mandatory forge_shell tests', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /Docs-only change — skip forge_shell tests/
+      )
+    ).toBe(true);
+  });
+
+  it('Conv AS — forge_merge does not claim an opened PR URL', () => {
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /pr_url: null/
+      )
+    ).toBe(true);
+    expect(
+      sourceMentions(
+        'apps/forge-edge-gateway/src/handlers/repository-workspace.ts',
+        /not an opened pull-request URL yet/
+      )
+    ).toBe(true);
+  });
 });

@@ -483,13 +483,13 @@
             "description": "Authorized GitHub repository to act on."
           },
           "ref": {
-            "default": "main",
-            "type": "string"
+            "description": "Branch to fork from. Omit to use the repository default branch (resolved from GitHub, not assumed to be main).",
+            "$ref": "#/$defs/__schema3"
           },
           "runtime": {
             "default": "node-24",
             "description": "Executor runtime to allocate lazily on the first execution call.",
-            "$ref": "#/$defs/__schema3"
+            "$ref": "#/$defs/__schema4"
           },
           "persistence": {
             "default": "ephemeral",
@@ -499,7 +499,7 @@
           "bootstrap": {
             "default": true,
             "description": "Run bootstrap when the executor is first allocated, not during workspace creation.",
-            "$ref": "#/$defs/__schema4"
+            "$ref": "#/$defs/__schema5"
           },
           "idempotency_key": {
             "type": "string",
@@ -510,7 +510,6 @@
         },
         "required": [
           "repository",
-          "ref",
           "runtime",
           "persistence",
           "bootstrap"
@@ -532,6 +531,9 @@
             "maxLength": 100
           },
           "__schema3": {
+            "type": "string"
+          },
+          "__schema4": {
             "type": "string",
             "enum": [
               "node-22",
@@ -540,7 +542,7 @@
               "general-purpose"
             ]
           },
-          "__schema4": {
+          "__schema5": {
             "type": "boolean"
           }
         }

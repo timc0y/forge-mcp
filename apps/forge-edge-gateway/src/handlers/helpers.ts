@@ -326,6 +326,35 @@ export async function authorizedCoordinator(
 }
 
 /**
+ * GitHub CRUD against a destroyed control-plane session. The authorization
+ * cache above only proves tenant ownership once — without this live state
+ * check, ChatGPT keeps forge_edit'ing a ws_ id after destroy and thinks the
+ * session is still open.
+ */
+export async function liveControlPlaneCoordinator(
+  env: Env,
+  identity: HandlerIdentity,
+  workspaceId: string
+): Promise<WorkspaceOperations> {
+  const value = await authorizedCoordinator(env, identity, workspaceId);
+  const binding = await value.getAuthorizationBinding();
+  if (binding.state === 'destroyed' || binding.state === 'destroying') {
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_NOT_READY',
+      message: `Workspace is ${binding.state}. GitHub commits on the forge/* branch remain. Call forge_workspace_create with the same repository (and that forge/* ref if needed); do not retry tools against the old workspace_id.`,
+      retryable: false,
+      details: {
+        workspace_id: workspaceId,
+        state: binding.state,
+        allowedNextActions: ['forge_workspace_create', 'forge_observer_workspaces'],
+        next_step: 'forge_workspace_create'
+      }
+    });
+  }
+  return value;
+}
+
+/**
  * Resolve an execution-only tool against the optional executor lifecycle.
  * GitHub CRUD never calls this: only commands, installs, previews and deploys
  * are allowed to wake the sandbox.

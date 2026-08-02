@@ -39,6 +39,9 @@ function nextStepForWorkspace(
   if (state === 'failed') {
     return 'Workspace provisioning failed. Call forge_workspace_create again; this is not a repository permission problem.';
   }
+  if (state === 'destroyed' || state === 'destroying') {
+    return 'Workspace ended. Call forge_workspace_create with the same repository (and the forge/* branch if you still need it). Do not retry tools against the old workspace_id — GitHub commits remain.';
+  }
   if (!isAgentForgeBranch(record.workspace.currentBranch)) {
     return branchPolicyFor(record.workspace.currentBranch).next_step;
   }

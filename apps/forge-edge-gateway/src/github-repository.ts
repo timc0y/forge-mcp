@@ -60,6 +60,8 @@ export interface GitHubReadResult {
 
 export interface GitHubListEntry {
   path: string;
+  /** Basename or path relative to the listing root; `path` is always repo-relative. */
+  name?: string;
   type: 'file' | 'directory' | 'symlink';
   sizeBytes?: number;
 }
@@ -530,7 +532,11 @@ export function listEntriesFromTree(
   const matches = tree.entries.filter((entry) => entry.path !== root && (root === '' || entry.path.startsWith(prefix)));
   const depthFiltered = matches.filter((entry) => entry.path.split('/').filter(Boolean).length - rootDepth <= depth);
   const entries = depthFiltered.slice(0, limit).map((entry) => ({
-    path: root ? entry.path.slice(prefix.length) : entry.path,
+    // Always repo-relative so forge_files_read / forge_edit can take path as-is.
+    // Nested listings previously returned basename-relative paths and ChatGPT
+    // then read README.md instead of docs/README.md.
+    path: entry.path,
+    name: root ? entry.path.slice(prefix.length) : entry.path,
     type: entry.type === 'tree' ? ('directory' as const) : entry.mode === '120000' ? ('symlink' as const) : ('file' as const),
     sizeBytes: entry.type === 'blob' ? entry.size : undefined
   }));

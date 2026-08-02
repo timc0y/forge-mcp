@@ -283,6 +283,9 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   if (state === 'provisioning' || state === 'bootstrapping') {
     return ['forge_workspace_get'];
   }
+  if (state === 'destroyed' || state === 'destroying') {
+    return ['forge_workspace_create', 'forge_observer_workspaces'];
+  }
   if (!['ready', 'busy'].includes(state)) {
     return ['forge_workspace_get'];
   }
@@ -627,7 +630,46 @@ export class ManagedProcesses {
           : processStatus === 'cancelled'
             ? 'cancelled'
             : 'failed';
+    } else {
+      // Create/destroy and other processless control-plane ops used to stay
+      // "accepted" forever, so ChatGPT polled forge_operation_get instead of
+      // editing. Once the workspace has a terminal-ish control-plane state,
+      // the operation is done.
+      const workspaceState = record.workspace.state;
+      if (
+        workspaceState === 'requested' ||
+        workspaceState === 'ready' ||
+        workspaceState === 'busy' ||
+        workspaceState === 'destroyed' ||
+        workspaceState === 'failed'
+      ) {
+        status = workspaceState === 'failed' ? 'failed' : 'completed';
+      } else if (workspaceState === 'provisioning' || workspaceState === 'bootstrapping') {
+        status = 'active';
+      }
     }
+    const allowedNextActions =
+      status === 'active'
+        ? processId
+          ? ['forge_process_wait', 'forge_process_list', 'forge_process_logs']
+          : ['forge_workspace_get']
+        : status === 'completed' && !processId
+          ? record.workspace.state === 'destroyed'
+            ? ['forge_workspace_create', 'forge_observer_workspaces']
+            : [...LAZY_REQUESTED_NEXT_ACTIONS]
+          : ['forge_workspace_get', 'forge_process_list', 'forge_shell'];
+    const next_step =
+      status === 'active' && processId
+        ? observationalWaitNextStep(processId)
+        : status === 'active'
+          ? EXECUTOR_PROVISIONING_NEXT_STEP
+          : status === 'completed' && !processId && record.workspace.state === 'requested'
+            ? 'Control-plane create finished. Do not keep polling forge_operation_get. Use forge_files_read / forge_edit now; the first forge_shell starts the ephemeral executor.'
+            : status === 'completed' && !processId && record.workspace.state === 'destroyed'
+              ? 'Destroy finished. Call forge_workspace_create to continue; do not reuse the old workspace_id.'
+              : status === 'completed' && !processId
+                ? 'Operation finished. Continue with forge_files_read / forge_edit, or forge_workspace_get for status — do not poll forge_operation_get.'
+                : undefined;
     return {
       workspaceId: record.workspace.id,
       operationId,
@@ -648,9 +690,8 @@ export class ManagedProcesses {
         : null,
       dependencyState: dependencyStateView(record.dependencyState),
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: status === 'active'
-        ? ['forge_process_wait', 'forge_process_list', 'forge_process_logs']
-        : ['forge_workspace_get', 'forge_process_list', 'forge_shell']
+      allowedNextActions,
+      ...(next_step ? { next_step, ...(status === 'completed' && !processId ? { stop_polling: true as const } : {}) } : {})
     };
   }
 
