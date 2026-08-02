@@ -66,6 +66,17 @@ function randomToken(prefix: string): string {
   return `${prefix}_${base64Url(bytes)}`;
 }
 
+async function ensureTenantAndProject(env: Env, tenantId: string, projectId: string): Promise<void> {
+  if (!tenantId || !projectId) return;
+  const now = new Date().toISOString();
+  await env.METADATA.prepare(
+    'INSERT OR IGNORE INTO tenants (id, name, status, created_at) VALUES (?1, ?2, ?3, ?4)'
+  ).bind(tenantId, `Tenant ${tenantId}`, 'active', now).run();
+  await env.METADATA.prepare(
+    'INSERT OR IGNORE INTO projects (id, tenant_id, name, created_at) VALUES (?1, ?2, ?3, ?4)'
+  ).bind(projectId, tenantId, `Project ${projectId}`, now).run();
+}
+
 async function hash(value: string): Promise<string> {
   return base64Url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
 }
@@ -354,16 +365,21 @@ export async function token(request: Request, env: Env): Promise<Response> {
         issuer: acceptedIssuers(env),
         audience: 'forge-mcp'
       });
+      const tenantId = typeof payload.tenant_id === 'string' ? payload.tenant_id : '';
+      const projectId = typeof payload.project_id === 'string' ? payload.project_id : '';
+      const clientId = typeof payload.client_id === 'string' ? payload.client_id : '';
+      const scope = typeof payload.scope === 'string' ? payload.scope : '';
       if (
         payload.token_type !== 'refresh' ||
         typeof payload.sub !== 'string' ||
-        typeof payload.tenant_id !== 'string' ||
-        typeof payload.project_id !== 'string' ||
-        typeof payload.client_id !== 'string' ||
-        typeof payload.scope !== 'string'
+        !tenantId ||
+        !projectId ||
+        !clientId ||
+        !scope
       ) return json({ error: 'invalid_grant' }, 400);
-      const access = await issueAccessToken(env, payload.sub, payload.tenant_id, payload.project_id, payload.client_id, payload.scope);
-      const refresh = await issueRefreshToken(env, payload.sub, payload.tenant_id, payload.project_id, payload.client_id, payload.scope);
+      await ensureTenantAndProject(env, tenantId, projectId);
+      const access = await issueAccessToken(env, payload.sub, tenantId, projectId, clientId, scope);
+      const refresh = await issueRefreshToken(env, payload.sub, tenantId, projectId, clientId, scope);
       return tokenResponse(access, refresh);
     } catch {
       return json({ error: 'invalid_grant' }, 400);
@@ -390,6 +406,7 @@ export async function token(request: Request, env: Env): Promise<Response> {
   await env.METADATA.prepare('UPDATE oauth_codes SET used_at = ?1 WHERE code_hash = ?2 AND used_at IS NULL')
     .bind(new Date().toISOString(), row.code_hash)
     .run();
+  await ensureTenantAndProject(env, row.tenant_id, row.project_id);
   const access = await issueAccessToken(env, row.subject, row.tenant_id, row.project_id, row.client_id, row.scope);
   const refresh = await issueRefreshToken(env, row.subject, row.tenant_id, row.project_id, row.client_id, row.scope);
   return tokenResponse(access, refresh);
