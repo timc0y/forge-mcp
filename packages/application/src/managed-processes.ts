@@ -54,6 +54,70 @@ export const LAZY_REQUESTED_NEXT_ACTIONS = [
   'forge_workspace_get'
 ] as const;
 
+/** Host transport aborts near 60s; each wait observes at most this long. */
+export const OBSERVATIONAL_WAIT_MS = 30_000;
+
+/**
+ * ChatGPT previously treated install start guidance that said
+ * `timeout_ms >= 600000` as a single long wait. That exceeds the MCP transport
+ * and contradicts forge_process_wait's 30s max — agents then restarted installs
+ * or invented larger waits. One shared recipe only.
+ */
+export function observationalWaitNextStep(
+  processId: string,
+  options: { alreadyRunning?: boolean; suggestedTimeoutMs?: number } = {}
+): string {
+  const budget = options.suggestedTimeoutMs ?? OBSERVATIONAL_WAIT_MS;
+  const prefix = options.alreadyRunning
+    ? `An install is already running as ${processId}. Do not start another install. `
+    : '';
+  return (
+    `${prefix}Call forge_process_wait with process_id ${processId} and timeout_ms at most ${budget}. ` +
+    `If timedOut:true, call forge_process_wait again with the same process_id — each call only observes; ` +
+    `never restart the process or raise the wait above ${budget}.`
+  );
+}
+
+/** True when a managed process command looks like a package-manager install. */
+export function isDependencyInstallCommand(command: string): boolean {
+  return (
+    /\b(pnpm|npm|yarn|bun|pip|uv)\b/i.test(command) &&
+    /\b(install|ci|sync)\b/i.test(command)
+  );
+}
+
+/**
+ * Active dependency install, if any. ChatGPT often races forge_shell / forge_preview
+ * against an unfinished install; callers should wait (or stop) this process first.
+ */
+export function findActiveDependencyInstall(
+  record: Pick<WorkspaceRuntimeRecord, 'processes'>
+): { processId: string; command: string } | undefined {
+  const active = Object.entries(record.processes).find(
+    ([, entry]) => !entry.completedAt && isDependencyInstallCommand(entry.command)
+  );
+  if (!active) return undefined;
+  return { processId: active[0], command: active[1].command };
+}
+
+/** First-execution wake / mid-provision poll recipe. Avoids duplicate workspaces. */
+export const EXECUTOR_PROVISIONING_NEXT_STEP =
+  'Call forge_workspace_get; if state is still provisioning or bootstrapping, wait a few seconds and call forge_workspace_get again until ready, then retry the same execution tool. Do not create a second workspace.';
+
+/**
+ * One durability recipe for ChatGPT. Soft “continue on the executor” wording
+ * licensed claiming shell exit 0 as saved work — this is the only next_step.
+ */
+export function durabilityNextStep(kind: 'mutating' | 'read_only' | 'process_done' = 'mutating'): string {
+  if (kind === 'read_only') {
+    return 'Repository truth is forge_files_read / forge_edit. Use forge_shell only to verify.';
+  }
+  if (kind === 'process_done') {
+    return 'Process finished. Executor files are ephemeral. Call forge_files_read on changed paths, then forge_edit (commit_url) before claiming progress.';
+  }
+  return 'Executor files are ephemeral. Call forge_files_read on changed paths, then forge_edit (commit_url). Do not treat exit 0 as saved.';
+}
+
 export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): string[] {
   const active = Object.entries(record.processes).filter(([, entry]) => !entry.completedAt);
   if (active.length > 0) {
@@ -85,13 +149,18 @@ export function workspaceAllowedNextActions(record: WorkspaceRuntimeRecord): str
   }
   const deps = dependencyStateView(record.dependencyState);
   if (deps.status !== 'ready') {
+    // Deps missing must not hide GitHub authoring — ChatGPT otherwise patches
+    // via forge_shell while "waiting for install" and never forge_edits.
     return [
+      'forge_files_read',
+      'forge_edit',
       'forge_deps_install',
       'forge_shell',
       'forge_workspace_get'
     ];
   }
   return [
+    'forge_files_read',
     'forge_edit',
     'forge_shell',
     'forge_merge',
@@ -332,7 +401,15 @@ export class ManagedProcesses {
   async processGet(record: WorkspaceRuntimeRecord, processId: ProcessId) {
     const handle = await this.resolveHandle(record, { allowRecreate: false });
     const process = await handle.getProcess(processId);
-    if (!process) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
+    if (!process) {
+      throw new ForgeError({
+        code: 'FORGE_PROCESS_NOT_FOUND',
+        message:
+          'The managed process was not found in this workspace. Call forge_process_list and reuse a returned process_id, or start work with forge_shell / forge_deps_install — do not invent process ids.',
+        retryable: false,
+        details: { processId, allowedNextActions: ['forge_process_list', 'forge_shell', 'forge_deps_install'] }
+      });
+    }
     const entry = record.processes[processId];
     if (entry && !entry.completedAt && process.status !== 'running' && process.status !== 'starting') {
       entry.completedAt = process.completedAt ?? new Date().toISOString();
@@ -436,9 +513,8 @@ export class ManagedProcesses {
     // Never replace an executor while waiting; this call is observational.
     const handle = await this.resolveHandle(record, { allowRecreate: false });
     // This method is reached through an HTTP tool call whose transport expires
-    // at roughly 60 seconds. Keep a generous response/ingestion margin even
-    // when an older client asks to wait for several minutes: waiting is
-    // observational, so another short call is always safe.
+    // at roughly 60 seconds. Cap the wait below that as a transport safety
+    // margin: waiting is observational, so another short call is always safe.
     const requestedTimeoutMs = Math.max(250, Math.min(timeoutMs ?? 30_000, 30_000));
     let process: ProcessRecord;
     try {
@@ -446,7 +522,15 @@ export class ManagedProcesses {
         process = await handle.processWait({ processId, timeoutMs: requestedTimeoutMs });
       } else {
         const current = await handle.getProcess(processId);
-        if (!current) throw new ForgeError({ code: 'FORGE_PROCESS_NOT_FOUND', message: 'The managed process was not found in this workspace.', retryable: false, details: { processId } });
+        if (!current) {
+          throw new ForgeError({
+            code: 'FORGE_PROCESS_NOT_FOUND',
+            message:
+              'The managed process was not found in this workspace. Call forge_process_list and reuse a returned process_id, or start work with forge_shell / forge_deps_install — do not invent process ids.',
+            retryable: false,
+            details: { processId, allowedNextActions: ['forge_process_list', 'forge_shell', 'forge_deps_install'] }
+          });
+        }
         process = current;
       }
     } catch (error) {
@@ -480,8 +564,8 @@ export class ManagedProcesses {
       workspaceRevision: record.workspace.revision,
       allowedNextActions: ['forge_shell', 'forge_workspace_get', 'forge_process_logs'],
       next_step: entry?.mutatesFilesystem
-        ? 'Process finished. Its filesystem changes remain only in this ephemeral executor session; use forge_edit to save deliberate changes to GitHub.'
-        : 'Process finished. Continue with shell commands or forge_workspace_get.'
+        ? durabilityNextStep('process_done')
+        : durabilityNextStep('read_only')
     };
   }
 
@@ -529,9 +613,10 @@ export class ManagedProcesses {
     if (!record.processes[processId]) {
       throw new ForgeError({
         code: 'FORGE_PROCESS_NOT_FOUND',
-        message: 'The process is not owned by this workspace.',
+        message:
+          'The process is not owned by this workspace. Call forge_process_list and reuse a returned process_id — do not invent process ids.',
         retryable: false,
-        details: { processId }
+        details: { processId, allowedNextActions: ['forge_process_list'] }
       });
     }
     const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
@@ -585,9 +670,10 @@ export class ManagedProcesses {
     if (!record.processes[processId]) {
       throw new ForgeError({
         code: 'FORGE_PROCESS_NOT_FOUND',
-        message: 'The process is not owned by this workspace.',
+        message:
+          'The process is not owned by this workspace. Call forge_process_list and reuse a returned process_id — do not invent process ids.',
         retryable: false,
-        details: { processId }
+        details: { processId, allowedNextActions: ['forge_process_list'] }
       });
     }
     const operation = this.beginMutation(record, expectedRevision, idempotencyKey);
@@ -606,6 +692,7 @@ export class ManagedProcesses {
     }
     await (await this.resolveHandle(record)).stopProcess(processId);
     const entry = record.processes[processId];
+    const wasInstall = Boolean(entry && isDependencyInstallCommand(entry.command));
     if (entry) {
       entry.completedAt = new Date().toISOString();
       entry.exitCode = 0;
@@ -620,7 +707,10 @@ export class ManagedProcesses {
       originalOperationId: operation.operationId,
       operationId: operation.operationId,
       workspaceRevision: record.workspace.revision,
-      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell']
+      allowedNextActions: ['forge_process_list', 'forge_workspace_get', 'forge_shell', 'forge_deps_install'],
+      next_step: wasInstall
+        ? 'Install was stopped incomplete. Call forge_process_list; only call forge_deps_install with a new idempotency_key when no install is running — never start two installs.'
+        : 'Process stopped. Call forge_process_list before starting related work again.'
     };
   }
 

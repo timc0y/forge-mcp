@@ -2,6 +2,9 @@
 
 Forge is a GitHub-native coding control plane with optional ephemeral execution, not the place where an agent should perform all of its thinking. The cheapest and most reliable pattern is to make the product decision first, use GitHub-backed tools for repository work, and allocate the executor only for commands, installs, builds, tests, dev servers, previews, or deploys.
 
+For ChatGPT-ready recipes (plan, UI iteration, bug fix, resume), see
+[project-workflows.md](./project-workflows.md).
+
 ## Core operating model
 
 Separate every task into two layers.

@@ -69,7 +69,14 @@ export function taskToolHandlers(env: Env, deps: TaskHandlerDependencies): Pick<
           likelyPaths: input.likely_paths as string[]
         });
         await store.put(task);
-        return { task_id: task.id, state: task.state, revision: task.revision, container_used: false };
+        return {
+          task_id: task.id,
+          state: task.state,
+          revision: task.revision,
+          container_used: false,
+          next_step:
+            'Keep this task_id for the session. Pass it to forge_task_get mode:resume, forge_task_update, and forge_merge — do not discard it when context compresses.'
+        };
       },
       forge_task_get: async (input) => {
         const identity = deps.identity();
@@ -261,7 +268,7 @@ export function taskToolHandlers(env: Env, deps: TaskHandlerDependencies): Pick<
             outcome: updated.state,
             forced: force,
             note: input.note ? text(input.note) : undefined,
-            pushedAt: updated.pushedAt,
+            remoteBranchSha: updated.remoteBranchSha,
             changedFileCount: updated.changedFiles.length
           },
           { workspaceId: updated.workspaceId }

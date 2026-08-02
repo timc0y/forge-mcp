@@ -17,6 +17,7 @@ import {
   listPendingDeferredActions,
   type DeferredAction
 } from './deferred-actions';
+import { dashboardFirstPrompts } from './mcp-guidance';
 
 const GITHUB_API_VERSION = '2026-03-10';
 const SESSION_SECONDS = 60 * 60 * 24 * 14;
@@ -99,19 +100,12 @@ function escapeHtmlLocal(value: string): string {
 
 /**
  * CSRF guard for form POSTs: the submission must come from a page Forge itself
- * served.
- *
- * "Forge itself" is more than one origin — the canonical one plus any it used
- * to answer on (FORGE_LEGACY_ORIGINS). Checking only the canonical origin broke
- * every approval page loaded on the older hostname the moment the canonical one
- * changed: the page rendered a working-looking Approve button, and pressing it
- * returned 403 with nothing explaining why.
+ * served (FORGE_PUBLIC_ORIGIN).
  */
 export function assertSameOrigin(request: Request, env: Env): void {
   const origin = request.headers.get('origin');
   if (!origin) return;
-  const allowed = [env.FORGE_PUBLIC_ORIGIN, ...(env.FORGE_LEGACY_ORIGINS ?? '').split(',').map((value) => value.trim())];
-  if (!allowed.filter(Boolean).includes(origin)) throw new ForgeError({
+  if (origin !== env.FORGE_PUBLIC_ORIGIN) throw new ForgeError({
     code: 'FORGE_PERMISSION_DENIED', message: 'Cross-origin form submission was rejected.', retryable: false
   });
 }
@@ -270,27 +264,16 @@ export async function repositoryWriteProof(
 }
 
 /**
- * The Forge origin this request came in on.
+ * The Forge origin for this request: FORGE_PUBLIC_ORIGIN.
  *
- * Forge answers on its canonical origin and on any origin it used to answer on
- * (see FORGE_LEGACY_ORIGINS), and a visitor should stay on whichever one they
- * chose — the session cookie is host-scoped, so redirecting them to the other
- * one mid-login silently drops the session they just established.
- *
- * The request's own host is matched against that allow-list rather than
- * trusted: a Host header is attacker-controlled, and this value ends up in an
- * OAuth redirect_uri. Anything unrecognised falls back to the canonical origin.
+ * The request Host is attacker-controlled and this value ends up in an OAuth
+ * redirect_uri, so unrecognised hosts must never be echoed back.
  */
 export function forgeOrigin(request: Request, env: Env): string {
-  let origin: string;
   try {
-    origin = new URL(request.url).origin;
+    if (new URL(request.url).origin === env.FORGE_PUBLIC_ORIGIN) return env.FORGE_PUBLIC_ORIGIN;
   } catch {
-    return env.FORGE_PUBLIC_ORIGIN;
-  }
-  if (origin === env.FORGE_PUBLIC_ORIGIN) return origin;
-  for (const legacy of (env.FORGE_LEGACY_ORIGINS ?? '').split(',')) {
-    if (legacy.trim() && legacy.trim() === origin) return origin;
+    // fall through
   }
   return env.FORGE_PUBLIC_ORIGIN;
 }
@@ -307,11 +290,6 @@ export async function getWebSession(request: Request, env: Env): Promise<UserRow
 
 export async function startGitHubLogin(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  // Sign in against the hostname the visitor is actually on. Forge answers on
-  // more than one (the canonical origin plus any legacy one), and pinning the
-  // flow to the canonical origin would bounce a visitor mid-login to a
-  // different host — losing the session cookie they are in the middle of
-  // getting, since it is host-scoped.
   const self = forgeOrigin(request, env);
   const requestedReturn = url.searchParams.get('return_to') ?? '/app';
   const candidate = new URL(requestedReturn, self);
@@ -445,8 +423,8 @@ export async function installGitHubApp(request: Request, env: Env): Promise<Resp
 /**
  * A slug freed by a rename can immediately be taken by a different repository.
  * Clear any row squatting on this (owner, name) that is not this repository, so
- * the legacy UNIQUE(provider, owner, name, tenant_id) cannot reject the upsert
- * below. GitHub is the source of truth for what exists.
+ * the UNIQUE(provider, owner, name, tenant_id) constraint cannot reject the
+ * upsert below. GitHub is the source of truth for what exists.
  *
  * Exported so the rename regression test drives the real statement.
  */
@@ -886,9 +864,8 @@ ${accessSection}${reviewSection}
 <code class="block" id="mcp">${escapeHtml(mcpUrl)}</code>
 <button class="primary" type="button" onclick="navigator.clipboard.writeText(document.querySelector('#mcp').textContent);this.textContent='Copied'">Copy MCP URL</button></section>
 <section class="section"><h2>Good first prompts</h2>
-<div class="prompt">Screenshot ${escapeHtml(user.github_login)}.com on phone and desktop and tell me what looks wrong.</div>
-<div class="prompt">Open one of my repositories, run the checks, and explain the architecture. Change nothing yet.</div>
-<div class="prompt">Fix the most important issue you found, verify it with screenshots, then submit it for my review.</div></section>
+${dashboardFirstPrompts(user.github_login).map((prompt) => `<div class="prompt">${escapeHtml(prompt)}</div>`).join('')}
+<p class="note">In ChatGPT or Claude you can also use Forge prompts: plan-work, iterate-ui, fix-bug, resume-task, start-task, review-live-url, prepare-draft-pr.</p></section>
 </div><aside>
 <section class="section"><h2>Workspace capacity</h2>
 <p class="note"><a href="/app/live">Open live activity</a> — read-only view of running workspaces, MCP tools, and log tails.</p>
@@ -1090,7 +1067,7 @@ export async function requireApproval(
     throw new ForgeError({ code: 'FORGE_APPROVAL_EXPIRED', message: 'This approval expired. Request a new one and have it approved, then retry.', retryable: false });
   }
   if (row.state !== 'approved') {
-    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: row.state === 'pending' ? 'Approval is still pending — wait for it to be approved in the browser, then retry.' : 'This approval was already used. Request a new one.', retryable: false });
+    throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: row.state === 'pending' ? 'Approval is still pending. Echo the approval_url to the human and stop — do not poll forge_pr or forge_merge. Retry once only after they confirm approval, with the same approval_id and idempotency_key.' : 'This approval was already used. Request a fresh approval_id and retry the same forge_* tool — do not reuse the spent id.', retryable: false });
   }
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
   const changed: Array<{ field: string; approved: unknown; current: unknown }> = [];
@@ -1403,10 +1380,7 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   const linkClaims = token ? await verifyApprovalLink(env, token, approvalId) : null;
   const user = linkClaims ? null : await getWebSession(request, env);
   const tenantId = linkClaims?.tenant ?? user?.tenant_id ?? null;
-  // Stay on the hostname the reviewer opened. Forge answers on more than one,
-  // and sending them to the canonical origin mid-decision makes the form post
-  // cross-origin (rejected by assertSameOrigin) and drops the host-scoped
-  // session cookie of anyone relying on one instead of a signed link.
+  // Stay on FORGE_PUBLIC_ORIGIN for the approval URL / form action.
   const self = forgeOrigin(request, env);
   if (!tenantId) return Response.redirect(`${self}/login/github?return_to=${encodeURIComponent(request.url)}`, 302);
   const resolvedBy = user ? `github:${user.github_user_id}` : 'approval-link';
@@ -1565,12 +1539,11 @@ poll();})();</script>`
     : '';
   const hasDiff = typeof diff === 'string' && diff.trim() !== '';
   const shown = hasDiff ? diffStats(diff) : null;
-  // Prefer the recorded totals for the headline figure — they describe the
-  // whole change. Fall back to counting the text for older approvals stored
-  // before totals were recorded.
+  // Headline figures come only from recorded totals — never by counting attached
+  // diff text, which may be a truncated page of a larger change.
   const stats = diffTotals?.files !== undefined
     ? { files: diffTotals.files, added: diffTotals.additions ?? 0, removed: diffTotals.deletions ?? 0 }
-    : shown;
+    : null;
   const statsLine = stats
     ? `<p class="stats"><b>${stats.files}</b> file${stats.files === 1 ? '' : 's'} · <span class="s-add">+${stats.added}</span> <span class="s-del">−${stats.removed}</span></p>`
     : '';

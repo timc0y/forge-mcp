@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { forgeTools, REMOVED_TOOLS } from '@forge/mcp-core';
+import { forgeTools } from '@forge/mcp-core';
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -43,45 +43,37 @@ function agentFacingStrings(source: string): string[] {
   for (const match of source.matchAll(/allowedNextActions\s*:\s*\[([^\]]*)\]/gu)) {
     found.push(match[1] as string);
   }
+  // mcp-guidance.ts holds the MCP instructions and prompt recipes as long
+  // string literals / template bodies. Sweep every prose-shaped literal there
+  // so a dead tool name in a ChatGPT prompt cannot land unnoticed.
+  if (source.includes('FORGE_MCP_INSTRUCTIONS') || source.includes('FORGE_PROMPT_HINTS')) {
+    for (const literal of source.matchAll(/(['"`])((?:\\.|(?!\1)[^\\])*?)\1/gu)) {
+      const text = literal[2] as string;
+      if (text.includes(' ') && /forge_[a-z_]+/u.test(text)) found.push(text);
+    }
+  }
   return found;
 }
 
 const ROOTS = ['packages', 'apps'].map((root) => join(process.cwd(), root));
-const FILES = ROOTS.flatMap((root) => sourceFiles(root))
-  // The removal map exists precisely to name removed tools.
-  .filter((file) => !file.includes('removed-tools') && !file.endsWith('mcp-core/src/index.ts'));
+const FILES = ROOTS.flatMap((root) => sourceFiles(root));
 
 describe('guidance an agent is told to follow', () => {
-  it('never sends an agent to a tool that no longer exists', () => {
-    // This regressed four separate times while the catalog shrank:
-    // allowedNextActions, a recycled-workspace error, a patch failure, a
-    // divergence message and the prompt templates all kept naming dead tools.
-    // A human reading a diff will not catch the fifth; this will.
-    const removed = new Set(Object.keys(REMOVED_TOOLS));
-    const offences: string[] = [];
-    for (const file of FILES) {
-      const source = readFileSync(file, 'utf8');
-      for (const prose of agentFacingStrings(source)) {
-        for (const named of prose.match(/forge_[a-z_]+/gu) ?? []) {
-          if (removed.has(named)) offences.push(`${file.split('/').slice(-2).join('/')}: ${named}`);
-        }
-      }
-    }
-    expect(offences).toEqual([]);
-  });
-
   it('only ever names tools that are actually in the catalog', () => {
+    // This regressed while the catalog shrank: allowedNextActions, recycled-
+    // workspace errors, patch failures, divergence messages and prompt
+    // templates all kept naming dead tools. A typo'd or invented tool name is
+    // the same dead end.
     const live = new Set(forgeTools.map((tool) => tool.name));
     const unknown: string[] = [];
     for (const file of FILES) {
       const source = readFileSync(file, 'utf8');
       for (const prose of agentFacingStrings(source)) {
         for (const named of prose.match(/forge_[a-z_]+/gu) ?? []) {
-          if (!live.has(named) && !(named in REMOVED_TOOLS)) unknown.push(`${file.split('/').slice(-2).join('/')}: ${named}`);
+          if (!live.has(named)) unknown.push(`${file.split('/').slice(-2).join('/')}: ${named}`);
         }
       }
     }
-    // A typo'd or invented tool name is the same dead end as a removed one.
     expect(unknown).toEqual([]);
   });
 });

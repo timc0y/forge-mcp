@@ -9,7 +9,15 @@ import {
   type WorkspaceId
 } from '@forge/core';
 import { registerForgeToolsV1, type ToolCallTelemetry } from '@forge/mcp-adapter-v1';
-import { ToolCallTracker, hashArgs } from './telemetry';
+import {
+  detectDurableWitness,
+  observeProgressEvent,
+  phiFromReceipt,
+  progressGate,
+  progressPotentialView,
+  witnessIdFromReceipt,
+  type ProgressStreakState
+} from '@forge/application';
 import type { ForgeToolHandlers } from '@forge/mcp-core';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { D1AuditStore } from '@forge/audit';
@@ -21,14 +29,13 @@ import type { Env } from './env';
 import { workspaceOperations } from './workspace-operations';
 import { credentialService } from './credentials';
 import { reclaimStaleSlots, slotTtlMs } from './capacity';
-import { registerLegacyWidgetStub } from './legacy-widget';
 import {
   completeApproval,
   markApprovalApproved,
   requestApproval,
   requireApproval
 } from './github';
-import { recordToolCall, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
+import { hashArgs, recordToolCall, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
 import { appendWorkspaceActivity } from './workspace-activity';
 import { claimExternalMutation, readExternalMutationReceipt, recordExternalMutationReceipt } from './external-mutation-idempotency';
 import { systemToolHandlers } from './handlers/system';
@@ -38,8 +45,11 @@ import { repositoryWorkspaceToolHandlers } from './handlers/repository-workspace
 import { executionToolHandlers } from './handlers/execution';
 import type { HandlerIdentity as SessionProps, SessionHandlerDependencies } from './handlers/types';
 import { sha256 } from './handlers/helpers';
+import { FORGE_MCP_INSTRUCTIONS, FORGE_PROMPT_HINTS } from './mcp-guidance';
+import { isWorkspaceId } from './workspace-resolve';
 
 const SELECTED_CREDENTIAL_PROFILE_KEY = 'selected-credential-profile';
+const PROGRESS_POTENTIAL_KEY = 'forge_progress_potential_v1';
 
 // Best-effort recovery of a successful call's workspace id from its own
 // result, for the audit trail only (see onToolCallTelemetry) — never used to
@@ -55,37 +65,43 @@ function workspaceIdFromResult(result: unknown): string | undefined {
   return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : undefined;
 }
 
+function annotateProgressPotential(result: unknown, state: ProgressStreakState, warning?: string): unknown {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  if (!warning && state.streak === 0) return result;
+  const view = progressPotentialView(state);
+  const record = { ...(result as Record<string, unknown>) };
+  if (warning) {
+    record.next_step = typeof record.next_step === 'string' ? `${warning} ${record.next_step}` : warning;
+  }
+  return {
+    ...record,
+    progress_potential: {
+      ...view,
+      ...(warning ? { warning } : {})
+    }
+  };
+}
+
 export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
   server = new McpServer(
     { name: 'Forge MCP', version: '0.1.0' },
     {
-      instructions: [
-        'Forge has two planes. GitHub is the durable repository: forge_edit commits straight to your branch. The optional executor runs commands; files those commands change are local-only and disposable until you deliberately recreate them with forge_edit.',
-        '1. forge_workspace_create — it cuts your branch for you. You never choose, create or switch branches. Optional: call forge_start first and pass its branch as ref — it creates the branch on GitHub before any workspace exists, so it is real on origin from the moment it exists at all.',
-        '2. Read with forge_context_get / forge_files_read / forge_files_list. Edit with forge_edit (one call, many files; content:null deletes). Each call returns commit_url — that IS the durable record.',
-        '3. Run checks with forge_shell. The first execution call starts the ephemeral executor. Later commands share its local files, but those files never save themselves to GitHub.',
-        '4. When the work is good, ask the human, then forge_merge — it opens the pull request and returns one approval link. Echo the link only.',
-        '5. Never run git push in the executor. If a command produced a wanted file change, apply it with forge_edit. If forge_edit reports a conflict, re-read those paths and edit again.',
-        '6. Deploys: forge_cloudflare_deploy → echo deploy_receipt.verified_url only. Never invent URLs.'
-      ].join(' ')
+      instructions: FORGE_MCP_INSTRUCTIONS
     }
   );
 
   async init(): Promise<void> {
-    // Resolves the retired widget URI to an empty document. No tool advertises
-    // it; this exists only so sessions opened before the widget was removed
-    // stop rendering an unresolved placeholder. See legacy-widget.ts.
-    registerLegacyWidgetStub(this.server);
-    const tracker = new ToolCallTracker(this.env, {
-      waitUntil: (p) => (this.ctx as unknown as { waitUntil?: (p: Promise<unknown>) => void })?.waitUntil?.(p)
-    });
-    registerForgeToolsV1(this.server, this.withRepeatDetection(this.handlers()), (event) => {
-      void this.onToolCallTelemetry(tracker, event);
-    });
+    registerForgeToolsV1(
+      this.server,
+      this.withProgressPotential(this.withRepeatDetection(this.handlers())),
+      (event) => {
+        void this.onToolCallTelemetry(event);
+      }
+    );
     this.registerPrompts();
   }
 
-  private async onToolCallTelemetry(tracker: ToolCallTracker, event: ToolCallTelemetry): Promise<void> {
+  private async onToolCallTelemetry(event: ToolCallTelemetry): Promise<void> {
     let identity: SessionProps;
     try {
       identity = this.identity();
@@ -99,33 +115,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     } catch {
       clientName = undefined;
     }
-    tracker.capture(
-      {
-        tool: event.tool,
-        distinctId: identity.tenantId,
-        sessionId: `${identity.tenantId}:${identity.projectId}`,
-        clientName,
-        durationMs: event.durationMs,
-        status: event.status,
-        errorCode: event.errorCode,
-        errorMessage: event.errorMessage,
-        resultBytes: event.resultBytes,
-        argsHash: await hashArgs(event.input)
-      },
-      Date.now()
-    );
-    // Most workspace-scoped tools no longer take workspace_id as input (see
-    // workspace-resolve.ts) — they resolve it from owner/repo/branch instead —
-    // so it is no longer reliably on event.input. It is on event.result
-    // instead: every workspace-scoped handler still returns workspace_id or
-    // workspaceId to the caller as a receipt (see invariant A's allowlist
-    // decision), and this audit trail is exactly what forge_observer_activity
-    // filters by workspace, so losing that association here would make that
-    // tool worse at the one job it exists for.
-    const workspaceId = (typeof event.input.workspace_id === 'string' && event.input.workspace_id.trim())
-      ? event.input.workspace_id.trim()
+    // Workspace-scoped tools address via `workspace` (owner/repo#branch, bare
+    // branch, or a ws_ id) — not a dedicated workspace_id input. Prefer a ws_
+    // locator when the caller passed one; otherwise recover from the result
+    // receipt (every workspace-scoped handler still returns workspace_id /
+    // workspaceId). That association is what forge_observer_activity filters by.
+    const rawWorkspace = typeof event.input.workspace === 'string' ? event.input.workspace.trim() : '';
+    const workspaceId = (rawWorkspace && isWorkspaceId(rawWorkspace))
+      ? rawWorkspace
       : workspaceIdFromResult(event.result);
     const waitUntil = (this.ctx as unknown as { waitUntil?: (promise: Promise<unknown>) => void }).waitUntil;
+    const argsHash = await hashArgs(event.input);
     // The payload trail. Written alongside the counter so a failure can be
     // diagnosed from exactly what the agent sent and exactly what it read
     // back, without waiting for someone to reproduce it.
@@ -148,8 +148,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           (event.schemaDrift ? `Fields off declared shape: ${event.schemaDrift.join(', ')}` : undefined),
         request: event.input,
         response: event.result,
-        argsHash: await hashArgs(event.input)
-      }).catch(() => undefined)
+        argsHash
+      }).catch((error) => {
+        console.error('forge_tool_call_log_failed', { name: error instanceof Error ? error.name : 'unknown' });
+      })
     );
     waitUntil?.(
       appendWorkspaceActivity(this.env, {
@@ -160,7 +162,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         status: event.status,
         durationMs: event.durationMs,
         errorCode: event.errorCode
-      }).catch(() => undefined)
+      }).catch((error) => {
+        console.error('forge_workspace_activity_failed', { name: error instanceof Error ? error.name : 'unknown' });
+      })
     );
     if (workspaceId) {
       waitUntil?.(
@@ -169,14 +173,15 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           status: event.status,
           durationMs: event.durationMs,
           errorCode: event.errorCode
-        }).catch(() => undefined)
+        }).catch((error) => {
+          console.error('forge_live_activity_failed', { name: error instanceof Error ? error.name : 'unknown' });
+        })
       );
     }
   }
 
-  // Slash-command style entry points that mirror the server workflow in the
-  // instructions block: each prompt renders one concise user turn that steers
-  // the model down the intended Forge path (URL review, coding task, draft PR).
+  // Slash-command style entry points for project work in ChatGPT/Claude.
+  // Prompt bodies live in mcp-guidance.ts so integrity tests can sweep them.
   private registerPrompts(): void {
     const userText = (text: string) => ({
       messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }]
@@ -192,12 +197,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           notes: z.string().optional().describe('Optional focus areas, routes or states to prioritise')
         }
       },
-      ({ url, notes }) =>
-        userText(
-          `Review the deployed site at ${url} with Parallax. Call forge_review first — it captures screenshots without starting a container — covering the key routes at phone and desktop viewports. Inspect every returned screenshot before reaching a verdict, and resolve or explicitly accept any structureSummary heading defects.${
-            notes ? ` Focus on: ${notes}.` : ''
-          }`
-        )
+      ({ url, notes }) => userText(FORGE_PROMPT_HINTS['review-live-url']({ url, notes }))
     );
 
     this.server.registerPrompt(
@@ -210,10 +210,59 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           task: z.string().describe('What the task should accomplish')
         }
       },
-      ({ repository, task }) =>
-        userText(
-          `Start a coding task on ${repository}: ${task}. Prefer forge_task_create, then forge_workspace_create and reuse workspace_id. Read and edit through GitHub immediately. The first execution tool starts the ephemeral executor; if it reports provisioning, check forge_workspace_get once before retrying the command. Read repository instructions and any parallax/ files before changes. Implement and verify, inspect with forge_diff_metadata, then forge_merge. Tell me it is submitted and where to approve it, then destroy the workspace.`
-        )
+      ({ repository, task }) => userText(FORGE_PROMPT_HINTS['start-task']({ repository, task }))
+    );
+
+    this.server.registerPrompt(
+      'plan-work',
+      {
+        title: 'Plan work on a repository',
+        description: 'Create a durable Forge task plan without allocating an executor or writing code yet.',
+        argsSchema: {
+          repository: z.string().describe('The repository to plan against, e.g. owner/name'),
+          goal: z.string().describe('What the plan should accomplish')
+        }
+      },
+      ({ repository, goal }) => userText(FORGE_PROMPT_HINTS['plan-work']({ repository, goal }))
+    );
+
+    this.server.registerPrompt(
+      'iterate-ui',
+      {
+        title: 'Iterate on UI or design',
+        description: 'Edit UI, verify with screenshots, and refine until phone and desktop look right.',
+        argsSchema: {
+          repository: z.string().describe('The repository to change, e.g. owner/name'),
+          change: z.string().describe('The UI or design change to iterate on')
+        }
+      },
+      ({ repository, change }) => userText(FORGE_PROMPT_HINTS['iterate-ui']({ repository, change }))
+    );
+
+    this.server.registerPrompt(
+      'fix-bug',
+      {
+        title: 'Fix a bug',
+        description: 'Reproduce cheaply, fix code and test together, verify narrowly, then submit a draft PR.',
+        argsSchema: {
+          repository: z.string().describe('The repository that has the bug, e.g. owner/name'),
+          bug: z.string().describe('What is broken and how to recognise a fix')
+        }
+      },
+      ({ repository, bug }) => userText(FORGE_PROMPT_HINTS['fix-bug']({ repository, bug }))
+    );
+
+    this.server.registerPrompt(
+      'resume-task',
+      {
+        title: 'Resume a Forge task',
+        description: 'Pick up after context compression or reconnect using the durable task handoff.',
+        argsSchema: {
+          task_id: z.string().optional().describe('Existing task id, if known'),
+          repository: z.string().optional().describe('Repository to find the open task on, e.g. owner/name')
+        }
+      },
+      ({ task_id, repository }) => userText(FORGE_PROMPT_HINTS['resume-task']({ task_id, repository }))
     );
 
     this.server.registerPrompt(
@@ -225,12 +274,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           workspace_id: z.string().optional().describe('The workspace whose branch should become a draft PR')
         }
       },
-      ({ workspace_id }) =>
-        userText(
-          `Submit the current work for review${
-            workspace_id ? ` in workspace ${workspace_id}` : ''
-          } once tests pass. Run the tests and confirm they are green, inspect the outgoing change with forge_diff_metadata, then call forge_merge. It opens the draft pull request for me to approve whenever I get to it, so do not block waiting for an approval — report that it is submitted, tell me where to review it, and destroy the workspace.`
-        )
+      ({ workspace_id }) => userText(FORGE_PROMPT_HINTS['prepare-draft-pr']({ workspace_id }))
     );
   }
 
@@ -415,6 +459,52 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       });
     }
     return task;
+  }
+
+  /**
+   * Durable Progress Potential (Φ-gate): refuse progress-seeking tools when
+   * the session has had too many successes without a durable witness
+   * (forge_edit commit_url, merge submit, deps ready). Discrete Lyapunov
+   * control for MCP tool streams — see packages/application progress-potential.
+   */
+  private withProgressPotential(handlers: ForgeToolHandlers): ForgeToolHandlers {
+    const wrapped = {} as ForgeToolHandlers;
+    for (const name of Object.keys(handlers) as Array<keyof ForgeToolHandlers>) {
+      const original = handlers[name];
+      wrapped[name] = (async (input: Record<string, unknown>) => {
+        const tool = String(name);
+        const prev = (await this.ctx.storage.get<ProgressStreakState>(PROGRESS_POTENTIAL_KEY)) ?? null;
+        const gate = progressGate(prev, tool);
+        if (!gate.allow) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: gate.next_step,
+            retryable: false,
+            details: {
+              progress_potential: progressPotentialView(prev),
+              reason: gate.reason,
+              allowedNextActions: gate.allowedNextActions,
+              next_step: gate.next_step,
+              stopRepeating: true
+            }
+          });
+        }
+        const result = await original(input);
+        const argsHash = await hashArgs(input);
+        const durableWitness = detectDurableWitness(tool, result);
+        const next = observeProgressEvent(prev, {
+          tool,
+          durableWitness,
+          phiNow: phiFromReceipt(result),
+          witnessId: durableWitness ? witnessIdFromReceipt(tool, result) : undefined,
+          argsHash,
+          status: 'success'
+        });
+        await this.ctx.storage.put(PROGRESS_POTENTIAL_KEY, next);
+        return annotateProgressPotential(result, next, 'warning' in gate ? gate.warning : undefined);
+      }) as ForgeToolHandlers[typeof name];
+    }
+    return wrapped;
   }
 
   /**

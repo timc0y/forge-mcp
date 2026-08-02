@@ -151,3 +151,22 @@ export function repeatCallGuidance(tool: string, attempts: number): string {
     'Do not repeat this call.'
   );
 }
+
+/**
+ * Cheap, non-cryptographic hash for repeat-call detection — not a secret.
+ *
+ * Hashes the INTENT of a call, not the attempt. `idempotency_key` is stripped
+ * first: it is the one field guaranteed to differ between two attempts at the
+ * same thing, so including it made every retry look like new work.
+ */
+export async function hashArgs(input: unknown): Promise<string> {
+  const intent =
+    input && typeof input === 'object' && !Array.isArray(input)
+      ? Object.fromEntries(
+          Object.entries(input as Record<string, unknown>).filter(([key]) => key !== 'idempotency_key')
+        )
+      : input;
+  const json = JSON.stringify(intent) ?? '';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(json));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+}

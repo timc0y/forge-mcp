@@ -195,7 +195,6 @@ type TaskDocument = Pick<
   | 'checks'
   | 'evidenceIds'
   | 'outstanding'
-  | 'pushedAt'
   | 'remoteBranchSha'
   | 'submittedAt'
   | 'handoff'
@@ -223,7 +222,6 @@ export class D1TaskStore implements TaskStore {
       checks: task.checks,
       evidenceIds: task.evidenceIds,
       outstanding: task.outstanding,
-      pushedAt: task.pushedAt,
       remoteBranchSha: task.remoteBranchSha,
       submittedAt: task.submittedAt,
       handoff: task.handoff
@@ -285,7 +283,6 @@ export class D1TaskStore implements TaskStore {
       checks: document.checks,
       evidenceIds: document.evidenceIds,
       outstanding: document.outstanding,
-      ...(document.pushedAt ? { pushedAt: document.pushedAt } : {}),
       ...(document.remoteBranchSha ? { remoteBranchSha: document.remoteBranchSha } : {}),
       ...(document.submittedAt ? { submittedAt: document.submittedAt } : {}),
       ...(document.handoff ? { handoff: document.handoff } : {}),

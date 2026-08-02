@@ -34,8 +34,8 @@ means application preview.
   trust boundaries, approval model.
 - [`operations/`](./operations/) — incident response, provider upgrades,
   workspace cleanup, cost runbook.
-- [`mcp/`](./mcp/) — error codes, client compatibility, the agent execution
-  playbook.
+- [`mcp/`](./mcp/) — error codes, client compatibility, project workflows,
+  the agent execution playbook.
 - [`adr/`](./adr/) — architecture decision records.
 
 ## Vision & research (not all shipped)

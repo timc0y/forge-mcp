@@ -322,7 +322,7 @@ Do not make every field mandatory.
 
 ### 3. Separate decisions, assumptions, and assertions
 
-Replace ambiguous free-text inheritance with structured authority and verification status while retaining backwards compatibility with current arrays.
+Replace ambiguous free-text inheritance with structured authority and verification status; migrate current arrays to the new shapes rather than dual-reading both.
 
 ### 4. Structured terminal closure
 

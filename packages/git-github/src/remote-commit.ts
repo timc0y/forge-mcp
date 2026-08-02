@@ -49,12 +49,11 @@ export interface RemoteCommitInput {
   /**
    * Commit to create the branch from if it is not on origin yet.
    *
-   * `forge_start` now creates the branch on origin before any container
-   * exists, so the common case is that this ref is already there. But an
-   * agent branch can still be cut without going through `forge_start` (a
-   * legacy `forge_workspace_create` call with the default ref, say), and its
-   * first edit would then target a ref GitHub has never heard of. Without
-   * this the remote-first path 404s on call one, every time.
+   * `forge_start` creates the branch on origin before any container exists,
+   * so the common case is that this ref is already there. An agent branch
+   * can still be opened without that cut (for example `forge_workspace_create`
+   * on the default ref), and its first edit would then target a ref GitHub
+   * has never heard of. Without this the remote-first path 404s on call one.
    */
   baseSha?: string;
   /**

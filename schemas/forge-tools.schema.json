@@ -54,7 +54,7 @@
     },
     "forge_observer_activity": {
       "title": "Observer: tool activity",
-      "description": "Read-only trail of MCP tool calls for this account. payloads:true returns what each call actually sent and received (secrets redacted, large values previewed); errors_only:true narrows to failures. Use it to see why agents are failing rather than only that they failed.",
+      "description": "Complete read-only trail of MCP tool calls (redacted request/response). Default returns payloads from mcp_tool_calls. Pass payloads:false for counters only; errors_only:true narrows to failures.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -66,7 +66,7 @@
             "$ref": "#/$defs/__schema0"
           },
           "payloads": {
-            "default": false,
+            "default": true,
             "type": "boolean"
           },
           "errors_only": {
@@ -400,7 +400,7 @@
     },
     "forge_start": {
       "title": "Start a branch",
-      "description": "Create forge/<slug> on GitHub from base_ref (default: the repository’s own default branch) — before any workspace exists, no container. Pass the returned branch as ref to forge_workspace_create: it adopts an already-existing forge/ branch instead of cutting a new one, so the branch is on origin from the moment it exists at all.",
+      "description": "Create forge/<slug> on GitHub from base_ref (default: the repository’s own default branch) — before any workspace exists, no container. Pass the returned branch as ref to forge_workspace_create: it adopts an already-existing forge/ branch instead of cutting a new one, so the branch is on origin from the moment it exists at all. If a live workspace already covers this repository, next_step steers you to reuse it instead of creating another.",
       "sideEffect": "external",
       "approval": "none",
       "inputSchema": {
@@ -454,7 +454,7 @@
     },
     "forge_workspace_create": {
       "title": "Create workspace",
-      "description": "Create a lightweight control-plane coding session and return workspace_id + operation_id immediately. No executor is provisioned here; the first shell, install, build, test, dev, preview, or deploy call allocates an ephemeral executor using the requested runtime/bootstrap settings.",
+      "description": "Create a lightweight control-plane coding session and return workspace_id + operation_id immediately. No executor is provisioned here; the first shell, install, build, test, dev, preview, or deploy call allocates an ephemeral executor using the requested runtime/bootstrap settings. Refuses a second live workspace for the same repository — reuse owner/repo#branch instead.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {
@@ -548,7 +548,7 @@
     },
     "forge_workspace_get": {
       "title": "Get workspace",
-      "description": "Compact workspace summary including branch_policy (must be on forge/). Prefer compact:true in ChatGPT.",
+      "description": "Compact workspace summary including branch_policy (must be on forge/). Defaults to compact:true for ChatGPT — pass compact:false only when you need the full dump.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
@@ -560,9 +560,13 @@
             "$ref": "#/$defs/__schema0"
           },
           "compact": {
+            "default": true,
             "type": "boolean"
           }
         },
+        "required": [
+          "compact"
+        ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
@@ -955,7 +959,7 @@
     },
     "forge_shell": {
       "title": "Run command",
-      "description": "Allocate an ephemeral executor on first use and run a command for up to 30 seconds. Set async:true for known-long work; otherwise a long-running command returns process_id. Command-created or modified files remain executor-only, are never auto-committed, and report remote_persisted:false. Use forge_edit separately for wanted repository changes.",
+      "description": "Allocate an ephemeral executor on first use and run a command for up to 30 seconds. Set async:true for known-long work; otherwise a long-running command returns process_id. Refused while a dependency install is still running — wait that process first. Never edit repo files via shell (sed/redirects/git add/commit/push) — use forge_edit. Command-created files remain executor-only and report remote_persisted:false.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
@@ -1502,7 +1506,7 @@
     },
     "forge_merge": {
       "title": "Merge for review",
-      "description": "Ask the human to merge your work. Opens a pull request from your branch and returns one approval link — echo the link, do not invent URLs. Your branch is already on GitHub; nothing is pushed here.",
+      "description": "Ask the human to merge your work. Opens a pull request from your branch and returns one approval link — echo the link, do not invent URLs. Your branch is already on GitHub; nothing is pushed here. Do not call again while the same submission is pending.",
       "sideEffect": "external",
       "approval": "deferred",
       "inputSchema": {
@@ -1515,11 +1519,6 @@
           },
           "pr_base": {
             "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          },
-          "base": {
             "type": "string",
             "minLength": 1,
             "maxLength": 255
@@ -1817,7 +1816,7 @@
     },
     "forge_preview": {
       "title": "Preview capture",
-      "description": "Screenshot a workspace app. Omit preview_id to start/expose its server; optional steps drive interactions.",
+      "description": "Screenshot a workspace app. Omit preview_id to start/expose its server; optional steps drive interactions. Refused while a dependency install is still running — forge_deps_install → forge_process_wait first.",
       "sideEffect": "workspace",
       "approval": "none",
       "inputSchema": {

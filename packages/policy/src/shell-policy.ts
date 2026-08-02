@@ -315,11 +315,17 @@ export function splitCommandSegments(command: string): SplitResult {
         continue;
       }
       // Redirection: the rest up to the next separator is a target filename, not
-      // a command. `>`/`>>` mean this segment writes a file.
+      // a command. `>`/`>>` mean this segment writes a file. `2>&1` / `>&2` are
+      // fd-to-fd and must not count as file writes (or ChatGPT cannot run tests).
       if (char === '>' || char === '<') {
-        if (char === '>') writesFile = true;
         index += 1;
-        if (input[index] === '>' || input[index] === '&') index += 1;
+        if (input[index] === '&') {
+          index += 1;
+          while (index < input.length && /\d/.test(input[index]!)) index += 1;
+          continue;
+        }
+        if (char === '>') writesFile = true;
+        if (input[index] === '>') index += 1;
         // Consume the redirection target.
         while (index < input.length && /\s/.test(input[index]!)) index += 1;
         while (
@@ -409,8 +415,8 @@ function shellTokenValue(token: string | undefined): string {
     : value;
 }
 
-/** Recognise visible raw pushes through common exec/env wrappers and Git global options. */
-function isRawGitPush(command: string): boolean {
+/** Recognise visible raw git subcommands through common exec/env wrappers and Git global options. */
+function isRawGitSubcommand(command: string, subcommand: string): boolean {
   const tokens = command.trim().split(/\s+/u).filter(Boolean);
   let index = 0;
 
@@ -454,11 +460,23 @@ function isRawGitPush(command: string): boolean {
   index += 1;
   while (index < tokens.length) {
     const token = shellTokenValue(tokens[index]);
-    if (token === 'push') return true;
+    if (token === subcommand) return true;
     if (!token.startsWith('-')) return false;
     index += GIT_GLOBAL_OPTIONS_WITH_ARGUMENT.has(token) ? 2 : 1;
   }
   return false;
+}
+
+function isRawGitPush(command: string): boolean {
+  return isRawGitSubcommand(command, 'push');
+}
+
+function isRawGitCommit(command: string): boolean {
+  return isRawGitSubcommand(command, 'commit');
+}
+
+function isRawGitAdd(command: string): boolean {
+  return isRawGitSubcommand(command, 'add');
 }
 
 function rawGitPushDecision(): ShellDecision {
@@ -467,6 +485,24 @@ function rawGitPushDecision(): ShellDecision {
     false,
     false,
     'Raw git push bypasses Forge\'s guarded, verified GitHub write path. Use forge_edit to commit file changes and forge_merge to merge the pull request; Forge performs the required remote writes.'
+  );
+}
+
+function rawGitLocalWriteDecision(kind: 'commit' | 'add'): ShellDecision {
+  return decide(
+    'prohibited',
+    false,
+    false,
+    `Raw git ${kind} only mutates the ephemeral executor checkout. Call forge_files_read on the paths you changed, then forge_edit (it returns commit_url on GitHub). Do not claim work is saved until forge_edit succeeds.`
+  );
+}
+
+function repoFileWriteDecision(): ShellDecision {
+  return decide(
+    'prohibited',
+    false,
+    false,
+    'Shell must not write repository files. Call forge_files_read, then forge_edit (commit_url). Redirects, sed -i, and tee only mutate the ephemeral executor.'
   );
 }
 
@@ -492,6 +528,8 @@ function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, dep
   }
 
   if (isRawGitPush(raw) || isRawGitPush(trimmed)) return rawGitPushDecision();
+  if (isRawGitCommit(raw) || isRawGitCommit(trimmed)) return rawGitLocalWriteDecision('commit');
+  if (isRawGitAdd(raw) || isRawGitAdd(trimmed)) return rawGitLocalWriteDecision('add');
 
   // These builtins execute their arguments (or the contents of a file) as
   // shell code. We intentionally do not pretend to parse that second shell
@@ -539,11 +577,15 @@ function classifySegment(segment: Segment, networkPolicy: NetworkPolicyMode, dep
   }
   // `sed -i` mutates in place; plain `sed` is a read-only filter.
   if (SED.test(trimmed)) {
-    return SED_IN_PLACE.test(trimmed)
-      ? decide('local_mutation', true, false, 'In-place stream edit confined to the isolated workspace.')
-      : decide(segment.writesFile ? 'local_mutation' : 'read_only', true, false, 'Read-only stream filter.');
+    if (SED_IN_PLACE.test(trimmed) || segment.writesFile) return repoFileWriteDecision();
+    return decide('read_only', true, false, 'Read-only stream filter.');
   }
-  if (!segment.writesFile && readOnly.some((rule) => rule.test(trimmed))) {
+  // Redirects / tee write files. ChatGPT treats exit 0 as “saved”; refuse and
+  // force forge_edit. Capture output via stdout (Forge spills large logs).
+  if (segment.writesFile || /\btee\b/i.test(trimmed) || /\bperl\b[^\n]*\s-i\b/i.test(trimmed)) {
+    return repoFileWriteDecision();
+  }
+  if (readOnly.some((rule) => rule.test(trimmed))) {
     return decide('read_only', true, false, 'Read-only workspace command.');
   }
   return decide('local_mutation', true, false, 'Command is confined to the isolated workspace.');

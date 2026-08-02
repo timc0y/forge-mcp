@@ -312,10 +312,10 @@ The page shows the complete repository-to-PR demo and clearly labels current lim
 
 ### Forge Console
 
-Not built, and not planned as an in-chat widget. An MCP Apps
-(`ui://forge/workspace-console`) version was shipped and then removed: it
-rendered unreliably across hosts, and where it did render it wrapped a lot of
-chrome around information the model was already stating in chat.
+Not built, and not planned as an in-chat widget. An MCP Apps in-chat widget
+version was shipped and then removed: it rendered unreliably across hosts, and
+where it did render it wrapped a lot of chrome around information the model was
+already stating in chat.
 
 Workspace, evidence, diff and test state stay available as structured MCP
 output. The only Forge-authored screen is the approval page at

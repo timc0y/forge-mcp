@@ -4,7 +4,7 @@ PRAGMA foreign_keys = ON;
 -- task/session summary later claims it did. Append-only; no UPDATE/DELETE
 -- path exists in AuditStore. Covers only mutating, consequential actions
 -- (push, PR create, task finish, workspace destroy), not every tool call —
--- that volume belongs in telemetry (PostHog), not this durable trail.
+-- that volume belongs in mcp_tool_calls, not this durable trail.
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,

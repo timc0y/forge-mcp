@@ -4,6 +4,7 @@ import { D1TaskStore } from '@forge/metadata-d1';
 import type { BrowserActionStep } from '@forge/browser-core';
 import type { CommandClass } from '@forge/policy';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
+import { EXECUTOR_PROVISIONING_NEXT_STEP } from '@forge/application';
 import type { Env } from '../env';
 import { workspaceOperations, type WorkspaceOperations } from '../workspace-operations';
 import type { HandlerIdentity } from './types';
@@ -189,8 +190,7 @@ export async function lookupUrlReviewOwner(
     if (!row) return null;
     return { tenantId: row.tenant_id, projectId: row.project_id };
   } catch (error) {
-    // Table not migrated yet, or a transient DB error: fall back to the
-    // (already tenant-scoped) R2 key path rather than failing every read.
+    // Table missing or transient DB error: treat as unbound so the caller denies.
     console.warn('forge_url_review_binding_read_failed', {
       workspaceId,
       reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown'
@@ -259,10 +259,6 @@ export async function mapWithConcurrency<T, R>(
 // How many captured screenshots to inline into the tool response. The rest stay
 // retrievable via forge_artifact_get, keeping response size (Worker CPU + client
 // tokens) bounded on large review grids.
-// How many screenshots to inline as data: URIs into the widget-only _meta
-// gallery. Kept small so the _meta payload (never seen by the model) stays
-// bounded on large review grids.
-export const MAX_GALLERY_IMAGES = 6;
 export const REVIEW_CAPTURE_CONCURRENCY = 3;
 
 // Roll a single evidence cell's heading-defect count up from its accessibility
@@ -364,12 +360,13 @@ export async function executorCoordinator(
     }
     throw new ForgeError({
       code: 'FORGE_WORKSPACE_NOT_READY',
-      message: 'The ephemeral executor is starting because this is the first execution tool used for the workspace. No command ran; retry this same tool after forge_workspace_get reports ready.',
+      message: `The ephemeral executor is starting because this is the first execution tool used for the workspace. No command ran. Call forge_workspace_get; if state is still provisioning or bootstrapping, wait a few seconds and call forge_workspace_get again until ready, then retry the same execution tool. Do not create a second workspace.`,
       retryable: true,
       details: {
         workspace_id: workspaceId,
         operation_id: binding.operationId,
         state: 'provisioning',
+        next_step: EXECUTOR_PROVISIONING_NEXT_STEP,
         allowedNextActions: ['forge_workspace_get']
       }
     });
@@ -378,17 +375,26 @@ export async function executorCoordinator(
   if (binding.state === 'provisioning' || binding.state === 'bootstrapping') {
     throw new ForgeError({
       code: 'FORGE_WORKSPACE_NOT_READY',
-      message: `The ephemeral executor cannot run this tool because it is still ${binding.state}. No command ran; retry after forge_workspace_get reports ready.`,
+      message: `The ephemeral executor cannot run this tool because it is still ${binding.state}. No command ran. Call forge_workspace_get; if state is still provisioning or bootstrapping, wait a few seconds and call forge_workspace_get again until ready, then retry the same execution tool. Do not create a second workspace.`,
       retryable: true,
-      details: { workspace_id: workspaceId, operation_id: binding.operationId, state: binding.state, allowedNextActions: ['forge_workspace_get'] }
+      details: {
+        workspace_id: workspaceId,
+        operation_id: binding.operationId,
+        state: binding.state,
+        next_step: EXECUTOR_PROVISIONING_NEXT_STEP,
+        allowedNextActions: ['forge_workspace_get']
+      }
     });
   }
 
   throw new ForgeError({
     code: 'FORGE_WORKSPACE_NOT_READY',
-    message: `The ephemeral executor cannot run this tool because the workspace is ${binding.state}. No command ran; inspect forge_workspace_get before retrying.`,
+    message:
+      binding.state === 'destroyed' || binding.state === 'destroying'
+        ? `The ephemeral executor cannot run this tool because the workspace is ${binding.state}. GitHub commits on the forge/* branch are kept. Call forge_workspace_create with the same repository (and that forge/* ref if needed); do not retry tools against the old workspace_id.`
+        : `The ephemeral executor cannot run this tool because the workspace is ${binding.state}. No command ran; inspect forge_workspace_get before retrying. Do not create a second workspace while this one is still live.`,
     retryable: false,
-    details: { workspace_id: workspaceId, operation_id: binding.operationId, state: binding.state, allowedNextActions: ['forge_workspace_get'] }
+    details: { workspace_id: workspaceId, operation_id: binding.operationId, state: binding.state, allowedNextActions: ['forge_workspace_get', 'forge_workspace_create', 'forge_observer_workspaces'] }
   });
 }
 
@@ -476,7 +482,6 @@ export async function recordTaskRemoteSha(env: Env, workspaceId: WorkspaceId, re
     await new D1TaskStore(env.METADATA).put({
       ...task,
       remoteBranchSha: remoteSha,
-      pushedAt: now,
       updatedAt: now
     });
   }).catch(() => undefined);

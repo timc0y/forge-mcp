@@ -92,7 +92,7 @@ export function deriveLimitations(task: Task): string[] {
   if (task.changedFiles.length > 0 && !task.latestDiffHash && task.state === 'reviewing') {
     limitations.push('Raw diff not yet inspected; push is unsafe until it is.');
   }
-  if (task.changedFiles.length > 0 && !task.remoteBranchSha && !task.pushedAt) {
+  if (task.changedFiles.length > 0 && !task.remoteBranchSha) {
     limitations.push('Changed files exist but the feature branch is not verified on origin.');
   }
   return limitations;
@@ -113,7 +113,7 @@ export function hasBlockingCompletionGaps(task: Task): string[] {
   if (task.changedFiles.length > 0 && task.checks.length === 0) {
     blocking.push('Changes exist but no checks have been recorded.');
   }
-  if (task.changedFiles.length > 0 && !task.remoteBranchSha && !task.pushedAt) {
+  if (task.changedFiles.length > 0 && !task.remoteBranchSha) {
     blocking.push('Changed files exist but the feature branch is not verified on origin (remoteBranchSha missing).');
   }
   if (task.outstanding.length > 0) {

@@ -97,8 +97,8 @@ export function toolAnnotations(name: string, sideEffect: 'none' | 'workspace' |
  * SHARED DATA CONTRACT — handlers return `{ ...structuredFields, _meta }`.
  * The adapter strips `_meta` so it never reaches the model-visible
  * `structuredContent`, and attaches it to the MCP result's `_meta` so the host
- * forwards it to the widget. Bulk widget-only payloads (base64, evidence, large
- * tables) live under `_meta['forge/widget']`.
+ * can forward host-only status. Handlers currently emit ChatGPT tool-invocation
+ * status via the adapter; bulk payloads (images) travel as MCP content instead.
  */
 function splitMeta(value: Record<string, unknown>): {
   structured: Record<string, unknown>;
@@ -239,9 +239,8 @@ export function registerForgeToolsV1(
           const { structured: full, meta } = splitMeta(rawValue);
           const structured = slimResponse(definition.name, full);
 
-          // Bulk `_meta` a handler set aside (e.g. inline screenshot payloads)
-          // rides on the result _meta alongside the per-tool ChatGPT status
-          // strings, and stays out of the model-visible structuredContent.
+          // Optional handler `_meta` rides on the result alongside the per-tool
+          // ChatGPT status strings, and stays out of model-visible structuredContent.
           const resultMeta: Record<string, unknown> = {
             ...(status
               ? {

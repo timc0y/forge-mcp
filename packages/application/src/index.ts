@@ -25,7 +25,9 @@ import { ExecutorMaterialization } from './executor-materialization.js';
 import {
   ManagedProcesses,
   dependencyStateView,
+  findActiveDependencyInstall,
   managedProcessStatus,
+  observationalWaitNextStep,
   workspaceAllowedNextActions
 } from './managed-processes.js';
 import { RepositoryInspection, type RepositoryInspectionResult } from './repository-inspection.js';
@@ -36,8 +38,35 @@ export {
   managedProcessStatus,
   workspaceAllowedNextActions,
   LAZY_REQUESTED_NEXT_ACTIONS,
+  OBSERVATIONAL_WAIT_MS,
+  observationalWaitNextStep,
+  durabilityNextStep,
+  isDependencyInstallCommand,
+  findActiveDependencyInstall,
+  EXECUTOR_PROVISIONING_NEXT_STEP,
   type DependencyStateView
 } from './managed-processes.js';
+export {
+  PROGRESS_STREAK_LIMIT,
+  PROGRESS_ENTROPY_WINDOW,
+  PROGRESS_ENTROPY_THRASH_BITS,
+  PROGRESS_VERIFY_BUDGET,
+  classifyToolProgress,
+  durableFingerprint,
+  extendWitnessChain,
+  shannonEntropyBits,
+  emptyProgressStreak,
+  phiFromReceipt,
+  witnessIdFromReceipt,
+  observeProgressEvent,
+  progressGate,
+  detectDurableWitness,
+  progressPotentialView,
+  type ToolProgressClass,
+  type ProgressStreakState,
+  type ProgressObservation,
+  type ProgressGateDecision
+} from './progress-potential.js';
 
 export interface WorkspaceRuntimeRecord {
   workspace: Workspace;
@@ -420,8 +449,14 @@ export class ForgeApplicationService {
     ) {
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_NOT_READY',
-        message: 'Workspace is not available.',
-        retryable: false
+        message:
+          'This workspace is destroyed or destroying. GitHub commits on its forge/* branch are kept. Call forge_workspace_create with the same repository (and ref pointing at that forge/* branch if you still need it); do not retry tools against the old workspace_id.',
+        retryable: false,
+        details: {
+          state: record.workspace.state,
+          next_step:
+            'Call forge_workspace_create for the same repository; do not retry tools against the old workspace_id.'
+        }
       });
     }
     if (!['ready', 'busy'].includes(record.workspace.state)) {
@@ -621,7 +656,7 @@ export class ForgeApplicationService {
             },
             next_step: entry.completedAt
               ? `Managed process ${processId} already finished with exit ${entry.exitCode ?? 1}.`
-              : `Call forge_process_wait with process_id ${processId} (use timeout_ms >= 600000 for large installs).`,
+              : observationalWaitNextStep(processId),
             allowedNextActions: entry.completedAt
               ? ['forge_process_list', 'forge_shell', 'forge_workspace_get']
               : ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
@@ -803,45 +838,24 @@ export class ForgeApplicationService {
     // install continues as a managed process; the agent finishes with process_wait.
     const hostSafeWaitMs = Math.min(input.hostSafeWaitMs ?? 25_000, timeoutMs, 45_000);
     const prior = record.idempotency[input.idempotencyKey];
-    // Legacy sync-install idempotency entries have no processId; return the
-    // recorded dependency state instead of starting a second install.
-    if (prior && !prior.processId) {
-      return {
-        replay: true,
-        replayed: true,
-        idempotencyKey: input.idempotencyKey,
-        originalOperationId: prior.operationId,
-        workspaceId: record.workspace.id,
-        operationId: prior.operationId,
-        dependencyState: dependencyStateView(record.dependencyState),
-        workspaceRevision: record.workspace.revision,
-        allowedNextActions: workspaceAllowedNextActions(record),
-        next_step: 'Dependencies install already recorded. Inspect forge_workspace_get before starting another install.'
-      };
-    }
 
     await this.syncProcessLifecycle(record).catch(() => undefined);
-    const activeInstall = Object.entries(record.processes).find(([, entry]) =>
-      !entry.completedAt &&
-      /\b(pnpm|npm|yarn|bun|pip|uv)\b/i.test(entry.command) &&
-      /\b(install|ci|sync)\b/i.test(entry.command)
-    );
-    if (activeInstall && (!prior?.processId || prior.processId !== activeInstall[0])) {
-      const [activeProcessId, entry] = activeInstall;
+    const activeInstall = findActiveDependencyInstall(record);
+    if (activeInstall && (!prior?.processId || prior.processId !== activeInstall.processId)) {
       return {
         started: true,
         success: false,
         status: 'running' as const,
         workspaceId: record.workspace.id,
-        processId: activeProcessId,
+        processId: activeInstall.processId,
         managedProcess: true,
-        command: entry.command,
+        command: activeInstall.command,
         dependencyState: dependencyStateView(record.dependencyState),
         reusedActiveProcess: true,
         operationId: prior?.operationId ?? record.idempotency[input.idempotencyKey]?.operationId ?? ids.operation(),
         workspaceRevision: record.workspace.revision,
         allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list'],
-        next_step: `An install is already running as ${activeProcessId}. Call forge_process_wait with timeout_ms >= 600000 — do not start another install.`
+        next_step: observationalWaitNextStep(activeInstall.processId, { alreadyRunning: true })
       };
     }
 
@@ -1019,8 +1033,10 @@ export class ForgeApplicationService {
     if (!record.processes[input.processId]) {
       throw new ForgeError({
         code: 'FORGE_PROCESS_NOT_FOUND',
-        message: 'The preview process was not found.',
-        retryable: false
+        message:
+          'The preview process was not found. Call forge_process_list and pass a running process_id, or call forge_preview without preview_id so Forge starts the app first.',
+        retryable: false,
+        details: { processId: input.processId, allowedNextActions: ['forge_process_list', 'forge_preview'] }
       });
     }
     const operation = this.beginMutation(

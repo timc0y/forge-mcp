@@ -54,7 +54,6 @@ describe('invariant B (schema defaults resolve to somewhere real)', () => {
 describe('invariant D (no agent-facing string names a dead or unknown tool)', () => {
   it('is still covered by tests/unit/guidance-integrity.test.ts, not duplicated here', () => {
     const source = readFileSync(join(process.cwd(), 'tests/unit/guidance-integrity.test.ts'), 'utf8');
-    expect(source).toContain('never sends an agent to a tool that no longer exists');
     expect(source).toContain('only ever names tools that are actually in the catalog');
   });
 });
@@ -378,7 +377,6 @@ const ALLOWLIST_C: ReadonlyArray<{ file: string; message: string; note: string }
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'Repository authorization was revoked.', note: '37 chars — restates the failure; no cause, no next action.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'Git push capability is missing its approved branch or commit.', note: '61 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'Forge refused this push before it reached GitHub: ${cause}', note: '58 chars — explains what went wrong but names no next action or tool.' },
-  { file: 'apps/forge-edge-gateway/src/github.ts', message: 'Approval is still pending — wait for it to be approved in the browser, then retry. ‖ This approval was already used. Request a new one.', note: 'branching message — branch 1 (82c): fine; branch 2 (50c): no next action.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'The operation changed since it was approved: ${changed.map((c) => ', note: '66 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'This approval has already been used.', note: '36 chars — restates the failure; no cause, no next action.' },
   { file: 'apps/forge-edge-gateway/src/github.ts', message: 'GitHub App authorization is required.', note: '37 chars — restates the failure; no cause, no next action.' },
@@ -397,7 +395,6 @@ const ALLOWLIST_C: ReadonlyArray<{ file: string; message: string; note: string }
   { file: 'apps/forge-edge-gateway/src/handlers/tasks.ts', message: 'handoff_summary requires next_steps (1–20 items).', note: '49 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/handlers/tasks.ts', message: 'Task is already in the terminal state "${task.state}" and cannot be finished again.', note: '83 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/handlers/tasks.ts', message: 'force requires a note explaining what remains unverified: ${gaps.join(\' \')}', note: '75 chars — explains what went wrong but names no next action or tool.' },
-  { file: 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts', message: '${file.path}: send either content (whole file, or null to delete) or replace (fragments), not both and not neither.', note: '115 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts', message: '"${duplicate}" appears twice in one edit. Send each path once — the last write would silently win.', note: '98 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts', message: '${file.path} does not exist on ${branch}, so there is nothing to replace in it. Send content to create it.', note: '106 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts', message: 'GitHub returned HTTP ${listed.status} listing pull requests.', note: '60 chars — explains what went wrong but names no next action or tool.' },
@@ -408,12 +405,9 @@ const ALLOWLIST_C: ReadonlyArray<{ file: string; message: string; note: string }
   { file: 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts', message: 'GitHub returned HTTP ${listed.status} reading history for ${owner}/${repo}. ‖ No history for ${text(input.path)} on ${input.ref === undefined ? \'the default branch\' : text(input.ref)} (HTTP ${listed.status}). Check the path.', note: 'branching message — branch 1 (75c): no next action; branch 2 (146c): no next action.' },
   { file: 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts', message: 'GitHub returned HTTP ${listed.status} listing branches for ${owner}/${repo}.', note: '76 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts', message: 'No merged branches to delete in ${owner}/${repo}. ‖ Branch ${input.branch === undefined ? \'(none given)\' : text(input.branch)} does not exist in ${owner}/${repo}. Run action:\'list\' first.', note: 'branching message — branch 1 (49c): no next action; branch 2 (135c): no next action.' },
-  { file: 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts', message: 'There is nothing to submit: ${branch} has no changes against ${comparisonRef}. Make the change first, then submit.', note: '114 chars — explains what went wrong but names no next action or tool.' },
   { file: 'apps/forge-edge-gateway/src/handlers/execution.ts', message: 'Wrangler deploy failed (exit ${result.exitCode}). Do not claim the Worker is live.', note: '82 chars — explains what went wrong but names no next action or tool.' },
-  { file: 'apps/forge-edge-gateway/src/workspace-coordinator.ts', message: 'Workspace was not found.', note: '24 chars — restates the failure; no cause, no next action.' },
   { file: 'apps/forge-edge-gateway/src/workspace-coordinator.ts', message: 'Workspace provisioning failed.', note: '30 chars — restates the failure; no cause, no next action.' },
   { file: 'apps/forge-edge-gateway/src/workspace-coordinator.ts', message: 'Patch path filter removed every hunk.', note: '37 chars — restates the failure; no cause, no next action.' },
-  { file: 'apps/forge-edge-gateway/src/workspace-coordinator.ts', message: 'Preview was not found.', note: '22 chars — restates the failure; no cause, no next action.' },
   { file: 'packages/application/src/executor-materialization.ts', message: 'Invalid GitHub repository owner or name.', note: '40 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Invalid Git ref.', note: '16 chars — restates the failure; no cause, no next action.' },
   { file: 'packages/application/src/index.ts', message: 'Requested ${profile}, but the provisioned runtime reports ${pythonVersion || \'no Python version\'}.', note: '98 chars — explains what went wrong but names no next action or tool.' },
@@ -426,7 +420,6 @@ const ALLOWLIST_C: ReadonlyArray<{ file: string; message: string; note: string }
   { file: 'packages/application/src/executor-materialization.ts', message: 'Workspace provisioning probe failed.', note: '36 chars — restates the failure; no cause, no next action.' },
   { file: 'packages/application/src/index.ts', message: 'Forge could not create agent branch ${branch} from ${record.workspace.requestedRef}.', note: '84 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/executor-materialization.ts', message: 'Workspace provisioning failed.', note: '30 chars — restates the failure; no cause, no next action.' },
-  { file: 'packages/application/src/index.ts', message: 'Workspace is not available.', note: '27 chars — restates the failure; no cause, no next action.' },
   { file: 'packages/application/src/index.ts', message: 'Workspace is ${state}.${failure ?  ‖  : \'\'} ${nextStep}', note: 'branching message — branch 1 (34c): too short; branch 2 (18c): too short.' },
   { file: 'packages/application/src/index.ts', message: 'The workspace filesystem Git state differs from Forge metadata; recovery will not overwrite it.', note: '95 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Forge could not safely inspect the workspace filesystem after process adoption/reap (${diagnosticCode}).', note: '104 chars — explains what went wrong but names no next action or tool.' },
@@ -441,9 +434,7 @@ const ALLOWLIST_C: ReadonlyArray<{ file: string; message: string; note: string }
   { file: 'packages/application/src/index.ts', message: 'Forge could not verify a deleted patch path.', note: '44 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Forge shell and file APIs did not observe the same patched bytes.', note: '65 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Mutating shell commands require an idempotency key.', note: '51 chars — explains what went wrong but names no next action or tool.' },
-  { file: 'packages/application/src/managed-processes.ts', message: 'The managed process was not found in this workspace.', note: '52 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/managed-processes.ts', message: 'No operation with that id is recorded for this workspace.', note: '57 chars — explains what went wrong but names no next action or tool.' },
-  { file: 'packages/application/src/managed-processes.ts', message: 'The process is not owned by this workspace.', note: '43 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Check name is invalid.', note: '22 chars — restates the failure; no cause, no next action.' },
   { file: 'packages/application/src/index.ts', message: 'The workspace filesystem Git state differs from Forge metadata; Forge will not normalize it automatically.', note: '106 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Forge could not safely inspect the workspace Git state after process adoption/reap (${diagnosticCode}).', note: '103 chars — explains what went wrong but names no next action or tool.' },
@@ -452,7 +443,6 @@ const ALLOWLIST_C: ReadonlyArray<{ file: string; message: string; note: string }
   { file: 'packages/application/src/index.ts', message: 'Dependency install exited successfully but the installed package tree is not visible to the workspace shell.', note: '108 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Forge Git mutation completed with an unexpected checked-out branch.', note: '67 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Public previews require explicit approval.', note: '42 chars — explains what went wrong but names no next action or tool.' },
-  { file: 'packages/application/src/index.ts', message: 'The preview process was not found.', note: '34 chars — restates the failure; no cause, no next action.' },
   { file: 'packages/application/src/repository-inspection.ts', message: 'Forge could not completely enumerate workspace changes.', note: '55 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Forge could not completely enumerate untracked files.', note: '53 chars — explains what went wrong but names no next action or tool.' },
   { file: 'packages/application/src/index.ts', message: 'Forge could not verify the file through the shell filesystem mount.', note: '67 chars — explains what went wrong but names no next action or tool.' },

@@ -28,6 +28,8 @@ describe('ChatGPT failure-loop contracts', () => {
     const install = tool('forge_deps_install');
     expect(install.description).toMatch(/processId/i);
     expect(install.description).toMatch(/Do not start a second install/i);
+    expect(install.description).toMatch(/bounded forge_process_wait/i);
+    expect(install.description).not.toMatch(/timeout_ms >= 600000/);
     const schema = install.outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
     expect(schema.status.safeParse('running').success).toBe(true);
     expect(schema.started.safeParse(true).success).toBe(true);

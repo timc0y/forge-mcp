@@ -154,12 +154,3 @@ function mergeActivity(
   out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
   return out.slice(0, 80);
 }
-
-export function posthogLiveEmbedUrl(env: Env): string | null {
-  const explicit = (env as Env & { FORGE_POSTHOG_LIVE_EMBED_URL?: string }).FORGE_POSTHOG_LIVE_EMBED_URL?.trim();
-  if (explicit) return explicit;
-  const host = env.POSTHOG_HOST?.replace(/\/+$/, '') ?? (env.POSTHOG_API_KEY ? 'https://us.i.posthog.com' : null);
-  const project = (env as Env & { FORGE_POSTHOG_PROJECT_ID?: string }).FORGE_POSTHOG_PROJECT_ID?.trim();
-  if (!host || !project) return null;
-  return `${host}/embedded/${project}`;
-}

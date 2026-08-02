@@ -2,7 +2,10 @@ import { DurableObject } from 'cloudflare:workers';
 import {
   ForgeApplicationService,
   dependencyStateView,
+  EXECUTOR_PROVISIONING_NEXT_STEP,
+  findActiveDependencyInstall,
   managedProcessStatus,
+  observationalWaitNextStep,
   workspaceAllowedNextActions,
   type CreateWorkspaceInput,
   type WorkspaceRuntimeRecord
@@ -16,8 +19,6 @@ import type { Env } from './env';
 import { repositoryCloneSource } from './github';
 
 const RECORD_KEY = 'workspace-runtime';
-// Legacy key from a removed mutation-lease mechanism; still cleared on destroy.
-const LEASE_KEY = 'mutation-lease';
 // How long a healthy checkout probe result stays trusted before repoRecord()
 // re-runs the `test -d .git` container round-trip. During bursts of repo-scoped
 // tool calls this collapses the redundant PRE-probe; the downstream self-heal
@@ -33,7 +34,7 @@ function nextStepForWorkspace(
     return 'GitHub branch is ready. Use forge_files_read and forge_edit now; the first forge_shell starts the ephemeral executor.';
   }
   if (state === 'provisioning' || state === 'bootstrapping') {
-    return 'The ephemeral executor is still starting. Retry forge_workspace_get until state is ready, then retry the execution tool.';
+    return `The ephemeral executor is still starting. ${EXECUTOR_PROVISIONING_NEXT_STEP}`;
   }
   if (state === 'failed') {
     return 'Workspace provisioning failed. Call forge_workspace_create again; this is not a repository permission problem.';
@@ -44,6 +45,28 @@ function nextStepForWorkspace(
   return allowedNextActions[0]
     ? `Next safe tool: ${allowedNextActions[0]}`
     : 'Inspect forge_workspace_get for details.';
+}
+
+/**
+ * Refuse forge_shell / forge_preview / process starts that race a live install.
+ * deps_install reuses the active process; shell/preview must wait instead.
+ */
+function assertNoActiveDependencyInstall(record: WorkspaceRuntimeRecord, tool: string): void {
+  const active = findActiveDependencyInstall(record);
+  if (!active) return;
+  throw new ForgeError({
+    code: 'FORGE_WORKSPACE_CONFLICT',
+    message:
+      `A dependency install is still running as ${active.processId}, so ${tool} was refused to avoid racing the package tree. Call forge_process_wait with that process_id; do not start shell, preview, or another install. ` +
+      observationalWaitNextStep(active.processId, { alreadyRunning: true }),
+    retryable: true,
+    details: {
+      processId: active.processId,
+      command: active.command.slice(0, 120),
+      next_step: observationalWaitNextStep(active.processId, { alreadyRunning: true }),
+      allowedNextActions: ['forge_process_wait', 'forge_process_logs', 'forge_process_list', 'forge_process_stop']
+    }
+  });
 }
 
 export class WorkspaceCoordinator extends DurableObject<Env> {
@@ -77,7 +100,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (!record) {
       throw new ForgeError({
         code: 'FORGE_WORKSPACE_NOT_FOUND',
-        message: 'Workspace was not found.',
+        message:
+          'Workspace was not found (destroyed or never existed). Call forge_observer_workspaces to see what is open, or forge_workspace_create to start a new one for the repository — do not retry tools against this workspace_id.',
         retryable: false
       });
     }
@@ -485,7 +509,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         // conservative and flags shell constructs that only ever print, so an
         // agent meets this for a harmless command and has no way to know the
         // fix is simply to drop the parameter.
-        message: 'This command was classified as possibly mutating, so mode:read_only was refused. Nothing ran. If it is safe to let it write, call forge_shell again without mode. Any files it changes will remain only in the ephemeral executor until you deliberately save them with forge_edit.',
+        message: 'This command was classified as possibly mutating, so mode:read_only was refused. Nothing ran. Drop mode:read_only only for verification commands you intend to run; never use forge_shell to write repository files — call forge_files_read then forge_edit.',
         retryable: false,
         details: { classification: shellDecision.classification, allowedNextActions: ['forge_shell'] }
       });
@@ -519,6 +543,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const touchesRepo = normalizedCwd === '/workspace/repo' || normalizedCwd.startsWith('/workspace/repo/');
       const record = touchesRepo ? await this.repoRecord() : await this.getRecord();
       await this.prepareExecution(record);
+      assertNoActiveDependencyInstall(record, 'forge_shell');
       const before = record.workspace.revision;
       const updatedAt = record.workspace.updatedAt;
       const divergenceAt = record.lastGitDivergence?.observedAt;
@@ -570,7 +595,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
           },
           next_step: entry?.completedAt
             ? `Managed process ${processId} already finished with exit ${entry.exitCode ?? 1}.`
-            : `Call forge_process_wait with process_id ${processId} (use a timeout_ms of at least 600000 for large installs), then continue with shell commands.`,
+            : observationalWaitNextStep(processId),
           allowedNextActions: entry?.completedAt
             ? ['forge_process_list', 'forge_shell', 'forge_workspace_get']
             : ['forge_process_wait', 'forge_process_logs', 'forge_process_list']
@@ -689,6 +714,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const record = await this.getRecord();
       try {
         await this.prepareExecution(record);
+        assertNoActiveDependencyInstall(record, 'forge_shell');
         return await this.app.startProcess(record, input);
       } finally {
         await this.save(record);
@@ -1167,6 +1193,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       const record = await this.getRecord();
       try {
         await this.prepareExecution(record);
+        assertNoActiveDependencyInstall(record, 'forge_preview');
         if (record.workspace.state !== 'ready') {
           return { ready: false as const, reason: `workspace is ${record.workspace.state}` };
         }
@@ -1248,8 +1275,9 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     if (!preview) {
       throw new ForgeError({
         code: 'FORGE_PREVIEW_UNAVAILABLE',
-        message: 'Preview was not found.',
-        retryable: false
+        message:
+          'Preview was not found (expired or never existed). Call forge_preview again without a preview_id so Forge starts a fresh one; do not reuse the old preview_id.',
+        retryable: true
       });
     }
     return { workspace: record.workspace, preview, providerId: record.providerId };
@@ -1278,9 +1306,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       try {
-        const value = await this.app.completeDestroy(record);
-        await this.ctx.storage.delete(LEASE_KEY);
-        return value;
+        return await this.app.completeDestroy(record);
       } finally {
         await this.save(record);
       }

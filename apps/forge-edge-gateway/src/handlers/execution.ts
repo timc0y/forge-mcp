@@ -12,6 +12,7 @@ import { R2ArtifactStore } from '@forge/artifacts-r2';
 import type { BrowserActionStep } from '@forge/browser-core';
 import { selectBrowserProvider } from '../browser-router';
 import { classifyCommand } from '@forge/policy';
+import { durabilityNextStep } from '@forge/application';
 import { normalizeViewports, prepareInlineImages } from '../review-images';
 import { resolveWorkspaceId } from '../workspace-resolve';
 import { storeGallery } from '../review-gallery';
@@ -21,7 +22,7 @@ import { completeApproval, requestApproval, requireApproval } from '../github';
 import { stripAnsi, summariseCommandOutput } from '../command-summary';
 import {
   mayAutoApproveShell, parseWorkersDevUrl, parseWranglerWorkerName, spillTextArtifact,
-  withDeadline, summarizeStructure, mapWithConcurrency, MAX_GALLERY_IMAGES,
+  withDeadline, summarizeStructure, mapWithConcurrency,
   REVIEW_CAPTURE_CONCURRENCY, findingCountOf, toActionSteps, executorCoordinator,
   text, number, optionalNumber, asRecord, workspaceAddress, idempotency, sha256
 } from './helpers';
@@ -188,13 +189,13 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
           }
           const base = asRecord(result);
           const { stdout: _s, stderr: _e, ...rest } = base;
+          const readOnly = input.mode === 'read_only' || rest.mode === 'read_only';
           const executionPersistence = {
-            remote_persisted: false,
-            executor_filesystem: 'ephemeral',
-            persistence_notice: input.mode === 'read_only'
-              ? 'The command did not save repository content. GitHub remains the source of truth.'
-              : 'Any files this command changed exist only in this executor session. Re-apply deliberate code changes with forge_edit to save them to GitHub.'
+            remote_persisted: false as const,
+            executor_filesystem: 'ephemeral' as const,
+            persistence_notice: durabilityNextStep(readOnly ? 'read_only' : 'mutating')
           };
+          const next = durabilityNextStep(readOnly ? 'read_only' : 'mutating');
           if (compact) {
             return {
               ...rest,
@@ -207,12 +208,12 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
               // only thing the agent has.
               stdout_tail: tailBytes(stdout, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
               stderr_tail: tailBytes(stderr, summary ? 800 : AGENT_OUTPUT_TAIL_BYTES),
-              ...(outputArtifactId
-                ? {
-                    output_artifact_id: outputArtifactId,
-                    next_step: `Full output in ${outputArtifactId} (forge_artifact_get). Do not invent missing log lines from the tails.`
-                  }
-                : {})
+              allowedNextActions: readOnly
+                ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
+                : ['forge_files_read', 'forge_edit', 'forge_shell'],
+              next_step: outputArtifactId
+                ? `Full output in ${outputArtifactId} (forge_artifact_get). ${next}`
+                : next
             };
           }
           return {
@@ -222,7 +223,11 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
             compact: false,
             stdout,
             stderr,
-            ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {})
+            ...(outputArtifactId ? { output_artifact_id: outputArtifactId } : {}),
+            allowedNextActions: readOnly
+              ? ['forge_files_read', 'forge_edit', 'forge_shell', 'forge_workspace_get']
+              : ['forge_files_read', 'forge_edit', 'forge_shell'],
+            next_step: next
           };
         } catch (error) {
           if (claimedApproval && approvalId) await completeApproval(env, approvalId, false);
@@ -276,16 +281,16 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
             ...waited,
             remote_persisted: false,
             executor_filesystem: 'ephemeral',
-            next_step: 'Process finished without saving repository content. Continue with forge_shell or forge_workspace_get.'
+            next_step: durabilityNextStep('read_only')
           };
         }
         return {
           ...waited,
           remote_persisted: false,
           executor_filesystem: 'ephemeral',
-          persistence_notice: 'Process filesystem changes remain only in this executor session. Forge never converts them into GitHub edits.',
+          persistence_notice: durabilityNextStep('process_done'),
           next_step: exitCode === 0
-            ? 'Re-apply any deliberate repository changes with forge_edit to save them. Otherwise continue with forge_shell; the same executor session retains its ephemeral files.'
+            ? durabilityNextStep('process_done')
             : 'Inspect forge_process_logs. Any partial filesystem changes remain ephemeral; use forge_edit only for changes you deliberately want to save.'
         };
       },
@@ -556,8 +561,8 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
               throw new ForgeError({
                 code: 'FORGE_PREVIEW_UNAVAILABLE',
                 message: lastReason.includes('no dev server command')
-                  ? 'No dev server command was detected for this project, so there is nothing to screenshot. Start the server with forge_shell async:true, then call forge_preview again (omit preview_id) or pass preview_id once exposed.'
-                  : `The preview was not ready inside this call's host-safe startup budget (${lastReason}). Check forge_process_logs, then retry forge_preview; do not restart an already-running server.`,
+                  ? 'No dev server command was detected for this project, so there is nothing to screenshot. If dependencies are missing call forge_deps_install and forge_process_wait first; otherwise start the server with forge_shell async:true, then call forge_preview again (omit preview_id). Do not open a second workspace.'
+                  : `The preview was not ready inside this call's host-safe startup budget (${lastReason}). If node_modules is missing call forge_deps_install then forge_process_wait; otherwise check forge_process_logs and retry forge_preview without restarting an already-running server or opening a second workspace.`,
                 retryable: true
               });
             }
@@ -622,8 +627,8 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
                 executedSteps: capture.steps ?? null,
                 inspected: false,
                 limitations: [],
-                // Carried only so the handler can build the widget gallery; it
-                // is stripped from both structuredContent and _meta evidence.
+                // Transient capture bytes for prepareInlineImages / storeGallery;
+                // stripped before structuredContent so base64 never reaches the model.
                 _inline: inline
               };
             } catch (error) {
@@ -644,9 +649,6 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
         const structureSummary = summarizeStructure(
           evidence as Array<{ accessibility?: { structure?: { findingCount?: number; countsByKind?: Record<string, number>; truncated?: boolean } }; route?: unknown; environment?: unknown }>
         );
-        // Widget-only screenshot gallery (small JPEG data: URIs) built from the
-        // inline bytes captured above, capped so _meta stays bounded.
-        const screenshots: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; dataUri: string }> = [];
         const capturedCells: Array<{ route: unknown; viewport: unknown; state: unknown; findingCount: number; inline?: { base64: string; contentType: string } }> = [];
         for (const cell of evidence) {
           const inline = cell._inline as { base64: string; contentType: string } | undefined;
@@ -657,19 +659,10 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
             findingCount: findingCountOf(cell),
             inline
           });
-          if (inline && screenshots.length < MAX_GALLERY_IMAGES) {
-            screenshots.push({
-              route: cell.route,
-              viewport: cell.observedViewport ?? cell.requestedViewport,
-              state: cell.state,
-              findingCount: findingCountOf(cell),
-              dataUri: `data:${inline.contentType};base64,${inline.base64}`
-            });
-          }
         }
         // This tool used to attach nothing at all: it stored every screenshot and
         // told the caller to fetch them back one at a time. For the flow this
-        // exists to serve â€” looking at your own app while designing it â€” that
+        // exists to serve — looking at your own app while designing it — that
         // meant the model never saw a single image without a second call per
         // shot. Attach them, and hand over a page for the rest, same as the
         // live-URL path.
@@ -682,11 +675,11 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
         const captureGalleryUrl = await storeGallery(
           env, identity, workspaceId, `preview of ${workspaceId}`, capturedAtIso, capturedCells
         );
-        // Strip the transient inline bytes out of the full evidence so no base64
-        // leaks into structuredContent or the _meta evidence array.
+        // Strip transient inline bytes so no base64 leaks into structuredContent.
         const fullEvidence = evidence.map(({ _inline: _drop, ...rest }) => rest);
-        // Concise per-cell rows for structuredContent â€” no base64, no heavy
-        // accessibility trees; the component reads the rest from _meta.
+        // Concise per-cell rows for structuredContent — no base64, no heavy
+        // accessibility trees. Images travel as MCP content; the gallery URL
+        // covers the rest.
         const evidenceCells = fullEvidence.map((cell) => ({
           selection: cell.selection,
           route: cell.route,
@@ -714,21 +707,11 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
           failures,
           structureSummary,
           limitations: [],
-          _meta: {
-            'forge/widget': {
-              schemaVersion: 1,
-              executionMode: 'preview_review',
-              screenshots,
-              evidence: fullEvidence,
-              failures,
-              structureSummary
-            }
-          },
           galleryUrl: captureGalleryUrl,
           inlineImageCount: inlineCells.length,
           omittedImageCount: omittedImages,
           nextStep: [
-            `Inspect the ${inlineCells.length} image(s) attached to this result â€” they are the evidence.`,
+            `Inspect the ${inlineCells.length} image(s) attached to this result — they are the evidence.`,
             omittedImages > 0 ? `${omittedImages} further capture(s) did not fit; fetch them with forge_artifact_get on evidence[].screenshot.artifactId.` : '',
             captureGalleryUrl ? `Give the human this link to see them all in a browser: ${captureGalleryUrl}` : '',
             'Then mark that evidence inspected in Parallax, resolving or explicitly accepting any structureSummary heading defects.'

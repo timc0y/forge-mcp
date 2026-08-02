@@ -35,6 +35,9 @@ execution, state, and evidence.
 10. `forge_workspace_destroy`; preview revoked; task and evidence remain
     retrievable via `forge_task_get`.
 
+Host-facing recipes (plan / UI / bug / resume) that ChatGPT can follow without
+a strong session: [`../mcp/project-workflows.md`](../mcp/project-workflows.md).
+
 ## Principles honoured
 
 Cheapest sufficient action; one workspace per coherent task; no executor for

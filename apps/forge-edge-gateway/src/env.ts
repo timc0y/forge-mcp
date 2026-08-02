@@ -33,12 +33,6 @@ export interface Env {
   FORGE_DEFAULT_TENANT_ID: string;
   FORGE_DEFAULT_PROJECT_ID: string;
   FORGE_PUBLIC_ORIGIN: string;
-  // Origins Forge used to be reachable on, comma-separated. Tokens are signed
-  // with FORGE_PUBLIC_ORIGIN as their issuer, so renaming the canonical origin
-  // would otherwise invalidate every access and refresh token already issued
-  // and force every connected client to re-authorize. Listing the old origin
-  // here keeps those tokens verifiable until they expire on their own.
-  FORGE_LEGACY_ORIGINS?: string;
   FORGE_PREVIEW_HOSTNAME: string;
   CF_VERSION_METADATA: WorkerVersionMetadata;
   // Minutes a workspace may hold a slot without activity before the lazy reaper
@@ -83,15 +77,4 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_APP_SLUG?: string;
   GITHUB_WEBHOOK_SECRET?: string;
-  // PostHog analytics for MCP tool usage (latency, errors, repeat/retry
-  // calls). Telemetry is a no-op whenever this is unset — safe to leave off
-  // in local/dev. Set via `wrangler secret put POSTHOG_API_KEY`.
-  POSTHOG_API_KEY?: string;
-  // Defaults to PostHog Cloud US (https://us.i.posthog.com). Override for
-  // EU cloud or a self-hosted instance.
-  POSTHOG_HOST?: string;
-  // Optional embedded PostHog insight/dashboard URL for /app/live (full URL).
-  FORGE_POSTHOG_LIVE_EMBED_URL?: string;
-  // Optional PostHog project id; with POSTHOG_HOST builds …/embedded/{id}.
-  FORGE_POSTHOG_PROJECT_ID?: string;
 }
