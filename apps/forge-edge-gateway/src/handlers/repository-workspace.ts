@@ -26,9 +26,12 @@ import {
   listAuthorizedRepositories,
   repositoryWriteProof,
   requestApproval,
-  githubRequestForWorkspace
+  githubRequestForWorkspace,
+  getApprovalRecord,
+  approvalStillUsable,
+  signedApprovalUrl
 } from '../github';
-import { createDeferredAction, listDeferredActionsForWorkspace } from '../deferred-actions';
+import { createDeferredAction, listDeferredActionsForWorkspace, rebindDeferredApproval } from '../deferred-actions';
 import { commitFilesToBranch, createBranchRef, RemoteCommitConflict } from '@forge/git-github';
 import { describeDurability } from '../durability';
 import { normalizeRepoPath, toContainerPath } from '../repo-paths';
@@ -1504,6 +1507,9 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         // Wrong order / retry storm: agent re-calls forge_merge while the human
         // still has the same submission pending. Approvals already dedupe, but
         // deferred_actions used to insert again — return the existing receipt.
+        // If the linked approval has expired (sync TTL used to be ~2h while the
+        // portal promises "days later"), mint a fresh one and rebind so the
+        // human gets a working link instead of the same dead id forever.
         const pendingSame = (await listDeferredActionsForWorkspace(env, identity.tenantId, workspaceId))
           .find((action) =>
             action.state === 'awaiting_approval' &&
@@ -1512,20 +1518,64 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
             action.commitSha === staged.commit
           );
         if (pendingSame) {
-          const approvalUrl = `${env.FORGE_PUBLIC_ORIGIN}/approvals/${pendingSame.approvalId}`;
+          const linked = await getApprovalRecord(env, identity.tenantId, pendingSame.approvalId);
+          if (approvalStillUsable(linked)) {
+            const approvalUrl = await signedApprovalUrl(
+              env, pendingSame.approvalId, identity.tenantId, linked!.expiresAt
+            );
+            return {
+              submitted: true,
+              replayed: true,
+              submission_receipt: {
+                branch,
+                remote_sha: staged.remote_sha,
+                staged_ref: staged.ref,
+                approval_id: pendingSame.approvalId,
+                approval_url: approvalUrl,
+                files_changed: pendingSame.filesChanged,
+                feature_branch_on_origin: true
+              },
+              next_step: `Already submitted — echo only submission_receipt. Do not call forge_merge again and do not poll approval. Human reviews at ${approvalUrl}. Call forge_workspace_destroy when done.`
+            };
+          }
+          let remintDiffArtifactId: string | undefined;
+          if (diff.trim() && utf8Bytes(diff) > 4_096) {
+            const spilled = await spillTextArtifact(env, identity, workspaceId, 'submit-diff', diff, 'text/x-diff');
+            remintDiffArtifactId = spilled.artifact_id;
+          }
+          const reminted = await requestApproval(
+            env,
+            identity,
+            workspaceId,
+            'work.submit',
+            `Merge ${branch} into ${prBase}`,
+            {
+              branch,
+              base: prBase,
+              comparisonRef,
+              title,
+              body,
+              commit: staged.commit,
+              ...(remintDiffArtifactId
+                ? { diffArtifactId: remintDiffArtifactId, diffTotals: { files: filesChanged, additions: outgoing?.totalAdditions ?? 0, deletions: outgoing?.totalDeletions ?? 0 } }
+                : { diff: diff.slice(0, 48_000), diffTotals: { files: filesChanged, additions: outgoing?.totalAdditions ?? 0, deletions: outgoing?.totalDeletions ?? 0 } })
+            }
+          );
+          await rebindDeferredApproval(env, pendingSame.id, reminted.approval_id);
           return {
             submitted: true,
             replayed: true,
+            approval_required: true,
             submission_receipt: {
               branch,
               remote_sha: staged.remote_sha,
               staged_ref: staged.ref,
-              approval_id: pendingSame.approvalId,
-              approval_url: approvalUrl,
+              approval_id: reminted.approval_id,
+              approval_url: reminted.approval_url,
               files_changed: pendingSame.filesChanged,
               feature_branch_on_origin: true
             },
-            next_step: `Already submitted — echo only submission_receipt. Do not call forge_merge again and do not poll approval. Human reviews at ${approvalUrl}. Call forge_workspace_destroy when done.`
+            next_step: `Previous approval expired — a fresh link was issued for the same staged work. Echo only submission_receipt.approval_url. Do not call forge_merge again and do not poll approval. Call forge_workspace_destroy when done. Approve at ${reminted.approval_url}.`
           };
         }
 

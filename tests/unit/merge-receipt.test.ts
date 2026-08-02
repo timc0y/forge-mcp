@@ -50,6 +50,9 @@ describe('forge_merge receipt', () => {
     expect(merge).toContain('/compare/');
     expect(merge).not.toContain('gitStatus');
     expect(merge).not.toContain('gitOutgoingDiff');
+    // Expired linked approvals must be reminted on replay, not echoed forever.
+    expect(merge).toContain('rebindDeferredApproval');
+    expect(merge).toContain('approvalStillUsable');
   });
 });
 

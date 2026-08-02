@@ -5,6 +5,7 @@ import {
   executeDeferredAction,
   getDeferredActionByApproval,
   listPendingDeferredActions,
+  rebindDeferredApproval,
   type DeferredExecutors
 } from '../../apps/forge-edge-gateway/src/deferred-actions';
 import type { Env } from '../../apps/forge-edge-gateway/src/env';
@@ -84,6 +85,15 @@ function fakeD1(rows: Row[]) {
             row.state = values[0];
             row.result = values[1];
             row.error = values[2];
+            return { meta: { changes: 1 } };
+          }
+          if (sql.includes('SET approval_id=?1')) {
+            const row = rows.find((candidate) => candidate.id === values[2]);
+            if (!row || !['awaiting_approval', 'failed'].includes(String(row.state))) {
+              return { meta: { changes: 0 } };
+            }
+            row.approval_id = values[0];
+            row.updated_at = values[1];
             return { meta: { changes: 1 } };
           }
           throw new Error(`unexpected run(): ${sql}`);
@@ -270,5 +280,16 @@ describe('deferred actions (async approval)', () => {
     await createDeferredAction(env, submission);
     expect(await getDeferredActionByApproval(env, 'ten_other', 'apr_a')).toBeNull();
     expect(await listPendingDeferredActions(env, 'ten_other')).toHaveLength(0);
+  });
+
+  it('rebinds an awaiting submission onto a fresh approval id', async () => {
+    const rows: Row[] = [];
+    const env = envWith(rows);
+    const action = await createDeferredAction(env, submission);
+    await rebindDeferredApproval(env, action.id, 'apr_fresh');
+    const stored = await getDeferredActionByApproval(env, 'ten_a', 'apr_fresh');
+    expect(stored?.id).toBe(action.id);
+    expect(stored?.approvalId).toBe('apr_fresh');
+    expect(await getDeferredActionByApproval(env, 'ten_a', 'apr_a')).toBeNull();
   });
 });

@@ -170,6 +170,23 @@ export async function listPendingDeferredActions(
   return (result.results ?? []).map(hydrate);
 }
 
+/**
+ * Point a queued submission at a freshly minted approval. Used when forge_merge
+ * is retried after the linked approval's short sync TTL has lapsed — the staged
+ * work is still valid, only the approval row needs replacing.
+ */
+export async function rebindDeferredApproval(
+  env: Env,
+  deferredId: string,
+  approvalId: string
+): Promise<void> {
+  await env.METADATA.prepare(
+    `UPDATE deferred_actions
+        SET approval_id=?1, updated_at=?2
+      WHERE id=?3 AND state IN ('awaiting_approval','failed')`
+  ).bind(approvalId, new Date().toISOString(), deferredId).run();
+}
+
 export async function listDeferredActionsForWorkspace(
   env: Env,
   tenantId: string,

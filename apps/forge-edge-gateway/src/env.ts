@@ -43,9 +43,14 @@ export interface Env {
   // single account. Optional; defaults to 8 global and 5 per tenant.
   FORGE_MAX_WORKSPACES?: string;
   FORGE_MAX_WORKSPACES_PER_TENANT?: string;
-  // How long an approval (push / PR / gated shell) stays valid. Optional; default
-  // 60 minutes — long enough to survive an install+build before using it.
+  // How long a sync approval (push / PR mutate / gated shell / deploy / secret)
+  // stays valid. Optional; default 120 minutes — long enough to survive an
+  // install+build before the agent redeems it.
   FORGE_APPROVAL_TTL_MINUTES?: string;
+  // How long a deferred work.submit approval stays valid. Optional; default
+  // 14 days — humans approve from the portal minutes or days later, with no
+  // live agent waiting.
+  FORGE_DEFERRED_APPROVAL_TTL_MINUTES?: string;
   // Operator policy: auto-approve in-workspace shell commands that would
   // otherwise need a human click (dependency installs and other gated shell).
   // GitHub writes remain independently gated. Optional; the

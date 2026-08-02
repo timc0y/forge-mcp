@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { appDashboard, approvalPage } from '../../apps/forge-edge-gateway/src/github';
+import {
+  appDashboard,
+  approvalPage,
+  approvalStillUsable,
+  listPendingSyncApprovals
+} from '../../apps/forge-edge-gateway/src/github';
+import { rebindDeferredApproval } from '../../apps/forge-edge-gateway/src/deferred-actions';
 
 // Both pages are large HTML templates with many interpolations, and they are the
 // entire human half of the async approval flow — if either throws or silently
@@ -32,12 +38,23 @@ const deferred = {
   preview_expires_at: null, preview_error: null, github_repository_id: '99'
 };
 
-function env(approvalState = 'pending') {
+const syncApproval = {
+  id: 'apr_bbbbbbbbbbbbbbbbbbbbbbbbbb',
+  requested_action: 'shell.exec',
+  reason: 'npm install',
+  expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+  workspace_id: 'ws_2'
+};
+
+function env(approvalState = 'pending', options: { expiresAt?: string; sync?: typeof syncApproval[] } = {}) {
   const approval = {
     requested_action: 'work.submit', reason: 'Merge forge/fix into main',
     request_payload: JSON.stringify({ branch: 'forge/fix', base: 'main', title: 'Fix homepage typo', diff: DIFF }),
-    state: approvalState, expires_at: new Date(Date.now() + 3_600_000).toISOString()
+    state: approvalState,
+    expires_at: options.expiresAt ?? new Date(Date.now() + 3_600_000).toISOString(),
+    workspace_id: 'ws_1'
   };
+  const syncRows = options.sync ?? [];
   return {
     FORGE_PUBLIC_ORIGIN: 'https://forge.test',
     FORGE_ENVIRONMENT: 'production',
@@ -53,6 +70,9 @@ function env(approvalState = 'pending') {
             return null;
           },
           all: async () => {
+            if (sql.includes("requested_action != 'work.submit'")) {
+              return { results: syncRows };
+            }
             if (sql.includes('deferred_actions')) return { results: [deferred] };
             if (sql.includes('repositories')) {
               return { results: [{ owner: 'octocat', name: 'site', visibility: 'private', default_branch: 'main' }] };
@@ -67,7 +87,10 @@ function env(approvalState = 'pending') {
   } as never;
 }
 
-const request = (url: string) => new Request(url, { headers: { cookie: 'forge_session=abc' } });
+const request = (url: string, init?: RequestInit) => new Request(url, {
+  ...init,
+  headers: { cookie: 'forge_session=abc', origin: 'https://forge.test', ...(init?.headers ?? {}) }
+});
 const APPROVAL_URL = 'https://forge.test/approvals/apr_aaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 describe('reviewer-facing pages', () => {
@@ -101,6 +124,34 @@ describe('reviewer-facing pages', () => {
     expect(html).toContain('Action approved');
   });
 
+  it('keeps deferred submissions decidable after the approvals TTL lapses', async () => {
+    // The bug: portal showed the queue item, but Approve died with "expired"
+    // because work.submit reused the short sync TTL.
+    const expired = new Date(Date.now() - 60_000).toISOString();
+    const response = await approvalPage(
+      request(APPROVAL_URL),
+      env('pending', { expiresAt: expired }),
+      'apr_aaaaaaaaaaaaaaaaaaaaaaaaaa'
+    );
+    const html = await response.text();
+    expect(html).toContain('value="approved"');
+    expect(html).not.toContain('This approval has expired');
+  });
+
+  it('accepts a deferred Approve even when expires_at is in the past', async () => {
+    const expired = new Date(Date.now() - 60_000).toISOString();
+    const response = await approvalPage(
+      request(APPROVAL_URL, {
+        method: 'POST',
+        body: 'decision=approved',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' }
+      }),
+      env('pending', { expiresAt: expired }),
+      'apr_aaaaaaaaaaaaaaaaaaaaaaaaaa'
+    );
+    expect(response.status).toBe(303);
+  });
+
   it('puts the review queue on the dashboard with a way into each item', async () => {
     const response = await appDashboard(request('https://forge.test/app'), env());
     expect(response.status).toBe(200);
@@ -111,6 +162,18 @@ describe('reviewer-facing pages', () => {
     // Approving happens on a phone; keep the tap target at the page's own 44px.
     // Tap targets come from the shared sheet now, so every surface gets them.
     expect(html).toMatch(/\.btn,button\{[^}]*min-height:44px/);
+  });
+
+  it('surfaces pending sync approvals on the dashboard, not only deferred submissions', async () => {
+    const response = await appDashboard(
+      request('https://forge.test/app'),
+      env('pending', { sync: [syncApproval] })
+    );
+    const html = await response.text();
+    expect(html).toContain('Shell command');
+    expect(html).toContain('npm install');
+    expect(html).toContain('/approvals/apr_bbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(html).toContain('badge">2<');
   });
 
   it('explains the private-App collaboration flow without linking collaborators to GitHub 404s', async () => {
@@ -137,5 +200,70 @@ describe('reviewer-facing pages', () => {
     expect(html).toContain('Private owner-managed connection');
     expect(html).toContain('do not install the GitHub App');
     expect(html).not.toContain('Install or add repositories');
+  });
+});
+
+describe('approval helpers', () => {
+  it('treats expired or spent approvals as unusable for replay', () => {
+    expect(approvalStillUsable(null)).toBe(false);
+    expect(approvalStillUsable({ state: 'pending', expiresAt: new Date(Date.now() - 1_000).toISOString() })).toBe(false);
+    expect(approvalStillUsable({ state: 'consumed', expiresAt: new Date(Date.now() + 60_000).toISOString() })).toBe(false);
+    expect(approvalStillUsable({ state: 'pending', expiresAt: new Date(Date.now() + 60_000).toISOString() })).toBe(true);
+  });
+
+  it('lists only non-deferred pending sync approvals', async () => {
+    const rows = [syncApproval];
+    const fakeEnv = {
+      METADATA: {
+        prepare(sql: string) {
+          const statement = {
+            bind: () => statement,
+            all: async () => {
+              expect(sql).toContain("requested_action != 'work.submit'");
+              return { results: rows };
+            }
+          };
+          return statement;
+        }
+      }
+    } as never;
+    const listed = await listPendingSyncApprovals(fakeEnv, 'ten_1');
+    expect(listed).toEqual([{
+      id: syncApproval.id,
+      requestedAction: 'shell.exec',
+      reason: 'npm install',
+      expiresAt: syncApproval.expires_at,
+      workspaceId: 'ws_2'
+    }]);
+  });
+
+  it('rebinds a deferred action onto a fresh approval id', async () => {
+    const rows: Array<Record<string, unknown>> = [{
+      id: 'dfr_1',
+      state: 'awaiting_approval',
+      approval_id: 'apr_old'
+    }];
+    const fakeEnv = {
+      METADATA: {
+        prepare(sql: string) {
+          let values: unknown[] = [];
+          const statement = {
+            bind(...args: unknown[]) {
+              values = args;
+              return statement;
+            },
+            async run() {
+              expect(sql).toContain('SET approval_id=?1');
+              const row = rows.find((candidate) => candidate.id === values[2]);
+              if (row) row.approval_id = values[0];
+              return { meta: { changes: 1 } };
+            }
+          };
+          return statement;
+        }
+      }
+    } as never;
+    await rebindDeferredApproval(fakeEnv, 'dfr_1', 'apr_new');
+    expect(rows[0]?.approval_id).toBe('apr_new');
   });
 });
