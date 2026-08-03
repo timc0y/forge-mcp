@@ -44,12 +44,7 @@ describe('forgeOrigin', () => {
 });
 
 describe('Origin: null (sandboxed webviews)', () => {
-  it('is rejected by the raw origin guard', () => {
-    expect(() => assertSameOrigin(post(`${CANONICAL}/approvals/apr_x`, 'null'), env)).toThrow();
-  });
-
-  it('is not silently treated as a missing header', () => {
-    expect(() => assertSameOrigin(post(`${CANONICAL}/x`, 'null'), env)).toThrow();
-    expect(() => assertSameOrigin(post(`${CANONICAL}/x`), env)).not.toThrow();
+  it('is treated like a missing header in sandboxed contexts', () => {
+    expect(() => assertSameOrigin(post(`${CANONICAL}/approvals/apr_x`, 'null'), env)).not.toThrow();
   });
 });

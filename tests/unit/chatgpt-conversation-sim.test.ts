@@ -496,11 +496,11 @@ describe('ChatGPT conversation simulations', () => {
     ).toBe(true);
   });
 
-  it('Conv AF — omitted screenshots must not invent evidence[].screenshot.artifactId', () => {
+  it('Conv AF — URL review exposes real screenshot handles while other capture paths do not invent them', () => {
     expect(
       sourceMentions(
         'apps/forge-edge-gateway/src/handlers/review-artifacts.ts',
-        /no screenshot\.artifactId field/
+        /screenshot: cell\.screenshot/
       )
     ).toBe(true);
     expect(
@@ -512,9 +512,9 @@ describe('ChatGPT conversation simulations', () => {
     expect(
       sourceMentions(
         'apps/forge-edge-gateway/src/handlers/review-artifacts.ts',
-        /fetch them with forge_artifact_get on evidence\[\]\.screenshot\.artifactId/
+        /retrieve the listed screenshot\.artifactId values/
       )
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('Conv AG — workspace_id alias is accepted as workspace', () => {

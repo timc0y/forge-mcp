@@ -246,6 +246,12 @@ const filesReadOutput = {
   })).optional().describe('Per-file results when several paths were requested; one failed file does not fail the batch.')
 } satisfies ZodRawShape;
 
+const screenshotOut = z.object({
+  artifactId: z.string(),
+  contentType: z.string(),
+  sha256: z.string()
+});
+
 const evidenceCellOut = z.object({
   selection: z.unknown().optional(),
   route: z.string(),
@@ -253,6 +259,7 @@ const evidenceCellOut = z.object({
   state: z.string(),
   requestedViewport: z.unknown().optional(),
   observedViewport: z.unknown().optional(),
+  screenshot: screenshotOut.optional(),
   findingCount: z.number(),
   inspected: z.boolean()
 });
@@ -268,10 +275,25 @@ const reviewOutput = {
   requestedCaptures: z.number(),
   capturedCount: z.number(),
   complete: z.boolean().describe('True when every requested cell was captured.'),
-  evidence: z.array(evidenceCellOut),
+  evidence: z.array(evidenceCellOut.extend({ screenshot: screenshotOut })),
   failures: z.array(z.unknown()),
   skipped: z.array(z.unknown()),
   structureSummary: z.unknown().describe('Aggregate heading-structure health across all cells.'),
+  capabilities: z.object({
+    screenshots: z.boolean(),
+    accessibilityStructure: z.boolean(),
+    responsiveScreenshots: z.boolean(),
+    interactions: z.boolean(),
+    scrolling: z.boolean(),
+    links: z.boolean(),
+    formsWithoutSubmission: z.boolean(),
+    consoleAndNetwork: z.boolean(),
+    crossBrowser: z.boolean(),
+    regression: z.boolean(),
+    websiteQaRunner: z.boolean(),
+    figmaSourceAccess: z.boolean(),
+    figmaParityComparison: z.boolean()
+  }).describe('Exact evidence capabilities. False specialist fields mean Forge supplied capture evidence but did not execute that standalone specialist workflow.'),
   limitations: z.array(z.string()),
   galleryUrl: z.string().optional().describe("A shareable page showing every screenshot from this review; give it to the human when they should look themselves."),
   inlineImageCount: z.number().describe("How many screenshots are attached to this result as images."),

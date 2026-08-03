@@ -128,6 +128,35 @@ describe('approval lifecycle (completeApproval on failure)', () => {
     expect(d1.rows.find((a) => a.id === 'apr_fail')?.state).toBe('failed');
   });
 
+  it('compares structured approval payload fields by value', async () => {
+    const d1 = fakeD1();
+    const { requireApproval } = await import('../../apps/forge-edge-gateway/src/github');
+    const identity = { tenantId: 'ten_map', projectId: 'prj_map' } as never;
+    const mapEnv = {
+      CLOUDFLARE_API_TOKEN: 'CLOUDFLARE_API_TOKEN',
+      CLOUDFLARE_ACCOUNT_ID: 'CLOUDFLARE_ACCOUNT_ID'
+    };
+
+    d1.rows.push({
+      id: 'apr_map',
+      state: 'approved',
+      expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      tenant_id: 'ten_map',
+      workspace_id: 'ws_w',
+      requested_action: 'cloudflare.deploy',
+      request_payload: JSON.stringify({ mapEnv })
+    });
+    await expect(requireApproval(
+      envWrap(d1),
+      identity,
+      'apr_map',
+      'ws_w',
+      'cloudflare.deploy',
+      { mapEnv: { ...mapEnv } },
+      { consume: false }
+    )).resolves.toBeUndefined();
+  });
+
   it('completeApproval with false does not overwrite a non-executing state', async () => {
     const d1 = fakeD1();
     const { completeApproval } = await import('../../apps/forge-edge-gateway/src/github');

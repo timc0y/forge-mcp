@@ -13,6 +13,8 @@ export const FORGE_MCP_INSTRUCTIONS = [
 
 export type ForgePromptName =
   | 'review-live-url'
+  | 'website-qa'
+  | 'figma-parity'
   | 'start-task'
   | 'plan-work'
   | 'iterate-ui'
@@ -27,6 +29,16 @@ export const FORGE_PROMPT_HINTS: Record<
 > = {
   'review-live-url': ({ url, notes }) =>
     `Review the deployed site at ${url} with Parallax. Call forge_review first — it captures screenshots without starting a container — covering the key routes at phone and desktop viewports. Inspect every returned screenshot before reaching a verdict, and resolve or explicitly accept any structureSummary heading defects.${
+      notes ? ` Focus on: ${notes}.` : ''
+    }`,
+
+  'website-qa': ({ url, notes }) =>
+    `Run a website QA review of ${url}. Invoke the standalone website-qa skill when it is installed; it owns the QA method and prefers its local runner for responsive, interaction, link, console/network, regression, cross-browser, and visual-tile coverage. Use forge_review as optional remote screenshot/accessibility evidence, or as an explicitly reduced forge-evidence mode when local capture is unavailable. Keep the packet provider as forge, inspect every image used, name the missing capabilities, and never imply the full website-qa runner executed.${
+      notes ? ` Focus on: ${notes}.` : ''
+    }`,
+
+  'figma-parity': ({ url, notes }) =>
+    `Compare ${url} with its Figma source using the standalone figma-parity skill. The skill owns exact Figma-node interpretation, breakpoint/state coverage, measurements, paired comparisons, and parity findings. Use forge_review or forge_preview only for the rendered live half. Preserve the Forge packet and screenshot artifact IDs/hashes, inspect every image used, and set captureProvider to forge in the figma-parity manifest. Never imply Forge accessed Figma or completed parity by itself; name every missing state, breakpoint, interaction, and measurement capability.${
       notes ? ` Focus on: ${notes}.` : ''
     }`,
 

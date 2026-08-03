@@ -115,7 +115,7 @@ function escapeHtmlLocal(value: string): string {
  */
 export function assertSameOrigin(request: Request, env: Env): void {
   const origin = request.headers.get('origin');
-  if (!origin) return;
+  if (!origin || origin === 'null') return;
   if (origin !== env.FORGE_PUBLIC_ORIGIN) throw new ForgeError({
     code: 'FORGE_PERMISSION_DENIED', message: 'Cross-origin form submission was rejected.', retryable: false
   });
@@ -1183,7 +1183,7 @@ export async function requireApproval(
   const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
   const changed: Array<{ field: string; approved: unknown; current: unknown }> = [];
   for (const [key, value] of Object.entries(expected)) {
-    if (payload[key] !== value) changed.push({ field: key, approved: payload[key], current: value });
+    if (!approvalPayloadValueEqual(payload[key], value)) changed.push({ field: key, approved: payload[key], current: value });
   }
   if (changed.length > 0) {
     // Name exactly what moved instead of a bare "state mismatch" — an agent
@@ -1201,6 +1201,22 @@ export async function requireApproval(
   const claimed = await env.METADATA.prepare("UPDATE approvals SET state='executing' WHERE id=?1 AND state='approved'")
     .bind(approvalId).run();
   if ((claimed.meta.changes ?? 0) !== 1) throw new ForgeError({ code: 'FORGE_APPROVAL_REQUIRED', message: 'This approval has already been used.', retryable: false });
+}
+
+function approvalPayloadValueEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(stableApprovalPayloadValue(left)) === JSON.stringify(stableApprovalPayloadValue(right));
+}
+
+function stableApprovalPayloadValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableApprovalPayloadValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, stableApprovalPayloadValue(nested)])
+    );
+  }
+  return value;
 }
 
 /**

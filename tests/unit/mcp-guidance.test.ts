@@ -18,12 +18,14 @@ describe('mcp project-workflow guidance', () => {
     expect(PROMPT_NAMES.sort()).toEqual(
       [
         'fix-bug',
+        'figma-parity',
         'iterate-ui',
         'plan-work',
         'prepare-draft-pr',
         'resume-task',
         'review-live-url',
-        'start-task'
+        'start-task',
+        'website-qa'
       ].sort()
     );
   });
@@ -71,6 +73,18 @@ describe('mcp project-workflow guidance', () => {
     const resume = FORGE_PROMPT_HINTS['resume-task']({ task_id: 'task_1' });
     expect(resume).toMatch(/forge_task_get/);
     expect(resume).toMatch(/do not forge_workspace_create a duplicate/i);
+
+    const websiteQa = FORGE_PROMPT_HINTS['website-qa']({ url: 'https://example.com' });
+    expect(websiteQa).toMatch(/standalone website-qa skill/i);
+    expect(websiteQa).toMatch(/forge_review/);
+    expect(websiteQa).toMatch(/reduced forge-evidence mode/i);
+    expect(websiteQa).toMatch(/never imply the full website-qa runner executed/i);
+
+    const figmaParity = FORGE_PROMPT_HINTS['figma-parity']({ url: 'https://example.com' });
+    expect(figmaParity).toMatch(/standalone figma-parity skill/i);
+    expect(figmaParity).toMatch(/rendered live half/i);
+    expect(figmaParity).toMatch(/captureProvider to forge/i);
+    expect(figmaParity).toMatch(/Never imply Forge accessed Figma/i);
   });
 
   it('gives the dashboard four copy-paste project prompts', () => {

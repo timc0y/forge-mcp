@@ -150,6 +150,7 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
           state: cell.state,
           requestedViewport: cell.requestedViewport,
           observedViewport: cell.observedViewport,
+          screenshot: cell.screenshot,
           findingCount: findingCountOf(cell),
           inspected: cell.inspected
         }));
@@ -173,7 +174,26 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
           failures,
           skipped,
           structureSummary,
-          limitations: ['A static screenshot only proves what it shows — it does not prove that any unexecuted interaction works.'],
+          capabilities: {
+            screenshots: true,
+            accessibilityStructure: true,
+            responsiveScreenshots: viewports.length > 1,
+            interactions: false,
+            scrolling: false,
+            links: false,
+            formsWithoutSubmission: false,
+            consoleAndNetwork: false,
+            crossBrowser: false,
+            regression: false,
+            websiteQaRunner: false,
+            figmaSourceAccess: false,
+            figmaParityComparison: false
+          },
+          limitations: [
+            'A static screenshot only proves what it shows — it does not prove that any unexecuted interaction works.',
+            'Forge supplied remote evidence only; it did not execute the standalone website-qa runner.',
+            'Forge did not access Figma or perform a Figma parity comparison.'
+          ],
           inlineImageCount: inlineCells.length,
           omittedImageCount: omittedImages,
           // Deliberately does not send the caller off to fetch artifacts one by
@@ -184,11 +204,11 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
           nextStep: [
             `Inspect the ${inlineCells.length} image(s) attached to this result — they are the evidence.`,
             omittedImages > 0
-              ? `${omittedImages} further capture(s) did not fit in this response; open galleryUrl or re-run with fewer routes or one viewport. Do not invent artifact ids — evidence rows in this result have no screenshot.artifactId field.`
+              ? `${omittedImages} further capture(s) did not fit in this response; open galleryUrl, retrieve the listed screenshot.artifactId values, or re-run with fewer routes or one viewport.`
               : '',
             complete ? '' : 'Some cells failed or were skipped (see failures and skipped) — re-run just those routes; fewer routes per call captures more reliably.',
             galleryUrl ? `Give the human this link to see them all in a browser: ${galleryUrl}` : '',
-            'Then pass the evidence to Parallax with inspected set to true.'
+            'If Parallax is active, import this original Forge packet after inspecting the images; otherwise keep it as standalone remote QA evidence.'
           ].filter(Boolean).join(' ')
         };
         const structureNote =

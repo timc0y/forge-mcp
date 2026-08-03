@@ -167,6 +167,8 @@ const ALLOWLIST_A: ReadonlyArray<{ tool: string; field: string; note: string }> 
   { tool: 'forge_deploy', field: 'output_artifact_id', note: 'Consumable as the `artifact_id` input to forge_artifact_get, qualified with "output" to say what kind of artifact it is — the same live workflow forge_deps_install’s spilled stdout/stderr artifacts already use.' },
   { tool: 'forge_deploy_profile_plan', field: 'profile_hash', note: 'A fingerprint of the proposed deploy shape for approval/drift context; the agent never feeds it back as a handle.' },
   { tool: 'forge_deploy_profile_approve', field: 'profile_hash', note: 'A receipt fingerprint of the approved deploy shape; follow-up deploys use profile_id, not this hash.' },
+  { tool: 'forge_review', field: 'sha256', note: 'Integrity fingerprint paired with screenshot.artifactId. Retrieval uses artifact_id; the hash lets Parallax verify durable evidence and is not itself a handle.' },
+  { tool: 'forge_preview', field: 'sha256', note: 'Integrity fingerprint paired with a preview screenshot reference. Retrieval uses artifact_id; the hash is evidence metadata, not a follow-up parameter.' },
   // forge_start landed while this suite was being written — another session
   // was actively committing to this same checkout mid-task (observed via a
   // working tree that gained and lost this exact change more than once

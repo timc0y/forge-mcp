@@ -201,6 +201,32 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     );
 
     this.server.registerPrompt(
+      'website-qa',
+      {
+        title: 'Run website QA',
+        description: 'Run the standalone website-qa specialist and supplement it with Forge remote evidence.',
+        argsSchema: {
+          url: z.string().describe('The deployed URL to audit, e.g. https://example.com'),
+          notes: z.string().optional().describe('Optional routes, templates, journeys or risks to prioritise')
+        }
+      },
+      ({ url, notes }) => userText(FORGE_PROMPT_HINTS['website-qa']({ url, notes }))
+    );
+
+    this.server.registerPrompt(
+      'figma-parity',
+      {
+        title: 'Compare with Figma',
+        description: 'Run the standalone Figma parity specialist using Forge rendered evidence.',
+        argsSchema: {
+          url: z.string().describe('The deployed URL to compare, e.g. https://example.com'),
+          notes: z.string().optional().describe('Optional states, breakpoints or components to prioritise')
+        }
+      },
+      ({ url, notes }) => userText(FORGE_PROMPT_HINTS['figma-parity']({ url, notes }))
+    );
+
+    this.server.registerPrompt(
       'start-task',
       {
         title: 'Start a coding task',

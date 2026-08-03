@@ -112,6 +112,26 @@ describe('Forge MCP public contracts', () => {
     expect(preview.preview_wait_ms.safeParse(30_001).success).toBe(false);
   });
 
+  it('keeps URL-review screenshot handles separate from preview evidence', () => {
+    const previewEvidence = (tool('forge_preview').outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>).evidence;
+    const reviewEvidence = (tool('forge_review').outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>).evidence;
+    const cell = {
+      route: '/',
+      environment: 'preview',
+      state: 'entry',
+      findingCount: 0,
+      inspected: true
+    };
+
+    expect(previewEvidence.safeParse([cell]).success).toBe(true);
+    expect(reviewEvidence.safeParse([cell]).success).toBe(false);
+    expect(reviewEvidence.safeParse([{
+      ...cell,
+      environment: 'remote',
+      screenshot: { artifactId: 'art_abc', contentType: 'image/jpeg', sha256: 'hash' }
+    }]).success).toBe(true);
+  });
+
   it('exposes secret vault tools (detach folded into attach)', () => {
     const expected = [
       'forge_secret_list',
