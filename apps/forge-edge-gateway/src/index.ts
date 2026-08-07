@@ -38,6 +38,7 @@ import {
   logout,
   startGitHubLogin
 } from './github';
+import { withRequestLogging } from './request-log';
 
 export {
   Sandbox,
@@ -468,8 +469,9 @@ export default {
     ctx.waitUntil(reapStuckProvisioning(env).then(() => reapAbandonedSlots(env)));
   },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    try {
+    return withRequestLogging(request, async (requestId) => {
+      const url = new URL(request.url);
+      try {
       if (url.pathname === '/favicon.ico' && request.method === 'GET') return favicon();
       if (url.pathname.startsWith('/__forge_operator/workspaces/')) return await operatorForceDestroy(request, env, url);
       if (url.pathname.startsWith('/git/')) return await gitCredentialProxy(request, env);
@@ -595,7 +597,10 @@ export default {
       }
       if (url.pathname === '/mcp') {
         const auth = await authenticate(request, env);
-        const mcpContext = mcpExecutionContext(ctx, auth as unknown as Record<string, unknown>);
+        const mcpContext = mcpExecutionContext(ctx, {
+          ...(auth as unknown as Record<string, unknown>),
+          requestId
+        });
         return await ForgeMcpSession.serve('/mcp', {
           binding: 'MCP_SESSIONS',
           transport: 'streamable-http'
@@ -606,8 +611,9 @@ export default {
       if (url.pathname === '/github/webhooks' && request.method === 'POST') return await githubWebhook(request, env);
       if (url.pathname === '/' && request.method === 'GET') return landing(env);
       return new Response('Not found', { status: 404 });
-    } catch (error) {
-      return safeError(error, env);
-    }
+      } catch (error) {
+        return safeError(error, env);
+      }
+    });
   }
 } satisfies ExportedHandler<Env>;

@@ -18,6 +18,33 @@ pnpm run deploy:worker       # Deploy Worker only; applies D1 migrations, skips 
 *   **Live Console**: Owners can view live logs and tools at [`/app/live`](https://forge.timcoy.uk/app/live) or via observer tools (`forge_observer_*`).
 *   **Database Migrations**: Stored in `migrations/d1/`. Applied automatically in sequential order during deployment. Database rollbacks are forbidden in production unless explicitly approved.
 
+## Request and Response Logging
+
+Every Worker HTTP request emits paired structured `forge_request` and
+`forge_response` events. Each pair has a generated `requestId`, method, pathname,
+query-key names, status, duration, content types, and bounded JSON summaries.
+The response also carries `x-forge-request-id` for support correlation.
+
+MCP tool calls additionally write their already-redacted request and response
+payloads to D1 `mcp_tool_calls`, including the same request ID. Use the request
+ID to join Worker logs to the per-tool payload trail; use `forge_observer_activity`
+or `/app/live` for operator-facing views.
+
+Sensitive route bodies (OAuth, GitHub login/setup, secrets, and credential proxy)
+are omitted. Authorization headers, cookies, token values, HTML, image bodies,
+and oversized payloads are never logged. Payloads are redacted by key and capped
+before they reach either the console sink or D1.
+
+For a live tail:
+
+```bash
+pnpm wrangler tail forge-edge-gateway --config infra/wrangler/forge.jsonc
+```
+
+Filter for `event=forge_request`, `event=forge_response`, or a returned
+`x-forge-request-id`, then inspect the matching D1 tool row when a request was
+an MCP call.
+
 ## Deployment Checklist
 1. Verify D1 database and R2 bucket exist.
 2. Set Worker secrets: `FORGE_CAPABILITY_SIGNING_KEY`, `FORGE_SESSION_SIGNING_KEY`, `FORGE_DEV_AUTH_TOKEN`, `FORGE_INTERNAL_PREVIEW_KEY`.

@@ -136,6 +136,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     // back, without waiting for someone to reproduce it.
     waitUntil?.(
       recordToolCall(this.env, {
+        requestId: typeof (this.props as SessionProps & { requestId?: unknown })?.requestId === 'string'
+          ? (this.props as SessionProps & { requestId: string }).requestId
+          : undefined,
         tenantId: identity.tenantId,
         projectId: identity.projectId,
         workspaceId: workspaceId ?? null,

@@ -58,6 +58,7 @@ export function serialiseBounded(value: unknown): { json: string; bytes: number 
 }
 
 interface ToolCallRecord {
+  requestId?: string;
   tenantId: string;
   projectId?: string;
   workspaceId?: string | null;
@@ -77,11 +78,12 @@ export async function recordToolCall(env: Env, record: ToolCallRecord): Promise<
   const response = serialiseBounded(record.response);
   await env.METADATA.prepare(
     `INSERT INTO mcp_tool_calls
-       (id, tenant_id, project_id, workspace_id, client_name, tool, status, duration_ms,
+       (id, request_id, tenant_id, project_id, workspace_id, client_name, tool, status, duration_ms,
         error_code, error_message, request_json, response_json, request_bytes, response_bytes, occurred_at, args_hash)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)`
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)`
   ).bind(
     ids.operation(),
+    record.requestId ?? null,
     record.tenantId,
     record.projectId ?? null,
     record.workspaceId ?? null,
@@ -114,7 +116,7 @@ export async function recentToolCalls(
   if (input.onlyErrors) where.push(`status = 'error'`);
   binds.push(limit);
   const rows = await env.METADATA.prepare(
-    `SELECT tool, status, duration_ms, error_code, error_message, request_json, response_json,
+    `SELECT tool, request_id, status, duration_ms, error_code, error_message, request_json, response_json,
             request_bytes, response_bytes, client_name, workspace_id, occurred_at
        FROM mcp_tool_calls WHERE ${where.join(' AND ')}
       ORDER BY occurred_at DESC LIMIT ?${binds.length}`
