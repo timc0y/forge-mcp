@@ -231,6 +231,37 @@ describe('chat operation registry', () => {
     expect(matchesChatOperationReference(completed, 'acme/site#forge/generated', 'main')).toBe(true);
   });
 
+  it('does not let a superseded startup row win branch lookup', async () => {
+    const db = memoryDb();
+    const store = new ChatOperationStore(db);
+    await store.create({
+      id: 'op_startup_handoff',
+      tenantId: 'ten_a',
+      projectId: 'prj_a',
+      repository: 'acme/site',
+      repositoryRef: 'acme/site#forge/generated',
+      kind: 'run',
+      state: 'completed',
+      summary: 'Private executor handed the command to its managed operation.',
+      result: { effective_ref: 'forge/generated' }
+    });
+    await store.create({
+      id: 'op_final_command',
+      tenantId: 'ten_a',
+      projectId: 'prj_a',
+      repository: 'acme/site',
+      repositoryRef: 'acme/site#forge/generated',
+      kind: 'run',
+      state: 'completed',
+      summary: 'Command completed successfully.',
+      result: { exit_code: 0, requested_ref: 'main' }
+    });
+
+    const latest = (await store.listRecent('ten_a', 'prj_a', 'acme/site'))
+      .find((operation) => matchesChatOperationReference(operation, 'acme/site#main', 'main'));
+    expect(latest).toMatchObject({ id: 'op_final_command', result: { requested_ref: 'main' } });
+  });
+
   it('does not recover a different branch through repository-wide status lookup', () => {
     const operation = {
       repository_ref: 'acme/site#forge/a',

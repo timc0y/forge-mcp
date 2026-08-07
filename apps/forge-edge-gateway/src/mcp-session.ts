@@ -634,7 +634,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     const closeExecutorStartup = async (input: {
       identity: HandlerIdentity;
       operationId?: string;
-      requestedRef?: string;
       effectiveRef: string;
       state: 'completed' | 'failed';
       summary: string;
@@ -644,8 +643,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         state: input.state,
         summary: input.summary,
         result: {
-          effective_ref: input.effectiveRef,
-          ...requestedRefResult(input.requestedRef, input.effectiveRef)
+          effective_ref: input.effectiveRef
         }
       }).catch(() => undefined);
     };
@@ -730,7 +728,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               await closeExecutorStartup({
                 identity: input.identity,
                 operationId: prepared.startupOperationId,
-                requestedRef,
                 effectiveRef: prepared.ref,
                 state: 'completed',
                 summary: 'Private executor handed the command to its managed operation.'
@@ -755,7 +752,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             await closeExecutorStartup({
               identity: input.identity,
               operationId: prepared.startupOperationId,
-              requestedRef,
               effectiveRef: prepared.ref,
               state: 'completed',
               summary: 'Private executor handed the command to its managed operation.'
@@ -766,7 +762,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             await closeExecutorStartup({
               identity: input.identity,
               operationId: prepared.startupOperationId,
-              requestedRef,
               effectiveRef: prepared.ref,
               state: 'failed',
               summary: 'Command failed after private executor startup.'
@@ -897,7 +892,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             await closeExecutorStartup({
               identity: input.identity,
               operationId: prepared.startupOperationId,
-              requestedRef,
               effectiveRef: prepared.ref,
               state: 'completed',
               summary: 'Private executor handed the deployment to its managed operation.'
@@ -927,7 +921,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 await closeExecutorStartup({
                   identity: input.identity,
                   operationId: prepared.startupOperationId,
-                  requestedRef,
                   effectiveRef: prepared.ref,
                   state: 'failed',
                   summary: 'Deployment approval could not be recorded after private executor startup.'
@@ -950,7 +943,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               await closeExecutorStartup({
                 identity: input.identity,
                 operationId: prepared.startupOperationId,
-                requestedRef,
                 effectiveRef: prepared.ref,
                 state: 'completed',
                 summary: 'Private executor handed the deployment to human approval.'
@@ -967,7 +959,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             await closeExecutorStartup({
               identity: input.identity,
               operationId: prepared.startupOperationId,
-              requestedRef,
               effectiveRef: prepared.ref,
               state: 'failed',
               summary: 'Deployment failed after private executor startup.'
