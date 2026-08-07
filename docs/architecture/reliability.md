@@ -37,3 +37,14 @@
 - **`forge_capabilities`:** Reports active tool and approval surface.
 - **Observer Tools:** Read-only inspection of control-plane and executor states without side-effects.
 - **Secrets:** Injected strictly into authorized executor processes; never persisted to GitHub.
+
+## Direct-chat executor startup
+
+The ordinary-chat facade uses a shorter startup budget than the legacy
+workspace API. A cold `forge_run`, repository `forge_screenshot`, or approved
+profile `forge_deploy` records a `running` operation against the durable
+`owner/repo#branch` address when the private executor is not ready in time.
+The response contains a bounded progress summary and status URL; it does not
+return workspace, process, or operation identifiers. `forge_status` observes
+the private binding and reports either that startup is continuing or that the
+original public action is ready to retry. It never starts the command itself.

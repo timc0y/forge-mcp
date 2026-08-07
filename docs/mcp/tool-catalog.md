@@ -26,6 +26,14 @@ small changes; whole-file content is for new or genuinely small files.
 Forge owns checkout, dependency setup, process waiting, preview startup, and
 cleanup. The chat does not address workspaces or processes directly.
 
+When a branch action is the first request that needs an executor, Forge waits
+only briefly for cold startup. If the container is still provisioning, the
+action returns `state: running`, a human-readable `progress_state`, and a
+status URL. Call `forge_status` with the same `owner/repo#branch` only when
+progress is needed; once it reports ready, retry the original public action.
+No command, screenshot, deployment, or approval is started by the status
+observation, and no workspace or process ID is part of the chat contract.
+
 ## Deploy and submit
 
 - `forge_environments` — list saved deploy environments and environment-variable names, never secret values

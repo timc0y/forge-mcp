@@ -1,7 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const workspaceState = vi.hoisted(() => ({ state: 'provisioning' }));
+
+vi.mock('../../apps/forge-edge-gateway/src/workspace-operations', () => ({
+  workspaceOperations: () => ({
+    getAuthorizationBinding: async () => ({ state: workspaceState.state })
+  })
+}));
+
 import {
   ChatOperationStore,
   issueChatOperationStatusUrl,
+  matchesChatOperationReference,
+  reconcileChatOperation,
   verifyChatOperationStatusToken
 } from '../../apps/forge-edge-gateway/src/chat-operations';
 
@@ -77,6 +88,10 @@ function memoryDb(): D1Database {
 }
 
 describe('chat operation registry', () => {
+  beforeEach(() => {
+    workspaceState.state = 'provisioning';
+  });
+
   it('persists a terminal receipt and supports semantic repository recovery', async () => {
     const store = new ChatOperationStore(memoryDb());
     await store.create({
@@ -109,6 +124,50 @@ describe('chat operation registry', () => {
     await expect(store.get('ten_a', 'op_deploy')).resolves.toMatchObject({
       state: 'running', summary: 'Deployment is running.', result: { process_id: 'proc_private' }
     });
+  });
+
+  it('reconciles private executor startup to a public retry-ready state', async () => {
+    const db = memoryDb();
+    const store = new ChatOperationStore(db);
+    await store.create({
+      id: 'op_start',
+      tenantId: 'ten_a',
+      projectId: 'prj_a',
+      repository: 'acme/site',
+      repositoryRef: 'acme/site#forge/start',
+      kind: 'run',
+      state: 'running',
+      summary: 'Forge is starting the private executor; no command has run yet.',
+      result: { workspace_id: 'ws_private', executor_starting: true }
+    });
+    const pending = await store.get('ten_a', 'op_start');
+    expect(pending).not.toBeNull();
+
+    const stillStarting = await reconcileChatOperation({ METADATA: db } as never, 'ten_a', pending!);
+    expect(stillStarting).toMatchObject({
+      state: 'running',
+      summary: 'Private executor is provisioning; no command has run yet.',
+      result: { workspace_id: 'ws_private', executor_starting: true, executor_state: 'provisioning' }
+    });
+
+    workspaceState.state = 'ready';
+    const ready = await reconcileChatOperation({ METADATA: db } as never, 'ten_a', stillStarting);
+    expect(ready).toMatchObject({
+      state: 'running',
+      summary: 'Private executor is ready. Retry forge_run with the same repository and branch; no command has run yet.',
+      result: { workspace_id: 'ws_private', executor_starting: false, executor_ready: true, executor_state: 'ready' }
+    });
+  });
+
+  it('does not recover a different branch through repository-wide status lookup', () => {
+    const operation = {
+      repository_ref: 'acme/site#forge/a',
+      result: { requested_ref: 'main' }
+    } as never;
+
+    expect(matchesChatOperationReference(operation, 'acme/site#forge/a', 'forge/a')).toBe(true);
+    expect(matchesChatOperationReference(operation, 'acme/site#forge/b', 'forge/b')).toBe(false);
+    expect(matchesChatOperationReference(operation, 'acme/site#forge/a', 'main')).toBe(true);
   });
 
   it('issues an expiring tenant-and-operation-bound status URL', async () => {

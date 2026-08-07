@@ -22,6 +22,22 @@ export interface ChatOperation {
   completed_at: string | null;
 }
 
+function executorAction(kind: ChatOperationKind): 'forge_run' | 'forge_screenshot' | 'forge_deploy' | undefined {
+  if (kind === 'run') return 'forge_run';
+  if (kind === 'screenshot') return 'forge_screenshot';
+  if (kind === 'deploy') return 'forge_deploy';
+  return undefined;
+}
+
+function executorObjectResult(result: Record<string, unknown>): Record<string, unknown> {
+  return { ...result, executor_starting: true };
+}
+
+/** Match a durable branch address, including the original ref alias used when Forge cut forge/*. */
+export function matchesChatOperationReference(operation: ChatOperation, repositoryRef: string, requestedRef: string): boolean {
+  return operation.repository_ref === repositoryRef || operation.result?.requested_ref === requestedRef;
+}
+
 interface ChatOperationRow extends Omit<ChatOperation, 'result'> {
   tenant_id: string;
   project_id: string;
@@ -152,8 +168,68 @@ export async function reconcileChatOperation(env: Env, tenantId: string, operati
   if (operation.state !== 'running' || !operation.result) return operation;
   const workspaceId = operation.result.workspace_id;
   const processId = operation.result.process_id;
-  if (typeof workspaceId !== 'string' || typeof processId !== 'string') return operation;
+  if (typeof workspaceId !== 'string') return operation;
   const workspace = workspaceOperations(env, workspaceId as WorkspaceId);
+
+  // Direct chat deliberately records container startup as a running,
+  // branch-addressed operation. Observe it here without starting a command;
+  // the user/model must retry the public action once the executor is ready.
+  const executorStarting = operation.result.executor_starting === true
+    || operation.result.executor_ready === true;
+  if (executorStarting && typeof processId !== 'string') {
+    const binding = await workspace.getAuthorizationBinding().catch(() => null);
+    if (!binding) return operation;
+    const action = executorAction(operation.kind);
+    const actionLabel = operation.kind === 'screenshot' ? 'screenshot' : operation.kind === 'deploy' ? 'deployment' : 'command';
+    const store = new ChatOperationStore(env.METADATA);
+    if (binding.state === 'ready' || binding.state === 'busy') {
+      const summary = action
+        ? `Private executor is ready. Retry ${action} with the same repository and branch; no ${actionLabel} has run yet.`
+        : 'Private executor is ready. Retry the requested action with the same repository and branch.';
+      if (operation.result.executor_ready !== true || operation.summary !== summary) {
+        await store.update(tenantId, operation.id, {
+          state: 'running',
+          summary,
+          result: {
+            ...operation.result,
+            executor_starting: false,
+            executor_ready: true,
+            executor_state: binding.state
+          }
+        });
+        return await store.get(tenantId, operation.id) ?? operation;
+      }
+      return operation;
+    }
+    if (binding.state === 'failed' || binding.state === 'destroyed' || binding.state === 'destroying') {
+      const summary = `Private executor could not start (${binding.state}). Retry ${action ?? 'the action'} with the same repository and branch.`;
+      await store.complete(tenantId, operation.id, {
+        state: 'failed',
+        summary,
+        result: {
+          ...operation.result,
+          executor_starting: false,
+          executor_failed: true,
+          executor_state: binding.state
+        },
+        errorMessage: summary
+      });
+      if (binding.state === 'failed') await discardChatExecutor(env, workspaceId, operation.id).catch(() => undefined);
+      return await store.get(tenantId, operation.id) ?? operation;
+    }
+    const summary = `Private executor is ${binding.state}; no ${actionLabel} has run yet.`;
+    if (operation.summary !== summary || operation.result.executor_state !== binding.state) {
+      await store.update(tenantId, operation.id, {
+        state: 'running',
+        summary,
+        result: executorObjectResult({ ...operation.result, executor_state: binding.state })
+      });
+      return await store.get(tenantId, operation.id) ?? operation;
+    }
+    return operation;
+  }
+
+  if (typeof processId !== 'string') return operation;
   const waited = await workspace.processWait({
     processId: processId as ProcessId,
     timeoutMs: 250

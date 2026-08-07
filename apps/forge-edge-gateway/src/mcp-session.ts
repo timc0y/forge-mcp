@@ -49,12 +49,12 @@ import { reviewArtifactToolHandlers } from './handlers/review-artifacts';
 import { repositoryWorkspaceToolHandlers } from './handlers/repository-workspace';
 import { executionToolHandlers } from './handlers/execution';
 import { directChatToolHandlers } from './handlers/direct-chat';
-import { ChatOperationStore, issueChatOperationStatusUrl, reconcileChatOperation } from './chat-operations';
+import { ChatOperationStore, issueChatOperationStatusUrl, matchesChatOperationReference, reconcileChatOperation } from './chat-operations';
 import type { HandlerIdentity, SessionHandlerDependencies } from './handlers/types';
 import { executorCoordinator, sha256, withDeadline } from './handlers/helpers';
 import { FORGE_MCP_INSTRUCTIONS } from './mcp-guidance';
 import { isWorkspaceId } from './workspace-resolve';
-import { waitForDirectExecutorReady } from './direct-executor';
+import { isDirectExecutorStartupPending, waitForDirectExecutorReady } from './direct-executor';
 
 const SELECTED_CREDENTIAL_PROFILE_KEY = 'selected-credential-profile';
 const PROGRESS_POTENTIAL_KEY = 'forge_progress_potential_v1';
@@ -498,7 +498,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
     // Direct Chat never waits inside the MCP turn for a human. Hosted approval
     // links must be terminal receipts that Forge redeems server-side.
     const legacy = this.handlers({ inlineApprovals: false });
-    const workspaceFor = async (repository: { owner: string; repo: string }, ref: string): Promise<string> => {
+    const workspaceFor = async (repository: { owner: string; repo: string }, ref: string): Promise<{ workspace: string; ref: string }> => {
       let created: Record<string, unknown>;
       try {
         created = await legacy.forge_workspace_create!({
@@ -516,14 +516,19 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           : [];
         const matching = existing.find((entry) => !ref || entry.branch === ref);
         if (!matching || typeof matching.workspace_id !== 'string') throw error;
-        created = { workspace_id: matching.workspace_id };
+        created = {
+          workspace_id: matching.workspace_id,
+          ...(typeof matching.branch === 'string' ? { current_branch: matching.branch } : {})
+        };
       }
       const workspace = created.workspace_id;
       if (typeof workspace !== 'string') throw new ForgeError({ code: 'FORGE_WORKSPACE_NOT_READY', message: 'Forge could not prepare private execution for this GitHub ref; retry forge_run once.', retryable: true });
-      return workspace;
+      return {
+        workspace,
+        ref: typeof created.current_branch === 'string' && created.current_branch.trim() ? created.current_branch : ref
+      };
     };
-    const executorWorkspaceFor = async (repository: { owner: string; repo: string }, ref: string): Promise<string> => {
-      const workspace = await workspaceFor(repository, ref);
+    const ensureExecutorReady = async (workspace: string): Promise<void> => {
       const identity = this.identity();
       const coordinator = workspaceOperations(this.env, workspace);
       await waitForDirectExecutorReady(
@@ -535,17 +540,154 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           return binding ? { state: binding.state } : undefined;
         }
       );
-      return workspace;
+    };
+    const executorAction = (kind: 'run' | 'screenshot' | 'deploy'): 'forge_run' | 'forge_screenshot' | 'forge_deploy' => {
+      if (kind === 'screenshot') return 'forge_screenshot';
+      if (kind === 'deploy') return 'forge_deploy';
+      return 'forge_run';
+    };
+    const executorLabel = (kind: 'run' | 'screenshot' | 'deploy'): string => {
+      if (kind === 'screenshot') return 'screenshot';
+      if (kind === 'deploy') return 'deployment';
+      return 'command';
+    };
+    const existingExecutor = async (input: {
+      identity: HandlerIdentity;
+      repository: { owner: string; repo: string };
+      ref: string;
+      kind: 'run' | 'screenshot' | 'deploy';
+    }): Promise<{ workspace: string; ref: string } | { progress: Record<string, unknown> } | undefined> => {
+      const repository = `${input.repository.owner}/${input.repository.repo}`;
+      const repositoryRef = `${repository}#${input.ref}`;
+      const store = new ChatOperationStore(this.env.METADATA);
+      const recent = await store.listRecent(input.identity.tenantId, input.identity.projectId, repository);
+      const candidate = recent.find((operation) =>
+        operation.kind === input.kind
+        && operation.state === 'running'
+        && matchesChatOperationReference(operation, repositoryRef, input.ref)
+        && typeof operation.result?.workspace_id === 'string'
+        && (operation.result?.executor_starting === true || operation.result?.executor_ready === true)
+      );
+      if (!candidate) return undefined;
+      const current = await reconcileChatOperation(this.env, input.identity.tenantId, candidate);
+      const workspace = current.result?.workspace_id;
+      const effectiveRef = current.repository_ref?.split('#', 2)[1];
+      if (current.state !== 'running' || typeof workspace !== 'string' || typeof effectiveRef !== 'string' || !effectiveRef) return undefined;
+      if (current.result?.executor_ready === true) return { workspace, ref: effectiveRef };
+      if (current.result?.executor_starting !== true) return undefined;
+      return {
+        progress: {
+          state: 'running',
+          status: 'running',
+          progress_state: 'executor_starting',
+          summary: current.summary,
+          effective_ref: effectiveRef,
+          status_url: await issueChatOperationStatusUrl(this.env, input.identity.tenantId, current.id)
+        }
+      };
+    };
+    const recordExecutorStartup = async (input: {
+      identity: HandlerIdentity;
+      repository: { owner: string; repo: string };
+      ref: string;
+      kind: 'run' | 'screenshot' | 'deploy';
+      workspace: string;
+      requestedRef?: string;
+      operationId?: string;
+    }): Promise<Record<string, unknown>> => {
+      const repository = `${input.repository.owner}/${input.repository.repo}`;
+      const repositoryRef = `${repository}#${input.ref}`;
+      const operationId = input.operationId ?? ids.operation();
+      const label = executorLabel(input.kind);
+      const store = new ChatOperationStore(this.env.METADATA);
+      await store.create({
+        id: operationId,
+        tenantId: input.identity.tenantId,
+        projectId: input.identity.projectId,
+        repository,
+        repositoryRef,
+        kind: input.kind,
+        state: 'running',
+        summary: `Forge is starting the private executor; no ${label} has run yet.`,
+        result: {
+          workspace_id: input.workspace,
+          executor_starting: true,
+          requested_action: executorAction(input.kind),
+          ...(input.requestedRef && input.requestedRef !== input.ref ? { requested_ref: input.requestedRef } : {})
+        }
+      });
+      // Provisioning was already requested by executorCoordinator. Do not
+      // create a second background command workflow: status/branch recovery
+      // observes the startup, and the user retries the public action when it
+      // is ready.
+      return {
+        state: 'running',
+        status: 'running',
+        progress_state: 'executor_starting',
+        summary: `Forge is starting the private executor; no ${label} has run yet.`,
+        effective_ref: input.ref,
+        status_url: await issueChatOperationStatusUrl(this.env, input.identity.tenantId, operationId)
+      };
+    };
+    const prepareExecutor = async (input: {
+      identity: HandlerIdentity;
+      repository: { owner: string; repo: string };
+      ref: string;
+      kind: 'run' | 'screenshot' | 'deploy';
+      operationId?: string;
+    }): Promise<{ workspace: string; ref: string } | { progress: Record<string, unknown> }> => {
+      const existing = await existingExecutor(input);
+      if (existing) return existing;
+      const prepared = await workspaceFor(input.repository, input.ref);
+      const workspace = prepared.workspace;
+      try {
+        await ensureExecutorReady(workspace);
+      } catch (error) {
+        if (isDirectExecutorStartupPending(error)) {
+          try {
+            return {
+              progress: await recordExecutorStartup({
+                ...input,
+                ref: prepared.ref,
+                requestedRef: input.ref,
+                workspace
+              })
+            };
+          } catch (recordError) {
+            await legacy.forge_workspace_destroy!({
+              workspace,
+              force: true,
+              idempotency_key: `direct-${input.kind}-startup-failed-${input.identity.tenantId}-${input.identity.projectId}-${input.repository.owner}-${input.repository.repo}-${input.ref}`.slice(0, 190)
+            }).catch(() => undefined);
+            throw recordError;
+          }
+        }
+        await legacy.forge_workspace_destroy!({
+          workspace,
+          force: true,
+          idempotency_key: `direct-${input.kind}-prepare-failed-${input.identity.tenantId}-${input.identity.projectId}-${input.repository.owner}-${input.repository.repo}-${input.ref}`.slice(0, 190)
+        }).catch(() => undefined);
+        throw error;
+      }
+      return { workspace, ref: prepared.ref };
     };
     return directChatToolHandlers(this.env, {
       identity: () => this.identity(),
       privateOperations: {
         run: async (input) => {
-          const workspace = await executorWorkspaceFor(input.repository, input.ref);
           const repository = `${input.repository.owner}/${input.repository.repo}`;
-          const repositoryRef = `${repository}#${input.ref}`;
           const operationId = ids.operation();
           const store = new ChatOperationStore(this.env.METADATA);
+          const prepared = await prepareExecutor({
+            identity: input.identity,
+            repository: input.repository,
+            ref: input.ref,
+            kind: 'run',
+            operationId
+          });
+          if ('progress' in prepared) return prepared.progress;
+          const workspace = prepared.workspace;
+          const repositoryRef = `${repository}#${prepared.ref}`;
           try {
             const value = await legacy.forge_shell!({
               workspace, command: input.command, cwd: input.cwd ?? '/workspace/repo', timeout_ms: input.timeoutMs,
@@ -569,6 +711,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               });
               return {
                 ...value,
+                effective_ref: prepared.ref,
                 chat_operation_id: operationId,
                 status_url: await issueChatOperationStatusUrl(this.env, input.identity.tenantId, operationId)
               };
@@ -580,7 +723,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               result: { exit_code: value.exitCode ?? null }
             });
             await legacy.forge_workspace_destroy!({ workspace, force: false, idempotency_key: `direct-run-cleanup-${operationId}` }).catch(() => undefined);
-            return { ...value, chat_operation_id: operationId };
+            return { ...value, effective_ref: prepared.ref, chat_operation_id: operationId };
           } catch (error) {
             await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-run-failed-${operationId}` }).catch(() => undefined);
             throw error;
@@ -593,9 +736,16 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               full_page: input.fullPage, time_budget_ms: 40_000
             }) as Record<string, unknown>;
           }
-          const workspace = await executorWorkspaceFor(input.target.repository, input.target.ref);
+          const prepared = await prepareExecutor({
+            identity: input.identity,
+            repository: input.target.repository,
+            ref: input.target.ref,
+            kind: 'screenshot'
+          });
+          if ('progress' in prepared) return prepared.progress;
+          const workspace = prepared.workspace;
           try {
-            return await legacy.forge_preview!({
+            const value = await legacy.forge_preview!({
               workspace,
               preview_wait_ms: 30_000,
               full_page: input.fullPage,
@@ -607,8 +757,13 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               })),
               viewports: input.viewports
             }) as Record<string, unknown>;
+            return { ...value, effective_ref: prepared.ref };
           } finally {
-            await legacy.forge_workspace_destroy!({ workspace, force: false, idempotency_key: `direct-screenshot-cleanup-${crypto.randomUUID()}` }).catch(() => undefined);
+            await legacy.forge_workspace_destroy!({
+              workspace,
+              force: false,
+              idempotency_key: `direct-screenshot-cleanup-${input.target.repository.owner}-${input.target.repository.repo}-${prepared.ref}`.slice(0, 190)
+            }).catch(() => undefined);
           }
         },
         environments: async (input) => {
@@ -633,7 +788,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         },
         deploy: async (input) => {
           const repository = `${input.repository.owner}/${input.repository.repo}`;
-          const repositoryRef = `${repository}#${input.ref}`;
           const tenantId = input.identity.tenantId as TenantId;
           const profiles = await deployProfileStore(this.env.METADATA).list(tenantId, {
             owner: input.repository.owner,
@@ -657,15 +811,24 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               retryable: false
             });
           }
-          const workspace = await executorWorkspaceFor(input.repository, input.ref);
+          const operationId = ids.operation();
+          const prepared = await prepareExecutor({
+            identity: input.identity,
+            repository: input.repository,
+            ref: input.ref,
+            kind: 'deploy',
+            operationId
+          });
+          if ('progress' in prepared) return prepared.progress;
+          const workspace = prepared.workspace;
+          const repositoryRef = `${repository}#${prepared.ref}`;
           try {
             for (const secret of selected.selected) await vault.attach(tenantId, secret.id, workspace);
-            return await legacy.forge_deploy!({ workspace, profile_id: profile.profile_id, workflow: 'auto', include_output: false, idempotency_key: `direct-deploy-${input.repository.owner}-${input.repository.repo}-${input.ref}-${profile.profile_id}`.slice(0, 190) }) as Record<string, unknown>;
+            return await legacy.forge_deploy!({ workspace, profile_id: profile.profile_id, workflow: 'auto', include_output: false, idempotency_key: `direct-deploy-${input.repository.owner}-${input.repository.repo}-${prepared.ref}-${profile.profile_id}`.slice(0, 190) }) as Record<string, unknown>;
           } catch (error) {
             const forge = toForgeError(error);
             const details = forge.details ?? {};
             if (forge.code === 'FORGE_APPROVAL_REQUIRED' && typeof details.approval_id === 'string') {
-              const operationId = ids.operation();
               const store = new ChatOperationStore(this.env.METADATA);
               const statusUrl = await issueChatOperationStatusUrl(this.env, input.identity.tenantId, operationId);
               await store.create({
@@ -683,7 +846,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 'SELECT request_payload FROM approvals WHERE id = ? AND tenant_id = ?'
               ).bind(details.approval_id, input.identity.tenantId).first<{ request_payload: string }>();
               if (!row) {
-                await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-deploy-missing-approval-${crypto.randomUUID()}` }).catch(() => undefined);
+                await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-deploy-missing-approval-${operationId}` }).catch(() => undefined);
                 throw error;
               }
               const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
@@ -702,19 +865,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 summary: forge.message,
                 approval_url: details.approval_url,
                 status_url: statusUrl,
+                effective_ref: prepared.ref,
                 chat_operation_id: operationId
               };
             }
-            await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-deploy-failed-${crypto.randomUUID()}` }).catch(() => undefined);
+            await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-deploy-failed-${operationId}` }).catch(() => undefined);
             throw error;
           }
         },
         submit: async (input) => {
-          const workspace = await workspaceFor(input.repository, input.branch);
+          const { workspace } = await workspaceFor(input.repository, input.branch);
           try {
             return await legacy.forge_merge!({ workspace, pr_base: input.baseRef ?? 'main', title: input.title, body: input.body ?? '', idempotency_key: `direct-submit-${input.repository.owner}-${input.repository.repo}-${input.branch}`.slice(0, 190) }) as Record<string, unknown>;
           } finally {
-            await legacy.forge_workspace_destroy!({ workspace, force: false, idempotency_key: `direct-submit-cleanup-${crypto.randomUUID()}` }).catch(() => undefined);
+            await legacy.forge_workspace_destroy!({ workspace, force: false, idempotency_key: `direct-submit-cleanup-${input.repository.owner}-${input.repository.repo}-${input.branch}`.slice(0, 190) }).catch(() => undefined);
           }
         },
         status: async (input) => {
@@ -722,6 +886,18 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const present = async (operation: Awaited<ReturnType<ChatOperationStore['get']>>) => {
             if (!operation) return null;
             operation = await reconcileChatOperation(this.env, input.identity.tenantId, operation);
+            const retryTool = operation.kind === 'run'
+              ? 'forge_run'
+              : operation.kind === 'screenshot'
+                ? 'forge_screenshot'
+                : operation.kind === 'deploy'
+                  ? 'forge_deploy'
+                  : undefined;
+            const next_action = operation.result?.executor_ready === true && retryTool
+              ? { kind: 'tool' as const, tool: retryTool, message: `Private executor is ready. Retry ${retryTool} with the same repository and branch; no work has run yet.` }
+              : operation.result?.executor_starting === true
+                ? { kind: 'human' as const, message: 'Private executor is still starting. This status is branch-addressed; retry the original Forge action with the same repository and branch when it is ready.' }
+                : undefined;
             return {
               chat_operation_id: operation.id,
               kind: operation.kind,
@@ -733,7 +909,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 ? operation.result
                 : undefined,
               status_url: await issueChatOperationStatusUrl(this.env, input.identity.tenantId, operation.id),
-              updated_at: operation.updated_at
+              updated_at: operation.updated_at,
+              ...(next_action ? { next_action } : {})
             };
           };
           if (input.reference.startsWith('op_')) {
@@ -741,7 +918,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             return present(operation);
           }
           const [repository, branch] = input.reference.split('#', 2);
-          if (repository && branch) {
+          const requestedBranch = branch;
+          if (repository && requestedBranch) {
             const [owner, name] = repository.split('/', 2);
             if (owner && name) {
               const deferred = await getLatestDeferredActionForBranch(
@@ -749,7 +927,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 input.identity.tenantId,
                 input.identity.projectId,
                 { owner, name },
-                branch
+                requestedBranch
               );
               if (deferred) {
                 const approval = await getApprovalRecord(this.env, input.identity.tenantId, deferred.approvalId);
@@ -774,14 +952,18 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                       ? `Submission completed${deferred.result?.pr_url ? `: ${deferred.result.pr_url}` : '.'}`
                       : deferred.error ?? `Submission is ${deferred.state}.`,
                   repository,
-                  repository_ref: `${repository}#${branch}`,
+                  repository_ref: `${repository}#${requestedBranch}`,
                   ...(approvalUrl ? { approval_url: approvalUrl } : {}),
                   ...(deferred.result ? { result: deferred.result } : {})
                 };
               }
             }
           }
-          const latest = (await store.listRecent(input.identity.tenantId, input.identity.projectId, repository)).at(0);
+          const latest = requestedBranch
+            ? (await store.listRecent(input.identity.tenantId, input.identity.projectId, repository)).find((operation) =>
+                matchesChatOperationReference(operation, `${repository}#${requestedBranch}`, requestedBranch)
+              )
+            : undefined;
           return present(latest ?? null);
         }
       }

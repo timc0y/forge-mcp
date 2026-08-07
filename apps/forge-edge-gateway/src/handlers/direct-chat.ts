@@ -130,9 +130,27 @@ function withoutControlPlaneIds(value: Record<string, unknown>): Record<string, 
     allowed_next_actions: _allowed_next_actions,
     nextStep: _nextStep,
     next_step: _next_step,
+    nextAction: _nextAction,
+    next_action: _next_action,
+    effective_ref: _effectiveRef,
+    requested_ref: _requestedRef,
     ...publicValue
   } = value;
   return publicValue;
+}
+
+function publicNextAction(value: unknown): DirectReceipt['next_action'] | undefined {
+  if (value === 'none') return 'none';
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if ((candidate.kind !== 'tool' && candidate.kind !== 'human') || typeof candidate.message !== 'string') return undefined;
+  const publicTools = new Set(['forge_run', 'forge_screenshot', 'forge_deploy', 'forge_status']);
+  if (candidate.tool !== undefined && (typeof candidate.tool !== 'string' || !publicTools.has(candidate.tool))) return undefined;
+  return {
+    kind: candidate.kind,
+    message: candidate.message,
+    ...(typeof candidate.tool === 'string' ? { tool: candidate.tool } : {})
+  };
 }
 
 function isForgeToolResponse(value: Record<string, unknown> | ForgeToolResponse): value is ForgeToolResponse {
@@ -492,9 +510,19 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
         throw publicExecutorError(error, 'forge_run');
       }
       const running = value.state === 'running' || value.status === 'running';
-      return receipt(running ? 'running' : 'completed', running ? 'Command continues in Forge; do not re-run it.' : 'Command finished in an ephemeral executor.', running ? { kind: 'human', message: 'Open the returned status URL for the final result.' } : 'none', {
+      const starting = value.progress_state === 'executor_starting';
+      const reportedRef = typeof value.effective_ref === 'string' && value.effective_ref.trim() ? value.effective_ref : selectedRef;
+      return receipt(running ? 'running' : 'completed', starting
+        ? String(value.summary ?? 'Forge is starting the private executor; no command has run yet.')
+        : running
+          ? 'Command continues in Forge; do not re-run it.'
+          : 'Command finished in an ephemeral executor.', starting
+        ? { kind: 'tool', tool: 'forge_status', message: 'Call forge_status with the same repository and branch to see when the private executor is ready, then retry forge_run.' }
+        : running
+          ? { kind: 'human', message: 'Open the returned status URL for the final result.' }
+          : 'none', {
         ...withoutControlPlaneIds(value),
-        repository_ref: `${input.repository.owner}/${input.repository.repo}#${selectedRef}`,
+        repository_ref: `${input.repository.owner}/${input.repository.repo}#${reportedRef}`,
         remote_persisted: false,
         executor_filesystem: 'ephemeral'
       });
@@ -515,7 +543,22 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
         throw publicPreviewError(error);
       }
       const value: Record<string, unknown> = isForgeToolResponse(raw) ? raw.value : raw;
-      const result = receipt(value.complete === false ? 'running' : 'completed', value.complete === false ? 'Returned the screenshots captured before the deadline.' : 'Captured responsive screenshot evidence.', value.complete === false ? { kind: 'human', message: 'Open the gallery/status URL for remaining captures.' } : 'none', withoutControlPlaneIds(value));
+      const starting = value.progress_state === 'executor_starting';
+      const reportedRef = target.kind === 'repository'
+        ? typeof value.effective_ref === 'string' && value.effective_ref.trim() ? value.effective_ref : target.ref
+        : undefined;
+      const result = receipt(starting ? 'running' : value.complete === false ? 'running' : 'completed', starting
+        ? String(value.summary ?? 'Forge is starting the private executor; no screenshot has been captured yet.')
+        : value.complete === false
+          ? 'Returned the screenshots captured before the deadline.'
+          : 'Captured responsive screenshot evidence.', starting
+        ? { kind: 'tool', tool: 'forge_status', message: 'Call forge_status with the same repository and branch to see when the private executor is ready, then retry forge_screenshot.' }
+        : value.complete === false
+          ? { kind: 'human', message: 'Open the gallery/status URL for remaining captures.' }
+          : 'none', {
+            ...withoutControlPlaneIds(value),
+            ...(target.kind === 'repository' ? { repository_ref: `${target.repository.owner}/${target.repository.repo}#${reportedRef}` } : {})
+          });
       return isForgeToolResponse(raw)
         ? { kind: 'forge_tool_response', value: result, content: raw.content } as ForgeToolResponse
         : result;
@@ -534,9 +577,15 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
       } catch (error) {
         throw publicExecutorError(error, 'forge_deploy');
       }
-      return receipt('approval_required', 'Deployment is staged for human approval and pinned to this repository ref.', { kind: 'human', message: 'Open the approval URL. Forge will execute and verify the deployment without another chat call.' }, {
+      const starting = value.progress_state === 'executor_starting';
+      const reportedRef = typeof value.effective_ref === 'string' && value.effective_ref.trim() ? value.effective_ref : selectedRef;
+      return receipt(starting ? 'running' : 'approval_required', starting
+        ? String(value.summary ?? 'Forge is starting the private executor; deployment has not started and no approval was created.')
+        : 'Deployment is staged for human approval and pinned to this repository ref.', starting
+        ? { kind: 'tool', tool: 'forge_status', message: 'Call forge_status with the same repository and branch to see when the private executor is ready, then retry forge_deploy.' }
+        : { kind: 'human', message: 'Open the approval URL. Forge will execute and verify the deployment without another chat call.' }, {
         ...withoutControlPlaneIds(value),
-        repository_ref: `${input.repository.owner}/${input.repository.repo}#${selectedRef}`
+        repository_ref: `${input.repository.owner}/${input.repository.repo}#${reportedRef}`
       });
     },
 
@@ -556,7 +605,8 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
       const status = await deps.privateOperations.status?.({ identity: identity(), reference });
       if (!status) return receipt('completed', 'No active Forge operation matches this reference.', 'none');
       const state = status.state === 'failed' || status.state === 'expired' || status.state === 'approval_required' || status.state === 'running' ? status.state : 'completed';
-      return receipt(state, String(status.summary ?? 'Recovered Forge operation status.'), state === 'approval_required' ? { kind: 'human', message: 'Open the returned approval URL.' } : 'none', {
+      const next = publicNextAction(status.next_action) ?? (state === 'approval_required' ? { kind: 'human', message: 'Open the returned approval URL.' } : 'none');
+      return receipt(state, String(status.summary ?? 'Recovered Forge operation status.'), next, {
         ...withoutControlPlaneIds(status),
       });
     }

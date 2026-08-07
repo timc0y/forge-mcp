@@ -1,6 +1,9 @@
 import { ForgeError, toForgeError } from '@forge/core';
 
-export const DIRECT_EXECUTOR_STARTUP_BUDGET_MS = 25_000;
+// Keep the first direct-chat turn short. The provisioning workflow continues
+// privately after this budget; the caller receives a durable branch-addressed
+// status receipt instead of holding an MCP turn open for container startup.
+export const DIRECT_EXECUTOR_STARTUP_BUDGET_MS = 5_000;
 export const DIRECT_EXECUTOR_POLL_MS = 750;
 
 type DirectExecutorState = {
@@ -13,6 +16,16 @@ type WaitOptions = {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 };
+
+export function isDirectExecutorStartupPending(error: unknown): boolean {
+  try {
+    const forge = toForgeError(error);
+    return forge.code === 'FORGE_WORKSPACE_NOT_READY'
+      && forge.details?.direct_executor_startup === 'pending';
+  } catch {
+    return false;
+  }
+}
 
 const terminalStates = new Set(['failed', 'destroyed', 'destroying']);
 
@@ -31,7 +44,10 @@ function directStartupError(state: string, timedOut: boolean): ForgeError {
       ? 'Forge could not start the private executor within this request. No command ran. Retry the same action with the same repository and branch; Forge will resume the existing startup.'
       : `Forge could not start the private executor for this repository branch (${state}). No command ran. Retry the same action; Forge will create a fresh executor if needed.`,
     retryable: true,
-    details: { allowedNextActions: ['forge_run', 'forge_screenshot'] }
+    details: {
+      allowedNextActions: ['forge_run', 'forge_screenshot'],
+      direct_executor_startup: timedOut ? 'pending' : 'failed'
+    }
   });
 }
 

@@ -42,6 +42,36 @@ describe('direct chat facade', () => {
     expect(result).not.toHaveProperty('process_id');
   });
 
+  it('returns a compact public progress receipt for cold executor startup', async () => {
+    const result = await handlers({
+      run: async () => ({
+        state: 'running',
+        status: 'running',
+        progress_state: 'executor_starting',
+        summary: 'Forge is starting the private executor; no command has run yet.',
+        status_url: 'https://forge.test/status/op_private',
+        effective_ref: 'forge/generated',
+        workspace_id: 'ws_private',
+        operation_id: 'op_private'
+      })
+    }).run({ repository, ref: 'forge/chat-1', command: 'pnpm test' });
+
+    expect(result).toMatchObject({
+      state: 'running',
+      summary: 'Forge is starting the private executor; no command has run yet.',
+      progress_state: 'executor_starting',
+      status_url: 'https://forge.test/status/op_private',
+      repository_ref: 'acme/web#forge/generated'
+    });
+    expect(result.next_action).toEqual({
+      kind: 'tool',
+      tool: 'forge_status',
+      message: 'Call forge_status with the same repository and branch to see when the private executor is ready, then retry forge_run.'
+    });
+    expect(result).not.toHaveProperty('workspace_id');
+    expect(result).not.toHaveProperty('operation_id');
+  });
+
   it('does not expose legacy operation or next-step fields on a completed run', async () => {
     const result = await handlers({
       run: async () => ({
@@ -84,6 +114,47 @@ describe('direct chat facade', () => {
 
     expect(result).toMatchObject({ kind: 'forge_tool_response', value: { state: 'completed' } });
     expect(result).toHaveProperty('content', [{ type: 'image', data: 'encoded-image', mimeType: 'image/jpeg' }]);
+  });
+
+  it('returns the same branch-addressed startup receipt for a repository screenshot', async () => {
+    const result = await handlers({
+      screenshot: async () => ({
+        state: 'running',
+        progress_state: 'executor_starting',
+        summary: 'Forge is starting the private executor; no screenshot has run yet.',
+        status_url: 'https://forge.test/status/op_private',
+        effective_ref: 'forge/generated',
+        workspace_id: 'ws_private'
+      })
+    }).screenshot({ target: { repository, ref: 'forge/chat-1' }, viewports: ['phone', 'desktop'] });
+
+    expect(result).toMatchObject({
+      state: 'running',
+      progress_state: 'executor_starting',
+      status_url: 'https://forge.test/status/op_private',
+      repository_ref: 'acme/web#forge/generated'
+    });
+    expect(result).toHaveProperty('next_action', expect.objectContaining({ tool: 'forge_status' }));
+    expect(result).not.toHaveProperty('workspace_id');
+  });
+
+  it('does not turn cold deploy startup into a false approval receipt', async () => {
+    const result = await handlers({
+      deploy: async () => ({
+        state: 'running',
+        progress_state: 'executor_starting',
+        summary: 'Forge is starting the private executor; deployment has not started and no approval was created.',
+        status_url: 'https://forge.test/status/op_private',
+        effective_ref: 'forge/generated',
+        workspace_id: 'ws_private'
+      })
+    }).deploy({ repository, ref: 'forge/chat-1', environment: 'preview' });
+
+    expect(result.state).toBe('running');
+    expect(result.summary).toMatch(/no approval was created/u);
+    expect(result.repository_ref).toBe('acme/web#forge/generated');
+    expect(result.next_action).toMatchObject({ kind: 'tool', tool: 'forge_status' });
+    expect(result).not.toHaveProperty('workspace_id');
   });
 
   it('keeps private preview recovery choreography out of direct-chat errors', async () => {
@@ -140,5 +211,28 @@ describe('direct chat facade', () => {
 
     expect(result.state).toBe('completed');
     expect(result.next_action).toBe('none');
+  });
+
+  it('preserves a public retry action returned by semantic status recovery', async () => {
+    const result = await handlers({
+      status: async () => ({
+        state: 'running',
+        summary: 'Private executor is ready. Retry forge_run with the same repository and branch; no command has run yet.',
+        next_action: {
+          kind: 'tool',
+          tool: 'forge_run',
+          message: 'Retry forge_run with the same repository and branch.'
+        },
+        workspace_id: 'ws_private'
+      })
+    }).status('acme/web#forge/chat-1');
+
+    expect(result.next_action).toEqual({
+      kind: 'tool',
+      tool: 'forge_run',
+      message: 'Retry forge_run with the same repository and branch.'
+    });
+    expect(result).not.toHaveProperty('workspace_id');
+    expect(result).not.toHaveProperty('next_action', expect.objectContaining({ workspace_id: expect.anything() }));
   });
 });

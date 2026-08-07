@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ForgeError } from '@forge/core';
-import { waitForDirectExecutorReady } from '../../apps/forge-edge-gateway/src/direct-executor';
+import { isDirectExecutorStartupPending, waitForDirectExecutorReady } from '../../apps/forge-edge-gateway/src/direct-executor';
 
 const notReady = () => new ForgeError({
   code: 'FORGE_WORKSPACE_NOT_READY',
@@ -26,25 +26,31 @@ describe('direct executor startup', () => {
 
   it('returns a bounded public error when startup never becomes ready', async () => {
     let clock = 0;
-    await expect(waitForDirectExecutorReady(
+    const error = await waitForDirectExecutorReady(
       async () => { throw notReady(); },
       async () => ({ state: 'provisioning' }),
       { timeoutMs: 5, pollMs: 2, now: () => clock, sleep: async (ms) => { clock += ms; } }
-    )).rejects.toMatchObject({
+    ).catch((value: unknown) => value);
+
+    expect(error).toMatchObject({
       code: 'FORGE_WORKSPACE_NOT_READY',
       message: expect.stringContaining('same repository and branch'),
-      details: { allowedNextActions: ['forge_run', 'forge_screenshot'] }
+      details: { allowedNextActions: ['forge_run', 'forge_screenshot'], direct_executor_startup: 'pending' }
     });
+    expect(isDirectExecutorStartupPending(error)).toBe(true);
   });
 
   it('does not retry a terminal failure with private recovery instructions', async () => {
-    await expect(waitForDirectExecutorReady(
+    const error = await waitForDirectExecutorReady(
       async () => { throw notReady(); },
       async () => ({ state: 'failed' }),
       { sleep: async () => undefined }
-    )).rejects.toMatchObject({
+    ).catch((value: unknown) => value);
+
+    expect(error).toMatchObject({
       message: expect.not.stringMatching(/workspace_id|operation_id|forge_workspace_get/iu),
-      details: { allowedNextActions: ['forge_run', 'forge_screenshot'] }
+      details: { allowedNextActions: ['forge_run', 'forge_screenshot'], direct_executor_startup: 'failed' }
     });
+    expect(isDirectExecutorStartupPending(error)).toBe(false);
   });
 });
