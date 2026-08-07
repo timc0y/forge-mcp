@@ -4,7 +4,8 @@ const workspaceState = vi.hoisted(() => ({ state: 'provisioning' }));
 
 vi.mock('../../apps/forge-edge-gateway/src/workspace-operations', () => ({
   workspaceOperations: () => ({
-    getAuthorizationBinding: async () => ({ state: workspaceState.state })
+    getAuthorizationBinding: async () => ({ state: workspaceState.state }),
+    requestDestroy: async () => ({ state: 'destroyed' })
   })
 }));
 
@@ -156,6 +157,13 @@ describe('chat operation registry', () => {
       state: 'running',
       summary: 'Private executor is ready. Retry forge_run with the same repository and branch; no command has run yet.',
       result: { workspace_id: 'ws_private', executor_starting: false, executor_ready: true, executor_state: 'ready' }
+    });
+
+    workspaceState.state = 'destroyed';
+    const failed = await reconcileChatOperation({ METADATA: db } as never, 'ten_a', stillStarting);
+    expect(failed).toMatchObject({
+      state: 'failed',
+      result: { executor_starting: false, executor_ready: false, executor_failed: true, executor_state: 'destroyed' }
     });
   });
 

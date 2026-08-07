@@ -209,6 +209,7 @@ export async function reconcileChatOperation(env: Env, tenantId: string, operati
         result: {
           ...operation.result,
           executor_starting: false,
+          executor_ready: false,
           executor_failed: true,
           executor_state: binding.state
         },
