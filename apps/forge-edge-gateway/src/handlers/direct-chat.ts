@@ -129,6 +129,28 @@ function isForgeToolResponse(value: Record<string, unknown> | ForgeToolResponse)
   return (value as ForgeToolResponse).kind === 'forge_tool_response';
 }
 
+function publicExecutorError(error: unknown, action: 'forge_run' | 'forge_screenshot' | 'forge_deploy'): unknown {
+  const forgeError = error instanceof ForgeError
+    ? error
+    : typeof error === 'object' && error !== null
+      ? toForgeError(error)
+      : undefined;
+  if (!forgeError) return error;
+  const details = forgeError.details ?? {};
+  const hasPrivateDetails = [
+    'workspace_id', 'workspaceId', 'process_id', 'processId', 'operation_id', 'operationId'
+  ].some((key) => key in details);
+  const hasPrivateGuidance = /workspace_id|process_id|forge_workspace_get|forge_process_|forge_deps_install/iu.test(forgeError.message);
+  if (forgeError.code !== 'FORGE_WORKSPACE_NOT_READY' && forgeError.code !== 'FORGE_WORKSPACE_CONFLICT' && !hasPrivateDetails && !hasPrivateGuidance) return error;
+  const label = action === 'forge_run' ? 'command' : action === 'forge_screenshot' ? 'branch preview' : 'deployment';
+  return new ForgeError({
+    code: forgeError.code,
+    message: `Forge could not prepare the private executor for this ${label}. Retry ${action} with the same repository and branch; Forge will reuse any existing startup.`,
+    retryable: forgeError.retryable,
+    details: { allowedNextActions: [action] }
+  });
+}
+
 /** Keep private executor choreography out of ordinary-chat error receipts. */
 function publicPreviewError(error: unknown): unknown {
   const forgeError = error instanceof ForgeError
@@ -136,7 +158,10 @@ function publicPreviewError(error: unknown): unknown {
     : typeof error === 'object' && error !== null
       ? toForgeError(error)
       : undefined;
-  if (!forgeError || forgeError.code !== 'FORGE_PREVIEW_UNAVAILABLE') return error;
+  if (!forgeError) return error;
+  if (forgeError.code !== 'FORGE_PREVIEW_UNAVAILABLE') {
+    return publicExecutorError(error, 'forge_screenshot');
+  }
   const message = forgeError.message.toLowerCase();
   if (message.includes('no dev server command') || message.includes('no preview')) {
     return new ForgeError({
@@ -450,7 +475,12 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
 
     async run(input: { repository: DirectRepository; ref?: string; command: string; cwd?: string; timeoutMs?: number }): Promise<DirectReceipt> {
       const selectedRef = input.ref?.trim() || (await readTree(input.repository)).selectedRef;
-      const value = await deps.privateOperations.run({ identity: identity(), repository: input.repository, ref: selectedRef, command: input.command, cwd: input.cwd, timeoutMs: Math.min(input.timeoutMs ?? 600_000, 600_000) });
+      let value: Record<string, unknown>;
+      try {
+        value = await deps.privateOperations.run({ identity: identity(), repository: input.repository, ref: selectedRef, command: input.command, cwd: input.cwd, timeoutMs: Math.min(input.timeoutMs ?? 600_000, 600_000) });
+      } catch (error) {
+        throw publicExecutorError(error, 'forge_run');
+      }
       const running = value.state === 'running' || value.status === 'running';
       return receipt(running ? 'running' : 'completed', running ? 'Command continues in Forge; do not re-run it.' : 'Command finished in an ephemeral executor.', running ? { kind: 'human', message: 'Open the returned status URL for the final result.' } : 'none', {
         ...withoutControlPlaneIds(value),
@@ -489,7 +519,12 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
 
     async deploy(input: { repository: DirectRepository; ref?: string; environment: string }): Promise<DirectReceipt> {
       const selectedRef = input.ref?.trim() || (await readTree(input.repository)).selectedRef;
-      const value = await deps.privateOperations.deploy({ identity: identity(), repository: input.repository, ref: selectedRef, environment: input.environment });
+      let value: Record<string, unknown>;
+      try {
+        value = await deps.privateOperations.deploy({ identity: identity(), repository: input.repository, ref: selectedRef, environment: input.environment });
+      } catch (error) {
+        throw publicExecutorError(error, 'forge_deploy');
+      }
       return receipt('approval_required', 'Deployment is staged for human approval and pinned to this repository ref.', { kind: 'human', message: 'Open the approval URL. Forge will execute and verify the deployment without another chat call.' }, {
         ...withoutControlPlaneIds(value),
         ...(typeof value.chat_operation_id === 'string' ? { operation_id: value.chat_operation_id } : {}),

@@ -48,9 +48,10 @@ import { executionToolHandlers } from './handlers/execution';
 import { directChatToolHandlers } from './handlers/direct-chat';
 import { ChatOperationStore, issueChatOperationStatusUrl, reconcileChatOperation } from './chat-operations';
 import type { HandlerIdentity, SessionHandlerDependencies } from './handlers/types';
-import { sha256 } from './handlers/helpers';
+import { executorCoordinator, sha256, withDeadline } from './handlers/helpers';
 import { FORGE_MCP_INSTRUCTIONS } from './mcp-guidance';
 import { isWorkspaceId } from './workspace-resolve';
+import { waitForDirectExecutorReady } from './direct-executor';
 
 const SELECTED_CREDENTIAL_PROFILE_KEY = 'selected-credential-profile';
 const PROGRESS_POTENTIAL_KEY = 'forge_progress_potential_v1';
@@ -518,11 +519,26 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       if (typeof workspace !== 'string') throw new ForgeError({ code: 'FORGE_WORKSPACE_NOT_READY', message: 'Forge could not prepare private execution for this GitHub ref; retry forge_run once.', retryable: true });
       return workspace;
     };
+    const executorWorkspaceFor = async (repository: { owner: string; repo: string }, ref: string): Promise<string> => {
+      const workspace = await workspaceFor(repository, ref);
+      const identity = this.identity();
+      const coordinator = workspaceOperations(this.env, workspace);
+      await waitForDirectExecutorReady(
+        async () => {
+          await executorCoordinator(this.env, identity, workspace);
+        },
+        async () => {
+          const binding = await withDeadline(coordinator.getAuthorizationBinding(), 2_000);
+          return binding ? { state: binding.state } : undefined;
+        }
+      );
+      return workspace;
+    };
     return directChatToolHandlers(this.env, {
       identity: () => this.identity(),
       privateOperations: {
         run: async (input) => {
-          const workspace = await workspaceFor(input.repository, input.ref);
+          const workspace = await executorWorkspaceFor(input.repository, input.ref);
           const repository = `${input.repository.owner}/${input.repository.repo}`;
           const repositoryRef = `${repository}#${input.ref}`;
           const operationId = ids.operation();
@@ -574,7 +590,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               full_page: input.fullPage, time_budget_ms: 40_000
             }) as Record<string, unknown>;
           }
-          const workspace = await workspaceFor(input.target.repository, input.target.ref);
+          const workspace = await executorWorkspaceFor(input.target.repository, input.target.ref);
           try {
             return await legacy.forge_preview!({
               workspace,
@@ -638,7 +654,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               retryable: false
             });
           }
-          const workspace = await workspaceFor(input.repository, input.ref);
+          const workspace = await executorWorkspaceFor(input.repository, input.ref);
           try {
             for (const secret of selected.selected) await vault.attach(tenantId, secret.id, workspace);
             return await legacy.forge_deploy!({ workspace, profile_id: profile.profile_id, workflow: 'auto', include_output: false, idempotency_key: `direct-deploy-${input.repository.owner}-${input.repository.repo}-${input.ref}-${profile.profile_id}`.slice(0, 190) }) as Record<string, unknown>;

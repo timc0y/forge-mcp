@@ -83,6 +83,23 @@ describe('direct chat facade', () => {
     });
   });
 
+  it('keeps private executor recovery choreography out of command errors', async () => {
+    await expect(handlers({
+      run: async () => {
+        throw {
+          code: 'FORGE_WORKSPACE_NOT_READY',
+          message: 'Call forge_workspace_get with workspace_id and operation_id.',
+          retryable: true,
+          details: { workspace_id: 'ws_private', operation_id: 'op_private' }
+        };
+      }
+    }).run({ repository, ref: 'forge/chat-1', command: 'pnpm test' })).rejects.toMatchObject({
+      code: 'FORGE_WORKSPACE_NOT_READY',
+      message: expect.stringContaining('Retry forge_run'),
+      details: { allowedNextActions: ['forge_run'] }
+    });
+  });
+
   it('returns a repair action for an invalid repository preview config', async () => {
     await expect(handlers({
       screenshot: async () => {
