@@ -1,106 +1,29 @@
-# Failure contracts
+# Failure Contracts
 
-These are the recovery contracts for Forge's GitHub control plane and ephemeral
-executor plane.
+## Governing Rules
+1. **GitHub is Single Source of Truth**: Success requires reading back the ref SHA.
+2. **Executor Files are Ephemeral**: Output is never auto-committed; marked `remote_persisted:false`.
+3. **Explicit Repository Mutations**: Only `forge_edit` modifies repository files.
 
-## Governing rules
+## Contracts Matrix
 
-1. **GitHub's observed ref is repository durability truth.** A 2xx write is not
-   sufficient; Forge reads the ref back and requires the expected SHA.
-2. **Executor files are never repository files.** Command-created or modified
-   files remain executor-only, are never auto-committed, and always have
-   `remote_persisted:false`.
-3. **Only `forge_edit` writes or deletes repository files.** Use it explicitly
-   for every wanted durable file change.
+| Component | Behaviour on Failure / Boundaries |
+| :--- | :--- |
+| **Workspace Creation** | `forge_workspace_create` returns workspace/operation IDs without allocating compute. Faults return `FORGE_PROVIDER_UNAVAILABLE` with `retryable:true`. |
+| **Path Resolution** | Restricts paths at or below `/workspace/repo`. Rejects `..`, sibling prefixes, and NUL bytes. |
+| **Edits (`forge_edit`)** | Fetches HEAD, applies diff, creates commit, updates branch ref, reads back SHA. Reuse idempotency key only when retrying same diff. |
+| **Executor Isolation** | File writes in sandbox are session-local. Sandbox recovery materializes fresh checkout from GitHub; local changes are lost unless written via `forge_edit`. |
+| **Push Gating** | `forge_shell` blocks `git push` variants. Mutations must use `forge_edit` or `forge_merge`. |
+| **Branch Collisions** | Returns 422 if branch exists; Forge inherits the branch only if current remote SHA matches the expected base SHA. |
+| **Process Tracking** | `forge_process_wait` checks status in host-safe intervals. If `timedOut:true`, call wait again; do not restart process. |
+| **PR Management** | `forge_pr` performs live reads of head, checks, reviews, and mergeability. Merges require explicit human approval. |
+| **Branch Deletion** | Rejects deletion if branch matches a live workspace; recheck SHA immediately before deletion. |
+| **Error Handling** | Infrastructure and provider issues return stable, action-oriented codes. |
+| **Artifacts** | `forge_artifact_get` recovers logs/screenshots independently of the executor state. |
 
-## Contracts
-
-### 1. Workspace creation returns a control-plane handle
-
-`forge_workspace_create` returns `workspace_id` and `operation_id` within the
-MCP host budget. It creates a lightweight session and allocates no executor.
-Pass the returned ID as `workspace` on later calls. The first execution tool
-allocates compute; do not create a duplicate session while that happens.
-
-Registry failure returns `FORGE_PROVIDER_UNAVAILABLE`, `retryable:true`, a
-bounded cause, and a next action that says to retry rather than create another
-workspace.
-
-### 2. Repository paths remain bounded
-
-GitHub-facing paths are repo-relative or absolute at/below
-`/workspace/repo`. Forge rejects `/workspace`, metadata, temporary directories,
-sibling-prefix tricks, `..`, empty input, and NUL bytes before access.
-
-### 3. An edit is remote or unsuccessful
-
-`forge_edit` reads GitHub, applies the requested change, creates a commit,
-updates the guarded feature ref, and reads the ref back. A successful receipt
-contains the verified remote commit identity. Reuse the same idempotency key
-only when retrying the same intended edit.
-
-### 4. Executor writes are local by design
-
-`forge_shell`, managed processes, dependency installs, builds, tests, dev
-servers, previews, and deploy commands run in a lazy ephemeral executor.
-Their filesystem effects are useful for that execution session but are never
-auto-committed or pushed. Process results report `remote_persisted:false`.
-
-A successful command proves only its exit status and captured evidence. It does
-not prove that files it generated are on GitHub. Recreate wanted changes with
-`forge_edit` before destroying the workspace. A later executor is materialized
-from GitHub and does not recover command-created local experiments.
-
-### 5. Raw push cannot bypass the control plane
-
-`forge_shell` refuses visible `git push` commands, including common shell/env
-wrappers and Git global options. Approval does not make them runnable. Use
-`forge_edit` for file commits and `forge_merge` for review.
-
-### 6. Branch creation collisions are verified
-
-GitHub HTTP 422 is not automatically treated as “already created.” Forge reads
-the colliding ref and adopts it only when its SHA equals the requested base SHA.
-
-### 7. Process waits are observational
-
-Each `forge_process_wait` call observes for one host-safe interval.
-`timedOut:true` means the process continues; call wait again with the same
-`process_id` and do not restart the command. Completion never promotes executor
-files into GitHub.
-
-### 8. PR readiness includes enforced gates
-
-`forge_pr` status reads the current head, check runs, classic statuses,
-required review decision, draft/state, and mergeability. Merge and close repeat
-the live read, bind idempotency keys to one exact intent, and require human
-approval.
-
-### 9. Branch deletion is ownership- and SHA-safe
-
-Deletion refuses a branch used by a live workspace, checks merge policy, and
-re-reads the ref SHA immediately before deletion. Large branch collections are
-bounded and report truncation instead of guessing.
-
-### 10. Provider errors retain cause and recovery
-
-Provider and Durable Object failures preserve stable Forge codes. Retryable
-infrastructure faults include a bounded cause and explicit next action; they
-are never translated into misleading user-validation states.
-
-### 11. Artifact recovery is independent and bounded
-
-`forge_artifact_get` returns image content, bounded text, or bounded base64 for
-binary artifacts. Artifacts and logs may outlive an executor, but they do not
-turn executor filesystem changes into repository changes.
-
-## Operator checks
-
-When investigating an uncertain result:
-
-1. Read `forge_observer_activity` with `errors_only:true`.
-2. Use `forge_operation_get` when an `operation_id` exists.
-3. Trust repository durability only from a verified GitHub receipt/ref.
-4. Reuse an idempotency key only for the identical intended mutation.
-5. Do not create a duplicate workspace, restart a managed process, or issue a
-   raw push as a generic recovery step.
+## Operator Troubleshooting Checklist
+1. Inspect `forge_observer_activity` with `errors_only:true`.
+2. Inspect operational status using `forge_operation_get`.
+3. Rely on GitHub ref verification as the final source of truth.
+4. Use unique idempotency keys for new mutations.
+5. Avoid duplicate workspace allocation or raw shell pushes for recovery.

@@ -1,87 +1,39 @@
-# Workspace reliability contract
+# Workspace Reliability Contract
 
-Forge has two deliberately separate planes:
+## System Planes
 
-- **GitHub control plane:** the sole durable authority for repository file
-  CRUD, diffs, commits, branches, history, and pull requests.
-- **Executor plane:** lazy, isolated, ephemeral compute for shell commands,
-  dependency installs, builds, tests, dev servers, previews, and deploys.
+| Plane | Authority & Scope | Ephemeral / Durable |
+|---|---|---|
+| **GitHub Control Plane** | Sole durable authority for file CRUD, diffs, commits, branches, history, PRs. | Durable |
+| **Executor Plane** | Ephemeral compute for shell, installs, builds, tests, dev servers, previews, deploys. | Ephemeral (never a durability boundary) |
 
-The executor is never a repository durability boundary.
+## Repository Operations
 
-## Repository mutation
+| Category | Tools | Execution Plane | Guards & Durability Guarantees |
+|---|---|---|---|
+| **Mutation** | `forge_edit` | GitHub API | Sole public write tool. Reads branch, applies changes, creates Git objects, updates guarded `forge/*` ref, verifies remote SHA matches commit before reporting success. Idempotency keys on retries. Content/revision/head-SHA/ref-SHA guards. Adopts branch collision only if ref matches base SHA. Refuses deleting live-workspace refs; re-reads target SHA pre-deletion. |
+| **Push Protection** | `forge_shell` | Executor | Refuses raw `git push`. Local filesystem changes never implicitly promote to GitHub. |
+| **Reads & Diffs** | `forge_files_list`, `forge_files_read`, `forge_context_get`, `forge_diff_metadata`, `forge_history`, `forge_branches`, `forge_pr` | GitHub API | Direct GitHub reads; zero executor allocation. Never substitutes executor checkout for repository truth. |
 
-`forge_edit` is the only public tool that writes or deletes repository files.
-It reads the selected GitHub branch, applies fragment or whole-file changes,
-creates Git objects through the GitHub API, updates the guarded `forge/*` ref,
-and reads that ref back. It reports success only when the observed remote SHA
-matches the expected commit.
+### Path Validation
+- **Allowed:** Repo-relative or absolute at/below `/workspace/repo`.
+- **Rejected Pre-Flight:** Metadata, temporary, sibling-prefix, traversal (`..`), empty, and NUL-containing paths.
 
-Mutation retries carry an idempotency key. Concurrent operations use content,
-revision, head-SHA, or ref-SHA guards as appropriate. Branch collisions are
-adopted only when the existing ref points at the requested base SHA. Branch
-deletion refuses live-workspace refs and re-reads the target SHA immediately
-before deletion.
+## Control-Plane Workspaces & Lazy Execution
 
-Raw `git push` is refused by `forge_shell`. Commands cannot promote their
-filesystem effects into GitHub implicitly.
+| Stage / Event | Target Signal / Tool | Protocol & Operational Behavior |
+|---|---|---|
+| **Workspace Creation** | `forge_workspace_create` | Returns `workspace_id` + `operation_id`. No executor provisioned. |
+| **Lazy-Create Receipt** | Receipt: `requested`<br>`executor_state: not_loaded`<br>`allowedNextActions: [forge_files_read, forge_edit]` | Healthy outcome. Read/edit directly via GitHub. Do not treat as hung provisioner. |
+| **Observer Inspection** | `forge_observer_workspace`<br>`forge_observer_workspaces` | Reports `lifecycle: lazy_control_plane`, `expected_empty_processes`, `expected_empty_logs`. Attaches `stop_polling` after 3 identical successful polls. |
+| **Executor Allocation** | Execution tools: shell, install, build, test, dev, preview, deploy | Materializes selected GitHub commit on ephemeral executor. |
+| **Not-Ready Polling** | Error: `FORGE_WORKSPACE_NOT_READY` | Poll `forge_workspace_get` until `ready`, then retry *same* tool call. Do not create second workspace. |
+| **Bounded Wait** | `forge_process_wait` (`timedOut: true`) | Observes process in max 30s chunks. `timedOut: true` indicates process is still running—never stops/restarts process. Repeat wait with same `process_id`. |
+| **Execution Output** | Process result: `remote_persisted: false` | Files modified/created on executor remain ephemeral (no auto-commit). Recreate wanted changes explicitly via `forge_edit`. |
+| **Destruction** | Workspace teardown | Terminates control-plane session, discards executor state/files. GitHub branches and `forge_edit` commits persist. |
 
-## Repository reads and diffs
+## Capability Truth & Security
 
-`forge_files_list`, `forge_files_read`, `forge_context_get`,
-`forge_diff_metadata`, `forge_history`, `forge_branches`, and `forge_pr` read
-GitHub directly. They allocate no executor and never substitute an executor
-checkout for repository truth.
-
-Public paths are repo-relative or absolute at/below `/workspace/repo`. Forge
-rejects metadata, temporary, sibling-prefix, traversal, empty, and
-NUL-containing paths before GitHub access or executor materialization.
-
-## Control-plane workspaces and lazy execution
-
-`forge_workspace_create` creates a lightweight coding session, records the
-repository/branch and desired runtime/bootstrap settings, and immediately
-returns `workspace_id` plus `operation_id`. It does not provision an executor.
-
-A `requested` receipt with `executor_state: not_loaded` and
-`allowedNextActions` naming `forge_files_read` / `forge_edit` is the healthy
-lazy-create outcome. Agents should read and edit through GitHub immediately;
-only shell, install, build, test, preview, or deploy calls allocate the
-ephemeral executor. Do not treat that receipt as a hung provisioner.
-
-Observer tools (`forge_observer_workspace` / `forge_observer_workspaces`)
-report the same distinction as `lifecycle: lazy_control_plane` with
-`expected_empty_processes` / `expected_empty_logs` when appropriate. Empty
-process lists and log tails while `requested` are expected — not evidence the
-session is stuck. Identical successful observer polls attach `stop_polling`
-guidance after the third repeat so agents stop waiting for a state change that
-will not happen without an execution tool.
-
-When the first execution tool wakes the executor, Forge may return
-`FORGE_WORKSPACE_NOT_READY` with a shared poll recipe: call
-`forge_workspace_get` until `ready`, then retry **that same** tool. Do not open
-a second workspace. Long installs never ask for a single multi-minute
-`forge_process_wait` — each wait observes at most 30 seconds; `timedOut:true`
-means observe again with the same `process_id`.
-
-The first shell, install, build, test, dev, preview, or deploy call allocates an
-ephemeral executor and materializes the selected GitHub commit. Managed process
-waits are bounded observations; `timedOut:true` never stops or restarts the
-process.
-
-Files created or modified by executor commands remain executor-only. Forge
-never auto-commits them, and process results report `remote_persisted:false`.
-If a command produced a wanted repository change, read or inspect it in the
-executor and explicitly recreate it with `forge_edit`.
-
-Destroying a workspace ends the control-plane session and discards executor
-state. GitHub branches and `forge_edit` commits remain. Executor-only files are
-intentionally lost, which is why tools must never describe them as remote or
-durable.
-
-## Capability truth
-
-`forge_capabilities` reports the current tool and approval surface. Observer
-tools expose control-plane and executor state without mutating either. Secret
-values enter only the approved executor process that needs them and never
-become GitHub content automatically.
+- **`forge_capabilities`:** Reports active tool and approval surface.
+- **Observer Tools:** Read-only inspection of control-plane and executor states without side-effects.
+- **Secrets:** Injected strictly into authorized executor processes; never persisted to GitHub.

@@ -56,16 +56,11 @@ export interface Workspace {
     details?: WorkspaceFailureDetails;
   };
   checkout?: { healthy: boolean; checkedAt: string; detail?: string };
-  // Non-fatal bootstrap issue: the workspace came up `ready` but dependency
-  // install did not fully succeed (e.g. a --frozen-lockfile mismatch that the
-  // non-frozen fallback also could not resolve). The checkout is usable; deps
-  // may need attention before `dev`/`build`.
+  // Non-fatal bootstrap warning: Workspace is `ready` but dependencies failed to install cleanly (e.g., --frozen-lockfile mismatch fallback failed). Checkout is usable, but deps require attention before `dev`/`build`.
   bootstrapWarning?: { phase: string; message: string; detail?: string };
 }
 
-// Kept structured-clone serializable so it survives the Durable Object RPC
-// boundary in forge_workspace_get (a Record<string, unknown> would collapse the
-// stub return type to never).
+// Must remain structured-clone serializable to survive the Durable Object RPC boundary in forge_workspace_get. `Record<string, unknown>` collapses stub return to `never`.
 export type WorkspaceFailureDetails = Record<
   string,
   string | number | boolean | null | string[]
@@ -81,7 +76,7 @@ export interface WorkspaceMutationResult<T> {
   value: T;
   workspaceRevision: number;
   operationId: string;
-  /** Why the workspace revision changed, for optimistic concurrency transparency. */
+  /** Reason for revision change, used for optimistic concurrency transparency. */
   revisionChange?: {
     from: number;
     to: number;

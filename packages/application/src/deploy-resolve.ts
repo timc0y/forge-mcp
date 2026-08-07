@@ -1,10 +1,8 @@
 /**
  * Agent-driven deploy env resolution.
  *
- * Vault secrets stay generic (arbitrary KEY=value). Forge does not guess
- * Cloudflare/provider aliases. The agent lists attached names via
- * forge_secret_list, then passes map_env to rename them into whatever the
- * deploy CLI expects (e.g. CF_KEY → CLOUDFLARE_API_TOKEN).
+ * Vault secrets remain generic (`KEY=value`). The agent lists attached names (`forge_secret_list`)
+ * and passes `map_env` to rename them for the deploy CLI (e.g. `CF_KEY` → `CLOUDFLARE_API_TOKEN`).
  */
 
 export type DeployWorkflowId = 'cloudflare_wrangler';

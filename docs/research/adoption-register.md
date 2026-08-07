@@ -1,23 +1,23 @@
-# Adoption register
+# Adoption Register
 
-Verified on 2026-07-12. A version bump requires the provider-upgrade runbook and compatibility tests.
+**Date**: 2026-07-12
 
-| Product | Official repository / package | Pin | Maturity | API surface used | Selection reason | Fallback | Migration risk / limitation |
-|---|---|---:|---|---|---|---|---|
-| Cloudflare Sandbox | `cloudflare/sandbox-sdk` / `@cloudflare/sandbox` | `0.12.4` | Beta, strategically central | `getSandbox`, RPC sessions, exec/files/processes, direct `containerFetch`, destroy | Supplies disposable isolated Linux execution without a bespoke scheduler | E2B is the leading researched alternative | High. Executors re-materialize from GitHub; provider backup/restore is deliberately outside the interface. Browser traffic is buffered and bounded by the Forge Worker; no raw provider URL is created. |
-| Cloudflare Agents | `cloudflare/agents` / `agents` | `0.17.3` | Adopted, evolving | `McpAgent`, Streamable HTTP session serving, authenticated props | Durable per-client MCP session state and reconnect handling | Direct official MCP SDK handler | Medium. It remains isolated in `apps/forge-edge-gateway/src/mcp-session.ts` and is not the workspace coordinator. |
-| MCP TypeScript SDK v1 | `modelcontextprotocol/typescript-sdk` / `@modelcontextprotocol/sdk` | `1.29.0` | Production-supported line | `McpServer`, tool registration and v1 schemas | Current supported production line | Stay pinned to v1 | Medium. Production must not follow the repository main branch while v2 is beta. |
-| MCP TypeScript SDK v2 | same repository / split v2 packages | not installed | Beta | Contract seam only | Prepare migration without mixing beta types into production | v1 adapter | High. Enable only after stable release and parity across clients. |
-| Cloudflare Browser Run | Worker `BrowserRun` binding / Workers Types | `5.20260712.1` | Quick Actions production; richer agent features beta | `quickAction("snapshot")`, screenshot, accessibility tree, viewport and request headers | One stateless action returns both forms of Parallax evidence with no browser-session lifecycle | Puppeteer or Playwright inside Sandbox | Medium. The `formats` option landed ahead of generated binding types, so the cast stays inside `browser-cloudflare` and deployed acceptance guards upgrades. Live View, recording, Stagehand, WebMCP and Playwright MCP remain off. |
-| Cloudflare Workflows | Cloudflare platform / Worker binding | Wrangler `4.110.0` schema | Production primitive | `WorkflowEntrypoint`, idempotent steps, provisioning and destruction bindings | Durable retries for multi-step lifecycle work | Coordinator plus Queues for bounded recovery | Medium. Step payloads must remain serializable and activities idempotent. |
-| Cloudflare D1 | Cloudflare platform | Worker binding | Production | global tenant/project/workspace/operation metadata | Relational queries outside one workspace DO | Postgres provider later | Medium. DO state remains authoritative for active mutation ordering; important state is reconciled to D1. |
-| Cloudflare R2 | Cloudflare platform | Worker binding | Production | immutable evidence, screenshots and bounded log artifacts | Low-cost artifact storage with lifecycle rules | S3-compatible ArtifactStore | Low/medium. R2 artifacts never become repository or executor persistence. Lifecycle and tenant-prefix policies must be deployed explicitly. |
-| Cloudflare Code Mode | `cloudflare/agents` / `@cloudflare/codemode` | researched `0.4.2`, not installed | Experimental | none in production | Potential future context-efficient orchestration | Explicit MCP tools | High. Generated code may never bypass policy, approval or audit. |
-| MCP Apps | `modelcontextprotocol/ext-apps` / `@modelcontextprotocol/ext-apps` | not installed (removed) | Rejected | none — trialled as an in-chat MCP Apps widget, then removed | n/a | Structured MCP results plus the hosted `/approvals/:id` page | Closed. Rendered inconsistently across hosts and duplicated what the model already said in chat. |
-| OAuth / MCP authorization | MCP specification, OAuth 2.1 draft, RFC 9728 | protocol | Production requirement | protected-resource metadata, dynamic registration, Authorization Code + PKCE, short-lived JWT access and refresh tokens | Interoperable remote MCP authentication | development bearer only outside production | High if misconfigured. The private pilot uses a single-owner approval token; product accounts replace that identity layer without changing MCP. |
-| GitHub App | GitHub REST/GraphQL | API version `2022-11-28` where REST applies | Required durable-edit capability | installation mapping, webhook validation, clone credential proxy, file/commit/ref and PR APIs | Least-privilege repository access without PATs | public clone for execution-only work | High. No upstream token enters an executor. Git receive-pack is blocked; durable mutations use guarded GitHub API calls with read-back. |
-| Alchemy | experimental infrastructure package | unpinned, not installed | Infrastructure experiment | none | Evaluate typed environment composition later | Canonical Wrangler | High. Cannot replace Wrangler until parity, destroy, drift, isolation and recovery tests pass. |
+Active and rejected dependencies/integrations. Bumping versions requires following the provider-upgrade runbook.
 
-## Workers type compatibility note
+## Registers
 
-`agents@0.17.3` currently brings a `partyserver` peer range targeting Workers Types 4.x while Forge pins the current Workers Types 5.x package. Type checking and Wrangler type generation pass, but the peer warning is retained as an upgrade signal rather than suppressed.
+| Dependency | Version / Pin | Maturity | API Surface | Rationale | Fallback / Risk |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Cloudflare Sandbox SDK** | `@cloudflare/sandbox` `0.12.4` | Beta | `getSandbox`, RPC, exec, destroy. | Ephemeral Linux sandboxes. | E2B. High risk; containers pull from GitHub. |
+| **Cloudflare Agents** | `agents` `0.17.3` | Adopted | `McpAgent`, HTTP streaming sessions. | Durable client state. | Official MCP SDK. Med risk. |
+| **MCP TS SDK v1** | `@modelcontextprotocol/sdk` `1.29.0` | Production | `McpServer`, v1 schemas. | Production tool schemas. | Stay on v1. Med risk. |
+| **MCP TS SDK v2** | None | Beta | Contract seam only. | Prepare migration. | v1 adapter. High risk. |
+| **Cloudflare Browser Run** | Workers Types `5.20260712.1` | Beta | `quickAction("snapshot")`, viewport screenshot. | Evidence capture. | Playwright. Med risk. |
+| **Cloudflare Workflows** | Wrangler `4.110.0` | Production | `WorkflowEntrypoint`, retries. | Provision/destruction. | Queues. Med risk. |
+| **Cloudflare D1** | Platform | Production | Bindings. | Global metadata store. | Postgres. Med risk. |
+| **Cloudflare R2** | Platform | Production | Bindings. | Screenshot/log storage. | S3-compatible. Low risk. |
+| **GitHub App** | REST/GraphQL `2022-11-28` | Required | Webhooks, REST file/commit/PR CRUD. | Scoped repo mutations. | Public clone only. High risk. |
+| **OAuth** | Protocol RFC 9728 | Production | PKCE S256, JWT Access/Refresh tokens. | Remote MCP auth. | Bearer tokens. High risk. |
+| **Cloudflare Code Mode** | `@cloudflare/codemode` `0.4.2` | Experimental | None | Future code efficiency. | MCP tools. High risk. |
+| **MCP Apps** | `@modelcontextprotocol/ext-apps` | **Rejected** | None | Trialled widget. | Approvals UI. Closed. |
+| **Alchemy** | None | Experimental | None | Environment composition. | Wrangler. High risk. |

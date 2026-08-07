@@ -1,13 +1,9 @@
 import type { Task, TaskHandoff } from './task';
 
 /**
- * A compact, portable summary of a durable task. This is the single most
- * important reconnect capability: it must give a fresh ChatGPT turn enough
- * context to resume WITHOUT replaying the whole session.
- *
- * It deliberately excludes full source files, complete command logs, complete
- * diffs, secrets and raw environment variables. Those remain retrievable
- * separately as artifacts.
+ * Compact, portable durable task summary.
+ * Enables fresh context resumption without full session replay.
+ * Excludes source files, command logs, diffs, secrets, and raw env vars (retrievable as artifacts).
  */
 export interface TaskSummary {
   taskId: string;
@@ -50,8 +46,8 @@ function boundedRedacted(values: string[]): string[] {
 }
 
 /**
- * Derive the next recommended action deterministically from task state. The
- * client remains the reasoning agent; this is only a cheap hint.
+ * Derives recommended next action deterministically from task state.
+ * Acts as a hint; the client remains the reasoning agent.
  */
 function recommendNextAction(task: Task): string {
   switch (task.state) {

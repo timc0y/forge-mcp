@@ -1,18 +1,16 @@
-# Persistence architecture
+# Persistence Architecture
 
-Persistence follows the control-plane/executor split.
+Follows control-plane/executor split.
 
-- **GitHub** stores all durable repository files, commits, branches, diffs,
-  history, and pull requests.
-- **D1** stores tenant-visible task/workspace metadata, repository bindings,
-  revisions, idempotency receipts, and process/approval indexes.
-- **Workspace Coordinator state** stores hot session/process/preview state.
-- **R2** stores bounded logs, screenshots, and evidence.
-- **Executor filesystems** are ephemeral and never repository persistence.
+| Component | Stored Data & Durability |
+| :--- | :--- |
+| **GitHub** | Durable repo files, commits, branches, diffs, history, PRs |
+| **D1** | Tenant-visible task/workspace metadata, repo bindings, revisions, idempotency receipts, process/approval indexes |
+| **Workspace Coordinator** | Hot session/process/preview state |
+| **R2** | Bounded logs, screenshots, evidence |
+| **Executor Filesystem** | Ephemeral (never durable) |
 
-Creating a workspace persists only a lightweight control-plane session and its
-desired executor profile. An executor is allocated on the first execution tool
-and may sleep, be reaped, or be recreated by materializing the selected GitHub
-commit. Command-created files are intentionally discarded when that executor
-ends; capabilities, injected secrets, sockets, and browser authentication are
-never durable state.
+## Ephemerality & Lifecycle
+- **Creation:** Persists lightweight control-plane session + desired executor profile.
+- **Allocation:** Lazy-allocated on first execution tool call; may sleep, be reaped, or be recreated from selected GitHub commit.
+- **Transient State:** Discarded command-created files, capabilities, injected secrets, sockets, browser auth.

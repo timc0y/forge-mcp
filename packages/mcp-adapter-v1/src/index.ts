@@ -38,9 +38,7 @@ const TRUE_READS = new Set([
   'forge_deploy_profile_plan'
 ]);
 
-// Tools that reach the open world of arbitrary external URLs (not just the
-// account's own GitHub App host or a workspace-scoped preview). forge_review
-// takes a caller-supplied url and fetches it directly.
+// Open world tools reaching arbitrary external URLs directly (not just GitHub App host or workspace-scoped previews).
 const OPEN_WORLD = new Set([
   'forge_review'
 ]);
@@ -99,13 +97,10 @@ export function toolAnnotations(name: string, sideEffect: 'none' | 'workspace' |
 }
 
 /**
- * Lift a component-only `_meta` object off a handler's returned value.
+ * Lift component-only `_meta` off handler returned value.
  *
- * SHARED DATA CONTRACT — handlers return `{ ...structuredFields, _meta }`.
- * The adapter strips `_meta` so it never reaches the model-visible
- * `structuredContent`, and attaches it to the MCP result's `_meta` so the host
- * can forward host-only status. Handlers currently emit ChatGPT tool-invocation
- * status via the adapter; bulk payloads (images) travel as MCP content instead.
+ * SHARED DATA CONTRACT: handlers return `{ ...structuredFields, _meta }`.
+ * Adapter strips `_meta` from model-visible `structuredContent`, attaching it to MCP result `_meta` for host-only status forwarding. Handlers emit ChatGPT tool-invocation status via adapter; bulk payloads (images) travel as MCP content.
  */
 function splitMeta(value: Record<string, unknown>): {
   structured: Record<string, unknown>;
@@ -127,39 +122,29 @@ function summarize(name: string, value: Record<string, unknown>): string {
 }
 
 /**
- * Drop fields that restate something already in the same response.
+ * Drop fields restating existing response data.
  *
- * Deliberately a named list, not a rule like "drop empty arrays": an empty
- * `failing: []` means "nothing is failing", which is not the same as absent,
- * and a general rule cannot tell those apart. Every entry here is redundant by
- * construction and is checked against its sibling before removal, so nothing
- * is dropped on the strength of its name alone.
+ * Deliberately explicit named list. Empty `failing: []` differs from absent; general rules cannot distinguish. Every entry is redundant by construction and checked against siblings before removal.
  */
 export function slimResponse(name: string, value: Record<string, unknown>): Record<string, unknown> {
-  // forge_operation_get exists to report exactly this bookkeeping — "what
-  // happened to op_x, was it a replay, under which key". Nothing is redundant
-  // there, so it is answered in full.
+  // forge_operation_get reports exact bookkeeping (replay status/keys). Answered in full.
   if (name === 'forge_operation_get') return value;
   const slim = { ...value };
-  // Echoed verbatim from the operation it already reports, whenever the call
-  // was not a replay. On a real replay the two differ and both are kept.
+  // Echoed verbatim from reported operation for non-replays. Kept if differ on real replays.
   if (slim.replayed === false && slim.originalOperationId === slim.operationId) {
     delete slim.originalOperationId;
   }
-  // The key the agent itself sent, handed straight back.
+  // Agent's idempotencyKey, returned directly.
   if (typeof slim.idempotencyKey === 'string') delete slim.idempotencyKey;
-  // Echoes the request argument; the response shape already shows which form
-  // came back.
+  // Echoes request arg; response shape indicates form.
   if (typeof slim.compact === 'boolean') delete slim.compact;
   return slim;
 }
 
 /**
- * Check a result against its declared output shape without failing the call.
+ * Check result against declared output shape without failing call.
  *
- * The shapes stay authoritative — drift is a bug and gets reported — but a
- * result that reached the agent correctly must never be destroyed on the way
- * out because a field was renamed. Returns the field paths that drifted.
+ * Shapes remain authoritative (drift reported as bugs). Results reaching agent correctly are preserved despite renamed fields. Returns drifted field paths.
  */
 export function outputSchemaDrift(
   name: string,
@@ -211,18 +196,9 @@ export function registerForgeToolsV1(
         title: definition.title,
         description: definition.description,
         inputSchema: definition.inputSchema,
-        // The declared output shapes (see mcp-core) deliberately do NOT go on
-        // the wire. Registering them cost 37% of every tools/list — ~6.4k
-        // tokens an agent re-reads each turn — to describe payloads it reads
-        // in full when it calls the tool. Worse, the SDK turns any drift
-        // between a shape and a real result into a hard -32602, so a correct
-        // result becomes a broken tool. They are enforced below instead, where
-        // drift is reported and the real result still reaches the agent.
+        // Declared output shapes intentionally omitted from wire payload to save ~6.4k tokens per turn. SDK drift validation (-32602) bypassed to avoid breaking tools; drift reported downstream while results reach agent.
         annotations: toolAnnotations(definition.name, definition.sideEffect),
-        // No `ui`/`openai/outputTemplate` here on purpose: Forge serves no
-        // ui:// widget resource, so every tool result renders as the host's
-        // own plain text/structured output. The only Forge-authored UI a
-        // client ever shows is the hosted approval page at /approvals/:id.
+        // Omit `ui`/`openai/outputTemplate`: Forge renders results as host plain text/structured output. Hosted approval page (/approvals/:id) is the only Forge UI.
         _meta: {
           ...(status
             ? {
@@ -246,8 +222,7 @@ export function registerForgeToolsV1(
           const { structured: full, meta } = splitMeta(rawValue);
           const structured = slimResponse(definition.name, full);
 
-          // Optional handler `_meta` rides on the result alongside the per-tool
-          // ChatGPT status strings, and stays out of model-visible structuredContent.
+          // Optional handler `_meta` attaches alongside ChatGPT status strings, omitted from model-visible structuredContent.
           const resultMeta: Record<string, unknown> = {
             ...(status
               ? {
@@ -260,9 +235,7 @@ export function registerForgeToolsV1(
 
           const response = {
             structuredContent: structured,
-            // A ForgeToolResponse already carries purpose-built content (e.g.
-            // image artifacts); otherwise emit a single short text summary
-            // instead of JSON.stringify-ing the whole payload.
+            // ForgeToolResponse carries purpose-built content (images); otherwise emit short text summary instead of full payload stringification.
             content: isResponse(result)
               ? result.content
               : [{ type: 'text' as const, text: summarize(definition.name, structured) }],
@@ -283,11 +256,7 @@ export function registerForgeToolsV1(
           return response;
         } catch (error) {
           const shape = toForgeError(error).toJSON();
-          // Hoist structured error details (e.g. an approval requirement's
-          // { kind, action, approval_id, approval_url, expires_at }) to the top
-          // level so the model can read approval_url straight off
-          // structuredContent and relay the link, rather than having to dig
-          // through the nested error.details.
+          // Hoist structured error details (e.g. approval requirements) to top level. Allows model to read approval_url directly from structuredContent.
           const details =
             shape.details && typeof shape.details === 'object'
               ? (shape.details as Record<string, unknown>)

@@ -1,10 +1,7 @@
 import { classifyPath, stableHash, type PathFacts } from './paths';
 
 /**
- * Deterministic compact metadata over a raw Git unified diff. Syntax-only: it
- * never claims semantic certainty and never uses a model. The raw diff must
- * still be inspected before any Git mutation; this is an index into it, not a
- * substitute for it.
+ * Deterministic compact metadata for raw Git unified diffs. Syntax-only: no semantic certainty, no models. Serves as an index, not a substitute for inspecting raw diffs before mutation.
  */
 
 export type FileChangeType = 'added' | 'deleted' | 'modified' | 'renamed';
@@ -35,9 +32,9 @@ export interface CompactDiff {
   generatedChanges: string[];
   possibleSecretExposure: string[];
   riskAreas: string[];
-  /** Files worth reading first, most-changed and highest-risk ranked up. */
+  /** Suggested files to read first, ranked by change volume and risk. */
   suggestedHunks: string[];
-  /** Stable hash of the analysed diff; changes iff the diff changes. */
+  /** Stable hash of the analyzed diff. */
   hash: string;
 }
 
@@ -50,7 +47,7 @@ const SECRET_PATTERNS: RegExp[] = [
   /\b(secret|token|api[_-]?key|password|passwd)\b\s*[:=]\s*['"][^'"]{8,}/i
 ];
 
-// Declaration shapes we can detect from a single added/removed line, syntax-only.
+// Syntax-only declaration shapes detectable from single added/removed lines.
 const SYMBOL_PATTERNS: RegExp[] = [
   /export\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/,
   /export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)/,
@@ -62,7 +59,7 @@ const SYMBOL_PATTERNS: RegExp[] = [
 ];
 
 function parseHeaderPath(line: string): string | null {
-  // "diff --git a/foo b/bar" — prefer the b/ side (destination).
+  // "diff --git a/foo b/bar" — prefer b/ (destination).
   const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
   if (!match) return null;
   return match[2] ?? null;

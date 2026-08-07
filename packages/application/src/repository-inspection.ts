@@ -27,8 +27,8 @@ function diagnostic(error: unknown): NonNullable<RepositoryInspectionResult['dia
 }
 
 /**
- * Owns the fail-closed repository checks for an ephemeral executor checkout.
- * It observes executor state only; GitHub remains the durable repository authority.
+ * Fail-closed repository checks for ephemeral executor checkouts.
+ * Observes executor state; GitHub remains the durable repository authority.
  */
 export class RepositoryInspection {
   async identity(handle: SandboxHandle): Promise<{ commit: string; branch?: string }> {

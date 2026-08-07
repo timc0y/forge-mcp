@@ -18,14 +18,10 @@ const manifest = {
   callback_urls: [`${origin}/login/github/callback`],
   setup_url: `${origin}/github/setup`,
   setup_on_update: true,
-  // Forge's private-pilot workflow is deliberately owner-installed. The owner
-  // installs this App on the selected repositories, then approves Forge access
-  // for collaborators. This avoids exposing a public installation surface just
-  // so a small trusted team can use the service.
+  // Private-pilot workflow: Owner-installed to restrict public surface area. Owner explicitly approves collaborator access.
   public: false,
   default_permissions: { contents: 'write', pull_requests: 'write' },
-  // Installation lifecycle events are implicit and GitHub rejects them when
-  // explicitly listed in an App manifest.
+  // GitHub rejects implicit installation lifecycle events if explicitly listed in manifest.
   default_events: ['push', 'pull_request'],
   request_oauth_on_install: false,
 };

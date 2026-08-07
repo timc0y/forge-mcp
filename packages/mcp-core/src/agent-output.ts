@@ -1,6 +1,5 @@
 /**
- * Helpers that keep MCP tool results small enough for ChatGPT / Claude hosts
- * while parking the full bytes in Forge artifacts or on GitHub.
+ * Helpers to keep MCP tool results small for LLM hosts while parking full bytes in Forge artifacts or GitHub.
  */
 
 /** Spill shell / deploy output to an artifact once it exceeds this. */
@@ -20,8 +19,7 @@ export function tailBytes(text: string, maxBytes: number): string {
 }
 
 /**
- * Keep only the unified-diff file sections whose `a/` / `b/` paths match
- * `paths` (repo-relative or `/workspace/repo/...`). Empty `paths` → unchanged.
+ * Keep only unified-diff file sections where `a/` or `b/` paths match `paths` (repo-relative or `/workspace/repo/...`). Empty `paths` returns full diff.
  */
 export function filterUnifiedDiff(patch: string, paths: string[] | undefined): string {
   if (!paths?.length) return patch;

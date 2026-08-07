@@ -55,11 +55,10 @@ export const LAZY_REQUESTED_NEXT_ACTIONS = [
 ] as const;
 
 /**
- * Control-plane vs executor plane for observer receipts.
+ * Control-plane vs executor plane observer receipts.
  *
- * Agents repeatedly mistook healthy `requested` (no executor yet) for a hung
- * provisioner because observer showed empty processes and empty logs. Name the
- * lifecycle explicitly so observer polling is not the "wait until ready" path.
+ * Explicit lifecycle states prevent agents misinterpreting `requested` (no executor)
+ * as hung provisioning due to empty processes/logs. Observer polling is not for "wait until ready".
  */
 export type ExecutorPlaneState = 'not_loaded' | 'starting' | 'ready' | 'failed' | 'absent';
 export type ControlPlaneLifecycle =
@@ -203,10 +202,9 @@ export function describeWorkspaceLifecycle(
 export const OBSERVATIONAL_WAIT_MS = 30_000;
 
 /**
- * ChatGPT previously treated install start guidance that said
- * `timeout_ms >= 600000` as a single long wait. That exceeds the MCP transport
- * and contradicts forge_process_wait's 30s max — agents then restarted installs
- * or invented larger waits. One shared recipe only.
+ * Single shared recipe for observational waits.
+ * Prevents agents from treating `timeout_ms >= 600000` as a single wait, which exceeds
+ * MCP transport limits and `forge_process_wait`'s 30s max.
  */
 export function observationalWaitNextStep(
   processId: string,
@@ -232,8 +230,8 @@ export function isDependencyInstallCommand(command: string): boolean {
 }
 
 /**
- * Active dependency install, if any. ChatGPT often races forge_shell / forge_preview
- * against an unfinished install; callers should wait (or stop) this process first.
+ * Active dependency install.
+ * Callers must wait or stop this process to prevent racing `forge_shell`/`forge_preview`.
  */
 export function findActiveDependencyInstall(
   record: Pick<WorkspaceRuntimeRecord, 'processes'>

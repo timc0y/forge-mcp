@@ -183,23 +183,10 @@ export interface RepositoryCloneSource {
 }
 
 // --- Progressive (per-file) diff paging ------------------------------------
-//
-// A diff is the one Forge result whose size is dictated by the user's
-// repository rather than by anything Forge chooses. A single generated file, a
-// vendored bundle or a large text/content change can run to megabytes, and
-// returning that in one tool result either blows the client's limit outright or
-// buries the answer. Worse, the previous behaviour truncated silently at the
-// exec output cap and then hashed the TRUNCATED text — so a push could be
-// approved against a diff nobody had actually seen in full.
-//
-// So the diff is served a page of FILES at a time:
-//   1. `git diff --numstat -z` gives the complete file list with line counts.
-//      Its size scales with the NUMBER of files, not their content, so it stays
-//      small (~40 bytes/file) even for a multi-megabyte change.
-//   2. A budget-aware planner picks the slice of files this page carries.
-//   3. Only those files' hunks are fetched, with `-- <paths>`.
-// The full-diff hash is computed inside the container (`| sha256sum`), so it
-// covers the whole change on every page and never depends on what was paged in.
+// Page files to prevent transport limit exceedance or truncation.
+// 1. Get file list using `git diff --numstat -z`.
+// 2. Page slices of file hunks using `git diff -- <paths>`.
+// 3. Compute full SHA256 of complete diff for validation.
 
 /** One record of `git diff --numstat -z`. Binary files report `-` for counts. */
 export interface DiffFileStat {
@@ -212,16 +199,10 @@ export interface DiffFileStat {
 }
 
 /**
- * Parse `git diff --numstat -z` output.
- *
- * NUL-delimited rather than line-delimited on purpose: with plain `--numstat`,
- * git quote-escapes any path containing a space, quote or non-ASCII byte, and
- * un-escaping that correctly is easy to get subtly wrong. With `-z` the paths
- * arrive verbatim.
- *
- * Record shapes:
+ * Parse `git diff --numstat -z` output. `-z` avoids `git` quote-escaping
+ * paths with spaces/non-ASCII. Shapes:
  *   normal  `<adds>\t<dels>\t<path>\0`
- *   rename  `<adds>\t<dels>\t\0<old>\0<new>\0`  — counts first, then two fields
+ *   rename  `<adds>\t<dels>\t\0<old>\0<new>\0`
  */
 export function parseNumstatZ(raw: string): DiffFileStat[] {
   const tokens = raw.split('\0');
@@ -260,10 +241,8 @@ export function parseNumstatZ(raw: string): DiffFileStat[] {
   return files;
 }
 
-// Rough per-line and per-file costs used only to decide where to cut a page.
-// Measuring the real size would mean fetching it, which is the cost being
-// avoided; the fetch itself is still hard-capped, so a bad estimate costs a
-// slightly fuller or emptier page, never a blown limit.
+// Rough cost estimates for page-cut decisions only. Fetch is hard-capped;
+// a bad estimate yields a slightly fuller/emptier page, never a blown limit.
 const DIFF_LINE_BYTES = 64;
 const DIFF_FILE_OVERHEAD_BYTES = 200;
 const DIFF_BINARY_BYTES = 4_096;
@@ -284,12 +263,10 @@ export interface DiffPagePlan {
 }
 
 /**
- * Choose the slice of files whose hunks a page carries.
+ * Selects file slice for a diff page.
  *
- * ALWAYS selects at least one file while any remain. A file whose own diff
- * exceeds the entire budget would otherwise select nothing, the cursor would
- * never advance, and a caller following nextCursor would page forever. Such a
- * file is instead returned alone and truncated, with the result saying so.
+ * ALWAYS selects ≥1 file if any remain. Prevents infinite paging when a single
+ * file's diff exceeds budget by returning it alone and truncated.
  */
 export function planDiffPage(
   files: DiffFileStat[],
@@ -333,9 +310,8 @@ export interface DiffPageResult {
 }
 
 /**
- * One plain sentence telling the caller what it is holding and how to get the
- * rest. The model acts on this, so it states the next call rather than merely
- * flagging that the result is partial.
+ * Plain sentence describing current page and next steps.
+ * States the next call explicitly since the model acts on this text.
  */
 export function diffPageNote(state: {
   shown: number;
@@ -486,12 +462,7 @@ export class ForgeApplicationService {
       });
     }
     if (!['ready', 'busy'].includes(record.workspace.state)) {
-      // "Workspace is failed." on its own is a dead end, and an agent facing a
-      // dead end does not stop — it invents a cause and a way round. Two
-      // separate agents met exactly this message, concluded the GitHub App had
-      // read-only access (it has contents:write), and announced they were
-      // switching to a "read-only workspace" that does not exist. The reason
-      // was on the record the whole time and this throw discarded it.
+      // Clear errors prevent agent hallucinating read-only fallbacks or repo auth limits.
       const failure = record.workspace.failure;
       const state = record.workspace.state;
       const retryable = state === 'provisioning' || state === 'requested';

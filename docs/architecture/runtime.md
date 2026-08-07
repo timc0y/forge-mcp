@@ -1,15 +1,8 @@
-# Runtime architecture
+# Runtime Architecture
 
-`SandboxProvider` is an ephemeral execution boundary. Core and application
-packages do not import Cloudflare types. GitHub, not Sandbox storage, is the
-durable repository boundary.
-
-The Cloudflare implementation uses `@cloudflare/sandbox` through
-`packages/sandbox-cloudflare`. A control-plane workspace has no sandbox until
-the first shell, install, build, test, dev, preview, or deploy operation. That
-operation allocates an executor with explicit sessions such as `system`,
-`agent-*`, `dev-server`, and `test-runner`. Sessions share one ephemeral
-filesystem and are not security boundaries.
+- **Boundary:** `SandboxProvider` is an ephemeral execution boundary. Core/app packages never import Cloudflare types. GitHub (not Sandbox storage) is the durable repository authority.
+- **Implementation:** `@cloudflare/sandbox` via `packages/sandbox-cloudflare`.
+- **Lazy Allocation:** No sandbox until first shell/install/build/test/dev/preview/deploy call. Allocates an executor with sessions: `system`, `agent-*`, `dev-server`, `test-runner`. Sessions share one ephemeral filesystem and are **not** security boundaries.
 
 ```text
 /workspace/
@@ -24,21 +17,9 @@ filesystem and are not security boundaries.
     processes.json
 ```
 
-Provider IDs are derived from Forge IDs and never accepted directly from
-clients. The adapter consistently uses RPC transport, lowercase identifiers,
-bounded timeouts and stable Forge errors. Public repository paths are either
-repo-relative or absolute at/below `/workspace/repo`; `/workspace/forge`,
-`/workspace/tmp`, sibling-prefix paths, traversal, and NUL bytes are rejected
-by the shared path helper before GitHub access or executor materialization. The
-executor repeats the repository-bound check.
-
-Forge verifies the requested runtime from inside the executor when it is first
-allocated. A requested Node profile must report that exact Node major plus
-Corepack; a mismatch fails the execution request. Workspace creation itself
-does not wait for or claim runtime readiness.
-
-Command-created files remain in this executor only. Destroying or reaping the
-executor discards them; recovery materializes the GitHub branch afresh, and
-wanted repository changes must go through `forge_edit`.
-
-Browser evidence reaches the running service through a private Worker bridge. Browser Run receives the Forge origin plus workspace-scoped internal headers; the Worker validates those headers, resolves the preview in the coordinator and uses `containerFetch` to reach the service. Responses are buffered to a 20 MB bound so browser navigation completes deterministically. Root-relative assets carry the same scoped headers, and no raw provider URL exists to leak or revoke.
+- **Provider IDs:** Derived from Forge IDs; never accepted from clients.
+- **Transport:** RPC, lowercase identifiers, bounded timeouts, stable Forge errors.
+- **Path Rules:** Public paths must be repo-relative or absolute at/below `/workspace/repo`. Rejected pre-flight: `/workspace/forge`, `/workspace/tmp`, sibling-prefix, traversal (`..`), NUL bytes. Executor repeats the boundary check.
+- **Runtime Verification:** Verified inside the executor at first allocation. Node profile must report exact Node major + Corepack; mismatch fails execution. Workspace creation does not wait for runtime readiness.
+- **Ephemerality:** Command-created files exist on the executor only. Reap/destroy discards them; recovery re-materializes from GitHub. Wanted changes must go through `forge_edit`.
+- **Browser Bridge:** Browser Run receives Forge origin + workspace-scoped internal headers. Worker validates headers, resolves preview via coordinator, proxies via `containerFetch`. Responses buffered to **20 MB**. Root-relative assets carry scoped headers; no raw provider URL exists.

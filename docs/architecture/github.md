@@ -1,27 +1,25 @@
-# GitHub architecture
+# GitHub Architecture
 
-Forge uses a GitHub App. Repository authorization is verified at each external
-operation against tenant membership, installation state, repository inclusion,
-permission, and branch policy.
+## Security & Auth
 
-A reusable installation token never enters an executor. Installation tokens
-are minted inside the edge gateway for narrowly scoped API reads/writes.
-GitHub's API is the sole file CRUD, diff, commit, branch, history, and pull
-request plane; no executor checkout is accepted as repository truth.
+| Domain | Mechanism / Invariant |
+| --- | --- |
+| Integration | GitHub App (`forge-mcp-cloud`); GitHub acts as Forge identity. |
+| Authorization | Verified per op against tenant membership, install state, repo inclusion, permissions, branch policy. |
+| Tokens | Reusable tokens never enter executor; edge gateway mints narrowly-scoped installation tokens. |
+| Revocation | Installation and repo-removal webhooks revoke stale authorization. |
 
-The private pilot uses GitHub as the Forge account identity and synchronizes
-repositories selected in the `forge-mcp-cloud` installation. `forge_start`
-creates a `forge/*` ref with a base-SHA/idempotency guard. `forge_edit` builds a
-Git commit through the GitHub API, updates only the guarded feature ref, then
-reads the ref back and requires the expected SHA before reporting remote
-durability. Installation and repository-removal webhooks revoke stale
-authorization.
+## Source of Truth & Pipeline
 
-Generated commits use the visible `forge-mcp[bot]` identity and never claim
-human authorship. Raw `git push` through `forge_shell` is refused because it
-bypasses expected-tip, idempotency, authorization, and read-back checks.
-`forge_edit` is the only file-writing/deleting tool. Command filesystem writes
-remain executor-only and are never translated into GitHub commits.
-`forge_merge` opens the human review path from the already-remote feature
-branch; `forge_pr` rechecks the live head, statuses, reviews, and mergeability,
-then requires human approval bound to that exact merge or close intent.
+- **Truth Plane:** GitHub API is sole plane for CRUD, diff, commit, branch, history, and PRs (executor checkouts non-authoritative; command FS writes remain local).
+- **Identity:** Commits use `forge-mcp[bot]` identity (never human authorship).
+
+## Tool Operations
+
+| Tool | Action & Guardrails |
+| --- | --- |
+| `forge_start` | Creates `forge/*` ref with base-SHA / idempotency guard. |
+| `forge_edit` | Sole file write/delete tool. Builds commit via GitHub API, updates guarded ref, reads back & verifies expected SHA for remote durability. |
+| `forge_shell` | Refuses raw `git push` (bypasses expected-tip, idempotency, auth, read-back checks). |
+| `forge_merge` | Opens human review path from remote feature branch. |
+| `forge_pr` | Rechecks live head, statuses, reviews, mergeability; requires human approval bound to exact merge/close intent. |

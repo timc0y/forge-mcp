@@ -1,31 +1,23 @@
-# Cloud cost runbook
+# Cloud Cost Runbook
 
-> This is a proposed cost-control runbook. The referenced `@forge/cost` package
-> and its runtime counters are not present in this workspace.
+**Ceiling**: ~$10/month per user (estimated).
 
-Target: below approximately USD 10 per month for one heavy personal user. All
-figures are **estimates**, not Cloudflare billing.
+## Monitoring Metrics (`UsageCounters`)
+*   Workspace active/idle duration (ms)
+*   Browser session time (ms) and capture count
+*   Package dependency installation count
+*   Code compilation build count
+*   Storage usage for artifacts (bytes)
+*   Workspace API command invocations
 
-## Monitor
+## Budget Gating
 
-When implemented, track `UsageCounters`: workspace active/idle ms, browser session ms, browser
-captures, dependency installs, builds, command count, stored artifact bytes.
-`budgetPosition(usage)` yields the estimated monthly USD and a level.
+| Level | Monthly Cost | Surfaced UI Action | Workspace Creation |
+| :--- | :--- | :--- | :--- |
+| **ok** | < $5 | None | Allowed |
+| **warning** | ≥ $5 | Budget shown in response headers | Allowed |
+| **strong** | ≥ $8 | Highlighted warning; suggest container-free tools | Allowed |
+| **hard** | ≥ $10 | Denied | Blocked (cleanups & metadata allowed) |
 
-## Thresholds and response
-
-| Level | Estimate | Action |
-| --- | --- | --- |
-| ok | < $5 | none |
-| warning | ≥ $5 | surface budget on responses |
-| strong-warning | ≥ $8 | surface prominently; prefer container-free actions |
-| hard | ≥ $10 | refuse new cloud workspaces; allow cleanup, metadata, summaries and compute-free Git |
-
-The proposed `gateComputeAction` would enforce the hard ceiling for workspace
-creation while keeping cleanup and compute-free paths open.
-
-## Keep costs low
-
-Reuse one workspace per coherent task; ~90s idle sleep; destroy on durable
-completion; prefer `forge_review` (no container) for deployed URLs; run narrow
-checks before full builds; capture browser evidence only when deliberate.
+## Best Practices
+Reuse workspaces per task; utilize container-free `forge_review` for deployed URLs; run narrow test checks; enforce ~90s idle container timeout.

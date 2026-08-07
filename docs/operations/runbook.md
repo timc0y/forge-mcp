@@ -1,5 +1,3 @@
-# Operations runbook
+# Runbook
 
-The canonical deployment, migration, recovery, incident and private-GitHub-App
-runbook is [Operations](../operations.md). This link remains so existing
-bookmarks do not retain a second, drifting set of release instructions.
+Status: stub. Operations runbooks belong in the operator wiki.

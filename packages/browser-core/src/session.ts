@@ -1,8 +1,5 @@
 /**
- * Pure model for interactive browser sessions. A browser session is distinct
- * from a preview (a preview is a URL; a session is an interactive browser
- * visiting one). Sessions are deliberate, never opened automatically for
- * documentation, backend-only, type, unit-test or config-only changes.
+ * Pure model for interactive browser sessions. Distinct from previews (URLs). Sessions are explicitly opened; never auto-opened for docs, backend, type, test, or config changes.
  */
 
 export type BrowserSessionState = 'opening' | 'open' | 'closing' | 'closed' | 'failed';
@@ -22,11 +19,11 @@ export interface BrowserSession {
   state: BrowserSessionState;
   viewport: Viewport;
   currentPath: string;
-  /** Evidence artifact ids captured during this session. */
+  /** Captured evidence artifact IDs. */
   captureIds: string[];
   openedAt: string;
   updatedAt: string;
-  /** Accumulated open duration in ms, for cost accounting. */
+  /** Cumulative open duration (ms) for cost accounting. */
   activeMs: number;
 }
 
@@ -73,7 +70,7 @@ export type BrowserInteraction =
   | { kind: 'click'; selector: string }
   | { kind: 'type'; selector: string; text: string };
 
-/** Apply an interaction to session state purely; the caller performs I/O. */
+/** Purely apply interaction to session state; caller handles I/O. */
 export function applyInteraction(session: BrowserSession, interaction: BrowserInteraction, at: string): BrowserSession {
   assertBrowserTransition(session.state, 'open');
   const next: BrowserSession = { ...session, state: 'open', updatedAt: at };

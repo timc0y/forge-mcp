@@ -8,7 +8,7 @@ export interface CreateSandboxInput {
   runtimeProfile: RuntimeProfile;
   labels: Record<string, string>;
   idleTimeout: string;
-  /** When true, prevent automatic container sleep (Cloudflare keepAlive). */
+  /** Prevents automatic container sleep. */
   keepAlive?: boolean;
 }
 
@@ -35,7 +35,7 @@ export interface ExecResult {
 export interface StartProcessInput extends Omit<ExecInput, 'timeoutMs' | 'outputLimitBytes'> {
   processId: ProcessId;
   autoCleanup: boolean;
-  /** Whether Forge classified this command as mutating the filesystem. */
+  /** Command mutates filesystem. */
   mutatesFilesystem?: boolean;
 }
 
@@ -48,22 +48,22 @@ export interface ProcessRecord {
   cwd: string;
   status: ProcessStatus;
   pid?: number;
-  /** Exit code when the process has terminated. Undefined while still running. */
+  /** Exit code. Undefined while running. */
   exitCode?: number;
-  /** ISO timestamp when the process was started. */
+  /** Started ISO timestamp. */
   startedAt: string;
-  /** ISO timestamp when the process reached a terminal state. Undefined while running. */
+  /** Completed ISO timestamp. Undefined while running. */
   completedAt?: string;
-  /** Whether the command is classified as mutating the filesystem (read_only vs local_mutation/dependency_install/etc). */
+  /** Command mutates filesystem. */
   mutatesFilesystem: boolean;
-  /** Artifact id of the persisted log output for this process. */
+  /** Log output artifact ID. */
   logArtifact?: ArtifactId;
 }
 
 export interface ProcessLogsInput { processId: ProcessId; cursor?: string; limitBytes: number; }
 export interface ProcessLogsResult {
   data: string;
-  /** Opaque cursor for the next page. Absent/undefined when no more log bytes remain. */
+  /** Next page cursor. */
   nextCursor?: string;
   truncated: boolean;
 }

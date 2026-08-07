@@ -1,77 +1,47 @@
 # Credential profiles
 
-Forge stores provider authentication as tenant-scoped vault secrets. A secret
-has a provider, user-facing label, environment-variable names, and encrypted
-values. It is deliberately separate from a workspace slot and can be attached
-only through Forge's approval path.
+Forge stores provider authentication as tenant-scoped vault secrets (provider, label, env var names, encrypted values), decoupled from workspace slots and attached via human approval.
 
-## Encryption boundary
+## Encryption & Security Boundary
 
-`@forge/credentials` is the only code that encrypts or decrypts secret values.
-It uses AES-256-GCM with a fresh 96-bit IV for every write. D1 receives a
-versioned encrypted envelope; tools, the MCP app, logs, and list queries expose
-only labels, providers, and environment-variable names.
+| Property | Specification / Rule |
+| :--- | :--- |
+| **Engine** | `@forge/credentials` (exclusive encryption/decryption module) |
+| **Cipher** | AES-256-GCM with fresh 96-bit IV per write |
+| **Key Secret** | `FORGE_CREDENTIAL_ENCRYPTION_KEY` (32-byte base64url Worker secret) |
+| **Key Restrictions** | Forbidden in Wrangler `vars`, source control, or sandbox env vars |
+| **Key Rotation** | Requires explicit migration; ciphertext unreadable with new key |
+| **Persistence** | D1 stores versioned encrypted envelope |
+| **Exposure Scope** | Tools, MCP app, logs, & list queries expose metadata only (labels, providers, env names) |
+| **Runtime Injection** | Decrypted only for approved operation; injected into managed process, never returned via MCP |
 
-Set `FORGE_CREDENTIAL_ENCRYPTION_KEY` as a Worker secret to a 32-byte base64url value. Do not add it to Wrangler `vars`, source control, or sandbox environment variables. Replacing the key requires an explicit migration/rotation procedure because existing ciphertext is intentionally unreadable with another key.
+## Deployment & Agent Flow
 
-Secrets are decrypted only for an approved operation that uses them. An
-attachment records secret identity and workspace scope; values are injected
-into the approved process only and never returned by MCP.
+### Controlled Path (`forge_deploy`)
 
-`forge_deploy` is the controlled path for a live deploy. Secrets stay generic
-(arbitrary environment-variable names such as `CF_KEY`). Typical agent flow:
+1. `forge_secret_list` — Query secret metadata (labels, env var names).
+2. `forge_secret_accounts` — Pass `token_var` (e.g. `CF_KEY`). Forge calls Cloudflare API; returns account `id` + `name`.
+3. **User Selection** — Prompt user to select target account ID.
+4. `forge_secret_update` — Apply `env: { CLOUDFLARE_ACCOUNT_ID: "<chosen>" }` (patches merge; token untouched).
+5. `forge_secret_attach` & `forge_deploy` — Pass `map_env` if vault names differ from CLI (e.g. `{"CLOUDFLARE_API_TOKEN": "CF_KEY"}`).
 
-1. `forge_secret_list` — see labels and env names (never values).
-2. `forge_secret_accounts` with `token_var` (e.g. `CF_KEY`) — Forge calls the
-   Cloudflare accounts API using the stored token and returns id+name only.
-3. Ask the user which account id to use.
-4. `forge_secret_update` with `env: { CLOUDFLARE_ACCOUNT_ID: "<chosen>" }` —
-   env patches **merge**, so the token does not need to be re-sent.
-5. `forge_secret_attach`, then `forge_deploy` with `map_env` when vault names
-   differ from CLI names (e.g. `{ "CLOUDFLARE_API_TOKEN": "CF_KEY" }`).
+### Wrangler & Execution Rules
 
-After human approval, Forge injects the attached vault vars into that one
-managed process. When the CLI expects different names, the agent passes
-`map_env` — process env name → attached vault var name — for example:
+- **Env Mapping**: Wrangler process env requires `CLOUDFLARE_API_TOKEN` (direct name or via `map_env`). Option to map `CLOUDFLARE_ACCOUNT_ID` if stored under another name. Forge maintains no Cloudflare alias list; agent chooses mapping after `forge_secret_list`.
+- **Account Pinning**: `CLOUDFLARE_ACCOUNT_ID` pins account in approval/receipt to prevent multi-account token silent publishing to wrong `*.workers.dev` subdomain. Defaults to wrangler config or token default if omitted. Prefer prompting via `forge_secret_accounts` when token sees >1 account.
+- **Idempotency**: All calls require stable idempotency key. Slow runs return `process_id` before host deadline; retry with same key reopens process, probes URL, & returns `deploy_receipt` without starting a second deploy.
+- **Verification Gate**: Agents must not mark Worker live without `deploy_receipt.verified_url`.
+- **Policy Enforcement**: Ungated `wrangler deploy` via `forge_shell` is classified as `external_side_effect` (requires approval).
+- **Hook Risk**: Wrangler executes repo-controlled hooks; approve deployments only for trusted code.
+- **Creation Tools**: Create secrets via `forge_secret_create` (`provider`: `cloudflare` \| `generic`) or portal (`/app/secrets`).
 
-```json
-{
-  "CLOUDFLARE_API_TOKEN": "CF_KEY"
-}
-```
+## Secret Lifecycle API
 
-Optionally also map `CLOUDFLARE_ACCOUNT_ID` when you store it under another name.
-
-Forge does not maintain a Cloudflare alias list; the agent chooses the mapping
-after `forge_secret_list`. For Cloudflare Wrangler, the process env must end up
-with `CLOUDFLARE_API_TOKEN` (via storage names or `map_env`).
-`CLOUDFLARE_ACCOUNT_ID` is optional: when present it pins the account in the
-approval and receipt so a multi-account token cannot silently publish under the
-wrong `*.workers.dev` subdomain; when absent Wrangler uses the account from
-wrangler config or the token default. Prefer asking the user via
-`forge_secret_accounts` when the token can see more than one account. Every call
-requires a stable idempotency key. A slow run returns its `process_id` inside
-the host deadline; after waiting, the same key reopens that process, probes the
-published URL, and returns `deploy_receipt` without starting a second deploy.
-Agents must not claim a Worker is live without `deploy_receipt.verified_url`.
-Ungated `wrangler deploy` via `forge_shell` is classified as
-`external_side_effect` and requires approval.
-
-Create the secret with `forge_secret_create` (provider may be `cloudflare` or
-`generic`) or the portal (`/app/secrets`), then `forge_secret_attach` (approval).
-Because Wrangler may execute repository-controlled hooks, approve deployments
-only for code you trust.
-
-## Secret lifecycle
-
-1. `forge_secret_create` normalizes and encrypts values before persistence.
-2. `forge_secret_list` returns metadata only; values are never recoverable
-   through a read tool.
-3. `forge_secret_update` merges env patches into existing encrypted values (so
-   agents can add an account id without re-entering the token) or removes keys
-   via `unset_env`.
-4. `forge_secret_accounts` uses a stored Cloudflare API token to list account
-   id+name for the user to choose; the token value is never returned.
-5. `forge_secret_attach` requires human approval before a workspace may use a
-   secret; `attached:false` detaches it.
-6. `forge_secret_delete` permanently removes the record and its attachments.
+| API Tool / Action | Operations & Semantics |
+| :--- | :--- |
+| `forge_secret_create` | Normalizes and encrypts values prior to D1 persistence. |
+| `forge_secret_list` | Returns metadata only; secret values are non-recoverable via read tools. |
+| `forge_secret_update` | Merges env patches (e.g., adding `CLOUDFLARE_ACCOUNT_ID`) or removes keys via `unset_env`. |
+| `forge_secret_accounts` | Queries Cloudflare API with stored token to list `id` + `name` options without exposing token. |
+| `forge_secret_attach` | Requires human approval before workspace use (`attached:false` detaches). |
+| `forge_secret_delete` | Permanently deletes secret record and all workspace attachments. |

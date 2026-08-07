@@ -1,56 +1,21 @@
 import { z, type ZodRawShape } from 'zod';
 
 const workspaceId = z.string().regex(/^ws_[0-9a-hjkmnp-tv-z]{20,32}$/).describe('Target workspace id (ws_...).');
-// Kept only for forge_artifact_get. Every OTHER workspace-scoped tool below
-// addresses by `workspace` instead (see addrWorkspace) — an opaque
-// workspace_id is exactly what a chat client cannot be trusted to carry
-// across turns: it scrolls out of context, and either every call fails or the
-// model creates a second workspace and strands the first with the work in it.
-// forge_artifact_get is the deliberate exception: an artifact's owning
-// workspace id is handed back in the SAME response that returned the
-// artifact_id (forge_review's `workspaceId`, forge_shell's
-// `output_artifact_id`, forge_deploy's spilled log, ...), so both
-// ids are already together in the model's immediate context — there is no
-// multi-turn carry problem for this one to solve. It is also the only way to
-// reach a forge_review url-review artifact, which has no repository or branch
-// at all to be addressed by (see migrations/d1/0011_url_review_workspaces.sql).
-// Deliberately a getter, not a shared constant. A single zod instance reused
-// across tools is hoisted by the JSON Schema converter into a per-tool $defs
-// entry plus a $ref — which costs more bytes than inlining it, in a catalog
-// that is re-sent every turn. A fresh instance per call site inlines, while
-// this stays the single definition of the pattern.
+// Retained strictly for `forge_artifact_get`. Other workspace-scoped tools address by `workspace` (see `addrWorkspace`).
+// Opaque `workspace_id`s are lost by chat clients across turns, causing failures. `forge_artifact_get` is the exception because artifact IDs and workspace IDs are returned together in the same response, solving the multi-turn carry problem. It is also the only way to reach a url-review artifact with no repository/branch.
+// Defined as a getter to prevent JSON Schema `$refs` overhead. Fresh instances inline and save bytes per-tool in the catalog.
 const wsid = () => z.string().regex(/^ws_[0-9a-hjkmnp-tv-z]{20,32}$/).describe('Workspace id from a forge_review result (no repository/branch). Otherwise use workspace.').optional();
-// Replaces `workspace_id` on every workspace-scoped tool below — ONE field,
-// not three. A first version split this into owner/repo/branch, but three
-// optional string fields cost ~353 bytes per tool once emitted as JSON schema
-// (type+minLength+maxLength+description, times three) against ~157 for one;
-// across 25 tools that is ~4,900 bytes added to a catalog re-sent every turn,
-// which is the exact regression this redesign exists to prevent. One string
-// costs almost nothing extra over the workspace_id it replaces. Optional —
-// omitting it resolves to the tenant's one open workspace; a bare branch
-// resolves if unambiguous; "owner/repo#branch" pins an exact workspace. With
-// none or several matching, the error names the live candidates as
-// `owner/repo on branch` (never as a ws_... id — that id is exactly what a
-// chat session has already lost) so it is answerable without another round
-// trip. Parsing rules and the ambiguity error live in
-// apps/forge-edge-gateway/src/workspace-resolve.ts (parseWorkspaceAddress /
-// resolveWorkspaceId) — this is the one canonical description, used
-// everywhere below rather than varied per tool.
+// Replaces `workspace_id`. Merges owner/repo/branch into one field to save ~353 bytes per tool in JSON schema representation.
+// Optional: omitting resolves to the single open workspace. Bare branch resolves if unambiguous. "owner/repo#branch" pins exactly.
+// Ambiguity errors name live candidates without opaque IDs. Parsing rules: `apps/forge-edge-gateway/src/workspace-resolve.ts`.
 const addrWorkspace = () => z.string().min(1).max(400).optional()
   .describe('workspace_id, "owner/repo#branch", or branch; omit for the sole open workspace.');
 const revision = () => z.number().int().positive().describe('Fails if the workspace moved on past this revision.').optional();
-// Repo-relative ("src/a.ts") or absolute ("/workspace/repo/src/a.ts"). Both
-// resolve, because forge_edit and forge_files_list report the relative form
-// and a schema that only accepted the absolute one rejected the exact string
-// the previous tool had just handed over.
+// Repo-relative ("src/a.ts") or absolute ("/workspace/repo/src/a.ts"). Both resolve because `forge_edit`/`forge_files_list` output relative forms.
 const repoPath = () => z.string().min(1).max(1000).describe('Repo-relative, or absolute at or under /workspace/repo.');
 const idempotency = () => z.string().min(8).max(200).describe('Stable key makes a retry safe. Fresh value per distinct call.');
-// Optional on every mutating tool. Supplying a stable key makes a retried call
-// safe to repeat; omitting it means "no retry protection", and the server mints
-// a fresh key so the call simply executes. Requiring it made the common case (a
-// single call, never retried) pay for the rare one, and pushed callers into
-// inventing keys they then accidentally reused — turning a real second command
-// into a silent replay.
+// Optional on mutating tools. Stable keys enable safe retries; omitted keys trigger immediate execution (server mints fresh key).
+// Avoids penalizing the common case (single calls) and prevents callers from mistakenly reusing invented keys.
 const idempotencyOptional = () => z.string().min(8).max(200).describe('Optional. Stable key makes a retry safe; omit to always execute.').optional();
 const repository = z.object({ provider: z.literal('github'), owner: z.string().min(1).max(100), name: z.string().min(1).max(100) }).describe('Authorized GitHub repository to act on.');
 const cwd = z.string().startsWith('/workspace').default('/workspace/repo').describe('Working directory inside the workspace; must start with /workspace.');
@@ -66,17 +31,11 @@ export interface ForgeToolDefinition<TShape extends ZodRawShape = ZodRawShape> {
   description: string;
   inputSchema: TShape;
   /**
-   * Optional zod raw shape describing the tool's structured result. When
-   * present the adapter threads it into registerTool so clients can validate
-   * the result. It mirrors what the corresponding handler actually returns —
-   * kept minimal and faithful, with optional fields where the handler may omit
-   * them.
+   * Optional zod shape for structured results, threaded into registerTool for client validation. Minimal and faithful to handler return object.
    */
   outputSchema?: ZodRawShape;
   sideEffect: 'none' | 'workspace' | 'external' | 'destructive';
-  // 'deferred' — the operation needs a human decision, but never blocks on one:
-  // it is staged and queued, and Forge performs it after the human approves in
-  // their own time. See forge_merge.
+  // 'deferred': Requires human decision but does not block. Staged/queued and performed async after human approval.
   approval: 'none' | 'policy' | 'required' | 'deferred';
 }
 
@@ -100,10 +59,7 @@ export function forgeToolResponse(
 const taskId = z.string().regex(/^task_[0-9a-hjkmnp-tv-z]{20,32}$/).describe('Target task id (task_...).');
 
 // ---------------------------------------------------------------------------
-// Output shapes. Each is a zod raw shape faithful to the matching handler's
-// return object in apps/forge-edge-gateway/src/mcp-session.ts. Kept minimal —
-// only the fields the model/client benefit from, optional where the handler may
-// omit them.
+// Output shapes. Zod raw shapes faithful to matching handlers in apps/forge-edge-gateway/src/mcp-session.ts. Kept minimal for client context limits.
 // ---------------------------------------------------------------------------
 
 const repositoryRefOut = z.object({ provider: z.string(), owner: z.string(), name: z.string() });
@@ -223,10 +179,7 @@ const contextGetOutput = {
   next_step: z.string().optional()
 } satisfies ZodRawShape;
 
-// No sha256 here on purpose. It was returned per file and described as being
-// "for a conflict-safe later edit", but no tool input has ever accepted a hash
-// — the read guard is server-side, recorded when the file is read. So it cost
-// 66 bytes a file and advertised a workflow an agent could not carry out.
+// Intentionally omit sha256 to save 66 bytes/file. Read guards are server-side and recorded on file read, no tool inputs accept hashes.
 const filesReadOutput = {
   path: z.string().optional(),
   content: z.string().optional(),
@@ -351,8 +304,7 @@ const repositoryListOutput = {
     default_branch: z.string().optional(),
     last_verified_at: z.unknown().optional()
   })),
-  // Hoisted off the rows whenever every repository agrees, which is the normal
-  // case: one install, one sync. A row keeps its own value when it differs.
+  // Hoisted off rows when all repositories agree (normal case). Row retains own value if different.
   default_branch: z.string().optional(),
   last_verified_at: z.unknown().optional(),
   reason: z.string().optional().describe('Present only when the list is empty: why there are none (never_installed, revoked, stale_owner, ok).'),

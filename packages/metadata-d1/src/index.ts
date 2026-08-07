@@ -126,17 +126,13 @@ export class D1MetadataStore implements MetadataStore {
 }
 
 /**
- * Single-use store for capability-token nonces. Backs the replay protection in
- * `verifyCapability`: the first `claim` of a nonce wins, every subsequent claim
- * of the same nonce returns false so a captured token cannot be redeemed twice.
+ * Single-use store for capability-token nonces. Backs replay protection in `verifyCapability`: first `claim` of a nonce wins, subsequent claims return false.
  */
 export class D1CapabilityNonceStore {
   constructor(private readonly db: D1Database) {}
 
   /**
-   * Records `nonce` as consumed. Returns true if it was previously unseen, false
-   * if it had already been claimed. Relies on the PRIMARY KEY conflict being a
-   * no-op so the check-and-set is atomic within D1.
+   * Records `nonce` as consumed. Returns true if previously unseen, false if claimed. Relies on PRIMARY KEY conflict as a no-op for atomic check-and-set within D1.
    */
   async claim(nonce: string, action: string, expiresAt: string): Promise<boolean> {
     const result = await this.db
@@ -150,7 +146,7 @@ export class D1CapabilityNonceStore {
     return (result.meta?.changes ?? 0) > 0;
   }
 
-  /** Deletes rows whose capability has already expired. Safe to run anytime. */
+  /** Deletes expired capability rows. Safe to run anytime. */
   async pruneExpired(now: string = new Date().toISOString()): Promise<number> {
     const result = await this.db
       .prepare('DELETE FROM capability_nonces WHERE expires_at <= ?1')
@@ -179,9 +175,7 @@ interface TaskRow extends Record<string, unknown> {
 }
 
 /**
- * The portion of a Task held outside the promoted columns. Kept as bounded JSON
- * so resume-relevant context survives without a wide schema. Never holds
- * secrets, full source, complete logs or raw diffs.
+ * Task attributes excluded from promoted columns. Persisted as bounded JSON to retain resume context without widening schema. Excludes secrets, full source, complete logs, or raw diffs.
  */
 type TaskDocument = Pick<
   Task,
@@ -304,11 +298,8 @@ export class D1TaskStore implements TaskStore {
 
   async list(tenantId: TenantId, opts?: { state?: TaskState; q?: string; limit?: number }): Promise<Task[]> {
     const limit = opts?.limit ?? 50;
-    // Tenant scope is always the first clause; state and free-text filters are
-    // optional, and every value is a bound parameter (no interpolation). The
-    // `q` filter is a recall-oriented LIKE over the goal, repository, and the
-    // task document JSON (which carries changed files, decisions, outstanding
-    // work) — it can match JSON key names, which is acceptable for a filter.
+    // Tenant scope is first clause; state and free-text filters are optional bound parameters.
+    // The `q` filter is a recall-oriented LIKE over goal, repository, and JSON document (matching keys is acceptable).
     const clauses = ['tenant_id = ?'];
     const binds: (string | number)[] = [tenantId];
     if (opts?.state) { clauses.push('state = ?'); binds.push(opts.state); }
@@ -322,8 +313,7 @@ export class D1TaskStore implements TaskStore {
   }
 
   /**
-   * Most-recently-updated task attached to a workspace, if any. Used to record
-   * verified remote-commit bookkeeping against the task that owns a workspace.
+   * Most-recently-updated task attached to a workspace. Used to record verified remote-commit bookkeeping against the owning task.
    */
   async getByWorkspace(workspaceId: string): Promise<Task | null> {
     const row = await this.db

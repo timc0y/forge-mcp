@@ -1,5 +1,6 @@
 # ADR 0002: Cloudflare Sandbox SDK runtime
 
-**Status:** accepted with beta controls; amended 2026-07-30
-
-Use `@cloudflare/sandbox` rather than constructing a bespoke container control plane. Pin the SDK, isolate imports in `sandbox-cloudflare`, and run provider contract tests before version changes. Executors are disposable and re-materialize from GitHub; provider backup/restore is not part of the Forge interface. Raw provider IDs never cross the public API.
+- **Status:** accepted with beta controls; amended 2026-07-30
+- **Implementation:** Use `@cloudflare/sandbox` instead of custom container control planes.
+- **Rules:** Pin SDK, isolate imports in `sandbox-cloudflare`, run provider contract tests pre-upgrade.
+- **Invariants:** Executors are disposable (re-materialize from GitHub). Backup/restore excluded from interface. Raw provider IDs never cross public API.

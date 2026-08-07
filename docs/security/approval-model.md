@@ -1,10 +1,16 @@
 # Approval model
 
-Approvals record requester, actor/client, repository, branch, exact command/diff, side effects, risk, expiry and the capability granted.
+## Approval Metadata
+Approvals record: requester, actor/client, repository, branch, exact command/diff, side effects, risk, expiry, granted capability.
 
-GitHub reads and guarded `forge_edit` commits to a `forge/*` branch normally proceed. Dependency installation and arbitrary executor network access are policy-dependent. PR mutation, public preview, production credentials, deployments, and other external writes normally require approval. Raw executor `git push`, default-branch writes, plaintext long-lived credentials, and audit bypass are prohibited.
+## Operation Policies
+| Action | Policy |
+|--------|--------|
+| GitHub reads, guarded `forge_edit` commits to `forge/*` | Proceed normally |
+| Dependency install, arbitrary network access | Policy-dependent |
+| PR mutation, public preview, deployments, external writes | Require approval |
+| Raw `git push`, default-branch writes, audit bypass | Prohibited |
 
-There are two approval shapes:
-
-- **Deferred (`work.submit` / `forge_merge`)** — the agent stages work and finishes. The human decides from the portal minutes or days later; Forge opens the draft PR. These stay decidable while the deferred queue row is open (default TTL 14 days). Failed promote/PR steps stay on the portal with a Retry button.
-- **Sync (`shell.exec`, `cloudflare.deploy`, `pull_request.mutate`, `secret.attach`)** — the agent must stay alive and retry with `approval_id` after the human decides (default TTL 120 minutes). Pending sync approvals also appear on the portal review queue. One approval authorises one attach/deploy/mutate; shell may reuse an identical approved command until TTL.
+## Approval Shapes
+- **Deferred (`work.submit` / `forge_merge`)**: Agent stages work and finishes. Human decides later; Forge opens draft PR. Default TTL 14 days. Failed steps get a Retry button.
+- **Sync (`shell.exec`, `cloudflare.deploy`, `pull_request.mutate`, `secret.attach`)**: Agent stays alive and retries with `approval_id`. Default TTL 120 mins. Pending sync approvals appear on portal queue. One approval authorizes one action; shell may reuse identical command until TTL.

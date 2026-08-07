@@ -1,115 +1,33 @@
-# Connecting ChatGPT and Claude
+# Client Connectors & OAuth Setup
 
-Forge is exposed as **one remote MCP server**, consumed by two clients:
+Forge exposes a single streamable MCP API consumed by ChatGPT and Claude remote connectors.
 
-- **ChatGPT App** (OpenAI Apps SDK) — Forge appears as an app; results render
-  as ChatGPT's own plain output, with no Forge-authored widget.
-- **Claude connector** (remote MCP server) — the same endpoint is added as a
-  custom/remote connector in Claude.
+## Endpoint & Routing Map
 
-Both talk to the same Worker, `@forge/edge-gateway` (`apps/forge-edge-gateway`),
-and the same tool surface. There is no second backend.
+| Component | Purpose / Location |
+| :--- | :--- |
+| **MCP API** | `POST /mcp` -> `ForgeMcpSession` Durable Object (`apps/forge-edge-gateway/src/mcp-session.ts`) |
+| **Tool Definitions** | `packages/mcp-core/src/index.ts` |
+| **Tool Registration** | `packages/mcp-adapter-v1/src/index.ts` |
+| **OAuth Routes** | `apps/forge-edge-gateway/src/oauth.ts` |
+| **Approval Flow** | `GET/POST /approvals/:id` served by `github.ts` |
 
-| Piece | Where |
-| --- | --- |
-| MCP endpoint | `POST /mcp`, served by the `ForgeMcpSession` Durable Object (`apps/forge-edge-gateway/src/mcp-session.ts`) |
-| Tool definitions | `packages/mcp-core/src/index.ts` |
-| Tool registration/adapter | `packages/mcp-adapter-v1/src/index.ts` |
-| OAuth | `apps/forge-edge-gateway/src/oauth.ts` |
-| Approval page | `approvalPage()` in `apps/forge-edge-gateway/src/github.ts`, served at `GET/POST /approvals/:id` |
+## OAuth Flow Lifecycle
 
-## OAuth flow (as implemented)
+1. **Discovery**: `GET /.well-known/oauth-authorization-server` advertises endpoints, S256 PKCE challenge support, and authorization/refresh code grants. `GET /.well-known/oauth-protected-resource` returns the resource target.
+2. **Registration (DCR)**: `POST /oauth/register` registers public clients (`token_endpoint_auth_method: none`). Redirect URIs must match `FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS` (defaults to OpenAI/Anthropic/localhost domains).
+3. **Authorize**: `GET/POST /oauth/authorize` checks code challenge and issues a 10-minute authorization code stored in D1.
+4. **Token**: `POST /oauth/token` validates PKCE or rotates refresh token to issue Access (JWT, HS256, 1h TTL) and Refresh (30d TTL) tokens with scope `forge:workspace offline_access`.
 
-All handlers live in `oauth.ts` and are routed from `src/index.ts`.
+Bearer tokens are validated per request in `src/auth.ts` and set session identity context (`tenantId`, `projectId`).
 
-1. **Discovery** — `GET /.well-known/oauth-authorization-server` advertises
-   `authorization_endpoint`, `token_endpoint`, `registration_endpoint`,
-   `code_challenge_methods_supported: ['S256']`, and
-   `grant_types_supported: ['authorization_code','refresh_token']`.
-   `GET /.well-known/oauth-protected-resource[/mcp]` advertises the resource
-   (`${FORGE_PUBLIC_ORIGIN}/mcp`); a `401` from `/mcp` also returns a
-   `WWW-Authenticate` header pointing at it.
-2. **Dynamic Client Registration** — `POST /oauth/register`. Redirect URIs
-   must be HTTPS (except `localhost`/`127.0.0.1`) and match an allow-list of
-   hosts (`FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS`, default
-   `chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1`).
-   Clients are stored in D1 (`oauth_clients`) as public clients
-   (`token_endpoint_auth_method: none`).
-3. **Authorize** — `GET/POST /oauth/authorize`. Requires `response_type=code`,
-   a registered `redirect_uri`, and a PKCE `code_challenge` with
-   `code_challenge_method=S256`. The user authenticates via the GitHub App web
-   session or an owner/dev token. A hashed authorization code is persisted in
-   D1 (`oauth_codes`) for 10 minutes.
-4. **Token** — `POST /oauth/token`.
-   - `grant_type=authorization_code`: single-use code, PKCE verifier checked,
-     then an access + refresh JWT (HS256) are issued.
-   - `grant_type=refresh_token`: verifies the refresh JWT and rotates a fresh
-     access + refresh pair.
-   - Access token TTL 1h, refresh TTL 30d. Scopes: `forge:workspace
-     offline_access`.
+## UI & Approvals
+*   **No In-Chat Widgets**: Results return as plain text or structured JSON. Statuses are reported via short text in `_meta['openai/toolInvocation/{invoking,invoked}']`.
+*   **Approval Page**: Gated mutations (e.g. branch push/merge) return an `approval_url` in the tool output pointing to `approvals/:id`. Clients with `elicitation.url` support render this inline.
 
-Bearer access tokens are verified per request in `src/auth.ts` and become the
-session's `subject`, `tenantId`, `projectId`, and `clientId`.
-
-Session-JWT signing can be split from capability-token signing via the
-`FORGE_SESSION_SIGNING_KEY` secret (falls back to
-`FORGE_CAPABILITY_SIGNING_KEY` if unset) — see [security.md](security.md).
-
-## No in-chat widget
-
-No tool carries `_meta.ui` or `_meta['openai/outputTemplate']`, so tool results
-render as the host's own plain text/structured output.
-
-There was previously an in-chat MCP Apps widget that shape-detected the last
-tool's output and drew repository cards, Parallax evidence galleries, diff
-viewers and scorecards. It was removed: it rendered unreliably across hosts,
-and where it did render it showed a large amount of chrome around information
-the model was already stating in chat. The only `_meta` the adapter still emits
-is:
-
-- `_meta['openai/toolInvocation/{invoking,invoked}']` — short (≤64 char) status
-  strings, plain text, no component.
-
-`tests/unit/mcp.test.ts` asserts no tool advertises a widget, so re-adding one
-is a deliberate act rather than an accident.
-
-The one piece of Forge-authored UI a user sees is the **approval page** at
-`/approvals/:id` (`approvalPage()` in `github.ts`) — the Approve / Deny form
-that gates pushes, pull requests and privileged commands. Tool results surface
-it as an `approval_url` in `structuredContent` for the model to relay. Hosts
-also show their own native tool-confirmation prompt; that is host UI, not ours.
-
-`inline-approval.ts` can additionally surface that same decision inline via
-MCP URL-mode elicitation (`elicitation/create`, mode `url`). It is inert until
-a client advertises the `elicitation.url` capability, and every failure path
-falls back to the `approval_url` link.
-
-Official docs: <https://claude.com/docs/connectors>,
-<https://developers.openai.com/apps-sdk>.
-
-## Setting up a connector
-
-1. Deploy Forge (see [operations.md](operations.md)) so you have a public
-   `FORGE_PUBLIC_ORIGIN`.
-2. In ChatGPT: add a custom connector pointing at
-   `https://<your-origin>/mcp`; ChatGPT performs DCR and the OAuth flow above
-   automatically.
-3. In Claude (Team/Enterprise org required for custom connectors): Settings →
-   Connectors → Add custom connector, same URL.
-4. Authorize the GitHub App (`forge-mcp-cloud` in the hosted pilot) against
-   the repositories you want Forge to work on.
-
-Once connected, use the recipes in
-[project workflows](mcp/project-workflows.md) — plan, iterate UI, fix bugs, and
-resume after a compressed ChatGPT session. The MCP server also exposes prompts
-`plan-work`, `iterate-ui`, `fix-bug`, `resume-task`, `start-task`,
-`review-live-url`, and `prepare-draft-pr`.
-
-## Environment variables referenced
-
-- `FORGE_PUBLIC_ORIGIN` — canonical origin (issuer, approval/preview URLs).
-- `FORGE_PREVIEW_HOSTNAME` — dedicated preview host.
-- `FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS` — DCR redirect-host allow-list.
-- `FORGE_OAUTH_AUTHORIZATION_SERVER` / `FORGE_OAUTH_ISSUER` — override advertised AS.
-- `FORGE_CAPABILITY_SIGNING_KEY` — HS256 signing key for access/refresh JWTs and capability tokens.
-- `FORGE_SESSION_SIGNING_KEY` — optional, splits OAuth session signing from capability signing.
+## Environment Variables
+*   `FORGE_PUBLIC_ORIGIN`: Canonical gateway origin.
+*   `FORGE_PREVIEW_HOSTNAME`: Hostname for exposed worker previews.
+*   `FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS`: Domain allow-list for DCR.
+*   `FORGE_CAPABILITY_SIGNING_KEY`: HS256 key for access/refresh tokens.
+*   `FORGE_SESSION_SIGNING_KEY`: Optional OAuth token signer override.

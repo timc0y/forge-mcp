@@ -1,5 +1,10 @@
 # Capability tokens
 
-Capabilities are short-lived HMAC/JWT-style envelopes scoped to subject, tenant, workspace, repository, action, branch pattern, expiry and nonce. They are not bearer access to general Forge APIs.
-
-Tokens are audience-specific, never logged, compared in constant time, rejected after expiry and revoked implicitly when a workspace or installation is disabled. High-risk Git operations remain disabled until one-time nonce storage is deployed.
+- **Format:** Short-lived HMAC/JWT-style envelopes.
+- **Scope:** Subject, tenant, workspace, repository, action, branch pattern, expiry, nonce.
+- **Constraints:**
+  - Not bearer access to general APIs.
+  - Audience-specific, never logged.
+  - Compared in constant time, rejected post-expiry.
+  - Implicitly revoked if workspace/installation disabled.
+  - High-risk Git operations disabled pending one-time nonce storage deployment.

@@ -11,12 +11,9 @@ import type {
 export type { TaskId };
 
 /**
- * A Task is a durable coding-session record that lives above the temporary
- * workspace. It survives MCP reconnects, ChatGPT context compression, container
- * sleep, browser closure, process failure and client reconnection.
- *
- * A Task is NOT a workspace. The workspace is disposable compute; the Task is
- * the durable memory that lets a fresh ChatGPT turn resume coherent work.
+ * Durable coding-session record independent of temporary workspaces.
+ * Survives reconnects, context compression, sleep, closure, and failures.
+ * Workspaces are disposable compute; Tasks provide durable memory for coherent resumption.
  */
 
 /**

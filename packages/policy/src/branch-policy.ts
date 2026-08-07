@@ -20,7 +20,7 @@ export function assertAllowedForgeBranch(branch: string, defaultBranch: string):
   assertForgeBranch(branch);
 }
 
-/** Agent work branches — not Forge-internal staged/backup refs. */
+/** True for agent work branches. */
 export function isAgentForgeBranch(branch: string | undefined | null): branch is string {
   if (!branch?.startsWith('forge/')) return false;
   if (branch.startsWith('forge/backup/')) return false;
@@ -33,7 +33,7 @@ export function isDefaultGitBranch(branch: string | undefined | null): boolean {
   return branch === 'main' || branch === 'master';
 }
 
-/** Compact branch guidance for agents (workspace_get / error details). */
+/** Branch policy guidance. */
 export function branchPolicyFor(branch: string | undefined | null): {
   requiredPrefix: 'forge/';
   onAgentBranch: boolean;

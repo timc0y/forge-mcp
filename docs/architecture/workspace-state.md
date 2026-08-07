@@ -1,6 +1,6 @@
-# Workspace state model
+# Workspace State Model
 
-The durable control-plane session and ephemeral executor have separate state.
+Separated control-plane session and ephemeral executor state models.
 
 ```mermaid
 stateDiagram-v2
@@ -26,7 +26,6 @@ stateDiagram-v2
   }
 ```
 
-D1 and the Workspace Coordinator store the control-plane record and observed
-executor/process state. GitHub remains repository truth in every executor
-state. Recreating or destroying an executor may discard command-created files;
-it never discards a `forge_edit` commit.
+- **D1 & Workspace Coordinator:** Store control-plane record & observed executor/process state.
+- **GitHub:** Repository truth in all executor states.
+- **Persistence Invariant:** Executor reap/destroy discards command-created files; `forge_edit` commits survive.

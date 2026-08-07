@@ -1,6 +1,6 @@
-# Forge system architecture
+# Forge System Architecture
 
-Forge separates durable repository control from ephemeral execution.
+Separates durable repository control from ephemeral execution.
 
 ```mermaid
 flowchart TD
@@ -23,32 +23,24 @@ flowchart TD
   W --> D
 ```
 
-## Durable boundaries
+## Durable Boundaries
 
-- **GitHub API:** sole durable repository file CRUD, diff, commit, branch,
-  history, and pull-request plane.
-- **D1 and coordinator state:** control-plane workspace identity, revisions,
-  idempotency, process handles, previews, and audit/recovery metadata.
-- **R2 artifacts:** bounded logs, screenshots, and evidence. Artifacts do not
-  turn executor files into repository changes.
-- **Executor:** lazy and ephemeral. It exists only for commands, installs,
-  builds, tests, dev servers, previews, and deploys.
+- **GitHub API:** Sole durable repo CRUD, diff, commit, branch, history, and PR plane.
+- **D1 & Coordinator:** Workspace identity, revisions, idempotency, process handles, previews, audit/recovery metadata.
+- **R2 Artifacts:** Bounded logs, screenshots, evidence (does not convert executor files to repo changes).
+- **Executor:** Lazy/ephemeral runner for commands, installs, builds, tests, dev servers, previews, deploys.
 
-## Trust and mutation rules
+## Trust & Mutation Rules
 
-1. The client and repository content are untrusted input.
-2. The executor is an isolation boundary, not a repository authority.
-3. `forge_edit` is the only public repository file writer/deleter.
-4. Executor command writes remain local to that executor and are never
-   auto-committed; process results report `remote_persisted:false`.
+1. Client and repository content are untrusted.
+2. Executor is an isolation boundary, not a repository authority.
+3. `forge_edit` is sole public repository file writer/deleter.
+4. Executor command writes remain local and uncommitted (`remote_persisted:false`).
 5. External side effects require fresh authorization at execution time.
-6. GitHub mutations use expected-state guards and provider read-back before
-   Forge reports success.
+6. GitHub mutations enforce expected-state guards and provider read-back before success.
 
-## Implemented surface
+## Implemented Surface (Private Pilot)
 
-The private pilot combines GitHub-backed identity and repository authorization,
-durable tasks and lightweight coding sessions, GitHub-native file reads/edits,
-diffs/history/branches/PRs, lazy managed execution, private previews, Browser
-Run evidence, encrypted secret attachments, and verified Cloudflare deployment
-receipts.
+- **Auth & Session:** GitHub-backed identity/auth, durable tasks, lightweight coding sessions.
+- **Repo Operations:** GitHub-native file reads/edits, diffs, history, branches, PRs.
+- **Execution & Security:** Lazy managed execution, private previews, Browser Run evidence, encrypted secret attachments, Cloudflare deployment receipts.

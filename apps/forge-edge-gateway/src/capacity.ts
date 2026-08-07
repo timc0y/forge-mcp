@@ -1,40 +1,18 @@
 import { ForgeError } from '@forge/core';
 
-// Forge workspace slots are per-tenant: each tenant holds up to `perTenant`
-// concurrent workspaces (its own 1..N slot range), while a global cap bounds the
-// total across all tenants — and thus container cost — so one busy account
-// cannot starve the rest. A slot is a D1 row, claimed on workspace_create and
-// deleted on destroy or a create failure. The container's idle sleep only
-// stops compute, never frees the slot, so the lazy + scheduled reaper reclaims
-// slots whose workspace is gone, terminal, or idle past a TTL.
+// Tenant workspaces are capped to prevent resource starvation. Slots are D1 rows
+// claimed on creation and freed on destroy/failure. Reapers reclaim lost/idle slots.
 
-// Idle workspaces are reclaimed after this long. Generous by default so an
-// in-progress harness (installed deps, built artifacts, a running dev server)
-// is not torn down between bursts of activity. Cost-neutral: the container
-// already sleeps on idle (and keepAlive covers active mutations), so a
-// held-but-idle slot bills ~nothing — this only governs when the workspace is
-// destroyed and its slot freed.
+// Long default TTL preserves dev environments. Cost-neutral since idle containers sleep;
+// only determines when workspace structures are garbage collected.
 const DEFAULT_SLOT_TTL_MINUTES = 240;
 const DEFAULT_GLOBAL_CAP = 8;
-// Keep the per-tenant default strictly below the global cap so the fairness
-// promise above actually holds by default: a single busy tenant can claim five
-// of the eight global slots, leaving room for others. Raise it per
-// deployment via FORGE_MAX_WORKSPACES_PER_TENANT; it is always clamped to the
-// global cap in workspaceCaps().
+// Keep per-tenant limit below global cap for fair scheduling.
 const DEFAULT_PER_TENANT_CAP = 5;
-// Exported so workspace-resolve.ts can exclude the same states when deciding
-// which workspaces are "live" candidates for owner/repo/branch resolution —
-// one definition of "terminal", not two that can drift apart.
+// Terminal states are excluded from resolution queries.
 export const TERMINAL_STATES = ['failed', 'destroying', 'destroyed'];
-// States where a provision Workflow is actively running. Sitting in one longer
-// than STUCK_PROVISION_MS means the workflow died mid-run (timed out / evicted
-// before its JS catch) and the slot is leaking. Reclaimable on the short bound
-// below instead of the generous idle TTL; the scheduled watchdog force-fails it.
-//
-// `requested` is intentionally excluded: lazy create parks there with a GitHub
-// branch and no executor until the first execution tool. That can last far
-// longer than STUCK_PROVISION_MS and must use the normal idle TTL, not the
-// wedged-provisioner reaper.
+// Provisioning states exceeding STUCK_PROVISION_MS imply a hung workflow instance.
+// Exclude `requested` from stuck-reaping as it represents a lazy control-plane session.
 const ACTIVE_PROVISIONING_STATES = ['provisioning', 'bootstrapping'];
 const STUCK_PROVISION_MS = 15 * 60_000;
 

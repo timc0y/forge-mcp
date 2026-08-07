@@ -77,5 +77,5 @@ the wait toward 600000 or restart the process.
 ## Related
 
 - [Agent execution playbook](./agent-execution-playbook.md)
-- [ChatGPT-first workflow plan](../plans/chatgpt-first.md)
+- [Archive Index of Completed Plans](../ARCHIVE_INDEX.md)
 - [Tool reference](../tools.md)

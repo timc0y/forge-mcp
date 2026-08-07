@@ -32,14 +32,11 @@ type SnapshotOptions = BrowserRunSnapshotOptions & {
   formats: Array<'screenshot' | 'markdown' | 'accessibilityTree'>;
 };
 
-// Evidence screenshots default to JPEG: 3-10× smaller than PNG end-to-end (R2
-// storage, response payload, Worker base64 CPU, client tokens) at a fidelity
-// that still supports visual review. Callers pass format: 'image/png' when they
-// need lossless pixels.
+// Screenshots default to JPEG (~3-10x smaller than PNG) for R2/Worker footprint.
+// Pass 'image/png' if lossless pixels are required.
 const DEFAULT_IMAGE: ImageContentType = 'image/jpeg';
 const DEFAULT_JPEG_QUALITY = 80;
-// The two evidence formats Forge actually consumes. `markdown` was requested
-// historically but never read, so it is dropped to shrink each snapshot.
+// Exclude unused 'markdown' format to minimize snapshot size.
 const EVIDENCE_FORMATS: SnapshotOptions['formats'] = ['screenshot', 'accessibilityTree'];
 
 function imageType(input: Pick<ScreenshotInput, 'format'>): { contentType: ImageContentType; type: 'png' | 'jpeg' } {
@@ -64,22 +61,16 @@ function baseOptions(input: Omit<ScreenshotInput, 'fullPage'>): BrowserRunBaseOp
     url: targetUrl(input),
     setExtraHTTPHeaders: input.headers,
     viewport: input.viewport,
-    // 'networkidle0' (no in-flight requests for 500ms) instead of
-    // 'domcontentloaded' — the latter fires before images finish downloading,
-    // producing screenshots with broken/half-loaded images. This REST
-    // snapshot path has no page handle to run a custom img.complete wait, so
-    // the goto wait strategy is the only lever available.
+    // 'networkidle0' ensures images download before screenshot.
+    // REST path has no page handle for img.complete polling, so waitUntil is the only lever.
     gotoOptions: { waitUntil: 'networkidle0', timeout: 30_000 },
     cacheTTL: input.cacheTtlSeconds ?? 0,
     actionTimeout: 60_000
   };
 }
 
-// Drive Forge's bounded action vocabulary against a real Puppeteer page. The
-// Browser Run REST `/snapshot` endpoint does not accept interaction steps
-// (it rejects an `actions` key), so multi-step journeys run through the
-// @cloudflare/puppeteer binding instead — the only path that actually clicks,
-// types, and waits before capturing evidence.
+// Browser Run `/snapshot` REST API lacks interaction support.
+// Puppeteer binding runs clicks, text input, and waits prior to screenshot.
 async function runStep(page: Page, step: BrowserActionStep, base: URL): Promise<void> {
   switch (step.kind) {
     case 'navigate':

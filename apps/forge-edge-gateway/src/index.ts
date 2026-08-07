@@ -64,8 +64,7 @@ function html(body: string, status = 200): Response {
 }
 
 function favicon(): Response {
-  // The same anvil as the wordmark and the app icon, so a pinned tab, the portal
-  // and a shared link all read as one product.
+  // Unified product icon for pinned tabs, portal, and shared links.
   return new Response(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="#0d0d0d"/><path d="M4 7.6H18l3.8 2a.5.5 0 0 1 0 .9L18 12.4h-3.7v3.2h3.2a1.15 1.15 0 0 1 1.15 1.15V18.6H5.35v-1.85A1.15 1.15 0 0 1 6.5 15.6h3.2v-3.2H6.3A2.3 2.3 0 0 1 4 10.1V7.6Z" fill="#fff" transform="translate(0 .2) scale(.94) translate(.75 .5)"/></svg>',
     {
@@ -101,8 +100,7 @@ async function operatorForceDestroy(request: Request, env: Env, url: URL): Promi
 }
 
 
-// Small monoline marks for the landing cards. Distinct shapes rather than the
-// Forge glyph repeated three times, which says nothing about what each card is.
+// Distinct monoline marks per landing card to visually differentiate content.
 const cardIcon = (paths: string): string =>
   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
 const ICON_PAGE = cardIcon('<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/><path d="M7 6.5h.01"/>');
@@ -216,11 +214,7 @@ function mcpExecutionContext(ctx: ExecutionContext, props: Record<string, unknow
   } as ExecutionContext;
 }
 
-// The preview upstream is UNTRUSTED user code, so forwarding is allowlist-only:
-// we copy just the minimal set of request headers a normal HTTP client needs and
-// drop everything else. An allowlist (vs. deleting a handful of known-sensitive
-// names) guarantees no inbound header — auth, cookies, forge-* control headers,
-// cf-* edge headers, or anything future — can ever leak into preview content.
+// Untrusted upstream preview: Request headers are strictly allowlisted. Guarantees no inbound auth, cookies, forge-*, or cf-* edge headers leak into preview content.
 const PREVIEW_FORWARD_HEADERS = new Set([
   'accept',
   'accept-encoding',
@@ -248,13 +242,7 @@ async function sandboxPreviewFetch(
   path: string,
   search: string
 ): Promise<{ response: Response; target: URL }> {
-  // The self-hosted sandbox branch that used to live here is gone with its
-  // provider. Nothing can produce a workspace of that kind any more and no
-  // stored workspace has one, so the branch was unreachable — and an
-  // unreachable branch describing a backend that no longer exists is exactly
-  // what sent agents looking for stages Forge had already removed.
-  // FORGE_SELFHOST_* survives because the self-hosted *browser* still uses it
-  // (see browser-router.ts); that is a different subsystem.
+  // Removed unreachable self-hosted sandbox branch (provider deprecated). Prevents agent halluncinations. FORGE_SELFHOST_* retained for self-hosted browser subsystem (browser-router.ts).
   const target = new URL(path, 'http://forge-container.internal');
   target.search = search;
   const upstreamRequest = new Request(target, {
@@ -344,12 +332,7 @@ async function preview(request: Request, env: Env, url: URL): Promise<Response> 
     env.FORGE_INTERNAL_PREVIEW_KEY
   );
   if (!internal) {
-    // Agents send the capability as a header. A human opening a review preview
-    // from the approval page cannot — a browser navigation carries no custom
-    // headers — so fall back to a path-scoped HttpOnly cookie holding the same
-    // signed capability. Same token, same verification; only the transport
-    // differs. It is deliberately not accepted from the query string, which
-    // would leak it into history, logs and any shared link.
+    // Capability transport: Agents use headers. Humans navigating from approval page use path-scoped HttpOnly cookie (browser lacks custom header capability). Query string rejected to prevent history/log leakage.
     const capability = request.headers.get('x-forge-preview-capability')
       || cookie(request, `forge_preview_${previewId}`)
       || '';
@@ -398,9 +381,7 @@ async function preview(request: Request, env: Env, url: URL): Promise<Response> 
   });
 }
 
-// Scheduled global reaper: recovers capacity even when nobody is calling
-// forge_workspace_create (the lazy reaper only fires on that path). Frees stale
-// slots and tears their workspaces down. Best-effort per workspace.
+// Scheduled global reaper: Best-effort recovery of stale capacity slots and workspace teardown independently of forge_workspace_create lazy reaping.
 async function reapAbandonedSlots(env: Env): Promise<void> {
   let reclaimed;
   try {

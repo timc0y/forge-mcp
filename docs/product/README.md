@@ -30,4 +30,4 @@ Task, Workspace, Process, Preview, Browser session, Evidence, Artifact, Approval
 Durable coding tasks, bounded GitHub repository context, guarded `forge_edit`
 commits, targeted verification in an ephemeral executor, private previews,
 structured functional journeys, browser evidence, and approval-gated PR review. See
-[`../plans/chatgpt-first.md`](../plans/chatgpt-first.md).
+[`../ARCHIVE_INDEX.md`](../ARCHIVE_INDEX.md).

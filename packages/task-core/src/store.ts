@@ -4,8 +4,7 @@ import { assertTaskTransition } from './state-machine';
 import type { Task, TaskId, TaskState } from './task';
 
 /**
- * A durable task store. The interface is intentionally small; a D1-backed
- * implementation lives in @forge/metadata-d1 and mirrors these semantics.
+ * Durable task store. D1-backed implementation: @forge/metadata-d1.
  */
 export interface TaskStore {
   put(task: Task): Promise<void>;
@@ -13,14 +12,13 @@ export interface TaskStore {
   list(tenantId: TenantId, opts?: { state?: TaskState; limit?: number }): Promise<Task[]>;
 }
 
-/** Owner identity carried on every request, checked before any task is returned. */
+/** Owner identity for request authorization. */
 export interface TaskOwner {
   tenantId: TenantId;
 }
 
 /**
- * A patch applied to a task on the server. Only the durable, resume-relevant
- * fields are mutable; identity and creation metadata are not.
+ * Server-side task patch. Mutable fields only.
  */
 export interface TaskPatch {
   state?: TaskState;
@@ -55,8 +53,7 @@ function uniquePush<T>(base: readonly T[], additions: readonly T[] | undefined, 
 }
 
 /**
- * Apply a patch to a task purely (no I/O), validating the state transition and
- * bumping the revision. Callers persist the returned task through the store.
+ * Purely applies a task patch. Validates state transition and bumps revision. Callers persist via store.
  */
 export function applyTaskPatch(task: Task, patch: TaskPatch, at: string, expectedRevision?: number): Task {
   if (expectedRevision !== undefined && expectedRevision !== task.revision) {
@@ -91,7 +88,7 @@ export function applyTaskPatch(task: Task, patch: TaskPatch, at: string, expecte
   };
 }
 
-/** Enforce tenant ownership; throws rather than leaking another tenant's task. */
+/** Enforces tenant ownership. Throws FORGE_PERMISSION_DENIED on mismatch. */
 export function assertTaskOwnership(task: Task, owner: TaskOwner): void {
   if (task.tenantId !== owner.tenantId) {
     throw new ForgeError({
@@ -102,7 +99,7 @@ export function assertTaskOwnership(task: Task, owner: TaskOwner): void {
   }
 }
 
-/** In-memory store for tests and the local single-owner deployment. */
+/** In-memory store for tests and single-owner deployments. */
 export class InMemoryTaskStore implements TaskStore {
   private readonly tasks = new Map<string, Task>();
 
