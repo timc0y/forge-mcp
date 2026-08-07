@@ -7,7 +7,7 @@ const origin = (process.env.FORGE_ORIGIN ?? 'https://forge.timcoy.uk').replace(/
 const ownerTokenFile = process.env.FORGE_OWNER_TOKEN_FILE ?? resolve(homedir(), '.config/forge-mcp/cloud-owner-token');
 const redirectUri = process.env.FORGE_ACCEPTANCE_REDIRECT_URI ?? 'https://chatgpt.com/forge-acceptance';
 const protocolVersion = '2025-11-25';
-const configuredRepository = process.env.FORGE_TOOL_TEST_REPOSITORY ?? 'mdn/beginner-html-site-styled';
+const configuredRepository = process.env.FORGE_TOOL_TEST_REPOSITORY ?? 'timc0y/forge-mcp';
 const [repositoryOwner, repositoryName, repositoryExtra] = configuredRepository.split('/');
 if (!repositoryOwner || !repositoryName || repositoryExtra) {
   throw new Error('FORGE_TOOL_TEST_REPOSITORY must be owner/name');
@@ -153,6 +153,8 @@ function valueForArg(name, schema, workspaceId, nested = false, toolName = '') {
   if (schema.type === 'string') {
     if (name === 'owner') return repositoryOwner;
     if (name === 'name') return repositoryName;
+    if (name === 'repository') return `${repositoryOwner}/${repositoryName}`;
+    if (name === 'target') return `${repositoryOwner}/${repositoryName}`;
     if (name === 'provider') return nested ? 'github' : 'generic';
     if (name === 'runtime') return 'node-24';
     if (name === 'persistence') return 'ephemeral';
@@ -211,8 +213,9 @@ function valueForArg(name, schema, workspaceId, nested = false, toolName = '') {
   if (schema.type === 'array') {
     if (name === 'captures') return [{ selection: 'homepage', route: '/', state: 'entry' }];
     if (name === 'viewports') return [{ id: 'phone', width: 390, height: 844 }];
-    if (name === 'files') return ['README.md'];
-    return [];
+    const itemSchema = schema.items ?? { type: 'string' };
+    const item = valueForArg(name, itemSchema, workspaceId, true, toolName);
+    return [item];
   }
 
   if (schema.type === 'object') {
@@ -459,6 +462,11 @@ function outcomeClass(message) {
   await mcp.init();
 
   const remoteToolList = (await mcp.request('tools/list')).result?.tools ?? [];
+  const remoteSchemas = Object.fromEntries(
+    remoteToolList
+      .filter((tool) => tool && typeof tool.name === 'string' && tool.inputSchema)
+      .map((tool) => [tool.name, tool])
+  );
   const toolNames = [...new Set(Array.isArray(remoteToolList)
     ? remoteToolList.map((tool) => tool?.name).filter((toolName) => typeof toolName === 'string' && toolName.length > 0)
     : Object.keys(schema)
@@ -479,7 +487,11 @@ function outcomeClass(message) {
   let seededArtifactId = null;
 
   for (const toolName of toolNames) {
-    const toolSchema = schema[toolName];
+    // The deployed worker is the system under test. Prefer its live schema so
+    // a checked-in schema drift cannot turn every required probe into a false
+    // validation failure. Keep the generated local schema as a fallback for
+    // older workers that omit inputSchema from tools/list.
+    const toolSchema = remoteSchemas[toolName] ?? schema[toolName];
     const coldRequiredArgs = buildArgs(toolSchema, undefined, true, toolName);
     if (toolName === 'forge_task_get' || toolName === 'forge_task_update') {
       if (seededTaskId) {
@@ -572,7 +584,7 @@ function outcomeClass(message) {
         row.warmInvalidOutcome = 'not_run';
         continue;
       }
-      const toolSchema = schema[toolName];
+      const toolSchema = remoteSchemas[toolName] ?? schema[toolName];
       const warmRequiredArgs = buildArgs(toolSchema, creationWorkspace, true, toolName);
       if ((toolName === 'forge_task_get' || toolName === 'forge_task_update') && seededTaskId) {
         warmRequiredArgs.task_id = seededTaskId;
@@ -665,6 +677,22 @@ function outcomeClass(message) {
     console.log(`${scenario}\t${JSON.stringify(counts)}`);
   }
   console.log('TOOL_MATRIX_SUMMARY_END');
+
+  if (process.env.FORGE_TOOL_MATRIX_VERBOSE === '1') {
+    console.log('TOOL_MATRIX_VERBOSE_START');
+    for (const row of matrix) {
+      if (row.coldRequiredOutcome === 'validation_fail' || row.warmRequiredOutcome === 'validation_fail') {
+        console.log(JSON.stringify({
+          tool: row.tool,
+          coldRequiredArgs: row.coldRequiredArgs,
+          coldRequired: row.coldRequired,
+          warmRequiredArgs: row.warmRequiredArgs,
+          warmRequired: row.warmRequired
+        }));
+      }
+    }
+    console.log('TOOL_MATRIX_VERBOSE_END');
+  }
 
   const failures = matrix.filter((row) =>
     row.warmRequiredOutcome === 'tool_fail' ||

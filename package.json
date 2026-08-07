@@ -13,6 +13,7 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run",
     "test:e2e": "vitest run tests/e2e",
+    "test:tools": "node scripts/tool-matrix.mjs",
     "acceptance:cloud": "node scripts/acceptance-cloud.mjs",
     "github-app:create": "node scripts/create-github-app.mjs",
     "check": "pnpm boundaries:check && pnpm wiring:check && pnpm typecheck && pnpm test && pnpm schemas:check",
