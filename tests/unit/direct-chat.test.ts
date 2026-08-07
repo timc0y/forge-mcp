@@ -51,6 +51,22 @@ describe('direct chat facade', () => {
     expect(result.next_action.message).toMatch(/without another chat call/u);
   });
 
+  it('keeps screenshot images on the initiating call', async () => {
+    const result = await handlers({
+      screenshot: async () => ({
+        kind: 'forge_tool_response' as const,
+        value: { complete: true, gallery_url: 'https://forge.test/gallery/signed' },
+        content: [{ type: 'image' as const, data: 'encoded-image', mimeType: 'image/jpeg' }]
+      })
+    }).screenshot({
+      target: { url: 'https://example.com' },
+      viewports: ['phone', 'desktop']
+    });
+
+    expect(result).toMatchObject({ kind: 'forge_tool_response', value: { state: 'completed' } });
+    expect(result).toHaveProperty('content', [{ type: 'image', data: 'encoded-image', mimeType: 'image/jpeg' }]);
+  });
+
   it('treats status as observational when no operation registry has a match', async () => {
     const result = await handlers().status('acme/web#forge/chat-1');
 

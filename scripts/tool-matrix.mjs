@@ -454,6 +454,35 @@ function outcomeClass(message) {
   return classifyOutcome(message);
 }
 
+function schemaType(schema, definitions = {}) {
+  if (!schema || typeof schema !== 'object') return 'unknown';
+  if (typeof schema.type === 'string') return schema.type;
+  if (typeof schema.$ref === 'string') {
+    const name = schema.$ref.replace(/^#\/\$defs\//u, '');
+    return schemaType(definitions[name], definitions);
+  }
+  if (Array.isArray(schema.anyOf)) return schema.anyOf.map((entry) => schemaType(entry, definitions)).sort().join('|');
+  return 'unknown';
+}
+
+function findSchemaDrift(toolNames, localSchemas, liveSchemas) {
+  const drift = [];
+  for (const toolName of toolNames) {
+    const local = localSchemas[toolName]?.inputSchema;
+    const live = liveSchemas[toolName]?.inputSchema;
+    if (!local || !live) continue;
+    const localProperties = local.properties ?? {};
+    const liveProperties = live.properties ?? {};
+    for (const property of Object.keys(localProperties)) {
+      if (!liveProperties[property]) continue;
+      const localType = schemaType(localProperties[property], local.$defs ?? {});
+      const liveType = schemaType(liveProperties[property], live.$defs ?? {});
+      if (localType !== liveType) drift.push(`${toolName}.${property}: local=${localType} live=${liveType}`);
+    }
+  }
+  return drift;
+}
+
 (async function main() {
   const schema = JSON.parse(await readFile(resolve(process.cwd(), 'schemas/forge-tools.schema.json'), 'utf8')).tools;
 
@@ -475,14 +504,10 @@ function outcomeClass(message) {
   if (missingFromSchema.length > 0) {
     console.log('TOOLS_WITHOUT_SCHEMA', missingFromSchema.join(','));
   }
+  const schemaDrift = findSchemaDrift(toolNames, schema, remoteSchemas);
 
   const matrix = [];
-  const outcomes = {
-    cold_required: {},
-    cold_invalid: {},
-    warm_required: {},
-    warm_invalid: {}
-  };
+  const outcomes = { required: {}, invalid: {} };
   let seededTaskId = null;
   let seededArtifactId = null;
 
@@ -493,50 +518,42 @@ function outcomeClass(message) {
     // older workers that omit inputSchema from tools/list.
     const toolSchema = remoteSchemas[toolName] ?? schema[toolName];
     const coldRequiredArgs = buildArgs(toolSchema, undefined, true, toolName);
-    if (toolName === 'forge_task_get' || toolName === 'forge_task_update') {
-      if (seededTaskId) {
-        coldRequiredArgs.task_id = seededTaskId;
-      }
-    }
     const coldInvalidArgs = buildInvalidArgs(toolSchema, undefined);
 
     const coldRequired = await mcp.call(toolName, coldRequiredArgs);
     const coldInvalid = await mcp.call(toolName, coldInvalidArgs);
-    if (toolName === 'forge_task_create') {
-      const taskId = extractTaskId(coldRequired) || extractTaskId(coldRequired.result);
-      if (taskId) seededTaskId = taskId;
-    }
 
-      const row = {
-        tool: toolName,
-        coldRequired,
-        coldInvalid,
+    const row = {
+      tool: toolName,
+      coldRequired,
+      coldInvalid,
       coldRequiredOutcome: outcomeClass(coldRequired),
       coldInvalidOutcome: outcomeClass(coldInvalid),
-      warmRequiredOutcome: 'not_run',
-      warmInvalidOutcome: 'not_run',
       coldRequiredArgs,
       coldInvalidArgs
     };
 
-    outcomes.cold_required[row.coldRequiredOutcome] = (outcomes.cold_required[row.coldRequiredOutcome] ?? 0) + 1;
-    outcomes.cold_invalid[row.coldInvalidOutcome] = (outcomes.cold_invalid[row.coldInvalidOutcome] ?? 0) + 1;
+    outcomes.required[row.coldRequiredOutcome] = (outcomes.required[row.coldRequiredOutcome] ?? 0) + 1;
+    outcomes.invalid[row.coldInvalidOutcome] = (outcomes.invalid[row.coldInvalidOutcome] ?? 0) + 1;
 
     matrix.push(row);
 
-    if (toolName === 'forge_workspace_create') {
-      const createdWorkspaceFromCold = extractWorkspaceId(coldRequired.result);
-      if (createdWorkspaceFromCold) {
-        await mcp.call('forge_workspace_destroy', {
-          workspace: createdWorkspaceFromCold,
-          preserve_artifacts: true,
-          force: true,
-          idempotency_key: randomLabel('cold-cleanup')
-        });
-      }
-    }
   }
 
+  if (process.env.FORGE_TOOL_MATRIX_PUBLIC_URL) {
+    const screenshot = await mcp.call('forge_screenshot', {
+      target: process.env.FORGE_TOOL_MATRIX_PUBLIC_URL,
+      paths: ['/'],
+      viewports: ['phone', 'tablet', 'desktop'],
+      full_page: false,
+      time_budget_ms: 40_000
+    });
+    console.log(`PUBLIC_SCREENSHOT\t${outcomeClass(screenshot)}\t${toPretty(screenshot)}`);
+  }
+
+  // The direct-chat matrix must not allocate or poll legacy workspaces. Keep
+  // the old acceptance probe available only for explicit historical debugging.
+  if (process.env.FORGE_TOOL_MATRIX_LEGACY === '1') {
   const workspaceCreateArgs = buildArgs(schema.forge_workspace_create, undefined);
   workspaceCreateArgs.repository = repositoryRef();
   workspaceCreateArgs.ref = 'main';
@@ -663,13 +680,12 @@ function outcomeClass(message) {
   } else {
     transcript.push(['workspace_missing', 'runtime_fail']);
   }
+  }
 
   console.log('TOOL_COUNT', toolNames.length);
   console.log('TOOL_MATRIX_START');
   for (const row of matrix) {
-    const warmReq = row.warmRequiredOutcome ?? row.warmRequired;
-    const warmInv = row.warmInvalidOutcome ?? row.warmInvalid;
-    console.log([row.tool, row.coldRequiredOutcome, row.coldInvalidOutcome, row.warmRequiredOutcome ?? warmReq, row.warmInvalidOutcome ?? warmInv].join('\t'));
+    console.log([row.tool, row.coldRequiredOutcome, row.coldInvalidOutcome].join('\t'));
   }
 
   console.log('TOOL_MATRIX_SUMMARY_START');
@@ -681,13 +697,11 @@ function outcomeClass(message) {
   if (process.env.FORGE_TOOL_MATRIX_VERBOSE === '1') {
     console.log('TOOL_MATRIX_VERBOSE_START');
     for (const row of matrix) {
-      if (row.coldRequiredOutcome === 'validation_fail' || row.warmRequiredOutcome === 'validation_fail') {
+      if (row.coldRequiredOutcome === 'validation_fail') {
         console.log(JSON.stringify({
           tool: row.tool,
           coldRequiredArgs: row.coldRequiredArgs,
           coldRequired: row.coldRequired,
-          warmRequiredArgs: row.warmRequiredArgs,
-          warmRequired: row.warmRequired
         }));
       }
     }
@@ -695,12 +709,8 @@ function outcomeClass(message) {
   }
 
   const failures = matrix.filter((row) =>
-    row.warmRequiredOutcome === 'tool_fail' ||
-    row.warmRequiredOutcome === 'runtime_fail' ||
     row.coldRequiredOutcome === 'tool_fail' ||
     row.coldRequiredOutcome === 'runtime_fail' ||
-    row.warmInvalidOutcome === 'tool_fail' ||
-    row.warmInvalidOutcome === 'runtime_fail' ||
     row.coldInvalidOutcome === 'tool_fail' ||
     row.coldInvalidOutcome === 'runtime_fail'
   );
@@ -711,9 +721,11 @@ function outcomeClass(message) {
   }
   console.log('TOOL_FAIL_RAW_END');
 
-  console.log('CHATGPT_SIMULATION_START');
-  for (const [step, status] of transcript) {
-    console.log(`${step}\t${status}`);
+  if (schemaDrift.length > 0) {
+    console.log('TOOL_SCHEMA_DRIFT_START');
+    for (const issue of schemaDrift) console.log(issue);
+    console.log('TOOL_SCHEMA_DRIFT_END');
+    process.exitCode = 1;
   }
-  console.log('CHATGPT_SIMULATION_END');
+
 })();
