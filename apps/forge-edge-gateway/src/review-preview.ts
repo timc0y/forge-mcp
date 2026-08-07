@@ -254,10 +254,11 @@ export async function reviewPreviewStatus(
     .catch((error: unknown) => ({ ready: false as const, reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown' }));
 
   if (!started.ready) {
-    // "No dev server" is terminal — polling will never fix it. Anything else is
+    // No dev server or valid config is terminal — polling will never fix it. Anything else is
     // just the server still coming up, so keep the reviewer waiting rather than
     // failing them out of a preview that is seconds away.
-    if (started.reason.includes('no dev server command')) {
+    const lowerReason = started.reason.toLowerCase();
+    if (lowerReason.includes('no dev server command') || lowerReason.includes('forge config')) {
       await setPreview(env, action.id, { state: 'failed', error: started.reason });
       return { state: 'failed', error: started.reason };
     }

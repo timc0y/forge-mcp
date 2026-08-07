@@ -1,0 +1,8 @@
+{
+  "$schema": "https://raw.githubusercontent.com/timc0y/forge-mcp/main/schemas/forge-config.schema.json",
+  "preview": {
+    "cwd": "apps/fixture-catalog",
+    "command": "node --experimental-strip-types src/server.ts",
+    "port": 4321
+  }
+}

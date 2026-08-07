@@ -16,6 +16,29 @@ Forge exposes 10 MCP tools for direct chat from
 | `forge_submit` | Queue the current branch for human review and return its approval URL. |
 | `forge_status` | Recover long-running command, screenshot, deploy, or submission status. |
 
+### Branch preview configuration
+
+Forge infers a root `package.json` `dev` script and a framework port. For a
+monorepo, a custom server, or a non-standard port, commit `forge.json` at the
+repository root:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/timc0y/forge-mcp/main/schemas/forge-config.schema.json",
+  "preview": {
+    "cwd": "apps/web",
+    "command": "pnpm dev --host 0.0.0.0",
+    "port": 5173
+  }
+}
+```
+
+`cwd` stays inside the repository. `command` and `port` override inference;
+omitting either keeps the detected package script or framework default. The
+config contains no environment or secret fields. The package manager and lock
+file still control dependency installation, with a root lockfile preferred for
+workspace monorepos. `forge.config.json` is accepted as an alternate filename.
+
 ## Operating contract
 
 - GitHub is the sole durable repository source of truth.

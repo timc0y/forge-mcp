@@ -146,6 +146,16 @@ describe('review preview (on-demand, at approval time)', () => {
     expect((await reviewPreviewStatus(env, action, stub.factory)).state).toBe('failed');
   });
 
+  it('fails immediately when repository preview configuration is invalid', async () => {
+    const row = { ...fresh(), preview_state: 'provisioning', preview_workspace_id: 'ws_preview' };
+    const stub = stubFor('ready', { ready: false, reason: 'Forge config preview.port must be an integer from 1024 to 65535.' });
+    const status = await reviewPreviewStatus(fakeEnv(row), action, stub.factory);
+    expect(status.state).toBe('failed');
+    expect(status.error).toContain('Forge config');
+    expect((await reviewPreviewStatus(fakeEnv(row), action, stub.factory)).state).toBe('failed');
+    expect(stub.startReviewPreview).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces a workspace that died rather than polling forever', async () => {
     const row = { ...fresh(), preview_state: 'provisioning', preview_workspace_id: 'ws_preview' };
     const stub = stubFor('failed', { ready: false, reason: 'n/a' });

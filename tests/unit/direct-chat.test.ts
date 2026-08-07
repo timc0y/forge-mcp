@@ -67,6 +67,38 @@ describe('direct chat facade', () => {
     expect(result).toHaveProperty('content', [{ type: 'image', data: 'encoded-image', mimeType: 'image/jpeg' }]);
   });
 
+  it('keeps private preview recovery choreography out of direct-chat errors', async () => {
+    await expect(handlers({
+      screenshot: async () => {
+        throw {
+          code: 'FORGE_PREVIEW_UNAVAILABLE',
+          message: 'No dev server command was detected. Call forge_deps_install then forge_process_wait, or use forge_shell.',
+          retryable: true
+        };
+      }
+    }).screenshot({ target: { repository, ref: 'forge/chat-1' } })).rejects.toMatchObject({
+      code: 'FORGE_PREVIEW_UNAVAILABLE',
+      message: expect.stringContaining('forge.json'),
+      details: { allowedNextActions: ['forge_edit', 'forge_screenshot'] }
+    });
+  });
+
+  it('returns a repair action for an invalid repository preview config', async () => {
+    await expect(handlers({
+      screenshot: async () => {
+        throw {
+          code: 'FORGE_PREVIEW_UNAVAILABLE',
+          message: 'Forge config preview.port must be an integer from 1024 to 65535.',
+          retryable: false
+        };
+      }
+    }).screenshot({ target: { repository, ref: 'forge/chat-1' } })).rejects.toMatchObject({
+      code: 'FORGE_PREVIEW_UNAVAILABLE',
+      message: expect.stringContaining('correct the repo-root'),
+      details: { allowedNextActions: ['forge_edit', 'forge_screenshot'] }
+    });
+  });
+
   it('treats status as observational when no operation registry has a match', async () => {
     const result = await handlers().status('acme/web#forge/chat-1');
 

@@ -159,4 +159,114 @@ describe('workspace coordinator recovery paths', () => {
     expect(requestDestroy).toHaveBeenCalledWith(record, undefined, 'force-destroy-test');
     expect(save).toHaveBeenCalledWith(record);
   });
+
+  it('starts a configured nested preview in its configured cwd and port', async () => {
+    const record = {
+      workspace: { id: 'ws_preview', state: 'ready' },
+      detection: {
+        devCommand: 'pnpm dev --host 0.0.0.0',
+        devCwd: '/workspace/repo/apps/web',
+        expectedPorts: [4173],
+        previewConfig: { cwd: 'apps/web', command: 'pnpm dev --host 0.0.0.0', port: 4173 },
+        previewConfigError: null
+      },
+      processes: {},
+      previews: {}
+    } as unknown as WorkspaceRuntimeRecord;
+    const startProcess = vi.fn(async (_current: unknown, input: { command: string; cwd: string }) => ({
+      value: { id: 'proc_preview' },
+      operationId: 'op_preview',
+      replayed: false,
+      ...input
+    }));
+    const exposePreview = vi.fn(async () => ({ previewId: 'prv_preview', expiresAt: '2099-01-01T00:00:00.000Z' }));
+    const save = vi.fn(async () => undefined);
+    const coordinator = {
+      serializeMutation: async (action: () => Promise<unknown>) => action(),
+      getRecord: async () => record,
+      prepareExecution: vi.fn(async () => undefined),
+      app: { startProcess, exposePreview },
+      save
+    };
+
+    await expect(WorkspaceCoordinator.prototype.startReviewPreview.call(coordinator as never, {
+      hostname: 'preview.forge.test',
+      ttlSeconds: 600
+    })).resolves.toMatchObject({ ready: true, previewId: 'prv_preview', port: 4173 });
+    expect(startProcess).toHaveBeenCalledWith(record, expect.objectContaining({
+      command: 'pnpm dev --host 0.0.0.0',
+      cwd: '/workspace/repo/apps/web',
+      networkPolicy: 'development'
+    }));
+    expect(exposePreview).toHaveBeenCalledWith(record, expect.objectContaining({ processId: 'proc_preview', port: 4173 }));
+    expect(save).toHaveBeenCalledWith(record);
+  });
+
+  it('refuses an invalid repository preview config without starting a process', async () => {
+    const record = {
+      workspace: { id: 'ws_invalid_preview', state: 'ready' },
+      detection: {
+        devCommand: 'pnpm run dev',
+        devCwd: '/workspace/repo',
+        expectedPorts: [5173],
+        previewConfigError: 'Forge config preview.cwd must stay inside the repository.'
+      },
+      processes: {},
+      previews: {}
+    } as unknown as WorkspaceRuntimeRecord;
+    const startProcess = vi.fn();
+    const coordinator = {
+      serializeMutation: async (action: () => Promise<unknown>) => action(),
+      getRecord: async () => record,
+      prepareExecution: vi.fn(async () => undefined),
+      app: { startProcess },
+      save: vi.fn(async () => undefined)
+    };
+
+    await expect(WorkspaceCoordinator.prototype.startReviewPreview.call(coordinator as never, {
+      hostname: 'preview.forge.test',
+      ttlSeconds: 600
+    })).resolves.toEqual({ ready: false, reason: 'Forge config preview.cwd must stay inside the repository.' });
+    expect(startProcess).not.toHaveBeenCalled();
+  });
+
+  it('refreshes project detection after a durable preview config edit', async () => {
+    const record = {
+      workspace: { id: 'ws_refresh_preview', state: 'ready' },
+      detection: undefined,
+      processes: {},
+      previews: {}
+    } as unknown as WorkspaceRuntimeRecord;
+    const startProcess = vi.fn(async () => ({ value: { id: 'proc_refresh' }, operationId: 'op_refresh', replayed: false }));
+    const refreshDetection = vi.fn(async (current: WorkspaceRuntimeRecord) => {
+      current.detection = {
+        devCommand: 'node server.js',
+        devCwd: '/workspace/repo/apps/web',
+        expectedPorts: [8080],
+        previewConfigError: null
+      } as never;
+      return current.detection;
+    });
+    const coordinator = {
+      serializeMutation: async (action: () => Promise<unknown>) => action(),
+      getRecord: async () => record,
+      prepareExecution: vi.fn(async () => undefined),
+      app: {
+        startProcess,
+        exposePreview: vi.fn(async () => ({ previewId: 'prv_refresh', expiresAt: '2099-01-01T00:00:00.000Z' })),
+        refreshDetection
+      },
+      save: vi.fn(async () => undefined)
+    };
+
+    await expect(WorkspaceCoordinator.prototype.startReviewPreview.call(coordinator as never, {
+      hostname: 'preview.forge.test',
+      ttlSeconds: 600
+    })).resolves.toMatchObject({ ready: true, previewId: 'prv_refresh', port: 8080 });
+    expect(refreshDetection).toHaveBeenCalledWith(record);
+    expect(startProcess).toHaveBeenCalledWith(record, expect.objectContaining({
+      command: 'node server.js',
+      cwd: '/workspace/repo/apps/web'
+    }));
+  });
 });

@@ -51,6 +51,11 @@ Public URL capture requires no repository or executor. Branch capture starts or
 reuses a temporary preview internally. Partial evidence and limitations are
 reported honestly when not every capture fits in the request budget.
 
+For a monorepo or custom server, put a small `forge.json` in the repository
+root with `preview.cwd`, `preview.command`, and `preview.port`. Forge reads it
+from the GitHub branch before starting the ephemeral server; ChatGPT does not
+need to know a workspace, process, or preview id.
+
 ## Submit for review
 
 > Submit this Forge branch for my review.

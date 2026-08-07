@@ -380,6 +380,27 @@ describe('Forge application service', () => {
     expect(record.dependencyState).toBe(dependencyState);
   });
 
+  it('invalidates preview detection without reinstalling for a Forge config edit', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    const dependencyState = {
+      lockfileHash: 'same-lockfile',
+      installedAt: new Date().toISOString(),
+      usable: true
+    };
+    record.dependencyState = dependencyState;
+    record.detection = { packageManager: 'npm', framework: 'vite', installCommand: 'npm ci' } as never;
+
+    await service.syncRemoteCommit(record, '3'.repeat(40), 'main', false, {
+      url: 'https://github.invalid/example/project.git'
+    }, true);
+
+    expect(record.dependencyState).toBe(dependencyState);
+    expect(record.detection).toBeUndefined();
+  });
+
   it('rejects client operations until provisioning has completed', async () => {
     const service = new ForgeApplicationService(new FakeProvider());
     const record = initialized(service);
@@ -1000,6 +1021,44 @@ describe('Forge application service', () => {
       dependencyState: { status: 'ready', usable: true }
     });
     expect(result.processId).toMatch(/^proc_/);
+  });
+
+  it('installs a nested configured app beside its lockfile', async () => {
+    const provider = new FakeProvider();
+    const service = new ForgeApplicationService(provider);
+    const record = initialized(service);
+    ready(record);
+    record.detection = {
+      packageManager: 'npm',
+      installCommand: 'npm ci',
+      installFallbackCommand: 'npm install',
+      framework: 'vite',
+      scripts: { dev: 'vite' },
+      installCwd: '/workspace/repo/apps/web',
+      lockfilePath: 'package-lock.json'
+    } as never;
+    const startedInputs: Array<{ command: string; cwd: string }> = [];
+    const originalStart = provider.handle.startProcess!;
+    provider.handle.startProcess = async (input) => {
+      startedInputs.push({ command: input.command, cwd: input.cwd });
+      const started = await originalStart.call(provider.handle, input);
+      provider.processStates.set(input.processId, {
+        ...started,
+        status: 'exited',
+        completedAt: new Date().toISOString(),
+        exitCode: 0
+      });
+      return started;
+    };
+
+    await expect(service.dependenciesInstall(record, {
+      networkPolicy: 'package_install',
+      idempotencyKey: 'deps-nested-app-1',
+      expectedRevision: 1,
+      timeoutMs: 5_000,
+      hostSafeWaitMs: 5_000
+    })).resolves.toMatchObject({ success: true, packageManager: 'npm' });
+    expect(startedInputs[0]).toEqual({ command: 'npm ci', cwd: '/workspace/repo/apps/web' });
   });
 
   it('returns timedOut process waits with suggestedTimeoutMs instead of killing or throwing', async () => {

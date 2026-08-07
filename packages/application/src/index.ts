@@ -119,7 +119,14 @@ export interface WorkspaceRuntimeRecord {
   /** Last completed edit handoff, retained to make recordGitHubCommit idempotent. */
   lastRecordedGitHubEdit?: { token: string; commit: string; branch: string };
   /** GitHub commit awaiting propagation into an already-loaded executor. */
-  pendingRemoteCommit?: { commit: string; branch: string; recordedAt: string; invalidateDependencies: boolean };
+  pendingRemoteCommit?: {
+    commit: string;
+    branch: string;
+    recordedAt: string;
+    invalidateDependencies: boolean;
+    /** Preview/config changes need fresh detection but not a dependency reinstall. */
+    invalidateDetection?: boolean;
+  };
   /** Set when the live checkout differs from the GitHub-backed workspace record. */
   lastGitDivergence?: {
     recordedCommit?: string;
@@ -409,9 +416,10 @@ export class ForgeApplicationService {
     commit: string,
     branch: string,
     invalidateDependencies: boolean,
-    cloneSource?: RepositoryCloneSource
+    cloneSource?: RepositoryCloneSource,
+    invalidateDetection = invalidateDependencies
   ): Promise<void> {
-    return this.materialization.syncRemoteCommit(record, commit, branch, invalidateDependencies, cloneSource);
+    return this.materialization.syncRemoteCommit(record, commit, branch, invalidateDependencies, cloneSource, invalidateDetection);
   }
 
   async provisionWorkspace(
@@ -878,17 +886,18 @@ export class ForgeApplicationService {
     }
 
     // Determine the lockfile hash before install.
-    const lockfile = detection.packageManager === 'pnpm' ? 'pnpm-lock.yaml' :
+    const installCwd = detection.installCwd ?? '/workspace/repo';
+    const lockfile = detection.lockfilePath ?? (detection.packageManager === 'pnpm' ? 'pnpm-lock.yaml' :
       detection.packageManager === 'npm' ? 'package-lock.json' :
       detection.packageManager === 'yarn' ? 'yarn.lock' :
       detection.packageManager === 'bun' ? 'bun.lock' :
       detection.packageManager === 'uv' ? 'uv.lock' :
-      detection.packageManager === 'pip' ? 'requirements.txt' : null;
+      detection.packageManager === 'pip' ? 'requirements.txt' : null);
 
     const lockfileHashBefore = lockfile
       ? await handle.exec({
           command: `sha256sum ${lockfile} 2>/dev/null | cut -d' ' -f1 || echo "none"`,
-          cwd: '/workspace/repo',
+          cwd: installCwd,
           timeoutMs: 10_000,
           outputLimitBytes: 1_000,
           sessionId: 'agent-default',
@@ -914,7 +923,7 @@ export class ForgeApplicationService {
       : input.networkPolicy as Exclude<NetworkPolicyMode, 'unrestricted_with_approval'>;
     const started = await this.startProcess(record, {
       command: installCommand,
-      cwd: '/workspace/repo',
+      cwd: installCwd,
       environment: nonInteractiveShellEnv(),
       networkPolicy,
       idempotencyKey: input.idempotencyKey,
@@ -954,7 +963,7 @@ export class ForgeApplicationService {
       ?? (lockfile
         ? await handle.exec({
             command: `sha256sum ${lockfile} 2>/dev/null | cut -d' ' -f1 || echo "none"`,
-            cwd: '/workspace/repo',
+            cwd: installCwd,
             timeoutMs: 10_000,
             outputLimitBytes: 1_000,
             sessionId: 'agent-default',
@@ -1008,6 +1017,15 @@ export class ForgeApplicationService {
         : 'Dependency install failed. Inspect logs with forge_process_logs, then retry with a new idempotency key only if needed.'
     };
   }
+
+  /** Re-read repository-owned launch settings after a durable config edit. */
+  async refreshDetection(record: WorkspaceRuntimeRecord): Promise<ProjectDetection> {
+    const handle = await this.handle(record, { allowRecreate: false });
+    const detection = await (await import('@forge/project-detection')).detectProject(handle);
+    record.detection = detection;
+    return detection;
+  }
+
   async exposePreview(
     record: WorkspaceRuntimeRecord,
     input: {

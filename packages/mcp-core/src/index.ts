@@ -143,7 +143,7 @@ export const forgeTools = [
   {
     name: 'forge_screenshot',
     title: 'Screenshot',
-    description: 'Capture a public URL or owner/repo#ref at responsive breakpoints. Repository captures start and expose the preview internally; screenshots are returned inline when available.',
+    description: 'Capture a public URL or owner/repo#ref at responsive breakpoints. Repository captures start and expose the preview internally; Forge infers a root dev script or reads repo-root forge.json/forge.config.json; screenshots are returned inline when available.',
     inputSchema: {
       target: z.string().min(1).max(1000).describe('Public URL or authorized repository reference: owner/repo or owner/repo#ref.'),
       paths: z.array(z.string().startsWith('/')).min(1).max(10).default(['/']),

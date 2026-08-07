@@ -328,7 +328,7 @@
     },
     "forge_screenshot": {
       "title": "Screenshot",
-      "description": "Capture a public URL or owner/repo#ref at responsive breakpoints. Repository captures start and expose the preview internally; screenshots are returned inline when available.",
+      "description": "Capture a public URL or owner/repo#ref at responsive breakpoints. Repository captures start and expose the preview internally; Forge infers a root dev script or reads repo-root forge.json/forge.config.json; screenshots are returned inline when available.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {

@@ -899,14 +899,18 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
               break;
             }
             lastReason = started.reason ?? 'the dev server did not become ready';
-            // No dev server to run is terminal — waiting cannot conjure one.
-            if (lastReason.includes('no dev server command') || Date.now() >= deadline) {
+            const lowerReason = lastReason.toLowerCase();
+            const terminalConfiguration = lowerReason.includes('no dev server command') || lowerReason.includes('forge config');
+            // No dev server or valid config to run is terminal — waiting cannot fix either.
+            if (terminalConfiguration || Date.now() >= deadline) {
               throw new ForgeError({
                 code: 'FORGE_PREVIEW_UNAVAILABLE',
-                message: lastReason.includes('no dev server command')
+                message: lowerReason.includes('no dev server command')
                   ? 'No dev server command was detected for this project, so there is nothing to screenshot. If dependencies are missing call forge_deps_install and forge_process_wait first; otherwise start the server with forge_shell async:true, then call forge_preview again (omit preview_id). Do not open a second workspace.'
+                  : terminalConfiguration
+                    ? `The repository preview configuration is invalid: ${lastReason}`
                   : `The preview was not ready inside this call's host-safe startup budget (${lastReason}). If node_modules is missing call forge_deps_install then forge_process_wait; otherwise check forge_process_logs and retry forge_preview without restarting an already-running server or opening a second workspace.`,
-                retryable: true
+                retryable: !terminalConfiguration
               });
             }
             await new Promise((resolve) => setTimeout(resolve, 2000));

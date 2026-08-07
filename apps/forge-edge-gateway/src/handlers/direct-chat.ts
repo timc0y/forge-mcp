@@ -12,7 +12,7 @@
  * those private operations while they are progressively moved behind this
  * boundary.
  */
-import { ForgeError, type TenantId } from '@forge/core';
+import { ForgeError, toForgeError, type TenantId } from '@forge/core';
 import { commitFilesToBranch, RemoteCommitConflict } from '@forge/git-github';
 import { type ForgeToolHandlers, type ForgeToolResponse } from '@forge/mcp-core';
 import type { Env } from '../env';
@@ -127,6 +127,39 @@ function withoutControlPlaneIds(value: Record<string, unknown>): Record<string, 
 
 function isForgeToolResponse(value: Record<string, unknown> | ForgeToolResponse): value is ForgeToolResponse {
   return (value as ForgeToolResponse).kind === 'forge_tool_response';
+}
+
+/** Keep private executor choreography out of ordinary-chat error receipts. */
+function publicPreviewError(error: unknown): unknown {
+  const forgeError = error instanceof ForgeError
+    ? error
+    : typeof error === 'object' && error !== null
+      ? toForgeError(error)
+      : undefined;
+  if (!forgeError || forgeError.code !== 'FORGE_PREVIEW_UNAVAILABLE') return error;
+  const message = forgeError.message.toLowerCase();
+  if (message.includes('no dev server command') || message.includes('no preview')) {
+    return new ForgeError({
+      code: forgeError.code,
+      message: 'No branch preview command was detected. Add a root package.json dev script, or use forge_edit to commit a repo-root forge.json or forge.config.json with preview.command and optional preview.cwd/preview.port, then retry forge_screenshot.',
+      retryable: false,
+      details: { allowedNextActions: ['forge_edit', 'forge_screenshot'] }
+    });
+  }
+  if (message.includes('forge config')) {
+    return new ForgeError({
+      code: forgeError.code,
+      message: 'Forge rejected the repository preview configuration. Use forge_edit to correct the repo-root forge.json or forge.config.json; preview.cwd must stay inside the repository, preview.port must be 1024–65535, and preview.command must be a bounded string.',
+      retryable: false,
+      details: { allowedNextActions: ['forge_edit', 'forge_screenshot'] }
+    });
+  }
+  return new ForgeError({
+    code: forgeError.code,
+    message: 'Forge could not start the branch preview inside this request. Retry forge_screenshot; Forge will reuse the existing preview when possible.',
+    retryable: true,
+    details: { allowedNextActions: ['forge_screenshot'] }
+  });
 }
 
 function repositoryOf(input: DirectRepository): { provider: 'github'; owner: string; name: string } {
@@ -436,7 +469,12 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
             repository: input.target.repository,
             ref: input.target.ref?.trim() || (await readTree(input.target.repository)).selectedRef
           };
-      const raw = await deps.privateOperations.screenshot({ identity: identity(), target, captures: (input.captures ?? [{ path: '/', state: 'entry' }]).map((capture) => ({ path: capture.path, state: capture.state ?? 'entry', ...(capture.selection ? { selection: capture.selection } : {}) })), ...(input.steps ? { steps: input.steps } : {}), viewports: input.viewports ?? ['phone', 'desktop'], fullPage: input.fullPage === true });
+      let raw: Record<string, unknown> | ForgeToolResponse;
+      try {
+        raw = await deps.privateOperations.screenshot({ identity: identity(), target, captures: (input.captures ?? [{ path: '/', state: 'entry' }]).map((capture) => ({ path: capture.path, state: capture.state ?? 'entry', ...(capture.selection ? { selection: capture.selection } : {}) })), ...(input.steps ? { steps: input.steps } : {}), viewports: input.viewports ?? ['phone', 'desktop'], fullPage: input.fullPage === true });
+      } catch (error) {
+        throw publicPreviewError(error);
+      }
       const value: Record<string, unknown> = isForgeToolResponse(raw) ? raw.value : raw;
       const result = receipt(value.complete === false ? 'running' : 'completed', value.complete === false ? 'Returned the screenshots captured before the deadline.' : 'Captured responsive screenshot evidence.', value.complete === false ? { kind: 'human', message: 'Open the gallery/status URL for remaining captures.' } : 'none', withoutControlPlaneIds(value));
       return isForgeToolResponse(raw)

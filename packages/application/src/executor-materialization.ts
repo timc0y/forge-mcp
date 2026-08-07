@@ -218,7 +218,8 @@ export class ExecutorMaterialization {
     commit: string,
     branch: string,
     invalidateDependencies: boolean,
-    cloneSource?: RepositoryCloneSource
+    cloneSource?: RepositoryCloneSource,
+    invalidateDetection = invalidateDependencies
   ): Promise<void> {
     const handle = await this.provider.get(record.providerId);
     const source = cloneSource ?? this.defaultCloneSource(record);
@@ -273,10 +274,8 @@ export class ExecutorMaterialization {
     record.executorCommit = commit;
     record.workspace.checkout = { healthy: true, checkedAt: syncedAt };
     record.workspace.updatedAt = syncedAt;
-    if (invalidateDependencies) {
-      record.dependencyState = undefined;
-      record.detection = undefined;
-    }
+    if (invalidateDependencies) record.dependencyState = undefined;
+    if (invalidateDetection) record.detection = undefined;
     record.lastGitDivergence = undefined;
   }
 
@@ -367,7 +366,7 @@ export class ExecutorMaterialization {
       if (bootstrap && detection.installCommand) {
         const runInstall = (command: string) => handle.exec({
           command,
-          cwd: '/workspace/repo',
+          cwd: detection.installCwd ?? '/workspace/repo',
           timeoutMs: 600_000,
           outputLimitBytes: 500_000,
           sessionId: 'system',

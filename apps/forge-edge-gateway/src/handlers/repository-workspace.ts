@@ -773,11 +773,14 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         if (result.commitSha) {
           await recordTaskRemoteSha(env, workspaceId as WorkspaceId, result.commitSha);
         }
+        const dependencyInputsChanged = result.paths.some((path) => /(^|\/)(package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|pyproject\.toml|uv\.lock|requirements\.txt)$/u.test(path));
+        const previewConfigChanged = result.paths.some((path) => /(^|\/)forge(?:\.config)?\.json$/u.test(path));
         const recordInput = {
           token: editGate.token,
           commit: result.remoteSha,
           branch,
-          invalidateDependencies: result.paths.some((path) => /(^|\/)(package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|pyproject\.toml|uv\.lock|requirements\.txt)$/u.test(path))
+          invalidateDependencies: dependencyInputsChanged,
+          invalidateDetection: dependencyInputsChanged || previewConfigChanged
         };
         let executorSync: { executorSynced: boolean; recorded: boolean } = {
           executorSynced: false,

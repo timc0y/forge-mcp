@@ -988,7 +988,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
       pending.commit,
       pending.branch,
       pending.invalidateDependencies,
-      cloneSource
+      cloneSource,
+      pending.invalidateDetection ?? pending.invalidateDependencies
     );
     record.pendingRemoteCommit = undefined;
     return true;
@@ -1045,7 +1046,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
     });
   }
 
-  async recordGitHubCommit(input: { token: string; commit: string; branch: string; invalidateDependencies?: boolean }): Promise<{ executorSynced: boolean; revision: number; replayed: boolean }> {
+  async recordGitHubCommit(input: { token: string; commit: string; branch: string; invalidateDependencies?: boolean; invalidateDetection?: boolean }): Promise<{ executorSynced: boolean; revision: number; replayed: boolean }> {
     return this.serializeMutation(async () => {
       const record = await this.getRecord();
       const previous = record.lastRecordedGitHubEdit;
@@ -1110,7 +1111,8 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         commit: input.commit,
         branch: input.branch,
         recordedAt: new Date().toISOString(),
-        invalidateDependencies: input.invalidateDependencies === true
+        invalidateDependencies: input.invalidateDependencies === true,
+        invalidateDetection: input.invalidateDetection === true || input.invalidateDependencies === true
       };
       record.workspace.checkout = {
         healthy: false,
@@ -1200,11 +1202,18 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         if (record.workspace.state !== 'ready') {
           return { ready: false as const, reason: `workspace is ${record.workspace.state}` };
         }
+        if (!record.detection) {
+          await this.app.refreshDetection(record);
+        }
+        if (record.detection?.previewConfigError) {
+          return { ready: false as const, reason: record.detection.previewConfigError };
+        }
         const devCommand = record.detection?.devCommand;
         if (!devCommand) {
           return { ready: false as const, reason: 'no dev server command was detected for this project' };
         }
         const port = record.detection?.expectedPorts?.[0] ?? 3000;
+        const cwd = record.detection?.devCwd ?? '/workspace/repo';
 
         const live = Object.entries(record.previews).find(
           ([, preview]) => preview.port === port && Date.parse(preview.expiresAt) > Date.now()
@@ -1220,7 +1229,7 @@ export class WorkspaceCoordinator extends DurableObject<Env> {
         if (!processId) {
           const started = await this.app.startProcess(record, {
             command: devCommand,
-            cwd: '/workspace/repo',
+            cwd,
             environment: {},
             networkPolicy: 'development',
             idempotencyKey: `review-preview-process-${record.workspace.id}`
