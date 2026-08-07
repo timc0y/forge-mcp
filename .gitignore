@@ -16,4 +16,5 @@ apps/forge-edge-gateway/src/worker-configuration.d.ts
 # Claude Code local state and agent worktrees
 .claude/
 .pnpm-store/
+.firecrawl/
 infra/wrangler/migrations/
