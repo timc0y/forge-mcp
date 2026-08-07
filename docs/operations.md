@@ -25,6 +25,27 @@ Every Worker HTTP request emits paired structured `forge_request` and
 query-key names, status, duration, content types, and bounded JSON summaries.
 The response also carries `x-forge-request-id` for support correlation.
 
+The Sandbox image uses BuildKit cache mounts for OS packages, and executor
+package-manager caches live under `/workspace/cache`. This makes rebuilds and
+repeat installs faster without persisting checkout files or dependency state as
+the repository authority. Use `pnpm run deploy:worker` for Worker-only changes;
+run the full `pnpm run deploy` only when `Dockerfile` or container configuration
+changes.
+
+When the local machine has no Docker daemon, use the private Unix-socket tunnel
+to a trusted Colima host instead of exposing Docker over TCP:
+
+```bash
+export FORGE_REMOTE_DOCKER_SSH_TARGET=timcoy@tims-mac-mini.local
+export FORGE_REMOTE_DOCKER_SSH_KEY="$HOME/.ssh/easyroads_macmini"
+export FORGE_REMOTE_DOCKER_SOCKET=/Users/timcoy/.colima/default/docker.sock
+pnpm run deploy:remote-docker
+```
+
+The wrapper creates a temporary Docker client config without inheriting a local
+credential helper, forwards only the remote Unix socket, and cleans up the
+tunnel when deployment exits.
+
 MCP tool calls additionally write their already-redacted request and response
 payloads to D1 `mcp_tool_calls`, including the same request ID. Use the request
 ID to join Worker logs to the per-tool payload trail; use `forge_observer_activity`

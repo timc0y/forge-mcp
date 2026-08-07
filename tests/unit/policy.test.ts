@@ -303,6 +303,14 @@ describe('Forge policy', () => {
       CI: '0',
       COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
       GIT_TERMINAL_PROMPT: '0',
+      npm_config_cache: '/workspace/cache/npm',
+      pnpm_config_store_dir: '/workspace/cache/pnpm-store',
+      PNPM_HOME: '/workspace/cache/pnpm',
+      YARN_CACHE_FOLDER: '/workspace/cache/yarn',
+      PIP_CACHE_DIR: '/workspace/cache/pip',
+      NPM_CONFIG_UPDATE_NOTIFIER: 'false',
+      NPM_CONFIG_FUND: 'false',
+      NPM_CONFIG_AUDIT: 'false',
       EXTRA: 'yes'
     });
   });

@@ -25,6 +25,7 @@
     "predeploy": "pnpm db:migrate:prod",
     "deploy": "pnpm --filter @forge/edge-gateway run deploy",
     "deploy:worker": "pnpm db:migrate:prod && pnpm --filter @forge/edge-gateway exec wrangler deploy --config ../../infra/wrangler/forge.jsonc --env=\"\" --containers-rollout=none",
+    "deploy:remote-docker": "sh scripts/deploy-with-remote-docker.sh",
     "wrangler": "pnpm --filter @forge/edge-gateway exec wrangler",
     "cf:typegen": "pnpm --filter @forge/edge-gateway cf:typegen",
     "boundaries:check": "tsx scripts/check-boundaries.ts",
