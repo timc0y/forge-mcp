@@ -1,6 +1,6 @@
 # Tool reference
 
-Forge exposes 10 MCP tools for direct chat from
+Forge exposes 11 MCP tools for direct chat from
 [`packages/mcp-core/src/index.ts`](../packages/mcp-core/src/index.ts).
 
 | Tool | Use it for |
@@ -14,7 +14,8 @@ Forge exposes 10 MCP tools for direct chat from
 | `forge_environments` | List saved deploy targets and variable names without revealing values. |
 | `forge_deploy` | Deploy through a saved environment and return verified deployment evidence. |
 | `forge_submit` | Queue the current branch for human review and return its approval URL. |
-| `forge_status` | Recover long-running command, screenshot, deploy, or submission status. |
+| `forge_merge` | Queue an existing pull request for human approval; Forge makes a draft ready, merges it, and verifies the GitHub receipt without another chat call. |
+| `forge_status` | Recover long-running command, screenshot, deploy, submission, or merge status. Use `owner/repo#pr/<number>` for a durable pull-request address. |
 
 ### Branch preview configuration
 

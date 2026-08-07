@@ -225,6 +225,8 @@ export function witnessIdFromReceipt(tool: string, result: unknown): string | un
     return typeof id === 'string' ? id : undefined;
   }
   if (tool === 'forge_merge') {
+    if (typeof s.merge_sha === 'string' && s.merge_sha) return s.merge_sha;
+    if (typeof s.head_sha === 'string' && typeof s.approval_url === 'string') return s.head_sha;
     const receipt = s.submission_receipt;
     if (receipt && typeof receipt === 'object') {
       const remote = (receipt as { remote_sha?: string; approval_id?: string }).remote_sha
@@ -377,7 +379,12 @@ export function detectDurableWitness(tool: string, result: unknown): boolean {
     if (structured.commit_url || structured.remote_sha) return true;
     if (structured.on_remote === true) return true;
   }
-  if (tool === 'forge_merge' && (structured.submitted === true || structured.submission_receipt)) return true;
+  if (tool === 'forge_merge' && (
+    structured.submitted === true ||
+    structured.submission_receipt ||
+    (typeof structured.approval_url === 'string' && structured.pull_request != null) ||
+    (structured.merged === true && typeof structured.merge_sha === 'string' && structured.merge_sha.length > 0)
+  )) return true;
   if (tool === 'forge_task_create' && typeof structured.task_id === 'string') return true;
   if (tool === 'forge_task_update' && structured.revision != null) return true;
   if (tool === 'forge_deps_install') {

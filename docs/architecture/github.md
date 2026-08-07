@@ -23,3 +23,10 @@
 | `forge_shell` | Refuses raw `git push` (bypasses expected-tip, idempotency, auth, read-back checks). |
 | `forge_merge` | Opens human review path from remote feature branch. |
 | `forge_pr` | Rechecks live head, statuses, reviews, mergeability; requires human approval bound to exact merge/close intent. |
+
+The direct-chat `forge_merge` capability is a separate public facade over an
+existing pull request. It stores the approved head SHA and merge method in a
+deferred action, then the approval portal rereads checks and branch protection,
+makes a draft ready if needed, merges through GitHub, and reads the pull request
+back before reporting success. It never exposes workspace, task, process, or
+approval IDs to ChatGPT.

@@ -162,6 +162,8 @@ const ALLOWLIST_A: ReadonlyArray<{ tool: string; field: string; note: string }> 
   { tool: 'forge_history', field: 'sha', note: 'Each commit’s sha in a read-only listing; no tool accepts a commit sha as input — nothing here to check out or diff by sha.' },
   { tool: 'forge_branches', field: 'sha', note: 'Each branch’s head sha in a read-only listing; same reasoning as forge_history.sha.' },
   { tool: 'forge_merge', field: 'remote_sha', note: 'The commit sha now on the remote branch — a receipt like commit_sha/merge_sha; no input takes it back.' },
+  { tool: 'forge_merge', field: 'merge_sha', note: 'Verified GitHub merge commit returned as durable evidence; a completed merge has no follow-up action that consumes it.' },
+  { tool: 'forge_merge', field: 'head_sha', note: 'The exact PR head pinned by the deferred merge receipt; it is evidence for the reviewer, while expected_head_sha is the optional input guard.' },
   { tool: 'forge_merge', field: 'staged_ref', note: 'The ref the merge was staged from, informational context on the submission receipt; not a follow-up parameter.' },
   { tool: 'forge_deploy', field: 'account_id', note: 'The Cloudflare account the deploy used, informational context on the receipt; no input takes an account id back.' },
   { tool: 'forge_deploy', field: 'output_artifact_id', note: 'Consumable as the `artifact_id` input to forge_artifact_get, qualified with "output" to say what kind of artifact it is — the same live workflow forge_deps_install’s spilled stdout/stderr artifacts already use.' },

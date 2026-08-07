@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ForgeError } from '@forge/core';
 import {
   createDeferredAction,
+  createDeferredPullRequestMergeAction,
   denyDeferredAction,
   executeDeferredAction,
   getDeferredActionByApproval,
+  getDeferredActionByIdempotencyKey,
   getLatestDeferredActionForBranch,
+  getLatestDeferredActionForPullRequest,
   listPendingDeferredActions,
   rebindDeferredApproval,
   recoverStaleExecutingDeferred,
@@ -46,6 +50,14 @@ function fakeD1(rows: Row[]) {
             return (rows.find((row) => row.tenant_id === values[0] && row.project_id === values[1] &&
               row.repo_owner === values[2] && row.repo_name === values[3] && row.branch === values[4]) as T) ?? null;
           }
+          if (sql.includes("action='pull_request.merge'") && sql.includes('pull_request_number=?5')) {
+            return (rows.find((row) => row.tenant_id === values[0] && row.project_id === values[1] &&
+              row.repo_owner === values[2] && row.repo_name === values[3] && row.pull_request_number === values[4]) as T) ?? null;
+          }
+          if (sql.includes("action='pull_request.merge'") && sql.includes('idempotency_key=?5')) {
+            return (rows.find((row) => row.tenant_id === values[0] && row.project_id === values[1] &&
+              row.repo_owner === values[2] && row.repo_name === values[3] && row.idempotency_key === values[4]) as T) ?? null;
+          }
           throw new Error(`unexpected first(): ${sql}`);
         },
         async all<T>(): Promise<{ results: T[] }> {
@@ -66,11 +78,13 @@ function fakeD1(rows: Row[]) {
           if (sql.startsWith('INSERT INTO deferred_actions')) {
             const [id, tenant_id, project_id, workspace_id, approval_id, task_id, action,
               repo_owner, repo_name, branch, base, staged_ref, commit_sha, title, body,
-              summary, files_changed, now, github_repository_id] = values;
+              summary, files_changed, github_repository_id, pull_request_number, merge_method,
+              idempotency_key, now] = values;
             rows.push({
               id, tenant_id, project_id, workspace_id, approval_id, task_id, action,
               repo_owner, repo_name, branch, base, staged_ref, commit_sha, title, body,
-              summary, files_changed, github_repository_id,
+              summary, files_changed, github_repository_id, pull_request_number, merge_method,
+              idempotency_key, retryable: 1,
               state: 'awaiting_approval', result: null, error: null,
               created_at: now, updated_at: now
             });
@@ -79,18 +93,19 @@ function fakeD1(rows: Row[]) {
           // The optimistic claim: only transitions a row that is still unclaimed.
           if (sql.includes("SET state='executing'")) {
             const row = rows.find((candidate) => candidate.id === values[1]);
-            if (!row || !['awaiting_approval', 'failed'].includes(String(row.state))) {
+            if (!row || !['awaiting_approval', 'failed'].includes(String(row.state)) || (row.state === 'failed' && row.retryable === 0)) {
               return { meta: { changes: 0 } };
             }
             row.state = 'executing';
             return { meta: { changes: 1 } };
           }
           if (sql.includes('SET state=?1, result=?2, error=?3')) {
-            const row = rows.find((candidate) => candidate.id === values[4]);
+            const row = rows.find((candidate) => candidate.id === values[5]);
             if (!row) return { meta: { changes: 0 } };
             row.state = values[0];
             row.result = values[1];
             row.error = values[2];
+            row.retryable = values[3];
             return { meta: { changes: 1 } };
           }
           if (sql.includes('SET approval_id=?1')) {
@@ -139,6 +154,7 @@ function executors(overrides: Partial<DeferredExecutors> = {}): DeferredExecutor
   return {
     promoteStagedRef: vi.fn(async () => undefined),
     createDraftPullRequest: vi.fn(async () => ({ number: 7, url: 'https://github.com/acme/app/pull/7', state: 'open' })),
+    mergePullRequest: vi.fn(async () => ({ number: 7, url: 'https://github.com/acme/app/pull/7', mergeSha: 'b'.repeat(40) })),
     ...overrides
   };
 }
@@ -149,6 +165,7 @@ describe('deferred actions (async approval)', () => {
     const env = envWith(rows);
     const action = await createDeferredAction(env, submission);
     expect(action.state).toBe('awaiting_approval');
+    expect(action.retryable).toBe(true);
     expect(action.result).toBeNull();
     // Nothing has been promoted or opened: the human has not decided yet.
     const stored = await getDeferredActionByApproval(env, 'ten_a', 'apr_a');
@@ -201,6 +218,49 @@ describe('deferred actions (async approval)', () => {
     );
   });
 
+  it('parks and executes a pull-request merge without a workspace executor', async () => {
+    const rows: Row[] = [];
+    const env = envWith(rows);
+    const action = await createDeferredPullRequestMergeAction(env, {
+      tenantId: 'ten_a',
+      projectId: 'prj_a',
+      repository: { provider: 'github', owner: 'acme', name: 'app' },
+      githubRepositoryId: '4242',
+      approvalId: 'apr_merge',
+      pullRequestNumber: 7,
+      headRef: 'feature/login',
+      baseRef: 'main',
+      headSha: 'c'.repeat(40),
+      title: 'Fix login',
+      body: 'Ready to merge',
+      mergeMethod: 'squash'
+    });
+    expect(action).toMatchObject({
+      action: 'pull_request.merge',
+      workspaceId: 'repository:acme/app',
+      pullRequestNumber: 7,
+      mergeMethod: 'squash',
+      commitSha: 'c'.repeat(40)
+    });
+    expect(action.idempotencyKey).toBeNull();
+
+    const deps = executors();
+    const result = await executeDeferredAction(env, action, deps);
+
+    expect(result).toMatchObject({
+      state: 'completed',
+      result: { pr_number: 7, pr_url: 'https://github.com/acme/app/pull/7', merge_sha: 'b'.repeat(40) }
+    });
+    expect(deps.mergePullRequest).toHaveBeenCalledWith(
+      env,
+      { tenantId: 'ten_a', projectId: 'prj_a' },
+      { provider: 'github', owner: 'acme', name: 'app' },
+      { number: 7, expectedHeadSha: 'c'.repeat(40), mergeMethod: 'squash' }
+    );
+    expect(deps.promoteStagedRef).not.toHaveBeenCalled();
+    expect(deps.createDraftPullRequest).not.toHaveBeenCalled();
+  });
+
   it('does not open two pull requests when approval is submitted twice', async () => {
     const rows: Row[] = [];
     const env = envWith(rows);
@@ -215,6 +275,28 @@ describe('deferred actions (async approval)', () => {
     for (const outcome of [first, second]) {
       expect(['completed', 'executing']).toContain(outcome.state);
     }
+  });
+
+  it('recovers a merge by PR number and idempotency key', async () => {
+    const rows: Row[] = [];
+    const env = envWith(rows);
+    const action = await createDeferredPullRequestMergeAction(env, {
+      tenantId: 'ten_a',
+      projectId: 'prj_a',
+      repository: { provider: 'github', owner: 'acme', name: 'app' },
+      approvalId: 'apr_merge_address',
+      pullRequestNumber: 42,
+      headRef: 'feature/from-a-fork',
+      baseRef: 'main',
+      headSha: 'd'.repeat(40),
+      title: 'Fork change',
+      body: 'Body',
+      mergeMethod: 'merge',
+      idempotencyKey: 'merge-key-42'
+    });
+    expect(action.idempotencyKey).toBe('merge-key-42');
+    expect((await getLatestDeferredActionForPullRequest(env, 'ten_a', 'prj_a', { owner: 'acme', name: 'app' }, 42))?.id).toBe(action.id);
+    expect((await getDeferredActionByIdempotencyKey(env, 'ten_a', 'prj_a', { owner: 'acme', name: 'app' }, 'merge-key-42'))?.id).toBe(action.id);
   });
 
   it('records why a submission failed and keeps the staged commits', async () => {
@@ -236,6 +318,36 @@ describe('deferred actions (async approval)', () => {
     expect(stored?.stagedRef).toBe(submission.stagedRef);
     const retry = await executeDeferredAction(env, stored!, executors());
     expect(retry.state).toBe('completed');
+  });
+
+  it('parks a non-retryable merge failure and refuses a stale approval retry', async () => {
+    const rows: Row[] = [];
+    const env = envWith(rows);
+    const action = await createDeferredPullRequestMergeAction(env, {
+      tenantId: 'ten_a',
+      projectId: 'prj_a',
+      repository: { provider: 'github', owner: 'acme', name: 'app' },
+      approvalId: 'apr_merge_stale',
+      pullRequestNumber: 7,
+      headRef: 'feature/login',
+      baseRef: 'main',
+      headSha: 'e'.repeat(40),
+      title: 'Stale',
+      body: 'Body',
+      mergeMethod: 'merge'
+    });
+    const merge = vi.fn(async () => {
+      throw new ForgeError({
+        code: 'FORGE_STALE_REVISION',
+        message: 'The pull-request head moved; request a fresh forge_merge.',
+        retryable: false
+      });
+    });
+    const failed = await executeDeferredAction(env, action, executors({ mergePullRequest: merge }));
+    expect(failed).toMatchObject({ state: 'failed', retryable: false });
+    const retry = await executeDeferredAction(env, failed, executors({ mergePullRequest: merge }));
+    expect(retry).toMatchObject({ state: 'failed', retryable: false });
+    expect(merge).toHaveBeenCalledTimes(1);
   });
 
   it('follows a GitHub rename that happened while it sat in the queue', async () => {

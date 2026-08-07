@@ -32,6 +32,8 @@ const deferred = {
   repo_owner: 'octocat', repo_name: 'site', branch: 'forge/fix', base: 'main',
   staged_ref: 'forge/staged/ws_1/fix', commit_sha: 'a'.repeat(40),
   title: 'Fix homepage typo', body: 'Body', summary: '1 file changed', files_changed: 1,
+  pull_request_number: null, merge_method: null,
+  idempotency_key: null, retryable: 1,
   state: 'awaiting_approval', result: null, error: null,
   created_at: new Date(Date.now() - 45 * 60_000).toISOString(), updated_at: new Date().toISOString(),
   preview_workspace_id: null, preview_state: 'none', preview_id: null,
@@ -149,6 +151,51 @@ describe('reviewer-facing pages', () => {
     expect(html).toMatch(/form\.decide\{[^}]*position:sticky[^}]*background:var\(--bg\)/);
   });
 
+  it('renders pull-request merge approval as self-executing and without preview controls', async () => {
+    const mergeEnv = env();
+    const originalPrepare = mergeEnv.METADATA.prepare.bind(mergeEnv.METADATA);
+    mergeEnv.METADATA.prepare = (sql: string) => {
+      if (sql.includes('FROM approvals')) {
+        const statement: Record<string, unknown> = {
+          bind: () => statement,
+          first: async () => ({
+            requested_action: 'pull_request.merge',
+            reason: 'Merge pull request #7',
+            request_payload: JSON.stringify({ action: 'merge', owner: 'octocat', repo: 'site', number: 7, headSha: 'a'.repeat(40), mergeMethod: 'squash' }),
+            state: 'pending',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            workspace_id: 'repository:octocat/site'
+          })
+        };
+        return statement;
+      }
+      if (sql.includes('FROM deferred_actions')) {
+        const statement: Record<string, unknown> = {
+          bind: () => statement,
+          first: async () => ({
+            ...deferred,
+            action: 'pull_request.merge',
+            workspace_id: 'repository:octocat/site',
+            branch: 'feature/login',
+            base: 'main',
+            title: 'Fix login',
+            pull_request_number: 7,
+            merge_method: 'squash'
+          })
+        };
+        return statement;
+      }
+      return originalPrepare(sql);
+    };
+
+    const response = await approvalPage(request(APPROVAL_URL), mergeEnv, 'apr_aaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const html = await response.text();
+    expect(html).toContain('Merge pull request #7');
+    expect(html).toContain('Approve &amp; merge pull request');
+    expect(html).not.toContain('Launch preview');
+    expect(html).toContain('without another chat call');
+  });
+
   it('shows the outcome instead of the buttons once decided', async () => {
     const response = await approvalPage(request(APPROVAL_URL), env('approved'), 'apr_aaaaaaaaaaaaaaaaaaaaaaaaaa');
     const html = await response.text();
@@ -242,6 +289,49 @@ describe('reviewer-facing pages', () => {
     expect(html).toContain('approving again retries');
   });
 
+  it('does not offer a retry button for a non-retryable merge failure', async () => {
+    const failedMerge = {
+      ...deferred,
+      action: 'pull_request.merge',
+      workspace_id: 'repository:octocat/site',
+      branch: 'feature/login',
+      pull_request_number: 7,
+      merge_method: 'squash',
+      state: 'failed',
+      retryable: 0,
+      error: 'The pull-request head moved; request a fresh forge_merge.'
+    };
+    const failedEnv = env('approved');
+    failedEnv.METADATA.prepare = (sql: string) => {
+      const statement: Record<string, unknown> = {
+        bind: () => statement,
+        first: async () => {
+          if (sql.includes('FROM web_sessions')) return user;
+          if (sql.includes('FROM approvals')) {
+            return {
+              requested_action: 'pull_request.merge',
+              reason: 'Merge pull request #7',
+              request_payload: JSON.stringify({ action: 'merge', number: 7, mergeMethod: 'squash' }),
+              state: 'approved',
+              expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+              workspace_id: 'repository:octocat/site'
+            };
+          }
+          if (sql.includes('FROM deferred_actions')) return failedMerge;
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ meta: { changes: 1 } })
+      };
+      return statement as never;
+    };
+    const response = await approvalPage(request(APPROVAL_URL), failedEnv, 'apr_aaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const html = await response.text();
+    expect(html).toContain('request a fresh forge_merge');
+    expect(html).not.toContain('Retry merge');
+    expect(html).not.toContain('value="approved"');
+  });
+
   it('shows a visible error when the review queue fails to load', async () => {
     const broken = env();
     broken.METADATA.prepare = (sql: string) => {
@@ -313,6 +403,7 @@ describe('approval helpers', () => {
             bind: () => statement,
             all: async () => {
               expect(sql).toContain("requested_action != 'work.submit'");
+              expect(sql).toContain("requested_action != 'pull_request.merge'");
               return { results: rows };
             }
           };

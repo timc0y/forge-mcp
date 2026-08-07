@@ -23,12 +23,12 @@ async function connect(handlers?: Partial<ForgeToolHandlers>) {
 }
 
 describe('direct-chat tools/list wire payload', () => {
-  it('sends the ten-tool catalog without output schemas inside a small per-turn budget', async () => {
+  it('sends the eleven-tool catalog without output schemas inside a small per-turn budget', async () => {
     const { client } = await connect();
     const listed = await client.listTools();
     await client.close();
 
-    expect(listed.tools).toHaveLength(10);
+    expect(listed.tools).toHaveLength(11);
     for (const entry of listed.tools) expect(entry, entry.name).not.toHaveProperty('outputSchema');
     expect(JSON.stringify({ tools: listed.tools }).length).toBeLessThanOrEqual(15_000);
   });

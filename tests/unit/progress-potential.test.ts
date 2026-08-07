@@ -185,6 +185,8 @@ describe('Durable Progress Potential (Φ-gate)', () => {
     expect(detectDurableWitness('forge_edit', { commit_url: 'https://github.com/o/r/commit/abc' })).toBe(true);
     expect(detectDurableWitness('forge_edit', { exitCode: 0, remote_persisted: false })).toBe(false);
     expect(detectDurableWitness('forge_merge', { submitted: true, submission_receipt: {} })).toBe(true);
+    expect(detectDurableWitness('forge_merge', { approval_url: 'https://forge.test/approvals/a', pull_request: 7, head_sha: 'c'.repeat(40) })).toBe(true);
+    expect(detectDurableWitness('forge_merge', { merged: true, merge_sha: 'b'.repeat(40) })).toBe(true);
     expect(detectDurableWitness('forge_shell', { exitCode: 0 })).toBe(false);
     expect(
       detectDurableWitness('forge_deploy', {

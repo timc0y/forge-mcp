@@ -19,7 +19,7 @@ compute only when it is needed.
   container-free; a full workspace spins up only when execution is needed.
 
 Forge is not an agent framework, an IDE, or an unrestricted shell. It exposes
-ten bounded, user-level capabilities through MCP, keeping provider credentials
+eleven bounded, user-level capabilities through MCP, keeping provider credentials
 and approval gates outside model context.
 
 ## Quickstart
@@ -39,7 +39,7 @@ Optional self-hosted browser evidence and local development are covered in
 
 ## The tools at a glance
 
-Ten user-level tools cover the direct-chat workflow. Full reference:
+Eleven user-level tools cover the direct-chat workflow. Full reference:
 [`docs/tools.md`](docs/tools.md).
 
 | Outcome | Tools |
@@ -47,11 +47,13 @@ Ten user-level tools cover the direct-chat workflow. Full reference:
 | Find and understand code | `forge_repositories`, `forge_search`, `forge_read` |
 | Make a focused change | `forge_edit` |
 | Run and inspect | `forge_run`, `forge_screenshot`, `forge_status` |
-| Release | `forge_environments`, `forge_deploy`, `forge_submit` |
+| Release | `forge_environments`, `forge_deploy`, `forge_submit`, `forge_merge` |
 
 GitHub's API is the sole durable repository plane. `forge_edit` commits directly
 to a Forge branch. `forge_run` executes against that branch but cannot save
 repository changes. `forge_submit` prepares the durable change for human review.
+`forge_merge` queues an existing pull request for human approval, then Forge
+rereads and verifies the merge without another chat call.
 
 Commands, branch previews, and deployments allocate ephemeral compute lazily.
 Workspace, process, dependency, and cleanup state remain Forge implementation
