@@ -1,17 +1,17 @@
 # Forge
 
-**A remote development computer for AI coding agents — over MCP.**
+**A GitHub workspace for ordinary AI chats — over MCP.**
 
-Forge gives ChatGPT, Claude, and any MCP-compatible client a GitHub-native
-coding control plane plus an isolated Linux executor when code actually needs
-to run. The model brings the reasoning; Forge brings guarded repository tools
-and ephemeral compute on demand.
+Forge lets an ordinary ChatGPT or Claude conversation browse your authorized
+repositories, read and make small focused edits, run commands, deploy through
+saved environments, and inspect websites at responsive breakpoints. The chat
+brings the reasoning; Forge provides guarded GitHub access and ephemeral
+compute only when it is needed.
 
 ## Why it exists
 
-- **Rent the model's quota, not the compute.** Drive Forge from whichever chat
-  app has generous limits (ChatGPT's are famously roomy) and get a full dev
-  environment for near-free — no local setup, no tight sandbox.
+- **Stay in chat.** Make focused repository and design changes without moving
+  the conversation into an IDE or autonomous coding agent.
 - **Code from your phone.** The whole loop — read, edit, run, test, review,
   open a PR — happens on the server. Your device is just the remote control.
 - **Cheapest capable runtime, automatically.** Reviewing a deployed URL never
@@ -19,21 +19,19 @@ and ephemeral compute on demand.
   container-free; a full workspace spins up only when execution is needed.
 
 Forge is not an agent framework, an IDE, or an unrestricted shell. It exposes
-**bounded** capabilities through MCP, keeping provider credentials and approval
-gates in front of anything that reaches the outside world.
+ten bounded, user-level capabilities through MCP, keeping provider credentials
+and approval gates outside model context.
 
 ## Quickstart
 
 Forge is a hosted MCP connector. Add it to your client and sign in with GitHub:
 
 - **ChatGPT** (Apps SDK / connectors) or **Claude** (Connectors) → add the
-  Forge MCP server URL, complete the GitHub OAuth flow, and grant the Forge
-  GitHub App access to the repositories you want.
-- Then just ask: *"Review https://example.com with Parallax"*, or *"Start a
-  task on owner/repo to fix X, then open a draft PR."*
-
-Recipes for planning, UI iteration, bug fixes, and resuming a compressed
-ChatGPT session: [`docs/mcp/project-workflows.md`](docs/mcp/project-workflows.md).
+  Forge URL ending in `/mcp`, complete the GitHub OAuth flow, and grant the
+  Forge GitHub App access to the repositories you want.
+- Then ask naturally: *"Improve the design direction in our docs"*, *"Change
+  this component and show it on phone and desktop"*, or *"Run the checks and
+  deploy this branch to staging."*
 
 Optional self-hosted browser evidence and local development are covered in
 [`docs/self-host.md`](docs/self-host.md) and
@@ -41,32 +39,23 @@ Optional self-hosted browser evidence and local development are covered in
 
 ## The tools at a glance
 
-Cheap, container-free tools first — Forge answers as much as possible before
-ever starting a workspace. Full reference: [`docs/tools.md`](docs/tools.md).
+Ten user-level tools cover the direct-chat workflow. Full reference:
+[`docs/tools.md`](docs/tools.md).
 
-| Group | Tools | Container? |
-| --- | --- | --- |
-| Discover & observe | `forge_capabilities`, `forge_observer_*`, `forge_repository_list` | no |
-| Durable tasks | `forge_task_create` / `_get` / `_list` / `_update` | no |
-| Branch & workspace | `forge_start`, `forge_workspace_*`, `forge_operation_get` | no; executor is lazy |
-| Read & edit | `forge_files_list`, `forge_files_read`, `forge_edit`, context/diff tools | no |
-| Shell & processes | `forge_shell`, `forge_process_*`, `forge_deps_install` | yes |
-| GitHub review | `forge_pr`, `forge_access`, `forge_history`, `forge_branches`, `forge_merge` | no |
-| Preview & artifacts | `forge_review`, `forge_preview*`, `forge_artifact_*` | mixed |
-| Deployment & secrets | `forge_secret_accounts`, `forge_deploy` (`map_env`), `forge_secret_*` | mixed |
+| Outcome | Tools |
+| --- | --- |
+| Find and understand code | `forge_repositories`, `forge_search`, `forge_read` |
+| Make a focused change | `forge_edit` |
+| Run and inspect | `forge_run`, `forge_screenshot`, `forge_status` |
+| Release | `forge_environments`, `forge_deploy`, `forge_submit` |
 
-GitHub's API is the sole durable repository plane: file CRUD, branch reads and
-writes, diffs, commits, history, and pull requests all operate on GitHub.
-`forge_edit` is the only file-writing/deleting tool and commits directly to the
-selected `forge/*` branch. Raw `git push` through `forge_shell` is refused. Use
-`forge_merge` to open the review path and return the human approval link.
+GitHub's API is the sole durable repository plane. `forge_edit` commits directly
+to a Forge branch. `forge_run` executes against that branch but cannot save
+repository changes. `forge_submit` prepares the durable change for human review.
 
-Workspace creation returns a lightweight control-plane session immediately; it
-does not provision a container. The first shell, install, build, test, dev,
-preview, or deploy call allocates an ephemeral executor. Files created or
-modified by commands remain executor-only, report `remote_persisted:false`, and
-are discarded with that executor unless the wanted change is explicitly
-recreated through `forge_edit`.
+Commands, branch previews, and deployments allocate ephemeral compute lazily.
+Workspace, process, dependency, and cleanup state remain Forge implementation
+details rather than concepts the chat must carry between turns.
 
 ## Parallax
 

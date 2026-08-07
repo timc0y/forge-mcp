@@ -4,7 +4,7 @@ import type { Env } from './env';
 
 export const MAX_SECRETS_PER_TENANT = 20;
 
-interface VaultSecret {
+export interface VaultSecret {
   id: SecretId;
   tenantId: TenantId;
   label: string;
@@ -15,6 +15,23 @@ interface VaultSecret {
   lastValidatedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export function selectSecretsForSources(secrets: VaultSecret[], sources: string[]): {
+  selected: VaultSecret[];
+  missing: string[];
+  ambiguous: string[];
+} {
+  const selected = new Map<string, VaultSecret>();
+  const missing: string[] = [];
+  const ambiguous: string[] = [];
+  for (const source of [...new Set(sources)]) {
+    const matches = secrets.filter((secret) => secret.varNames.includes(source));
+    if (matches.length === 0) missing.push(source);
+    else if (matches.length > 1) ambiguous.push(source);
+    else selected.set(matches[0]!.id, matches[0]!);
+  }
+  return { selected: [...selected.values()], missing, ambiguous };
 }
 
 interface StoredVaultSecret extends VaultSecret {

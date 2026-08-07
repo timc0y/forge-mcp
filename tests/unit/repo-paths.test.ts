@@ -104,16 +104,11 @@ describe('readableFile', () => {
 });
 
 describe('tool path defaults resolve to somewhere real', () => {
-  it('defaults forge_files_list to the repository root, not a directory below it', () => {
-    // The regression: the default was changed to 'repo' when the schema moved
-    // to accepting repo-relative paths, and toContainerPath('repo') yields
-    // /workspace/repo/repo — so a listing call with no path argument walked a
-    // directory that does not exist. Shipped and deployed before it was caught.
-    const listTool = forgeTools.find((tool) => tool.name === 'forge_files_list');
-    const shape = listTool?.inputSchema as { path: { safeParse(v: unknown): { data?: unknown } } };
-    const defaulted = shape.path.safeParse(undefined).data as string;
-
-    expect(toContainerPath(defaulted)).toBe('/workspace/repo');
+  it('accepts paths that normalize to the repository checkout', () => {
+    const readTool = forgeTools.find((tool) => tool.name === 'forge_read');
+    const shape = readTool?.inputSchema as { paths: { safeParse(v: unknown): { success: boolean } } };
+    expect(shape.paths.safeParse(['src/index.ts']).success).toBe(true);
+    expect(shape.paths.safeParse(['/workspace/repo/src/index.ts']).success).toBe(true);
   });
 
   it('leaves every other repo-relative default resolvable too', () => {

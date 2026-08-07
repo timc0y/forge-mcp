@@ -94,6 +94,38 @@ const request = (url: string, init?: RequestInit) => new Request(url, {
 const APPROVAL_URL = 'https://forge.test/approvals/apr_aaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 describe('reviewer-facing pages', () => {
+  it('presents direct-chat deploy approval as self-executing with a durable status link', async () => {
+    const directEnv = env() as unknown as { METADATA: { prepare(sql: string): unknown } };
+    const originalPrepare = directEnv.METADATA.prepare.bind(directEnv.METADATA);
+    directEnv.METADATA.prepare = (sql: string) => {
+      if (sql.includes('FROM approvals')) {
+        const statement: Record<string, unknown> = {
+          bind: () => statement,
+          first: async () => ({
+            requested_action: 'cloudflare.deploy', reason: 'Deploy preview',
+            request_payload: JSON.stringify({
+              chat_operation_id: 'op_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+              status_url: 'https://forge.test/status/op_aaaaaaaaaaaaaaaaaaaaaaaaaa?t=signed',
+              repository_ref: 'octocat/site#forge/release'
+            }),
+            state: 'pending', expires_at: new Date(Date.now() + 3_600_000).toISOString(), workspace_id: 'ws_1'
+          })
+        };
+        return statement;
+      }
+      if (sql.includes('FROM deferred_actions')) {
+        const statement: Record<string, unknown> = { bind: () => statement, first: async () => null };
+        return statement;
+      }
+      return originalPrepare(sql);
+    };
+
+    const response = await approvalPage(request(APPROVAL_URL), directEnv as never, 'apr_aaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const html = await response.text();
+    expect(html).toContain('Open deployment status');
+    expect(html).not.toContain('agent that asked can carry it out');
+  });
+
   it('renders an approval with everything needed to decide', async () => {
     const response = await approvalPage(request(APPROVAL_URL), env(), 'apr_aaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(response.status).toBe(200);

@@ -1,5 +1,5 @@
 import { ForgeError, type SecretId, type TenantId } from '@forge/core';
-import type { ForgeToolHandlers } from '@forge/mcp-core';
+import type { LegacyForgeToolHandlers } from '@forge/mcp-core';
 import type { Env } from '../env';
 import { buildLiveWorkspaceList, buildWorkspaceObserverDetail, observerRepeatDiagnostic } from '../observer-api';
 import { completeApproval, requestApproval, requireApproval } from '../github';
@@ -30,7 +30,7 @@ type SystemTool =
 export function systemToolHandlers(
   env: Env,
   identity: () => Identity
-): Pick<ForgeToolHandlers, SystemTool> {
+): Pick<LegacyForgeToolHandlers, SystemTool> {
   return {
     forge_capabilities: async () => ({
       model: 'remote_first',

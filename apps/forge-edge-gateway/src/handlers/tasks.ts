@@ -1,5 +1,5 @@
 import { ForgeError, ids, type ProjectId, type TenantId } from '@forge/core';
-import type { ForgeToolHandlers } from '@forge/mcp-core';
+import type { LegacyForgeToolHandlers } from '@forge/mcp-core';
 import { D1TaskStore } from '@forge/metadata-d1';
 import {
   applyTaskPatch,
@@ -26,7 +26,7 @@ import type { TaskHandlerDependencies } from './types';
 type WorkflowTool = 'forge_repository_list' | 'forge_task_create' | 'forge_task_get' | 'forge_task_list' | 'forge_task_update';
 
 /** Focused task workflows behind the ForgeToolHandlers seam. */
-export function taskToolHandlers(env: Env, deps: TaskHandlerDependencies): Pick<ForgeToolHandlers, WorkflowTool> {
+export function taskToolHandlers(env: Env, deps: TaskHandlerDependencies): Pick<LegacyForgeToolHandlers, WorkflowTool> {
   return {
       forge_repository_list: async () => {
         const identity = deps.identity();

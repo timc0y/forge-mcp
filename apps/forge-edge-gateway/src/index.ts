@@ -5,6 +5,8 @@ import { listSlotOccupants, reclaimStaleSlots, releaseWorkspaceSlot, slotTtlMs }
 import { verifyCapability } from '@forge/capabilities';
 import openapi from '../../../openapi/forge.openapi.json';
 import { ForgeMcpSession } from './mcp-session';
+import { SiteReviewWorkflow } from './site-review-workflow';
+import { ChatOperationWorkflow } from './chat-operation-workflow';
 import { WorkspaceCoordinator } from './workspace-coordinator';
 import { workspaceOperations, type WorkspaceOperations } from './workspace-operations';
 import { ProvisionWorkspaceWorkflow, DestroyWorkspaceWorkflow } from './workflows';
@@ -17,6 +19,7 @@ import {
 } from './oauth';
 import type { Env } from './env';
 import { galleryPage } from './review-gallery';
+import { chatOperationStatusPage } from './chat-operations';
 import { secretsDashboard } from './secrets-ui';
 import { forgeGlyph } from './ui';
 import { liveApiSnapshot, liveApiWorkspaceDetail, liveDashboardPage, liveApiStream } from './live-dashboard';
@@ -40,6 +43,8 @@ export {
   Sandbox,
   ContainerProxy,
   ForgeMcpSession,
+  SiteReviewWorkflow,
+  ChatOperationWorkflow,
   WorkspaceCoordinator,
   ProvisionWorkspaceWorkflow,
   DestroyWorkspaceWorkflow
@@ -463,8 +468,8 @@ export default {
     ctx.waitUntil(reapStuckProvisioning(env).then(() => reapAbandonedSlots(env)));
   },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
     try {
-      const url = new URL(request.url);
       if (url.pathname === '/favicon.ico' && request.method === 'GET') return favicon();
       if (url.pathname.startsWith('/__forge_operator/workspaces/')) return await operatorForceDestroy(request, env, url);
       if (url.pathname.startsWith('/git/')) return await gitCredentialProxy(request, env);
@@ -571,8 +576,10 @@ export default {
       if (url.pathname === '/github/install') return await installGitHubApp(request, env);
       if (url.pathname === '/github/reconnect' && request.method === 'POST') return await reconnectGitHub(request, env);
       if (url.pathname === '/github/setup') return await finishGitHubInstall(request, env);
-      const galleryMatch = url.pathname.match(/^\/gallery\/(ws_[0-9a-hjkmnp-tv-z]{20,32})\/(art_[0-9a-hjkmnp-tv-z]{20,32})$/u);
+      const galleryMatch = url.pathname.match(/^\/gallery\/((?:ws|srv)_[0-9a-hjkmnp-tv-z]{20,32})\/(art_[0-9a-hjkmnp-tv-z]{20,32})$/u);
       if (galleryMatch?.[1] && galleryMatch[2]) return await galleryPage(request, env, galleryMatch[1], galleryMatch[2]);
+      const statusMatch = url.pathname.match(/^\/status\/(op_[0-9a-hjkmnp-tv-z]{20,32})$/u);
+      if (statusMatch?.[1] && request.method === 'GET') return await chatOperationStatusPage(request, env, statusMatch[1]);
       const previewMatch = url.pathname.match(/^\/approvals\/(apr_[0-9a-hjkmnp-tv-z]{20,32})\/preview$/u);
       if (previewMatch?.[1]) return await approvalPreviewEndpoint(request, env, previewMatch[1]);
       const approvalMatch = url.pathname.match(/^\/approvals\/(apr_[0-9a-hjkmnp-tv-z]{20,32})$/u);

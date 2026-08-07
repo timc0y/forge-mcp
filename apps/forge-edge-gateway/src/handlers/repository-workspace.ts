@@ -9,7 +9,7 @@ import {
   type WorkspaceId
 } from '@forge/core';
 import { LAZY_REQUESTED_NEXT_ACTIONS } from '@forge/application';
-import { type ForgeToolHandlers, utf8Bytes } from '@forge/mcp-core';
+import { type LegacyForgeToolHandlers, utf8Bytes } from '@forge/mcp-core';
 import { verifyFeatureBranchOnOrigin } from '../merge-guards';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { analyzeDiff, selectContext } from '@forge/insight';
@@ -60,7 +60,7 @@ function docsOnlyPaths(paths: string[]): boolean {
 }
 
 /** Focused repositoryWorkspace workflows behind the ForgeToolHandlers seam. */
-export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorkspaceHandlerDependencies): Pick<ForgeToolHandlers, WorkflowTool> {
+export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorkspaceHandlerDependencies): Pick<LegacyForgeToolHandlers, WorkflowTool> {
   return {
       forge_start: async (input) => {
         // Create the agent's branch on GitHub before any container exists, so

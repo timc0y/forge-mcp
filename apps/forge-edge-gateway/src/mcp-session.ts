@@ -1,8 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { McpAgent } from 'agents/mcp';
-import { z } from 'zod';
 import {
   ForgeError,
+  ids,
   toForgeError,
   type CredentialProfileId,
   type TenantId,
@@ -18,7 +18,7 @@ import {
   witnessIdFromReceipt,
   type ProgressStreakState
 } from '@forge/application';
-import type { ForgeToolHandlers } from '@forge/mcp-core';
+import type { ForgeToolHandler, LegacyForgeToolHandlers } from '@forge/mcp-core';
 import { D1TaskStore } from '@forge/metadata-d1';
 import { D1AuditStore } from '@forge/audit';
 import { elicitInlineApproval } from './inline-approval';
@@ -28,6 +28,8 @@ import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import type { Env } from './env';
 import { workspaceOperations } from './workspace-operations';
 import { credentialService } from './credentials';
+import { deployProfileStore } from './deploy-profiles';
+import { selectSecretsForSources, vaultService } from './vault';
 import { reclaimStaleSlots, slotTtlMs } from './capacity';
 import {
   completeApproval,
@@ -43,13 +45,17 @@ import { taskToolHandlers } from './handlers/tasks';
 import { reviewArtifactToolHandlers } from './handlers/review-artifacts';
 import { repositoryWorkspaceToolHandlers } from './handlers/repository-workspace';
 import { executionToolHandlers } from './handlers/execution';
-import type { HandlerIdentity as SessionProps, SessionHandlerDependencies } from './handlers/types';
+import { directChatToolHandlers } from './handlers/direct-chat';
+import { ChatOperationStore, issueChatOperationStatusUrl, reconcileChatOperation } from './chat-operations';
+import type { HandlerIdentity, SessionHandlerDependencies } from './handlers/types';
 import { sha256 } from './handlers/helpers';
-import { FORGE_MCP_INSTRUCTIONS, FORGE_PROMPT_HINTS } from './mcp-guidance';
+import { FORGE_MCP_INSTRUCTIONS } from './mcp-guidance';
 import { isWorkspaceId } from './workspace-resolve';
 
 const SELECTED_CREDENTIAL_PROFILE_KEY = 'selected-credential-profile';
 const PROGRESS_POTENTIAL_KEY = 'forge_progress_potential_v1';
+
+type SessionProps = HandlerIdentity;
 
 // Best-effort recovery of a successful call's workspace id from its own
 // result, for the audit trail only (see onToolCallTelemetry) — never used to
@@ -83,22 +89,21 @@ function annotateProgressPotential(result: unknown, state: ProgressStreakState, 
 }
 
 export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
-  server = new McpServer(
-    { name: 'Forge MCP', version: '0.1.0' },
-    {
-      instructions: FORGE_MCP_INSTRUCTIONS
-    }
-  );
+  // Recreated in init after McpAgent has hydrated request props.
+  server = new McpServer({ name: 'Forge MCP', version: '0.1.0' });
 
   async init(): Promise<void> {
+    this.server = new McpServer(
+      { name: 'Forge MCP', version: '0.1.0' },
+      { instructions: FORGE_MCP_INSTRUCTIONS }
+    );
     registerForgeToolsV1(
       this.server,
-      this.withProgressPotential(this.withRepeatDetection(this.handlers())),
+      this.directHandlers(),
       (event) => {
         void this.onToolCallTelemetry(event);
       }
     );
-    this.registerPrompts();
   }
 
   private async onToolCallTelemetry(event: ToolCallTelemetry): Promise<void> {
@@ -178,130 +183,6 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         })
       );
     }
-  }
-
-  // Slash-command style entry points for project work in ChatGPT/Claude.
-  // Prompt bodies live in mcp-guidance.ts so integrity tests can sweep them.
-  private registerPrompts(): void {
-    const userText = (text: string) => ({
-      messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }]
-    });
-
-    this.server.registerPrompt(
-      'review-live-url',
-      {
-        title: 'Review a live URL',
-        description: 'Review an already-deployed URL with Parallax — screenshots without starting a container.',
-        argsSchema: {
-          url: z.string().describe('The deployed URL to review, e.g. https://example.com'),
-          notes: z.string().optional().describe('Optional focus areas, routes or states to prioritise')
-        }
-      },
-      ({ url, notes }) => userText(FORGE_PROMPT_HINTS['review-live-url']({ url, notes }))
-    );
-
-    this.server.registerPrompt(
-      'website-qa',
-      {
-        title: 'Run website QA',
-        description: 'Run the standalone website-qa specialist and supplement it with Forge remote evidence.',
-        argsSchema: {
-          url: z.string().describe('The deployed URL to audit, e.g. https://example.com'),
-          notes: z.string().optional().describe('Optional routes, templates, journeys or risks to prioritise')
-        }
-      },
-      ({ url, notes }) => userText(FORGE_PROMPT_HINTS['website-qa']({ url, notes }))
-    );
-
-    this.server.registerPrompt(
-      'figma-parity',
-      {
-        title: 'Compare with Figma',
-        description: 'Run the standalone Figma parity specialist using Forge rendered evidence.',
-        argsSchema: {
-          url: z.string().describe('The deployed URL to compare, e.g. https://example.com'),
-          notes: z.string().optional().describe('Optional states, breakpoints or components to prioritise')
-        }
-      },
-      ({ url, notes }) => userText(FORGE_PROMPT_HINTS['figma-parity']({ url, notes }))
-    );
-
-    this.server.registerPrompt(
-      'start-task',
-      {
-        title: 'Start a coding task',
-        description: 'Start a coding task on an authorized repository in a fresh Forge workspace.',
-        argsSchema: {
-          repository: z.string().describe('The repository to work in, e.g. owner/name'),
-          task: z.string().describe('What the task should accomplish')
-        }
-      },
-      ({ repository, task }) => userText(FORGE_PROMPT_HINTS['start-task']({ repository, task }))
-    );
-
-    this.server.registerPrompt(
-      'plan-work',
-      {
-        title: 'Plan work on a repository',
-        description: 'Create a durable Forge task plan without allocating an executor or writing code yet.',
-        argsSchema: {
-          repository: z.string().describe('The repository to plan against, e.g. owner/name'),
-          goal: z.string().describe('What the plan should accomplish')
-        }
-      },
-      ({ repository, goal }) => userText(FORGE_PROMPT_HINTS['plan-work']({ repository, goal }))
-    );
-
-    this.server.registerPrompt(
-      'iterate-ui',
-      {
-        title: 'Iterate on UI or design',
-        description: 'Edit UI, verify with screenshots, and refine until phone and desktop look right.',
-        argsSchema: {
-          repository: z.string().describe('The repository to change, e.g. owner/name'),
-          change: z.string().describe('The UI or design change to iterate on')
-        }
-      },
-      ({ repository, change }) => userText(FORGE_PROMPT_HINTS['iterate-ui']({ repository, change }))
-    );
-
-    this.server.registerPrompt(
-      'fix-bug',
-      {
-        title: 'Fix a bug',
-        description: 'Reproduce cheaply, fix code and test together, verify narrowly, then submit a draft PR.',
-        argsSchema: {
-          repository: z.string().describe('The repository that has the bug, e.g. owner/name'),
-          bug: z.string().describe('What is broken and how to recognise a fix')
-        }
-      },
-      ({ repository, bug }) => userText(FORGE_PROMPT_HINTS['fix-bug']({ repository, bug }))
-    );
-
-    this.server.registerPrompt(
-      'resume-task',
-      {
-        title: 'Resume a Forge task',
-        description: 'Pick up after context compression or reconnect using the durable task handoff.',
-        argsSchema: {
-          task_id: z.string().optional().describe('Existing task id, if known'),
-          repository: z.string().optional().describe('Repository to find the open task on, e.g. owner/name')
-        }
-      },
-      ({ task_id, repository }) => userText(FORGE_PROMPT_HINTS['resume-task']({ task_id, repository }))
-    );
-
-    this.server.registerPrompt(
-      'prepare-draft-pr',
-      {
-        title: 'Submit work for review',
-        description: 'Stage the current Forge branch and queue its draft pull request for review, without waiting for an approval.',
-        argsSchema: {
-          workspace_id: z.string().optional().describe('The workspace whose branch should become a draft PR')
-        }
-      },
-      ({ workspace_id }) => userText(FORGE_PROMPT_HINTS['prepare-draft-pr']({ workspace_id }))
-    );
   }
 
   // Append-only "what actually happened" trail for the handful of mutating,
@@ -493,10 +374,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
    * (forge_edit commit_url, merge submit, deps ready). Discrete Lyapunov
    * control for MCP tool streams — see packages/application progress-potential.
    */
-  private withProgressPotential(handlers: ForgeToolHandlers): ForgeToolHandlers {
-    const wrapped = {} as ForgeToolHandlers;
-    for (const name of Object.keys(handlers) as Array<keyof ForgeToolHandlers>) {
-      const original = handlers[name];
+  private withProgressPotential(handlers: LegacyForgeToolHandlers): LegacyForgeToolHandlers {
+    const wrapped = {} as LegacyForgeToolHandlers;
+    for (const name of Object.keys(handlers) as Array<keyof LegacyForgeToolHandlers>) {
+      const original = handlers[name] as ForgeToolHandler;
       wrapped[name] = (async (input: Record<string, unknown>) => {
         const tool = String(name);
         const prev = (await this.ctx.storage.get<ProgressStreakState>(PROGRESS_POTENTIAL_KEY)) ?? null;
@@ -528,7 +409,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         });
         await this.ctx.storage.put(PROGRESS_POTENTIAL_KEY, next);
         return annotateProgressPotential(result, next, 'warning' in gate ? gate.warning : undefined);
-      }) as ForgeToolHandlers[typeof name];
+      }) as LegacyForgeToolHandlers[typeof name];
     }
     return wrapped;
   }
@@ -545,10 +426,10 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
    * The lookup runs only on the failing path, so a working session never pays
    * for it, and it can never turn a success into a failure.
    */
-  private withRepeatDetection(handlers: ForgeToolHandlers): ForgeToolHandlers {
-    const wrapped = {} as ForgeToolHandlers;
-    for (const name of Object.keys(handlers) as Array<keyof ForgeToolHandlers>) {
-      const original = handlers[name];
+  private withRepeatDetection(handlers: LegacyForgeToolHandlers): LegacyForgeToolHandlers {
+    const wrapped = {} as LegacyForgeToolHandlers;
+    for (const name of Object.keys(handlers) as Array<keyof LegacyForgeToolHandlers>) {
+      const original = handlers[name] as ForgeToolHandler;
       wrapped[name] = (async (input: Record<string, unknown>) => {
         try {
           return await original(input);
@@ -577,12 +458,12 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           }
           throw forge;
         }
-      }) as ForgeToolHandlers[typeof name];
+      }) as LegacyForgeToolHandlers[typeof name];
     }
     return wrapped;
   }
 
-  private handlers(): ForgeToolHandlers {
+  private handlers(options: { inlineApprovals?: boolean } = {}): LegacyForgeToolHandlers {
     const env = this.env;
     const deps: SessionHandlerDependencies = {
       identity: () => this.identity(),
@@ -590,8 +471,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       selectedCredentialProfileId: (identity) => this.selectedCredentialProfileId(identity),
       reclaimStaleWorkspaceSlots: () => this.reclaimStaleWorkspaceSlots(),
       recordAudit: (type, tenantId, payload, extra) => this.recordAudit(type, tenantId, payload, extra),
-      tryResolveApprovalInline: (identity, approval, reason) =>
-        this.tryResolveApprovalInline(identity, approval, reason),
+      tryResolveApprovalInline: options.inlineApprovals === false
+        ? async () => null
+        : (identity, approval, reason) => this.tryResolveApprovalInline(identity, approval, reason),
       runApprovedPullRequestMutation: (args) => this.runApprovedPullRequestMutation(args),
       ctx: this.ctx
     };
@@ -602,5 +484,245 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       ...repositoryWorkspaceToolHandlers(env, deps),
       ...executionToolHandlers(env, deps)
     };
+  }
+
+  /** Bridge the direct Chat facade to the old implementation while keeping all IDs private. */
+  private directHandlers() {
+    // Direct Chat never waits inside the MCP turn for a human. Hosted approval
+    // links must be terminal receipts that Forge redeems server-side.
+    const legacy = this.handlers({ inlineApprovals: false });
+    const workspaceFor = async (repository: { owner: string; repo: string }, ref: string): Promise<string> => {
+      let created: Record<string, unknown>;
+      try {
+        created = await legacy.forge_workspace_create!({
+          repository: { provider: 'github', owner: repository.owner, name: repository.repo },
+          ref,
+          runtime: 'node-24',
+          persistence: 'ephemeral',
+          bootstrap: true,
+          idempotency_key: `direct-${crypto.randomUUID()}`
+        }) as Record<string, unknown>;
+      } catch (error) {
+        const forge = toForgeError(error);
+        const existing = Array.isArray(forge.details?.existing)
+          ? forge.details.existing as Array<Record<string, unknown>>
+          : [];
+        const matching = existing.find((entry) => !ref || entry.branch === ref);
+        if (!matching || typeof matching.workspace_id !== 'string') throw error;
+        created = { workspace_id: matching.workspace_id };
+      }
+      const workspace = created.workspace_id;
+      if (typeof workspace !== 'string') throw new ForgeError({ code: 'FORGE_WORKSPACE_NOT_READY', message: 'Forge could not prepare private execution for this GitHub ref; retry forge_run once.', retryable: true });
+      return workspace;
+    };
+    return directChatToolHandlers(this.env, {
+      identity: () => this.identity(),
+      privateOperations: {
+        run: async (input) => {
+          const workspace = await workspaceFor(input.repository, input.ref);
+          const repository = `${input.repository.owner}/${input.repository.repo}`;
+          const repositoryRef = `${repository}#${input.ref}`;
+          const operationId = ids.operation();
+          const store = new ChatOperationStore(this.env.METADATA);
+          try {
+            const value = await legacy.forge_shell!({
+              workspace, command: input.command, cwd: input.cwd ?? '/workspace/repo', timeout_ms: input.timeoutMs,
+              environment: {}, network_policy: 'development', output_limit_bytes: 200_000, compact: true,
+              mode: 'mutating', idempotency_key: `direct-run-${operationId}`
+            }) as Record<string, unknown>;
+            const processId = typeof value.processId === 'string'
+              ? value.processId
+              : typeof value.process_id === 'string' ? value.process_id : undefined;
+            const running = value.status === 'running' || Boolean(processId);
+            if (running && processId) {
+              await store.create({
+                id: operationId, tenantId: input.identity.tenantId, repository, repositoryRef,
+                projectId: input.identity.projectId,
+                kind: 'run', state: 'running', summary: 'Command is still running.',
+                result: { workspace_id: workspace, process_id: processId }
+              });
+              await this.env.CHAT_OPERATION_WORKFLOW.create({
+                id: `chat-operation-${operationId}`,
+                params: { tenantId: input.identity.tenantId, operationId }
+              });
+              return {
+                ...value,
+                chat_operation_id: operationId,
+                status_url: await issueChatOperationStatusUrl(this.env, input.identity.tenantId, operationId)
+              };
+            }
+            await store.create({
+              id: operationId, tenantId: input.identity.tenantId, repository, repositoryRef,
+              projectId: input.identity.projectId,
+              kind: 'run', state: 'completed', summary: String(value.result_summary ?? 'Command finished.'),
+              result: { exit_code: value.exitCode ?? null }
+            });
+            await legacy.forge_workspace_destroy!({ workspace, force: false, idempotency_key: `direct-run-cleanup-${operationId}` }).catch(() => undefined);
+            return { ...value, chat_operation_id: operationId };
+          } catch (error) {
+            await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-run-failed-${operationId}` }).catch(() => undefined);
+            throw error;
+          }
+        },
+        screenshot: async (input) => {
+          if (input.target.kind === 'url') {
+            return await legacy.forge_review!({
+              url: input.target.url, captures: input.captures, viewports: input.viewports,
+              full_page: input.fullPage, time_budget_ms: 40_000
+            }) as Record<string, unknown>;
+          }
+          const workspace = await workspaceFor(input.target.repository, input.target.ref);
+          try {
+            return await legacy.forge_preview!({
+              workspace,
+              preview_wait_ms: 30_000,
+              full_page: input.fullPage,
+              captures: input.captures.map((capture) => ({
+                route: capture.path,
+                state: capture.state,
+                ...(capture.selection ? { selection: capture.selection } : {}),
+                ...(input.steps ? { steps: input.steps } : {})
+              })),
+              viewports: input.viewports
+            }) as Record<string, unknown>;
+          } finally {
+            await legacy.forge_workspace_destroy!({ workspace, force: false, idempotency_key: `direct-screenshot-cleanup-${crypto.randomUUID()}` }).catch(() => undefined);
+          }
+        },
+        environments: async (input) => {
+          const tenantId = input.identity.tenantId as TenantId;
+          const [listed, secrets] = await Promise.all([
+            deployProfileStore(this.env.METADATA).list(
+              tenantId,
+              { owner: input.repository.owner, name: input.repository.repo }
+            ),
+            vaultService(this.env).list(tenantId)
+          ]);
+          const profiles = listed.map((profile) => ({
+            label: profile.label,
+            environment: profile.environment,
+            provider: 'cloudflare',
+            ready: profile.state === 'approved' && (() => {
+              const selected = selectSecretsForSources(secrets, Object.values(profile.map_env));
+              return selected.missing.length === 0 && selected.ambiguous.length === 0;
+            })()
+          }));
+          return { environments: profiles };
+        },
+        deploy: async (input) => {
+          const repository = `${input.repository.owner}/${input.repository.repo}`;
+          const repositoryRef = `${repository}#${input.ref}`;
+          const tenantId = input.identity.tenantId as TenantId;
+          const profiles = await deployProfileStore(this.env.METADATA).list(tenantId, {
+            owner: input.repository.owner,
+            name: input.repository.repo
+          });
+          const profile = profiles.find((item) => item.environment === input.environment || item.label === input.environment);
+          if (!profile) {
+            throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `No approved deployment environment named ${input.environment}. Call forge_environments first.`, retryable: false });
+          }
+          const vault = vaultService(this.env);
+          const secrets = await vault.list(tenantId);
+          const sourceNames = Object.values(profile.map_env);
+          const selected = selectSecretsForSources(secrets, sourceNames);
+          if (selected.missing.length > 0 || selected.ambiguous.length > 0) {
+            const problem = selected.missing.length > 0
+              ? `missing stored variables ${selected.missing.join(', ')}`
+              : `variables exist in multiple secrets: ${selected.ambiguous.join(', ')}`;
+            throw new ForgeError({
+              code: 'FORGE_VALIDATION_FAILED',
+              message: `Deployment environment ${input.environment} has ${problem}; use the Forge secrets page, then retry forge_deploy.`,
+              retryable: false
+            });
+          }
+          const workspace = await workspaceFor(input.repository, input.ref);
+          try {
+            for (const secret of selected.selected) await vault.attach(tenantId, secret.id, workspace);
+            return await legacy.forge_deploy!({ workspace, profile_id: profile.profile_id, workflow: 'auto', include_output: false, idempotency_key: `direct-deploy-${input.repository.owner}-${input.repository.repo}-${input.ref}-${profile.profile_id}`.slice(0, 190) }) as Record<string, unknown>;
+          } catch (error) {
+            const forge = toForgeError(error);
+            const details = forge.details ?? {};
+            if (forge.code === 'FORGE_APPROVAL_REQUIRED' && typeof details.approval_id === 'string') {
+              const operationId = ids.operation();
+              const store = new ChatOperationStore(this.env.METADATA);
+              const statusUrl = await issueChatOperationStatusUrl(this.env, input.identity.tenantId, operationId);
+              await store.create({
+                id: operationId,
+                tenantId: input.identity.tenantId,
+                projectId: input.identity.projectId,
+                repository,
+                repositoryRef,
+                kind: 'deploy',
+                state: 'approval_required',
+                summary: 'Deployment is waiting for human approval.',
+                result: { workspace_id: workspace, approval_id: details.approval_id }
+              });
+              const row = await this.env.METADATA.prepare(
+                'SELECT request_payload FROM approvals WHERE id = ? AND tenant_id = ?'
+              ).bind(details.approval_id, input.identity.tenantId).first<{ request_payload: string }>();
+              if (!row) {
+                await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-deploy-missing-approval-${crypto.randomUUID()}` }).catch(() => undefined);
+                throw error;
+              }
+              const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
+              await this.env.METADATA.prepare(
+                'UPDATE approvals SET request_payload = ? WHERE id = ? AND tenant_id = ? AND state = \'pending\''
+              ).bind(JSON.stringify({
+                ...payload,
+                chat_operation_id: operationId,
+                project_id: input.identity.projectId,
+                repository,
+                repository_ref: repositoryRef,
+                status_url: statusUrl
+              }), details.approval_id, input.identity.tenantId).run();
+              return {
+                state: 'approval_required',
+                summary: forge.message,
+                approval_url: details.approval_url,
+                status_url: statusUrl,
+                chat_operation_id: operationId
+              };
+            }
+            await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-deploy-failed-${crypto.randomUUID()}` }).catch(() => undefined);
+            throw error;
+          }
+        },
+        submit: async (input) => {
+          const workspace = await workspaceFor(input.repository, input.branch);
+          try {
+            return await legacy.forge_merge!({ workspace, pr_base: input.baseRef ?? 'main', title: input.title, body: input.body ?? '', idempotency_key: `direct-submit-${input.repository.owner}-${input.repository.repo}-${input.branch}`.slice(0, 190) }) as Record<string, unknown>;
+          } finally {
+            await legacy.forge_workspace_destroy!({ workspace, force: false, idempotency_key: `direct-submit-cleanup-${crypto.randomUUID()}` }).catch(() => undefined);
+          }
+        },
+        status: async (input) => {
+          const store = new ChatOperationStore(this.env.METADATA);
+          const present = async (operation: Awaited<ReturnType<ChatOperationStore['get']>>) => {
+            if (!operation) return null;
+            operation = await reconcileChatOperation(this.env, input.identity.tenantId, operation);
+            return {
+              chat_operation_id: operation.id,
+              kind: operation.kind,
+              state: operation.state,
+              summary: operation.summary,
+              repository: operation.repository,
+              repository_ref: operation.repository_ref,
+              result: operation.result && !('workspace_id' in operation.result) && !('process_id' in operation.result)
+                ? operation.result
+                : undefined,
+              status_url: await issueChatOperationStatusUrl(this.env, input.identity.tenantId, operation.id),
+              updated_at: operation.updated_at
+            };
+          };
+          if (input.reference.startsWith('op_')) {
+            const operation = await store.getForProject(input.identity.tenantId, input.identity.projectId, input.reference);
+            return present(operation);
+          }
+          const repository = input.reference.split('#', 1)[0] || undefined;
+          const latest = (await store.listRecent(input.identity.tenantId, input.identity.projectId, repository)).at(0);
+          return present(latest ?? null);
+        }
+      }
+    });
   }
 }

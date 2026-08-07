@@ -38,22 +38,11 @@ describe('assertForgeBranch (used by forge_git_push, forge_pull_request_create, 
 
 describe('new tool definitions', () => {
   const tool = (name: string) => forgeTools.find((t) => t.name === name)!;
-
-
-
-
-  it('forge_artifact_upload has no revision or idempotency key', () => {
-    const t = tool('forge_artifact_upload');
-    const schema = t.inputSchema as Record<string, { safeParse(v: unknown): { success: boolean } }>;
-    expect(schema.expected_revision).toBeUndefined();
-    expect(schema.idempotency_key).toBeUndefined();
-  });
-
-  it('forge_context_get clamps max_results between 1 and 100', () => {
-    const t = tool('forge_context_get');
+  it('forge_search clamps max_results between 1 and 50', () => {
+    const t = tool('forge_search');
     const schema = t.inputSchema as { max_results: { safeParse(v: unknown): { success: boolean } } };
     expect(schema.max_results.safeParse(0).success).toBe(false);
-    expect(schema.max_results.safeParse(101).success).toBe(false);
+    expect(schema.max_results.safeParse(51).success).toBe(false);
     expect(schema.max_results.safeParse(12).success).toBe(true);
   });
 

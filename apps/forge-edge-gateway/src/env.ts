@@ -5,6 +5,8 @@ import type {
 } from '@forge/workflows-cloudflare';
 import type { ForgeMcpSession } from './mcp-session';
 import type { WorkspaceCoordinator } from './workspace-coordinator';
+import type { SiteReviewWorkflow } from './site-review-workflow';
+import type { ChatOperationWorkflow } from './chat-operation-workflow';
 
 export interface Env {
   Sandbox: DurableObjectNamespace<Sandbox>;
@@ -12,8 +14,11 @@ export interface Env {
   WORKSPACE_COORDINATORS: DurableObjectNamespace<WorkspaceCoordinator>;
   PROVISION_WORKFLOW: Workflow<ProvisionWorkspaceParams>;
   DESTROY_WORKFLOW: Workflow<DestroyWorkspaceParams>;
+  SITE_REVIEW_WORKFLOW: Workflow<{ reviewId: string }>;
+  CHAT_OPERATION_WORKFLOW: Workflow<{ tenantId: string; operationId: string }>;
   METADATA: D1Database;
   ARTIFACTS: R2Bucket;
+  SITE_REVIEW_ANALYTICS: AnalyticsEngineDataset;
   BROWSER: BrowserRun;
   // Cloudflare Workers AI binding. Powers best-effort commit-message and PR
   // summarisation; every call has a deterministic fallback so AI is never on
@@ -21,6 +26,9 @@ export interface Env {
   AI: Ai;
   // Kill switch for the Workers AI features. AI is ON unless this is 'true'/'1'.
   FORGE_AI_DISABLED?: string;
+  /** Cloudflare AI Gateway used only for bounded site-route planning. */
+  FORGE_SITE_REVIEW_GATEWAY_ID?: string;
+  FORGE_SITE_REVIEW_MODEL?: string;
   FORGE_DEV_AUTH_TOKEN?: string;
   FORGE_OWNER_AUTH_TOKEN?: string;
   FORGE_CAPABILITY_SIGNING_KEY: string;

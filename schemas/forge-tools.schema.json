@@ -4,437 +4,64 @@
   "version": 1,
   "generatedAt": "deterministic",
   "tools": {
-    "forge_capabilities": {
-      "title": "Capabilities",
-      "description": "Return what this Forge session can do (workspace, Git, secrets, previews, approvals).",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      }
-    },
-    "forge_observer_workspaces": {
-      "title": "Observer: list workspaces",
-      "description": "Read-only snapshot of live workspace slots, tasks, and branch state. Includes lifecycle/executor_state — state:requested with empty processes is healthy lazy create (use forge_files_read/forge_edit), not a hung provisioner. Repeated identical polls attach stop_polling guidance.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      }
-    },
-    "forge_observer_workspace": {
-      "title": "Observer: workspace detail",
-      "description": "Read-only observer bundle: processes, merged MCP tool trail, log tail, plus lifecycle guidance. Empty processes/logs while state is requested are expected. Do not poll this tool waiting for requested→ready; that transition happens only after an execution tool starts the executor.",
+    "forge_repositories": {
+      "title": "Repositories",
+      "description": "List or filter GitHub repositories authorized for Forge. Explains how to reconnect or grant access when a repository is missing.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          }
-        },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_observer_activity": {
-      "title": "Observer: tool activity",
-      "description": "Complete read-only trail of MCP tool calls (redacted request/response). Default returns payloads from mcp_tool_calls. Pass payloads:false for counters only; errors_only:true narrows to failures.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "payloads": {
-            "default": true,
-            "type": "boolean"
-          },
-          "errors_only": {
-            "default": false,
-            "type": "boolean"
-          },
-          "limit": {
-            "default": 40,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 200
-          },
-          "since": {
-            "type": "string",
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
-          }
-        },
-        "required": [
-          "payloads",
-          "errors_only",
-          "limit"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_repository_list": {
-      "title": "List repositories",
-      "description": "List GitHub repositories authorized for this account. No container.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      }
-    },
-    "forge_task_create": {
-      "title": "Create task",
-      "description": "Create a durable task (goal, decisions, non-goals). Call before opening a workspace for coherent work.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "repository": {
-            "type": "object",
-            "properties": {
-              "provider": {
-                "$ref": "#/$defs/__schema0"
-              },
-              "owner": {
-                "$ref": "#/$defs/__schema1"
-              },
-              "name": {
-                "$ref": "#/$defs/__schema2"
-              }
-            },
-            "required": [
-              "provider",
-              "owner",
-              "name"
-            ],
-            "additionalProperties": false,
-            "description": "Authorized GitHub repository to act on."
-          },
-          "base_ref": {
-            "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          },
-          "goal": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "decisions": {
-            "default": [],
-            "maxItems": 40,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema3"
-            }
-          },
-          "non_goals": {
-            "default": [],
-            "maxItems": 40,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema4"
-            }
-          },
-          "likely_paths": {
-            "default": [],
-            "maxItems": 40,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema5"
-            }
-          }
-        },
-        "required": [
-          "repository",
-          "base_ref",
-          "goal",
-          "decisions",
-          "non_goals",
-          "likely_paths"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "const": "github"
-          },
-          "__schema1": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "__schema3": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "__schema4": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "__schema5": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          }
-        }
-      }
-    },
-    "forge_task_get": {
-      "title": "Get task",
-      "description": "Get a task. mode=full (default), summary (compact resume), or resume (task + workspace + git + handoff in one call).",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target task id (task_...)."
-          },
-          "mode": {
-            "default": "full",
-            "type": "string",
-            "enum": [
-              "full",
-              "summary",
-              "resume"
-            ]
-          },
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "compact": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "task_id",
-          "mode"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_task_list": {
-      "title": "List tasks",
-      "description": "List recent tasks, optionally filtered by state or query.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "state": {
-            "type": "string",
-            "enum": [
-              "planning",
-              "ready",
-              "coding",
-              "validating",
-              "previewing",
-              "reviewing",
-              "awaiting-approval",
-              "complete",
-              "failed",
-              "cancelled"
-            ]
-          },
-          "q": {
+          "query": {
             "type": "string",
             "minLength": 1,
             "maxLength": 200
-          },
-          "limit": {
-            "default": 20,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
           }
         },
-        "required": [
-          "limit"
-        ],
         "additionalProperties": false
       }
     },
-    "forge_task_update": {
-      "title": "Update task",
-      "description": "Finish a task (outcome) and/or record a handoff for the next session.",
+    "forge_search": {
+      "title": "Search repository",
+      "description": "Search file paths and text directly in GitHub. Does not start compute.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "task_id": {
+          "repository": {
             "type": "string",
-            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target task id (task_...)."
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$",
+            "description": "Authorized GitHub repository, written owner/repo."
           },
-          "outcome": {
-            "type": "string",
-            "enum": [
-              "complete",
-              "failed",
-              "cancelled"
-            ]
-          },
-          "note": {
-            "type": "string",
-            "maxLength": 2000
-          },
-          "force": {
-            "default": false,
-            "type": "boolean"
-          },
-          "handoff_summary": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "next_steps": {
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema0"
-            }
-          },
-          "key_learnings": {
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema1"
-            }
-          },
-          "modified_files": {
-            "maxItems": 50,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema2"
-            }
-          },
-          "blocked_by": {
-            "type": "string",
-            "maxLength": 500
-          },
-          "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Fails if the workspace moved on past this revision."
-          }
-        },
-        "required": [
-          "task_id",
-          "force"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "__schema1": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          }
-        }
-      }
-    },
-    "forge_start": {
-      "title": "Start a branch",
-      "description": "Create forge/<slug> on GitHub from base_ref (default: the repository’s own default branch) — before any workspace exists, no container. Pass the returned branch as ref to forge_workspace_create: it adopts an already-existing forge/ branch instead of cutting a new one, so the branch is on origin from the moment it exists at all. If a live workspace already covers this repository, next_step steers you to reuse it instead of creating another.",
-      "sideEffect": "external",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "owner": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "repo": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "base_ref": {
-            "description": "Branch to fork from. Omit to use the repository’s actual default branch, resolved from GitHub rather than assumed to be main.",
+          "ref": {
+            "description": "Branch, tag, or commit SHA. Omit to use the repository default/current intent branch.",
             "$ref": "#/$defs/__schema0"
           },
-          "slug": {
-            "description": "Branch becomes forge/<slug>. Omit for a generated one.",
-            "$ref": "#/$defs/__schema1"
-          },
-          "idempotency_key": {
+          "query": {
             "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Repository-relative path."
+          },
+          "max_results": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
           }
         },
         "required": [
-          "owner",
-          "repo"
+          "repository",
+          "query",
+          "max_results"
         ],
         "additionalProperties": false,
         "$defs": {
@@ -442,288 +69,27 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 255
-          },
-          "__schema1": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 80,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
           }
         }
       }
     },
-    "forge_workspace_create": {
-      "title": "Create workspace",
-      "description": "Create a lightweight control-plane coding session and return workspace_id + operation_id immediately. No executor is provisioned here; the first shell, install, build, test, dev, preview, or deploy call allocates an ephemeral executor using the requested runtime/bootstrap settings. Refuses a second live workspace for the same repository — reuse owner/repo#branch instead.",
-      "sideEffect": "workspace",
+    "forge_read": {
+      "title": "Read repository",
+      "description": "Read up to 20 files or directories directly from GitHub. Directory paths return a bounded listing; no compute is started.",
+      "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "repository": {
-            "type": "object",
-            "properties": {
-              "provider": {
-                "$ref": "#/$defs/__schema0"
-              },
-              "owner": {
-                "$ref": "#/$defs/__schema1"
-              },
-              "name": {
-                "$ref": "#/$defs/__schema2"
-              }
-            },
-            "required": [
-              "provider",
-              "owner",
-              "name"
-            ],
-            "additionalProperties": false,
-            "description": "Authorized GitHub repository to act on."
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$",
+            "description": "Authorized GitHub repository, written owner/repo."
           },
           "ref": {
-            "description": "Branch to fork from. Omit to use the repository default branch (resolved from GitHub, not assumed to be main).",
-            "$ref": "#/$defs/__schema3"
-          },
-          "runtime": {
-            "default": "node-24",
-            "description": "Executor runtime to allocate lazily on the first execution call.",
-            "$ref": "#/$defs/__schema4"
-          },
-          "persistence": {
-            "default": "ephemeral",
-            "type": "string",
-            "const": "ephemeral"
-          },
-          "bootstrap": {
-            "default": true,
-            "description": "Run bootstrap when the executor is first allocated, not during workspace creation.",
-            "$ref": "#/$defs/__schema5"
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          }
-        },
-        "required": [
-          "repository",
-          "runtime",
-          "persistence",
-          "bootstrap"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "const": "github"
-          },
-          "__schema1": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "__schema3": {
-            "type": "string"
-          },
-          "__schema4": {
-            "type": "string",
-            "enum": [
-              "node-22",
-              "node-24",
-              "python-3.13",
-              "general-purpose"
-            ]
-          },
-          "__schema5": {
-            "type": "boolean"
-          }
-        }
-      }
-    },
-    "forge_workspace_get": {
-      "title": "Get workspace",
-      "description": "Compact workspace summary including branch_policy (must be on forge/). Defaults to compact:true for ChatGPT — pass compact:false only when you need the full dump.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
+            "description": "Branch, tag, or commit SHA. Omit to use the repository default/current intent branch.",
             "$ref": "#/$defs/__schema0"
-          },
-          "compact": {
-            "default": true,
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "compact"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_workspace_destroy": {
-      "title": "Destroy workspace",
-      "description": "End the control-plane session and discard any ephemeral executor state. GitHub branches and forge_edit commits are unaffected; command-created files that were not recreated with forge_edit are intentionally lost.",
-      "sideEffect": "destructive",
-      "approval": "policy",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "preserve_artifacts": {
-            "default": true,
-            "type": "boolean"
-          },
-          "force": {
-            "default": false,
-            "type": "boolean"
-          },
-          "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Fails if the workspace moved on past this revision."
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          }
-        },
-        "required": [
-          "preserve_artifacts",
-          "force"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_operation_get": {
-      "title": "Get operation",
-      "description": "After a disconnect or unknown tool outcome, check whether operation op_... finished, failed, or is still active.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "operation_id": {
-            "type": "string",
-            "pattern": "^op_.*"
-          }
-        },
-        "required": [
-          "operation_id"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_files_list": {
-      "title": "List files",
-      "description": "List a bounded file tree from the selected GitHub branch. No executor is allocated and no executor filesystem is consulted. Paths come back repo-relative, which is the form forge_edit and forge_files_read take.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "path": {
-            "default": "/workspace/repo",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1000,
-            "description": "Repo-relative, or absolute at or under /workspace/repo."
-          },
-          "depth": {
-            "default": 4,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 20
-          },
-          "limit": {
-            "default": 1000,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 10000
-          }
-        },
-        "required": [
-          "path",
-          "depth",
-          "limit"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_files_read": {
-      "title": "Read files",
-      "description": "Read one file or several directly from the selected GitHub branch without allocating an executor. The read guard that protects forge_edit is server-side; no input takes a hash back.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "path": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1000,
-            "description": "Repo-relative, or absolute at or under /workspace/repo."
           },
           "paths": {
             "minItems": 1,
@@ -733,27 +99,16 @@
               "$ref": "#/$defs/__schema1"
             }
           },
-          "start_line": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "end_line": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
           "max_bytes": {
             "default": 200000,
             "type": "integer",
             "minimum": 1,
             "maximum": 500000
-          },
-          "compact": {
-            "type": "boolean"
           }
         },
         "required": [
+          "repository",
+          "paths",
           "max_bytes"
         ],
         "additionalProperties": false,
@@ -761,37 +116,52 @@
           "__schema0": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 400
+            "maxLength": 255
           },
           "__schema1": {
             "type": "string",
             "minLength": 1,
             "maxLength": 1000,
-            "description": "Repo-relative, or absolute at or under /workspace/repo."
+            "description": "Repository-relative path."
           }
         }
       }
     },
     "forge_edit": {
-      "title": "Edit files",
-      "description": "Edit files. Committed straight to GitHub on your branch — no push, nothing left only in the workspace. Prefer replace: [{old,new}] and send only the fragment you are changing; Forge reads the current file and applies it. Use content for a whole new file, or content:null to delete. Returns the commit URL.",
+      "title": "Edit and commit",
+      "description": "Make a small, bounded repository change. Forge creates or reuses an intent branch, commits to GitHub, and verifies the remote commit before reporting success. Command-created files are never saved by this tool.",
       "sideEffect": "external",
       "approval": "none",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
+          "repository": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$",
+            "description": "Authorized GitHub repository, written owner/repo."
+          },
+          "ref": {
+            "description": "Branch, tag, or commit SHA. Omit to use the repository default/current intent branch.",
             "$ref": "#/$defs/__schema0"
+          },
+          "intent": {
+            "description": "Required when starting a new intent branch; omit only when ref names an existing intent branch.",
+            "$ref": "#/$defs/__schema1"
+          },
+          "base_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
           },
           "files": {
             "minItems": 1,
-            "maxItems": 50,
+            "maxItems": 10,
             "type": "array",
             "items": {
-              "$ref": "#/$defs/__schema1"
-            }
+              "$ref": "#/$defs/__schema2"
+            },
+            "description": "At most 10 files and 200 KB combined content (enforced by Forge)."
           },
           "message": {
             "type": "string",
@@ -799,13 +169,12 @@
             "maxLength": 500
           },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
+            "description": "Optional stable retry key. Omit for a new request.",
+            "$ref": "#/$defs/__schema6"
           }
         },
         "required": [
+          "repository",
           "files"
         ],
         "additionalProperties": false,
@@ -813,34 +182,29 @@
           "__schema0": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 400
+            "maxLength": 255
           },
           "__schema1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "__schema2": {
             "type": "object",
             "properties": {
               "path": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 1000
+                "maxLength": 1000,
+                "description": "Repository-relative path."
               },
               "content": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "maxLength": 500000
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "description": "Whole new file content; null deletes the file.",
+                "$ref": "#/$defs/__schema3"
               },
               "replace": {
-                "minItems": 1,
-                "maxItems": 20,
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/__schema2"
-                }
+                "description": "Unambiguous fragment replacements. Prefer this for existing files.",
+                "$ref": "#/$defs/__schema4"
               }
             },
             "required": [
@@ -848,7 +212,26 @@
             ],
             "additionalProperties": false
           },
-          "__schema2": {
+          "__schema3": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "__schema4": {
+            "minItems": 1,
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema5"
+            }
+          },
+          "__schema5": {
             "type": "object",
             "properties": {
               "old": {
@@ -869,107 +252,31 @@
               "new"
             ],
             "additionalProperties": false
+          },
+          "__schema6": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 200
           }
         }
       }
     },
-    "forge_diff_metadata": {
-      "title": "Diff metadata",
-      "description": "Syntax-only metadata over the GitHub branch comparison: changed symbols, secret risk, file classification, and suggested hunks. No executor is allocated.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "base": {
-            "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          }
-        },
-        "required": [
-          "base"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_context_get": {
-      "title": "Get context",
-      "description": "Deterministic repo-context selection for a goal. Returns ranked file paths with reasons, adjacent tests, governing instructions, and confidence scores. Does NOT return file contents — use forge_files_read for that.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "goal": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "likely_paths": {
-            "default": [],
-            "maxItems": 40,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema1"
-            }
-          },
-          "max_results": {
-            "default": 12,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
-          }
-        },
-        "required": [
-          "goal",
-          "likely_paths",
-          "max_results"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          },
-          "__schema1": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          }
-        }
-      }
-    },
-    "forge_shell": {
+    "forge_run": {
       "title": "Run command",
-      "description": "Allocate an ephemeral executor on first use and run a command for up to 30 seconds. Set async:true for known-long work; otherwise a long-running command returns process_id. Refused while a dependency install is still running — wait that process first. Never edit repo files via shell (sed/redirects/git add/commit/push) — use forge_edit. Command-created files remain executor-only and report remote_persisted:false.",
+      "description": "Run one command against the exact GitHub revision. Forge handles checkout and dependencies. File changes produced by commands are ephemeral and never committed automatically.",
       "sideEffect": "workspace",
       "approval": "policy",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
+          "repository": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$",
+            "description": "Authorized GitHub repository, written owner/repo."
+          },
+          "ref": {
+            "description": "GitHub branch. Omit to use the repository default branch.",
             "$ref": "#/$defs/__schema0"
           },
           "command": {
@@ -979,873 +286,64 @@
           },
           "cwd": {
             "default": "/workspace/repo",
-            "description": "Working directory inside the workspace; must start with /workspace.",
-            "$ref": "#/$defs/__schema1"
-          },
-          "timeout_ms": {
-            "default": 30000,
-            "type": "integer",
-            "minimum": 100,
-            "maximum": 900000
-          },
-          "environment": {
-            "default": {},
-            "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
-            "additionalProperties": {
-              "type": "string"
-            }
-          },
-          "network_policy": {
-            "default": "development",
-            "type": "string",
-            "enum": [
-              "deny_all",
-              "package_install",
-              "development",
-              "custom_allowlist",
-              "unrestricted_with_approval"
-            ]
-          },
-          "output_limit_bytes": {
-            "default": 200000,
-            "type": "integer",
-            "minimum": 1000,
-            "maximum": 1000000
-          },
-          "mode": {
-            "type": "string",
-            "enum": [
-              "read_only",
-              "mutating"
-            ]
-          },
-          "async": {
-            "type": "boolean"
-          },
-          "compact": {
-            "default": true,
-            "type": "boolean"
-          },
-          "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Fails if the workspace moved on past this revision."
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          },
-          "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
-          }
-        },
-        "required": [
-          "command",
-          "cwd",
-          "timeout_ms",
-          "environment",
-          "network_policy",
-          "output_limit_bytes",
-          "compact"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          },
-          "__schema1": {
-            "type": "string",
-            "pattern": "^\\/workspace.*"
-          }
-        }
-      }
-    },
-    "forge_process_list": {
-      "title": "List processes",
-      "description": "List managed executor processes. Pass process_id to get one process in detail. Process filesystem effects are ephemeral and never imply a GitHub change.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "process_id": {
-            "type": "string",
-            "pattern": "^proc_.*"
-          }
-        },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_process_wait": {
-      "title": "Wait for process",
-      "description": "Observe a managed executor process for at most 30 seconds. timedOut:true is observational: call again with the same process_id instead of restarting it. Process filesystem effects remain executor-only and are never auto-committed to GitHub.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "process_id": {
-            "type": "string",
-            "pattern": "^proc_.*"
-          },
-          "timeout_ms": {
-            "default": 30000,
-            "type": "integer",
-            "minimum": 1000,
-            "maximum": 30000
-          }
-        },
-        "required": [
-          "process_id",
-          "timeout_ms"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_process_logs": {
-      "title": "Process logs",
-      "description": "Read new log bytes after an opaque cursor. Pass nextCursor until hasMore is false.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "process_id": {
-            "type": "string",
-            "pattern": "^proc_.*"
-          },
-          "cursor": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "process_id"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_process_stop": {
-      "title": "Stop process",
-      "description": "Stop a managed process. force:true cancels harder (SIGTERM then SIGKILL).",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "process_id": {
-            "type": "string",
-            "pattern": "^proc_.*"
-          },
-          "force": {
-            "default": false,
-            "type": "boolean"
-          },
-          "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Fails if the workspace moved on past this revision."
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          }
-        },
-        "required": [
-          "process_id",
-          "force"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_deps_install": {
-      "title": "Install dependencies",
-      "description": "Allocate the ephemeral executor if needed and start one managed dependency install. Reuse its processId with bounded forge_process_wait calls; do not start a second install. Lockfile changes remain executor-only until explicitly recreated with forge_edit.",
-      "sideEffect": "workspace",
-      "approval": "policy",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "frozen_lockfile": {
-            "default": true,
-            "type": "boolean"
-          },
-          "allow_lockfile_update": {
-            "default": false,
-            "type": "boolean"
-          },
-          "network_policy": {
-            "default": "package_install",
-            "type": "string",
-            "enum": [
-              "deny_all",
-              "package_install",
-              "development",
-              "custom_allowlist",
-              "unrestricted_with_approval"
-            ]
-          },
-          "timeout_ms": {
-            "default": 600000,
-            "type": "integer",
-            "minimum": 10000,
-            "maximum": 900000
-          },
-          "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Fails if the workspace moved on past this revision."
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          }
-        },
-        "required": [
-          "frozen_lockfile",
-          "allow_lockfile_update",
-          "network_policy",
-          "timeout_ms"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_pr": {
-      "title": "Pull requests",
-      "description": "List PRs or read live readiness. Merge and close re-check the head, require human approval, and bind a supplied idempotency_key to one exact mutation.",
-      "sideEffect": "external",
-      "approval": "required",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "owner": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "repo": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "action": {
-            "default": "list",
-            "type": "string",
-            "enum": [
-              "list",
-              "status",
-              "merge",
-              "close"
-            ]
-          },
-          "number": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "expected_head_sha": {
-            "description": "Optional concurrency guard from action:status for merge or close.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "merge_method": {
-            "default": "merge",
-            "type": "string",
-            "enum": [
-              "merge",
-              "squash",
-              "rebase"
-            ]
-          },
-          "force": {
-            "default": false,
-            "type": "boolean"
-          },
-          "reason": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          }
-        },
-        "required": [
-          "owner",
-          "repo",
-          "action",
-          "merge_method",
-          "force"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{40}$"
-          }
-        }
-      }
-    },
-    "forge_access": {
-      "title": "Repository access",
-      "description": "Why Forge can or cannot reach a repository: which repositories this account has authorized, and for one repo whether the GitHub App is installed and what it can do. Call this when a Git operation fails with a permission error, before assuming the transport is broken.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "owner": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "repo": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          }
-        },
-        "additionalProperties": false
-      }
-    },
-    "forge_history": {
-      "title": "Commit history",
-      "description": "Recent commits on a branch, or the history of one file. Returns sha, message, author and date — not diffs. Use it to see how a file got to its current state without cloning anything.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "owner": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "repo": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "path": {
             "type": "string",
             "minLength": 1,
             "maxLength": 1000
           },
-          "ref": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          },
-          "limit": {
-            "default": 20,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50
-          }
-        },
-        "required": [
-          "owner",
-          "repo",
-          "limit"
-        ],
-        "additionalProperties": false
-      }
-    },
-    "forge_branches": {
-      "title": "List or delete branches",
-      "description": "List branches with proved merge state, or delete one. Live-workspace and default branches are always refused; unmerged deletion needs force plus reason. Large lists report truncation.",
-      "sideEffect": "external",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "owner": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "repo": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "action": {
-            "default": "list",
-            "type": "string",
-            "enum": [
-              "list",
-              "delete"
-            ]
-          },
-          "branch": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          },
-          "expected_sha": {
-            "description": "Optional concurrency guard from action:list. Refuse deletion if the branch tip changed.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "merged_only": {
-            "default": false,
-            "type": "boolean"
-          },
-          "force": {
-            "default": false,
-            "type": "boolean"
-          },
-          "reason": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          }
-        },
-        "required": [
-          "owner",
-          "repo",
-          "action",
-          "merged_only",
-          "force"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{40}$"
-          }
-        }
-      }
-    },
-    "forge_merge": {
-      "title": "Merge for review",
-      "description": "Ask the human to merge your work. Opens a pull request from your branch and returns one approval link — echo the link, do not invent URLs. Your branch is already on GitHub; nothing is pushed here. Do not call again while the same submission is pending.",
-      "sideEffect": "external",
-      "approval": "deferred",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "pr_base": {
-            "default": "main",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256
-          },
-          "body": {
-            "default": "",
-            "type": "string",
-            "maxLength": 60000
-          },
-          "task_id": {
-            "type": "string",
-            "pattern": "^task_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Target task id (task_...)."
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          }
-        },
-        "required": [
-          "pr_base",
-          "body"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_deploy_profiles": {
-      "title": "List deploy profiles",
-      "description": "List approved deploy profiles for a repository/workspace. Use before guessing a Cloudflare deploy command.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          }
-        },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_deploy_profile_plan": {
-      "title": "Plan deploy profile",
-      "description": "Inspect repo deploy hints (wrangler.toml/package scripts) and propose a Cloudflare deploy profile. Repo files are hints only; approval saves the authoritative Forge profile.",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "environment": {
-            "type": "string",
-            "enum": [
-              "preview",
-              "staging",
-              "production"
-            ]
-          }
-        },
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_deploy_profile_approve": {
-      "title": "Approve deploy profile",
-      "description": "Request approval to save or update a deploy profile snapshot. Profile approval is distinct from deploy approval.",
-      "sideEffect": "external",
-      "approval": "required",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "label": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "environment": {
-            "default": "preview",
-            "type": "string",
-            "enum": [
-              "preview",
-              "staging",
-              "production"
-            ]
-          },
-          "workflow": {
-            "default": "cloudflare_wrangler",
-            "type": "string",
-            "enum": [
-              "cloudflare_wrangler"
-            ]
-          },
-          "cwd": {
-            "default": "/workspace/repo",
-            "description": "Working directory inside the workspace; must start with /workspace.",
+          "timeout_ms": {
+            "default": 600000,
+            "description": "Maximum command runtime. Forge returns a status URL when work outlives the host-safe synchronous window.",
             "$ref": "#/$defs/__schema1"
           },
-          "command": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
-          },
-          "expected_url": {
-            "type": "string",
-            "format": "uri"
-          },
-          "expected_worker_name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "account_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "map_env": {
-            "default": {
-              "CLOUDFLARE_API_TOKEN": "CLOUDFLARE_API_TOKEN"
-            },
-            "type": "object",
-            "propertyNames": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 100
-            },
-            "additionalProperties": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 100
-            }
-          },
-          "source_hint": {
-            "default": "agent-provided",
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          },
-          "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
-          },
           "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          }
-        },
-        "required": [
-          "label",
-          "environment",
-          "workflow",
-          "cwd",
-          "command",
-          "map_env",
-          "source_hint"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          },
-          "__schema1": {
-            "type": "string",
-            "pattern": "^\\/workspace.*"
-          }
-        }
-      }
-    },
-    "forge_deploy": {
-      "title": "Deploy",
-      "description": "Approved deploy using attached vault secrets or an approved deploy profile. Prefer profile_id from forge_deploy_profiles; otherwise pass command/cwd/map_env directly. Requires idempotency_key; slow runs return process_id, then the same key yields a verified receipt.",
-      "sideEffect": "external",
-      "approval": "required",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "profile_id": {
-            "type": "string",
-            "pattern": "^dpf_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Deploy profile id (dpf_...)."
-          },
-          "workflow": {
-            "default": "auto",
-            "type": "string",
-            "enum": [
-              "auto",
-              "cloudflare_wrangler"
-            ]
-          },
-          "command": {
-            "description": "Override default command (e.g. npx wrangler deploy).",
-            "$ref": "#/$defs/__schema1"
-          },
-          "map_env": {
-            "description": "Process env name → attached vault var name. Example: { \"CLOUDFLARE_API_TOKEN\": \"CF_KEY\" }.",
+            "description": "Optional stable retry key. Omit for a new request.",
             "$ref": "#/$defs/__schema2"
-          },
-          "cwd": {
-            "default": "/workspace/repo",
-            "description": "Working directory inside the workspace; must start with /workspace.",
-            "$ref": "#/$defs/__schema3"
-          },
-          "expected_url": {
-            "type": "string",
-            "format": "uri"
-          },
-          "include_output": {
-            "default": false,
-            "type": "boolean"
-          },
-          "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Stable key makes a retry safe. Fresh value per distinct call."
           }
         },
         "required": [
-          "workflow",
+          "repository",
+          "command",
           "cwd",
-          "include_output",
-          "idempotency_key"
+          "timeout_ms"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 400
+            "maxLength": 255
           },
           "__schema1": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 600000
           },
           "__schema2": {
-            "type": "object",
-            "propertyNames": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 100
-            },
-            "additionalProperties": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 100
-            }
-          },
-          "__schema3": {
             "type": "string",
-            "pattern": "^\\/workspace.*"
+            "minLength": 8,
+            "maxLength": 200
           }
         }
       }
     },
-    "forge_review": {
-      "title": "Review URL",
-      "description": "Screenshot a public URL and return images within a 40s capture budget.",
+    "forge_screenshot": {
+      "title": "Screenshot",
+      "description": "Capture a public URL or owner/repo#ref at responsive breakpoints. Repository captures start and expose the preview internally; screenshots are returned inline when available.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "url": {
+          "target": {
             "type": "string",
-            "format": "uri"
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Public URL or authorized repository reference: owner/repo or owner/repo#ref."
           },
-          "captures": {
+          "paths": {
             "default": [
-              {
-                "path": "/",
-                "state": "entry"
-              }
+              "/"
             ],
             "minItems": 1,
             "maxItems": 10,
@@ -1860,10 +358,17 @@
               "desktop"
             ],
             "minItems": 1,
-            "maxItems": 3,
+            "maxItems": 4,
             "type": "array",
             "items": {
               "$ref": "#/$defs/__schema1"
+            }
+          },
+          "steps": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema2"
             }
           },
           "full_page": {
@@ -1878,8 +383,8 @@
           }
         },
         "required": [
-          "url",
-          "captures",
+          "target",
+          "paths",
           "viewports",
           "full_page",
           "time_budget_ms"
@@ -1887,29 +392,8 @@
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
-            "type": "object",
-            "properties": {
-              "path": {
-                "type": "string",
-                "pattern": "^\\/.*"
-              },
-              "state": {
-                "default": "entry",
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
-              },
-              "selection": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 200
-              }
-            },
-            "required": [
-              "path",
-              "state"
-            ],
-            "additionalProperties": false
+            "type": "string",
+            "pattern": "^\\/.*"
           },
           "__schema1": {
             "anyOf": [
@@ -1932,7 +416,7 @@
                   "width": {
                     "type": "integer",
                     "minimum": 240,
-                    "maximum": 1920
+                    "maximum": 3840
                   },
                   "height": {
                     "type": "integer",
@@ -1948,165 +432,6 @@
                 "additionalProperties": false
               }
             ]
-          }
-        }
-      }
-    },
-    "forge_preview_expose": {
-      "title": "Expose preview",
-      "description": "Expose a running process through a short-lived Forge preview URL. Private by default; public access needs approval.",
-      "sideEffect": "workspace",
-      "approval": "policy",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "process_id": {
-            "type": "string",
-            "pattern": "^proc_.*"
-          },
-          "port": {
-            "type": "integer",
-            "minimum": 1024,
-            "maximum": 65535
-          },
-          "access": {
-            "default": "private",
-            "type": "string",
-            "enum": [
-              "private",
-              "tenant",
-              "share-link",
-              "public"
-            ]
-          },
-          "ttl_seconds": {
-            "default": 3600,
-            "type": "integer",
-            "minimum": 60,
-            "maximum": 86400
-          },
-          "expected_revision": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "description": "Fails if the workspace moved on past this revision."
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 200,
-            "description": "Optional. Stable key makes a retry safe; omit to always execute."
-          }
-        },
-        "required": [
-          "process_id",
-          "port",
-          "access",
-          "ttl_seconds"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_preview": {
-      "title": "Preview capture",
-      "description": "Screenshot a workspace app. Omit preview_id to start/expose its server; optional steps drive interactions. Refused while a dependency install is still running — forge_deps_install → forge_process_wait first.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "preview_id": {
-            "type": "string",
-            "pattern": "^prv_.*"
-          },
-          "preview_wait_ms": {
-            "default": 30000,
-            "type": "integer",
-            "minimum": 5000,
-            "maximum": 30000
-          },
-          "captures": {
-            "minItems": 1,
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema1"
-            }
-          },
-          "viewports": {
-            "default": [
-              "phone",
-              "desktop"
-            ],
-            "minItems": 1,
-            "maxItems": 4,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema3"
-            }
-          }
-        },
-        "required": [
-          "preview_wait_ms",
-          "captures",
-          "viewports"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
-          },
-          "__schema1": {
-            "type": "object",
-            "properties": {
-              "route": {
-                "type": "string",
-                "pattern": "^\\/.*"
-              },
-              "state": {
-                "default": "entry",
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 100
-              },
-              "selection": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 200
-              },
-              "steps": {
-                "minItems": 1,
-                "maxItems": 20,
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/__schema2"
-                }
-              }
-            },
-            "required": [
-              "route",
-              "state"
-            ],
-            "additionalProperties": false
           },
           "__schema2": {
             "type": "object",
@@ -2157,364 +482,146 @@
               "kind"
             ],
             "additionalProperties": false
-          },
-          "__schema3": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "phone",
-                  "tablet",
-                  "desktop"
-                ]
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 40
-                  },
-                  "width": {
-                    "type": "integer",
-                    "minimum": 240,
-                    "maximum": 3840
-                  },
-                  "height": {
-                    "type": "integer",
-                    "minimum": 240,
-                    "maximum": 2160
-                  }
-                },
-                "required": [
-                  "id",
-                  "width",
-                  "height"
-                ],
-                "additionalProperties": false
-              }
-            ]
           }
         }
       }
     },
-    "forge_artifact_get": {
-      "title": "Get artifact",
-      "description": "Fetch a stored artifact (images returned as MCP image content). workspace for a workspace artifact; workspace_id for a forge_review screenshot (it has no repository/branch).",
+    "forge_environments": {
+      "title": "Deployment environments",
+      "description": "List saved deployment environments and readiness for a repository. Returns labels and providers only; secret values and mappings never leave Forge.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "workspace_id": {
+          "repository": {
             "type": "string",
-            "pattern": "^ws_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Workspace id from a forge_review result (no repository/branch). Otherwise use workspace."
-          },
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "artifact_id": {
-            "type": "string",
-            "pattern": "^art_.*"
-          },
-          "max_bytes": {
-            "default": 2500000,
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 4000000
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$",
+            "description": "Authorized GitHub repository, written owner/repo."
           }
         },
         "required": [
-          "artifact_id",
-          "max_bytes"
+          "repository"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "forge_deploy": {
+      "title": "Deploy",
+      "description": "Request deployment of an exact GitHub revision through a saved environment. Returns a deferred approval/status URL; Forge runs the approved deployment without another Chat call.",
+      "sideEffect": "external",
+      "approval": "deferred",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "repository": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$",
+            "description": "Authorized GitHub repository, written owner/repo."
+          },
+          "ref": {
+            "description": "GitHub branch. Omit to use the repository default branch.",
+            "$ref": "#/$defs/__schema0"
+          },
+          "environment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "idempotency_key": {
+            "description": "Optional stable retry key. Omit for a new request.",
+            "$ref": "#/$defs/__schema1"
+          }
+        },
+        "required": [
+          "repository",
+          "environment"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 400
-          }
-        }
-      }
-    },
-    "forge_artifact_upload": {
-      "title": "Upload artifact",
-      "description": "Upload a binary file as a stored artifact. Pass base64-encoded content. Returns artifact id for later retrieval.",
-      "sideEffect": "workspace",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
+            "maxLength": 255
           },
-          "filename": {
+          "__schema1": {
             "type": "string",
-            "minLength": 1,
+            "minLength": 8,
             "maxLength": 200
-          },
-          "content_base64": {
+          }
+        }
+      }
+    },
+    "forge_submit": {
+      "title": "Submit for review",
+      "description": "Seal an intent branch and submit its verified GitHub revision for deferred review and draft pull-request creation.",
+      "sideEffect": "external",
+      "approval": "deferred",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "repository": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$",
+            "description": "Authorized GitHub repository, written owner/repo."
           },
-          "content_type": {
-            "default": "application/octet-stream",
+          "ref": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100
+            "maxLength": 255,
+            "description": "Exact forge/chat-* intent branch returned by forge_edit."
           },
-          "metadata": {
-            "default": {},
-            "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
-            "additionalProperties": {
-              "type": "string",
-              "maxLength": 200
-            }
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 60000
+          },
+          "idempotency_key": {
+            "description": "Optional stable retry key. Omit for a new request.",
+            "$ref": "#/$defs/__schema0"
           }
         },
         "required": [
-          "filename",
-          "content_base64",
-          "content_type",
-          "metadata"
+          "repository",
+          "ref"
         ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 400
+            "minLength": 8,
+            "maxLength": 200
           }
         }
       }
     },
-    "forge_secret_list": {
-      "title": "List secrets",
-      "description": "List stored secrets (labels, providers, env var names). Values never returned.",
+    "forge_status": {
+      "title": "Status",
+      "description": "Recover the latest Forge result for a repository/ref or durable operation ID. Never restarts work and is not required for normal flows.",
       "sideEffect": "none",
       "approval": "none",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      }
-    },
-    "forge_secret_accounts": {
-      "title": "List provider accounts",
-      "description": "Use a stored API token to list Cloudflare accounts (id + name only). Pass token_var when the token is not named CLOUDFLARE_API_TOKEN (e.g. CF_KEY). Ask the user which account_id to keep, then forge_secret_update to set CLOUDFLARE_ACCOUNT_ID (env merges; token stays).",
-      "sideEffect": "none",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
         "properties": {
-          "secret_id": {
-            "type": "string",
-            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Secret id (sec_...)."
-          },
-          "token_var": {
-            "description": "Vault env name holding the API token. Defaults to CLOUDFLARE_API_TOKEN, or the sole var on the secret.",
+          "target": {
+            "description": "owner/repo, owner/repo#ref, or operation ID from a prior receipt. Omit to recover the most recent operation.",
             "$ref": "#/$defs/__schema0"
           }
         },
-        "required": [
-          "secret_id"
-        ],
         "additionalProperties": false,
         "$defs": {
           "__schema0": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100
-          }
-        }
-      }
-    },
-    "forge_secret_create": {
-      "title": "Create secret",
-      "description": "Store env vars as a labeled secret. Encrypted at rest; values never returned.",
-      "sideEffect": "external",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "label": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "provider": {
-            "default": "generic",
-            "type": "string",
-            "enum": [
-              "cloudflare",
-              "shopify",
-              "generic"
-            ]
-          },
-          "env": {
-            "type": "object",
-            "propertyNames": {
-              "$ref": "#/$defs/__schema0"
-            },
-            "additionalProperties": {
-              "$ref": "#/$defs/__schema1"
-            },
-            "description": "Environment variable key-value pairs to store."
-          }
-        },
-        "required": [
-          "label",
-          "provider",
-          "env"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string"
-          },
-          "__schema1": {
-            "type": "string"
-          }
-        }
-      }
-    },
-    "forge_secret_update": {
-      "title": "Update secret",
-      "description": "Update label/provider, or patch env vars (merged into existing — so you can add CLOUDFLARE_ACCOUNT_ID without re-sending the token). Optional unset_env removes keys.",
-      "sideEffect": "external",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "secret_id": {
-            "type": "string",
-            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Secret id (sec_...)."
-          },
-          "label": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "provider": {
-            "default": "generic",
-            "type": "string",
-            "enum": [
-              "cloudflare",
-              "shopify",
-              "generic"
-            ]
-          },
-          "env": {
-            "type": "object",
-            "propertyNames": {
-              "$ref": "#/$defs/__schema0"
-            },
-            "additionalProperties": {
-              "$ref": "#/$defs/__schema1"
-            },
-            "description": "Environment variable key-value pairs to store."
-          },
-          "unset_env": {
-            "maxItems": 50,
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/__schema2"
-            }
-          }
-        },
-        "required": [
-          "secret_id"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string"
-          },
-          "__schema1": {
-            "type": "string"
-          },
-          "__schema2": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          }
-        }
-      }
-    },
-    "forge_secret_delete": {
-      "title": "Delete secret",
-      "description": "Permanently delete a secret and detach it from workspaces.",
-      "sideEffect": "destructive",
-      "approval": "none",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "secret_id": {
-            "type": "string",
-            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Secret id (sec_...)."
-          }
-        },
-        "required": [
-          "secret_id"
-        ],
-        "additionalProperties": false
-      }
-    },
-    "forge_secret_attach": {
-      "title": "Attach or detach secret",
-      "description": "Attach (default) or detach (attached:false) a secret on a workspace. Attach requires human approval.",
-      "sideEffect": "external",
-      "approval": "required",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "secret_id": {
-            "type": "string",
-            "pattern": "^sec_[0-9a-hjkmnp-tv-z]{20,32}$",
-            "description": "Secret id (sec_...)."
-          },
-          "workspace": {
-            "description": "workspace_id, \"owner/repo#branch\", or branch; omit for the sole open workspace.",
-            "$ref": "#/$defs/__schema0"
-          },
-          "attached": {
-            "default": true,
-            "type": "boolean"
-          },
-          "approval_id": {
-            "type": "string",
-            "pattern": "^apr_.*"
-          }
-        },
-        "required": [
-          "secret_id",
-          "attached"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 400
+            "maxLength": 1000
           }
         }
       }

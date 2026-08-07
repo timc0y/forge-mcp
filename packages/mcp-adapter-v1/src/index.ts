@@ -1,89 +1,42 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { forgeTools, type ForgeToolHandlers, type ForgeToolResponse } from '@forge/mcp-core';
+import {
+  forgeTools,
+  type ForgeToolDefinition,
+  type ForgeToolHandlers,
+  type ForgeToolResponse
+} from '@forge/mcp-core';
 import { toForgeError } from '@forge/core';
 import { z, type ZodRawShape } from 'zod';
 
-const RETRY_SAFE_MUTATIONS = new Set([
-  'forge_workspace_create',
-  'forge_shell',
-  'forge_process_stop',
-  'forge_workspace_destroy',
-  'forge_deps_install',
-  'forge_preview_expose'
-]);
+const RETRY_SAFE_MUTATIONS = new Set<string>();
 
 const TRUE_READS = new Set([
-  'forge_access',
-  'forge_history',
-  'forge_capabilities',
-  'forge_observer_workspaces',
-  'forge_observer_workspace',
-  'forge_observer_activity',
-  'forge_repository_list',
-  'forge_workspace_get',
-  'forge_files_list',
-  'forge_files_read',
-  'forge_process_logs',
-  'forge_process_list',
-  'forge_process_wait',
-  'forge_diff_metadata',
-  'forge_context_get',
-  'forge_operation_get',
-  'forge_artifact_get',
-  'forge_task_get',
-  'forge_task_list',
-  'forge_secret_list',
-  'forge_secret_accounts',
-  'forge_deploy_profiles',
-  'forge_deploy_profile_plan'
+  'forge_repositories',
+  'forge_search',
+  'forge_read',
+  'forge_screenshot',
+  'forge_environments',
+  'forge_status'
 ]);
 
 // Open world tools reaching arbitrary external URLs directly (not just GitHub App host or workspace-scoped previews).
 const OPEN_WORLD = new Set([
-  'forge_review'
+  'forge_screenshot'
 ]);
 
 // Short (<=64 char) ChatGPT status strings surfaced through result/tool _meta.
 interface ToolInvocationStatus { invoking: string; invoked: string }
 const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
-  forge_review: { invoking: 'Capturing screenshots…', invoked: 'Screenshots ready' },
-  forge_preview: { invoking: 'Capturing preview…', invoked: 'Preview captured' },
-  forge_preview_expose: { invoking: 'Exposing preview…', invoked: 'Preview ready' },
-  forge_workspace_create: { invoking: 'Creating workspace…', invoked: 'Workspace requested' },
-  forge_workspace_get: { invoking: 'Checking workspace…', invoked: 'Workspace status ready' },
-  forge_workspace_destroy: { invoking: 'Destroying workspace…', invoked: 'Workspace destroyed' },
-  forge_files_list: { invoking: 'Listing files…', invoked: 'File list ready' },
-  forge_files_read: { invoking: 'Reading files…', invoked: 'Files read' },
-  forge_diff_metadata: { invoking: 'Analyzing diff…', invoked: 'Diff metadata ready' },
-  forge_context_get: { invoking: 'Selecting context…', invoked: 'Context ready' },
-  forge_shell: { invoking: 'Running command…', invoked: 'Command finished' },
-  forge_process_logs: { invoking: 'Reading logs…', invoked: 'Logs ready' },
-  forge_process_list: { invoking: 'Listing processes…', invoked: 'Process list ready' },
-  forge_process_wait: { invoking: 'Waiting for process…', invoked: 'Process finished' },
-  forge_process_stop: { invoking: 'Stopping process…', invoked: 'Process stopped' },
-  forge_operation_get: { invoking: 'Checking operation…', invoked: 'Operation status ready' },
-  forge_observer_workspaces: { invoking: 'Listing workspaces…', invoked: 'Workspace list ready' },
-  forge_observer_workspace: { invoking: 'Observing workspace…', invoked: 'Workspace observer ready' },
-  forge_observer_activity: { invoking: 'Loading activity…', invoked: 'Activity ready' },
-  forge_merge: { invoking: 'Submitting for review…', invoked: 'Submitted for review' },
-  forge_deploy_profiles: { invoking: 'Listing deploy profiles…', invoked: 'Deploy profiles ready' },
-  forge_deploy_profile_plan: { invoking: 'Planning deploy profile…', invoked: 'Deploy profile planned' },
-  forge_deploy_profile_approve: { invoking: 'Approving deploy profile…', invoked: 'Deploy profile approved' },
-  forge_deploy: { invoking: 'Deploying…', invoked: 'Deploy finished' },
-  forge_repository_list: { invoking: 'Listing repositories…', invoked: 'Repositories ready' },
-  forge_artifact_get: { invoking: 'Fetching artifact…', invoked: 'Artifact ready' },
-  forge_artifact_upload: { invoking: 'Uploading artifact…', invoked: 'Artifact uploaded' },
-  forge_deps_install: { invoking: 'Installing dependencies…', invoked: 'Dependencies installed' },
-  forge_task_create: { invoking: 'Creating task…', invoked: 'Task created' },
-  forge_task_get: { invoking: 'Loading task…', invoked: 'Task ready' },
-  forge_task_list: { invoking: 'Listing tasks…', invoked: 'Tasks ready' },
-  forge_task_update: { invoking: 'Updating task…', invoked: 'Task updated' },
-  forge_secret_list: { invoking: 'Listing secrets…', invoked: 'Secrets ready' },
-  forge_secret_accounts: { invoking: 'Listing provider accounts…', invoked: 'Accounts ready' },
-  forge_secret_create: { invoking: 'Saving secret…', invoked: 'Secret saved' },
-  forge_secret_update: { invoking: 'Updating secret…', invoked: 'Secret updated' },
-  forge_secret_delete: { invoking: 'Deleting secret…', invoked: 'Secret deleted' },
-  forge_secret_attach: { invoking: 'Updating secret attach…', invoked: 'Secret attach updated' }
+  forge_repositories: { invoking: 'Finding repositories…', invoked: 'Repositories ready' },
+  forge_search: { invoking: 'Searching repository…', invoked: 'Search ready' },
+  forge_read: { invoking: 'Reading repository…', invoked: 'Files ready' },
+  forge_edit: { invoking: 'Committing change…', invoked: 'Change committed' },
+  forge_run: { invoking: 'Running command…', invoked: 'Command finished' },
+  forge_screenshot: { invoking: 'Capturing screenshots…', invoked: 'Screenshots ready' },
+  forge_environments: { invoking: 'Loading environments…', invoked: 'Environments ready' },
+  forge_deploy: { invoking: 'Requesting deployment…', invoked: 'Deployment requested' },
+  forge_submit: { invoking: 'Submitting for review…', invoked: 'Review submitted' },
+  forge_status: { invoking: 'Checking status…', invoked: 'Status ready' }
 };
 
 export function toolAnnotations(name: string, sideEffect: 'none' | 'workspace' | 'external' | 'destructive') {
@@ -118,7 +71,12 @@ function splitMeta(value: Record<string, unknown>): {
 function summarize(name: string, value: Record<string, unknown>): string {
   const pick = (k: string): string | undefined =>
     typeof value?.[k] === 'string' ? (value[k] as string) : undefined;
-  return pick('nextStep') ?? pick('message') ?? pick('summary') ?? `${name} completed`;
+  const nextAction = value.next_action;
+  const nextActionMessage = nextAction && typeof nextAction === 'object' && !Array.isArray(nextAction)
+    && typeof (nextAction as Record<string, unknown>).message === 'string'
+    ? (nextAction as Record<string, unknown>).message as string
+    : undefined;
+  return pick('next_action') ?? nextActionMessage ?? pick('next_step') ?? pick('nextStep') ?? pick('message') ?? pick('summary') ?? `${name} completed`;
 }
 
 /**
@@ -127,8 +85,8 @@ function summarize(name: string, value: Record<string, unknown>): string {
  * Deliberately explicit named list. Empty `failing: []` differs from absent; general rules cannot distinguish. Every entry is redundant by construction and checked against siblings before removal.
  */
 export function slimResponse(name: string, value: Record<string, unknown>): Record<string, unknown> {
-  // forge_operation_get reports exact bookkeeping (replay status/keys). Answered in full.
-  if (name === 'forge_operation_get') return value;
+  // forge_status reports exact bookkeeping. Answered in full.
+  if (name === 'forge_status') return value;
   const slim = { ...value };
   // Echoed verbatim from reported operation for non-replays. Kept if differ on real replays.
   if (slim.replayed === false && slim.originalOperationId === slim.operationId) {
@@ -183,12 +141,13 @@ export interface ToolCallTelemetry {
   input: Record<string, unknown>;
 }
 
-export function registerForgeToolsV1(
+function registerForgeToolSetV1(
   server: McpServer,
   handlers: ForgeToolHandlers,
+  definitions: readonly (ForgeToolDefinition & { name: keyof ForgeToolHandlers })[],
   onToolCall?: (event: ToolCallTelemetry) => void
 ): void {
-  for (const definition of forgeTools) {
+  for (const definition of definitions) {
     const status = TOOL_INVOCATION_STATUS[definition.name];
     server.registerTool(
       definition.name,
@@ -281,4 +240,13 @@ export function registerForgeToolsV1(
       }
     );
   }
+}
+
+/** Register Forge's one direct-chat catalog. */
+export function registerForgeToolsV1(
+  server: McpServer,
+  handlers: ForgeToolHandlers,
+  onToolCall?: (event: ToolCallTelemetry) => void
+): void {
+  registerForgeToolSetV1(server, handlers, forgeTools, onToolCall);
 }

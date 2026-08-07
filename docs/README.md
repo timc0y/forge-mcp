@@ -4,7 +4,7 @@ Forge provides a secure, durable, remote development runtime for coding agents.
 
 ## Directory Index
 *   [Architecture](./architecture.md): Request routing, workspace lifecycle, bindings.
-*   [Tool Reference](./tools.md): Reference details for the 45 MCP tools.
+*   [Tool Reference](./tools.md): Reference details for the 47 MCP tools.
 *   [Connectors & Setup](./connectors.md): Client setup (ChatGPT/Claude) and OAuth.
 *   [Operations](./operations.md): Verification, deployment, watchdogs, cleanup.
 *   [Security](./security/README.md): Threat models, capabilities, approvals.

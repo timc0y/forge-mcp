@@ -11,7 +11,7 @@ import { mayAutoApproveShell } from '../../apps/forge-edge-gateway/src/handlers/
 // (DO stubs, R2, D1) to run, so they are exercised at the primitive level here:
 // the wiring in mcp-session.ts is a thin, reviewed adapter over these units.
 
-describe('SSRF guard (forge_review URL egress)', () => {
+describe('SSRF guard (forge_screenshot URL egress)', () => {
   // Mirrors mcp-session.ts: new URL(input.url).hostname with IPv6 brackets stripped.
   const hostOf = (url: string) => new URL(url).hostname.replace(/^\[|\]$/g, '');
 
@@ -38,10 +38,10 @@ describe('SSRF guard (forge_review URL egress)', () => {
     });
   }
 
-  it('the forge_review schema still accepts an arbitrary URL (guard is runtime, not schema)', () => {
-    const review = forgeTools.find((t) => t.name === 'forge_review');
-    expect(review).toBeDefined();
-    const url = (review!.inputSchema as { url: { safeParse(v: unknown): { success: boolean } } }).url;
+  it('the forge_screenshot schema accepts URL targets (guard is runtime, not schema)', () => {
+    const screenshot = forgeTools.find((t) => t.name === 'forge_screenshot');
+    expect(screenshot).toBeDefined();
+    const url = (screenshot!.inputSchema as { target: { safeParse(v: unknown): { success: boolean } } }).target;
     // Schema permits any well-formed URL; the SSRF block is enforced in the handler.
     expect(url.safeParse('http://169.254.169.254/').success).toBe(true);
   });
@@ -116,7 +116,7 @@ describe('task-state transition enforcement (forge_task_finish)', () => {
   });
 });
 
-describe('bounded inputs (forge_files_read aggregate ceiling)', () => {
+describe('bounded inputs (forge_read aggregate ceiling)', () => {
   // Replicates the mcp-session.ts ceiling: paths.length * max_bytes must not
   // exceed MAX_TOTAL_READ_BYTES, independent of the per-file schema bound.
   const MAX_TOTAL_READ_BYTES = 2_000_000;
@@ -131,7 +131,7 @@ describe('bounded inputs (forge_files_read aggregate ceiling)', () => {
   });
 
   it('the schema still allows the maximal per-file / path counts (ceiling is runtime)', () => {
-    const read = forgeTools.find((t) => t.name === 'forge_files_read');
+    const read = forgeTools.find((t) => t.name === 'forge_read');
     const schema = read!.inputSchema as {
       max_bytes: { safeParse(v: unknown): { success: boolean } };
       paths: { safeParse(v: unknown): { success: boolean } };

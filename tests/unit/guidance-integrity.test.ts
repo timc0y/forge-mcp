@@ -55,8 +55,14 @@ function agentFacingStrings(source: string): string[] {
   return found;
 }
 
-const ROOTS = ['packages', 'apps'].map((root) => join(process.cwd(), root));
-const FILES = ROOTS.flatMap((root) => sourceFiles(root));
+// Hidden legacy handlers remain implementation details while the direct
+// facade composes them. Only prose exposed by the public catalog/guidance may
+// name public tools.
+const FILES = [
+  join(process.cwd(), 'packages/mcp-core/src/index.ts'),
+  join(process.cwd(), 'apps/forge-edge-gateway/src/mcp-guidance.ts'),
+  join(process.cwd(), 'apps/forge-edge-gateway/src/handlers/direct-chat.ts')
+];
 
 describe('guidance an agent is told to follow', () => {
   it('only ever names tools that are actually in the catalog', () => {

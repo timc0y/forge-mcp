@@ -1,5 +1,5 @@
 const PREFIXES = {
-  tenant: 'ten', project: 'prj', workspace: 'ws', operation: 'op', approval: 'apr', artifact: 'art', preview: 'prv', process: 'proc', credentialProfile: 'crp', task: 'task', deferred: 'dfr', secret: 'sec'
+  tenant: 'ten', project: 'prj', workspace: 'ws', operation: 'op', approval: 'apr', artifact: 'art', preview: 'prv', process: 'proc', credentialProfile: 'crp', task: 'task', deferred: 'dfr', secret: 'sec', siteReview: 'srv'
 } as const;
 
 export type Branded<T, Brand extends string> = T & { readonly __brand: Brand };
@@ -15,6 +15,7 @@ export type CredentialProfileId = Branded<string, 'CredentialProfileId'>;
 export type TaskId = Branded<string, 'TaskId'>;
 export type DeferredActionId = Branded<string, 'DeferredActionId'>;
 export type SecretId = Branded<string, 'SecretId'>;
+export type SiteReviewId = Branded<string, 'SiteReviewId'>;
 
 function randomBase32(length: number): string {
   const alphabet = '0123456789abcdefghjkmnpqrstvwxyz';
@@ -38,7 +39,8 @@ export const ids = {
   credentialProfile: () => createId('credentialProfile') as CredentialProfileId,
   task: () => createId('task') as TaskId,
   deferred: () => createId('deferred') as DeferredActionId,
-  secret: () => createId('secret') as SecretId
+  secret: () => createId('secret') as SecretId,
+  siteReview: () => createId('siteReview') as SiteReviewId
 };
 
 export function assertForgeId(value: string, prefix: string): void {

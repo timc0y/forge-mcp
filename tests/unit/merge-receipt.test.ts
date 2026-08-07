@@ -10,17 +10,7 @@ import {
 
 const SESSION = readFileSync(join(process.cwd(), 'apps/forge-edge-gateway/src/handlers/repository-workspace.ts'), 'utf8');
 
-const CORE = readFileSync(join(process.cwd(), 'packages/mcp-core/src/index.ts'), 'utf8');
-
 describe('forge_merge receipt', () => {
-  it('does not let the schema forbid an honest answer', () => {
-    // The output schema declared feature_branch_on_origin as z.literal(true),
-    // so reporting the truthful `false` would have failed validation. A schema
-    // that only permits the reassuring answer guarantees the reassuring answer.
-    expect(CORE).not.toContain('feature_branch_on_origin: z.literal(true)');
-    expect(CORE).toContain('feature_branch_on_origin: z.boolean()');
-  });
-
   it('never hardcodes that the branch is on origin', () => {
     // It read `feature_branch_on_origin: true as const`, asserting remote
     // presence whether or not the branch was there — the same false assurance

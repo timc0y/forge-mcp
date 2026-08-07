@@ -1,6 +1,7 @@
 import { ForgeError, ids, type TenantId } from '@forge/core';
-import { forgeToolResponse, type ForgeToolHandlers } from '@forge/mcp-core';
+import { forgeToolResponse, type LegacyForgeToolHandlers } from '@forge/mcp-core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
+import { CloudflareBrowserProvider } from '@forge/browser-cloudflare';
 import { selectBrowserProvider } from '../browser-router';
 import { assertPublicHost } from '@forge/policy';
 import { normalizeViewports, prepareInlineImages } from '../review-images';
@@ -15,12 +16,37 @@ import {
   findingCountOf, base64, text, number, workspaceAddress
 } from './helpers';
 import type { ReviewArtifactHandlerDependencies } from './types';
+import { getSiteReview, siteReviewStatus, startSiteReview } from '../site-review';
 
-type WorkflowTool = 'forge_review' | 'forge_artifact_get' | 'forge_artifact_upload';
+type WorkflowTool = 'forge_review' | 'forge_site_review' | 'forge_site_review_status' | 'forge_artifact_get' | 'forge_artifact_upload';
 
 /** Focused reviewArtifact workflows behind the ForgeToolHandlers seam. */
-export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandlerDependencies): Pick<ForgeToolHandlers, WorkflowTool> {
+export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandlerDependencies): Pick<LegacyForgeToolHandlers, WorkflowTool> {
   return {
+      forge_site_review: async (input) => {
+        const identity = deps.identity();
+        const { review, reused } = await startSiteReview(env, identity, text(input.url), input.goal ? text(input.goal) : '');
+        return {
+          state: review.state,
+          source_url: review.requestedUrl,
+          origin: review.origin,
+          reused,
+          container_used: false as const,
+          allowed_actions: ['check_site_review_status']
+        };
+      },
+      forge_site_review_status: async (input) => {
+        const identity = deps.identity();
+        const review = await getSiteReview(env, identity, text(input.url));
+        if (!review) {
+          throw new ForgeError({
+            code: 'FORGE_FILE_NOT_FOUND',
+            message: 'No public-site review exists for this URL in the current project. Start one with forge_site_review.',
+            retryable: false
+          });
+        }
+        return siteReviewStatus(review);
+      },
       forge_review: async (input) => {
         const identity = deps.identity();
         // SSRF guard: the caller-supplied URL is fetched by the browser provider,
@@ -37,7 +63,16 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
         await recordUrlReviewOwner(env, workspaceId, identity.tenantId, identity.projectId);
         const artifacts = new R2ArtifactStore(env.ARTIFACTS);
         // Arbitrary-URL review always renders on Cloudflare, never the mini (SSRF guard).
-        const browser = await selectBrowserProvider(env, artifacts, identity.tenantId as TenantId, false);
+        // Public URL reviews prefer Kitesurf: it is cheaper and purpose-built
+        // for agent browsing. Each cell falls back to Chromium Browser Run so
+        // a Kitesurf compatibility gap never turns into missing evidence.
+        const kitesurf = new CloudflareBrowserProvider(
+          env.BROWSER,
+          artifacts,
+          identity.tenantId as TenantId,
+          { browser: 'kitesurf' }
+        );
+        const chromium = await selectBrowserProvider(env, artifacts, identity.tenantId as TenantId, false);
         const captures = input.captures as Array<{ selection?: string; path: string; state: string }>;
         const viewports = normalizeViewports(input.viewports);
         const evidence: Array<Record<string, unknown>> = [];
@@ -68,7 +103,7 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
               return { kind: 'skipped', value: { route: capture.path, environment: viewport.id, reason: 'capture_deadline_reached' } };
             }
             try {
-              const result = await browser.captureEvidence({
+              const captureInput = {
                 workspaceId,
                 url: text(input.url),
                 path: capture.path,
@@ -80,7 +115,15 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
                 // same route skip a full re-fetch; JPEG keeps evidence small.
                 cacheTtlSeconds: 45,
                 deadlineAt
-              });
+              };
+              let result;
+              let engine: 'kitesurf' | 'chromium' = 'kitesurf';
+              try {
+                result = await kitesurf.captureEvidence(captureInput);
+              } catch {
+                engine = 'chromium';
+                result = await chromium.captureEvidence(captureInput);
+              }
               const { inline, ...screenshotRef } = result.screenshot;
               return {
                 kind: 'evidence',
@@ -92,6 +135,7 @@ export function reviewArtifactToolHandlers(env: Env, deps: ReviewArtifactHandler
                   state: capture.state,
                   requestedViewport: { width: viewport.width, height: viewport.height },
                   observedViewport: { width: result.screenshot.width, height: result.screenshot.height },
+                  engine,
                   screenshot: screenshotRef,
                   accessibility: result.accessibility,
                   inspected: false,

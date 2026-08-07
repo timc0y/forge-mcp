@@ -2,7 +2,7 @@ import { ForgeError, ids, type ProcessId, type TenantId, type WorkspaceId } from
 import { issueCapability } from '@forge/capabilities';
 import {
   forgeToolResponse,
-  type ForgeToolHandlers,
+  type LegacyForgeToolHandlers,
   AGENT_OUTPUT_SPILL_BYTES,
   AGENT_OUTPUT_TAIL_BYTES,
   tailBytes,
@@ -426,7 +426,7 @@ async function runEnvDrivenDeploy(
 }
 
 /** Focused execution workflows behind the ForgeToolHandlers seam. */
-export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependencies): Pick<ForgeToolHandlers, WorkflowTool> {
+export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependencies): Pick<LegacyForgeToolHandlers, WorkflowTool> {
   return {
       forge_deploy_profiles: async (input) => {
         const identity = deps.identity();
@@ -943,7 +943,7 @@ export function executionToolHandlers(env: Env, deps: ExecutionHandlerDependenci
                   'x-forge-browser-preview': previewId
                 },
                 viewport: { width: viewport.width, height: viewport.height },
-                fullPage: false,
+                fullPage: input.full_page === true,
                 operationId: ids.operation(),
                 repositoryCommit: detail.workspace.currentCommit,
                 workspaceRevision: detail.workspace.revision,

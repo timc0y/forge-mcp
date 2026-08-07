@@ -24,12 +24,15 @@ interface SnapshotResponse {
     screenshot?: string;
     accessibilityTree?: unknown;
     url?: string;
+    markdown?: string;
   };
   errors?: Array<{ message?: string; code?: number }>;
 }
 
 type SnapshotOptions = BrowserRunSnapshotOptions & {
   formats: Array<'screenshot' | 'markdown' | 'accessibilityTree'>;
+  /** Browser Run beta engine selector. Kitesurf is retried with Chromium by callers. */
+  browser?: 'kitesurf';
 };
 
 // Screenshots default to JPEG (~3-10x smaller than PNG) for R2/Worker footprint.
@@ -56,7 +59,7 @@ function targetUrl(input: Pick<ScreenshotInput, 'url' | 'path'>): string {
   return new URL(input.path.replace(/^\/+/, ''), base).toString();
 }
 
-function baseOptions(input: Omit<ScreenshotInput, 'fullPage'>): BrowserRunBaseOptions & { url: string } {
+function baseOptions(input: Omit<ScreenshotInput, 'fullPage'>, browser?: 'kitesurf'): BrowserRunBaseOptions & { url: string; browser?: 'kitesurf' } {
   return {
     url: targetUrl(input),
     setExtraHTTPHeaders: input.headers,
@@ -65,7 +68,8 @@ function baseOptions(input: Omit<ScreenshotInput, 'fullPage'>): BrowserRunBaseOp
     // REST path has no page handle for img.complete polling, so waitUntil is the only lever.
     gotoOptions: { waitUntil: 'networkidle0', timeout: 30_000 },
     cacheTTL: input.cacheTtlSeconds ?? 0,
-    actionTimeout: 60_000
+    actionTimeout: 60_000,
+    ...(browser ? { browser } : {})
   };
 }
 
@@ -164,7 +168,8 @@ export class CloudflareBrowserProvider implements BrowserProvider {
   constructor(
     private readonly browserBinding: BrowserRun,
     private readonly artifacts: ArtifactStore,
-    private readonly tenantId: TenantId
+    private readonly tenantId: TenantId,
+    private readonly options: { browser?: 'kitesurf' } = {}
   ) {}
 
   // Persist to R2 and attach the freshly captured image inline so the caller can
@@ -209,11 +214,24 @@ export class CloudflareBrowserProvider implements BrowserProvider {
     formats: SnapshotOptions['formats']
   ): Promise<SnapshotResponse['result']> {
     const options: SnapshotOptions = {
-      ...baseOptions(input),
+      ...baseOptions(input, this.options.browser),
       formats,
       screenshotOptions: screenshotOptions(input)
     };
     return this.snapshotWithOptions(options as BrowserRunSnapshotOptions, input.deadlineAt);
+  }
+
+  /**
+   * Read a public page through Browser Run without exposing arbitrary browser
+   * actions. Kitesurf supports this quick-action path and is useful for cheap
+   * route reconnaissance before a more expensive evidence capture.
+   */
+  async discoverPublicPage(input: ScreenshotInput): Promise<{ finalUrl?: string; links: string[]; headings: string[] }> {
+    const result = await this.snapshot(input, ['markdown']);
+    const markdown = result?.markdown ?? '';
+    const links = [...markdown.matchAll(/\[[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)/g)].map((match) => match[1]!).slice(0, 200);
+    const headings = markdown.split('\n').filter((line) => /^#{1,3}\s+/.test(line)).map((line) => line.replace(/^#{1,3}\s+/, '').slice(0, 240)).slice(0, 40);
+    return { ...(result?.url ? { finalUrl: result.url } : {}), links, headings };
   }
 
   private async snapshotWithOptions(

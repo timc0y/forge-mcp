@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { forgeTools } from '@forge/mcp-core';
 
 const gatewaySrc = join(process.cwd(), 'apps/forge-edge-gateway/src');
 const read = (file: string): string => readFileSync(join(gatewaySrc, file), 'utf8');
@@ -48,8 +47,4 @@ describe('forge_access proves write capability instead of inferring it', () => {
     expect(session).toMatch(/is NOT a permission problem/u);
   });
 
-  it('declares the granted permissions it now reports', () => {
-    const access = forgeTools.find((tool) => tool.name === 'forge_access');
-    expect(Object.keys(access?.outputSchema ?? {})).toContain('granted_permissions');
-  });
 });

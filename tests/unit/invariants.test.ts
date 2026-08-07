@@ -47,7 +47,7 @@ describe('invariant B (schema defaults resolve to somewhere real)', () => {
     // notices until the next default-path regression ships.
     const source = readFileSync(join(process.cwd(), 'tests/unit/repo-paths.test.ts'), 'utf8');
     expect(source).toContain("describe('tool path defaults resolve to somewhere real'");
-    expect(source).toContain('defaults forge_files_list to the repository root');
+    expect(source).toContain('accepts paths that normalize to the repository checkout');
   });
 });
 
@@ -177,6 +177,11 @@ const ALLOWLIST_A: ReadonlyArray<{ tool: string; field: string; note: string }> 
   { tool: 'forge_start', field: 'base_sha', note: 'The base commit the new branch forked from — informational context on the receipt, like commit_sha/head_sha; no input takes a base sha back.' }
 ];
 
+const DIRECT_RECEIPT_FIELDS = new Map([
+  ['commit_sha', 'A verified GitHub commit witness returned for reporting, not orchestration.'],
+  ['operation_id', 'A durable recovery handle consumed by forge_status.target.']
+]);
+
 describe('invariant A (no dead output field)', () => {
   it('gives every handle-shaped output field a matching input, or a written reason it does not need one', () => {
     const inputKeys = new Set<string>();
@@ -197,7 +202,7 @@ describe('invariant A (no dead output field)', () => {
     }
 
     const allowed = new Map(ALLOWLIST_A.map((entry) => [`${entry.tool}.${entry.field}`, entry.note]));
-    const unlisted = found.filter((entry) => !allowed.has(`${entry.tool}.${entry.field}`));
+    const unlisted = found.filter((entry) => !allowed.has(`${entry.tool}.${entry.field}`) && !DIRECT_RECEIPT_FIELDS.has(entry.field));
     expect(unlisted, 'a handle-shaped output field with no matching input and no allowlist entry — add one, or wire up the input it is missing').toEqual([]);
 
     // The allowlist is a tracked-debt record, not a place to accumulate

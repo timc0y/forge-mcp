@@ -92,6 +92,12 @@
       "bucket_name": "forge-production-artifacts"
     }
   ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "SITE_REVIEW_ANALYTICS",
+      "dataset": "forge_site_reviews"
+    }
+  ],
   "containers": [
     {
       "class_name": "Sandbox",
@@ -139,6 +145,16 @@
       "name": "forge-production-destroy",
       "binding": "DESTROY_WORKFLOW",
       "class_name": "DestroyWorkspaceWorkflow"
+    },
+    {
+      "name": "forge-production-site-review",
+      "binding": "SITE_REVIEW_WORKFLOW",
+      "class_name": "SiteReviewWorkflow"
+    },
+    {
+      "name": "forge-production-chat-operation",
+      "binding": "CHAT_OPERATION_WORKFLOW",
+      "class_name": "ChatOperationWorkflow"
     }
   ],
   "env": {
@@ -188,6 +204,12 @@
           "bucket_name": "forge-development-artifacts"
         }
       ],
+      "analytics_engine_datasets": [
+        {
+          "binding": "SITE_REVIEW_ANALYTICS",
+          "dataset": "forge_development_site_reviews"
+        }
+      ],
       "containers": [
         {
           "class_name": "Sandbox",
@@ -222,6 +244,16 @@
           "name": "forge-development-destroy",
           "binding": "DESTROY_WORKFLOW",
           "class_name": "DestroyWorkspaceWorkflow"
+        },
+        {
+          "name": "forge-development-site-review",
+          "binding": "SITE_REVIEW_WORKFLOW",
+          "class_name": "SiteReviewWorkflow"
+        },
+        {
+          "name": "forge-development-chat-operation",
+          "binding": "CHAT_OPERATION_WORKFLOW",
+          "class_name": "ChatOperationWorkflow"
         }
       ]
     }

@@ -66,7 +66,7 @@ if (dump) {
 } else if (process.argv.includes('--json')) {
   console.log(JSON.stringify({ totalWire, rows }, null, 2));
 } else {
-  console.log(`tools/list wire payload: ${totalWire} bytes  ${tok(totalWire)}  (${rows.length} tools)`);
+  console.log(`direct-chat tools/list wire payload: ${totalWire} bytes  ${tok(totalWire)}  (${rows.length} tools)`);
   const withOutput = rows.filter((row) => row.output > 0).length;
   for (const [label, key, note] of [
     ['inputSchema ', 'input', ''],

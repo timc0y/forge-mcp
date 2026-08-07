@@ -18,6 +18,7 @@ import {
   type DeferredAction
 } from './deferred-actions';
 import { dashboardFirstPrompts } from './mcp-guidance';
+import { denyApprovedChatDeploy, startApprovedChatDeploy } from './chat-deploy';
 
 const GITHUB_API_VERSION = '2026-03-10';
 const SESSION_SECONDS = 60 * 60 * 24 * 14;
@@ -1132,14 +1133,14 @@ export async function requestApproval(
     };
   }
   const approvalId = ids.approval();
-  // Sync approvals need to survive a real build+push cycle (default 120 min).
-  // Deferred work.submit is decided from the portal minutes or days later, so
-  // it gets a much longer window — otherwise the queue fills with expired rows
-  // the human can see but cannot approve.
-  const ttlRaw = action === 'work.submit'
+  // Chat-facing submissions and deploys are both deferred: Forge performs the
+  // external write after approval without an MCP caller waiting to redeem it.
+  // They therefore need a human-scale window rather than the sync 120 minutes.
+  const deferred = action === 'work.submit' || action === 'cloudflare.deploy';
+  const ttlRaw = deferred
     ? Number(env.FORGE_DEFERRED_APPROVAL_TTL_MINUTES)
     : Number(env.FORGE_APPROVAL_TTL_MINUTES);
-  const fallback = action === 'work.submit' ? DEFERRED_APPROVAL_TTL_MINUTES : 120;
+  const fallback = deferred ? DEFERRED_APPROVAL_TTL_MINUTES : 120;
   const minutes = Number.isFinite(ttlRaw) && ttlRaw > 0 ? ttlRaw : fallback;
   const expiresAt = new Date(Date.now() + minutes * 60 * 1000).toISOString();
   await env.METADATA.prepare(
@@ -1518,6 +1519,9 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     'SELECT requested_action, reason, request_payload, state, expires_at, workspace_id FROM approvals WHERE id=?1 AND tenant_id=?2'
   ).bind(approvalId, tenantId).first<{ requested_action: string; reason: string; request_payload: string; state: string; expires_at: string; workspace_id: string }>();
   if (!row) return decisionProblem(env, 404, 'not_found', 'Approval not found', 'This approval no longer exists, or it belongs to a different account.');
+  const requestPayload = JSON.parse(row.request_payload) as Record<string, unknown>;
+  const directChatDeploy = row.requested_action === 'cloudflare.deploy'
+    && typeof requestPayload.chat_operation_id === 'string';
   // Deferred submissions are meant to be decided hours or days later. The
   // linked approvals row still carries an expires_at (used for signed links and
   // sync redemption), but a still-queued deferred action must remain decidable
@@ -1639,10 +1643,26 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
           });
         });
       }
+    } else if (directChatDeploy) {
+      if (decision === 'approved') {
+        await startApprovedChatDeploy(env, {
+          tenantId,
+          workspaceId: row.workspace_id,
+          approvalId,
+          payload: requestPayload
+        }).catch((error) => {
+          console.error('forge_deferred_deploy_start_failed', {
+            approvalId,
+            name: error instanceof Error ? error.name : 'unknown'
+          });
+        });
+      } else {
+        await denyApprovedChatDeploy(env, tenantId, row.workspace_id, requestPayload).catch(() => undefined);
+      }
     }
     return Response.redirect(selfUrl, 303);
   }
-  const payload = JSON.parse(row.request_payload) as Record<string, unknown>;
+  const payload = requestPayload;
   // Pull out the display-only diff/body; show the rest as a small key/value
   // list so the human approves what they can actually read, not a raw hash blob.
   const { diff: inlineDiff, body, diffTotals, diffArtifactId, ...meta } = payload as {
@@ -1677,6 +1697,9 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   // or exactly why it could not.
   const deferredAction = deferredForGate;
   const outcomeBlock = deferredAction ? renderDeferredOutcome(deferredAction) : '';
+  const deployOutcomeBlock = directChatDeploy && typeof payload.status_url === 'string'
+    ? `<div class="outcome ${row.state === 'denied' ? 'bad' : 'ok'}"><strong>${row.state === 'pending' ? 'Ready for approval.' : row.state === 'denied' ? 'Deployment declined.' : 'Deployment handed to Forge.'}</strong> <a href="${escapeHtml(payload.status_url)}">Open deployment status →</a></div>`
+    : '';
   // On-demand live preview. Provisioning takes far longer than a request, so the
   // button only kicks it off and the page polls until there is a URL to open.
   const previewBlock = deferredAction && deferredAction.state === 'awaiting_approval'
@@ -1708,7 +1731,7 @@ poll();})();</script>`
   // else only RECORDS the decision — the agent that asked still has to come
   // back and redeem it. If that session has ended, approving here is correct
   // but nothing visible happens, which reads as a silent failure unless said.
-  const handoffBlock = decidable && !deferredAction
+  const handoffBlock = decidable && !deferredAction && !directChatDeploy
     ? '<p class="note">Approving records your decision so the agent that asked can carry it out. It does not perform the action from this page — if that session has already ended, ask it again and it will go straight through.</p>'
     : '';
   const hasDiff = typeof diff === 'string' && diff.trim() !== '';
@@ -1736,7 +1759,9 @@ poll();})();</script>`
     ? 'Retry opening pull request'
     : deferredAction
       ? 'Approve &amp; open pull request'
-      : 'Approve once';
+      : directChatDeploy
+        ? 'Approve &amp; deploy'
+        : 'Approve once';
   return page({
     title: `Forge — ${decidable ? (deferredRetryable ? 'retry' : 'approve') : expired ? 'expired' : row.state}`,
     topRight: '<a href="/app">Portal</a>',
@@ -1777,7 +1802,7 @@ body{padding-bottom:5rem}
 @media(max-width:560px){form.decide{flex-direction:column}form.decide button{width:100%}}`,
     body: `<h1>${decidable ? (deferredRetryable ? 'Retry Forge submission' : 'Approve Forge action') : expired ? 'Approval expired' : `Action ${escapeHtml(row.state)}`}</h1>
 <p><strong>${escapeHtml(row.requested_action)}</strong> — ${escapeHtml(row.reason)}</p>
-${expiredBlock}${outcomeBlock}${previewBlock}${statsLine}${partialLine}${handoffBlock}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
+${expiredBlock}${outcomeBlock}${deployOutcomeBlock}${previewBlock}${statsLine}${partialLine}${handoffBlock}${metaRows ? `<div class="meta">${metaRows}</div>` : ''}${bodyBlock}${contentBlock}
 ${decidable ? `<form class="decide" method="post" action="${escapeHtml(selfUrl)}"><button class="primary" name="decision" value="approved">${approveLabel}</button><button name="decision" value="denied">Deny</button></form>` : ''}`
   });
 }
