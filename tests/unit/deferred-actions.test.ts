@@ -4,6 +4,7 @@ import {
   denyDeferredAction,
   executeDeferredAction,
   getDeferredActionByApproval,
+  getLatestDeferredActionForBranch,
   listPendingDeferredActions,
   rebindDeferredApproval,
   recoverStaleExecutingDeferred,
@@ -40,6 +41,10 @@ function fakeD1(rows: Row[]) {
           }
           if (sql.includes('WHERE id=?1')) {
             return (rows.find((row) => row.id === values[0]) as T) ?? null;
+          }
+          if (sql.includes('repo_owner=?3') && sql.includes('repo_name=?4') && sql.includes('branch=?5')) {
+            return (rows.find((row) => row.tenant_id === values[0] && row.project_id === values[1] &&
+              row.repo_owner === values[2] && row.repo_name === values[3] && row.branch === values[4]) as T) ?? null;
           }
           throw new Error(`unexpected first(): ${sql}`);
         },
@@ -149,6 +154,26 @@ describe('deferred actions (async approval)', () => {
     const stored = await getDeferredActionByApproval(env, 'ten_a', 'apr_a');
     expect(stored?.stagedRef).toBe(submission.stagedRef);
     expect(stored?.state).toBe('awaiting_approval');
+  });
+
+  it('recovers a submission by repository and branch without a workspace id', async () => {
+    const rows: Row[] = [];
+    const env = envWith(rows);
+    await createDeferredAction(env, submission);
+
+    const recovered = await getLatestDeferredActionForBranch(
+      env,
+      'ten_a',
+      'prj_a',
+      { owner: 'acme', name: 'app' },
+      'forge/fix-login'
+    );
+
+    expect(recovered).toMatchObject({
+      state: 'awaiting_approval',
+      branch: 'forge/fix-login',
+      commitSha: submission.commitSha
+    });
   });
 
   it('pushes the branch and opens the PR when the human finally approves', async () => {

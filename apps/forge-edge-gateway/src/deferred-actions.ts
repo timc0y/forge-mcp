@@ -217,6 +217,22 @@ export async function listDeferredActionsForWorkspace(
   return (result.results ?? []).map(hydrate);
 }
 
+/** Recover the latest submission by its durable repository/branch address. */
+export async function getLatestDeferredActionForBranch(
+  env: Env,
+  tenantId: string,
+  projectId: string,
+  repository: { owner: string; name: string },
+  branch: string
+): Promise<DeferredAction | null> {
+  const row = await env.METADATA.prepare(
+    `SELECT * FROM deferred_actions
+      WHERE tenant_id=?1 AND project_id=?2 AND repo_owner=?3 AND repo_name=?4 AND branch=?5
+      ORDER BY created_at DESC LIMIT 1`
+  ).bind(tenantId, projectId, repository.owner, repository.name, branch).first<Row>();
+  return row ? recoverStaleExecutingDeferred(env, hydrate(row)) : null;
+}
+
 async function setState(
   env: Env,
   id: string,

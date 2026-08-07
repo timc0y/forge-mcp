@@ -33,13 +33,16 @@ import { selectSecretsForSources, vaultService } from './vault';
 import { reclaimStaleSlots, slotTtlMs } from './capacity';
 import {
   completeApproval,
+  getApprovalRecord,
   markApprovalApproved,
   requestApproval,
-  requireApproval
+  requireApproval,
+  signedApprovalUrl
 } from './github';
 import { hashArgs, recordToolCall, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
 import { appendWorkspaceActivity } from './workspace-activity';
 import { claimExternalMutation, readExternalMutationReceipt, recordExternalMutationReceipt } from './external-mutation-idempotency';
+import { getLatestDeferredActionForBranch } from './deferred-actions';
 import { systemToolHandlers } from './handlers/system';
 import { taskToolHandlers } from './handlers/tasks';
 import { reviewArtifactToolHandlers } from './handlers/review-artifacts';
@@ -737,7 +740,47 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
             const operation = await store.getForProject(input.identity.tenantId, input.identity.projectId, input.reference);
             return present(operation);
           }
-          const repository = input.reference.split('#', 1)[0] || undefined;
+          const [repository, branch] = input.reference.split('#', 2);
+          if (repository && branch) {
+            const [owner, name] = repository.split('/', 2);
+            if (owner && name) {
+              const deferred = await getLatestDeferredActionForBranch(
+                this.env,
+                input.identity.tenantId,
+                input.identity.projectId,
+                { owner, name },
+                branch
+              );
+              if (deferred) {
+                const approval = await getApprovalRecord(this.env, input.identity.tenantId, deferred.approvalId);
+                const approvalUrl = approval && approval.state === 'pending' && Date.parse(approval.expiresAt) > Date.now()
+                  ? await signedApprovalUrl(this.env, approval.id, input.identity.tenantId, approval.expiresAt)
+                  : undefined;
+                const state = deferred.state === 'awaiting_approval'
+                  ? 'approval_required'
+                  : deferred.state === 'executing'
+                    ? 'running'
+                    : deferred.state === 'failed'
+                      ? 'failed'
+                      : deferred.state === 'expired'
+                        ? 'expired'
+                        : 'completed';
+                return {
+                  kind: 'submit',
+                  state,
+                  summary: deferred.state === 'awaiting_approval'
+                    ? 'Submission is awaiting human approval.'
+                    : deferred.state === 'completed'
+                      ? `Submission completed${deferred.result?.pr_url ? `: ${deferred.result.pr_url}` : '.'}`
+                      : deferred.error ?? `Submission is ${deferred.state}.`,
+                  repository,
+                  repository_ref: `${repository}#${branch}`,
+                  ...(approvalUrl ? { approval_url: approvalUrl } : {}),
+                  ...(deferred.result ? { result: deferred.result } : {})
+                };
+              }
+            }
+          }
           const latest = (await store.listRecent(input.identity.tenantId, input.identity.projectId, repository)).at(0);
           return present(latest ?? null);
         }
