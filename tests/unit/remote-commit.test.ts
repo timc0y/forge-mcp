@@ -377,6 +377,22 @@ describe('createBranchRef', () => {
     ]);
   });
 
+  it('retries a transient missing read-back after GitHub creates the ref', async () => {
+    let reads = 0;
+    const request: GitHubRequest = async (path, init) => {
+      if (init?.method === 'POST') return { status: 201, json: {} };
+      reads += 1;
+      return reads === 1
+        ? { status: 404, json: {} }
+        : { status: 200, json: { object: { sha: 'base-sha' } } };
+    };
+
+    await expect(createBranchRef(request, {
+      owner: 'acme', repo: 'app', branch: 'forge/new-task', baseSha: 'base-sha'
+    })).resolves.toEqual({ created: true });
+    expect(reads).toBe(2);
+  });
+
   it('tolerates a concurrent creation only when the ref matches the requested base', async () => {
     // 422 means someone else — another call, another retry — created the same
     // ref between our read and our write. That is a race resolved in our

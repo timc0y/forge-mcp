@@ -42,6 +42,25 @@ describe('direct chat facade', () => {
     expect(result).not.toHaveProperty('process_id');
   });
 
+  it('does not expose legacy operation or next-step fields on a completed run', async () => {
+    const result = await handlers({
+      run: async () => ({
+        exitCode: 0,
+        originalOperationId: 'op_private',
+        workspaceRevision: 7,
+        allowedNextActions: ['forge_shell'],
+        nextStep: 'Call forge_process_wait with process_id.'
+      })
+    }).run({ repository, ref: 'forge/chat-1', command: 'node -e "0"' });
+
+    expect(result).toMatchObject({ state: 'completed' });
+    expect(result).not.toHaveProperty('originalOperationId');
+    expect(result).not.toHaveProperty('workspaceRevision');
+    expect(result).not.toHaveProperty('allowedNextActions');
+    expect(result).not.toHaveProperty('nextStep');
+    expect(JSON.stringify(result)).not.toMatch(/forge_shell|process_id|op_private/iu);
+  });
+
   it('returns deferred deploy approval as a terminal chat receipt', async () => {
     const result = await handlers().deploy({ repository, ref: 'forge/chat-1', environment: 'preview' });
 

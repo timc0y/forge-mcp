@@ -127,6 +127,25 @@ export interface CreateBranchRefResult {
   created: boolean;
 }
 
+const BRANCH_READ_BACK_RETRIES = 3;
+
+function retryableBranchRead(status: number): boolean {
+  return status === 404 || status === 408 || status === 429 || status >= 500;
+}
+
+/** GitHub can make a newly-created ref visible to GET a moment after POST. */
+async function readBranchRef(
+  request: GitHubRequest,
+  path: string
+): Promise<{ status: number; json: unknown }> {
+  let response = await request(path);
+  for (let attempt = 0; attempt < BRANCH_READ_BACK_RETRIES && retryableBranchRead(response.status); attempt += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+    response = await request(path);
+  }
+  return response;
+}
+
 /**
  * Create `refs/heads/<branch>` at `baseSha` — the one way Forge ever mints a
  * branch ref on GitHub, whether that is `forge_start` creating one before any
@@ -146,7 +165,8 @@ export async function createBranchRef(
     body: { ref: `refs/heads/${input.branch}`, sha: input.baseSha }
   });
   if (created.status === 201) {
-    const readBack = await request(
+    const readBack = await readBranchRef(
+      request,
       `/repos/${input.owner}/${input.repo}/git/ref/heads/${encodePath(input.branch)}`
     );
     const readBackSha = readBack.status === 200
@@ -173,7 +193,8 @@ export async function createBranchRef(
   if (!collision) {
     throw new Error(`GitHub branch create failed validation with HTTP 422: ${validation.message ?? 'unknown validation error'}.`);
   }
-  const existing = await request(
+  const existing = await readBranchRef(
+    request,
     `/repos/${input.owner}/${input.repo}/git/ref/heads/${encodePath(input.branch)}`
   );
   const existingSha = existing.status === 200

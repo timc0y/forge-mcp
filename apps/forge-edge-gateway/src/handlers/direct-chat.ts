@@ -119,7 +119,17 @@ function withoutControlPlaneIds(value: Record<string, unknown>): Record<string, 
     preview_id: _preview_id,
     operationId: _operationId,
     operation_id: _operation_id,
+    originalOperationId: _originalOperationId,
+    original_operation_id: _original_operation_id,
     chat_operation_id: _chatOperationId,
+    workspaceRevision: _workspaceRevision,
+    workspace_revision: _workspace_revision,
+    artifactRefs: _artifactRefs,
+    artifact_refs: _artifact_refs,
+    allowedNextActions: _allowedNextActions,
+    allowed_next_actions: _allowed_next_actions,
+    nextStep: _nextStep,
+    next_step: _next_step,
     ...publicValue
   } = value;
   return publicValue;
@@ -484,7 +494,6 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
       const running = value.state === 'running' || value.status === 'running';
       return receipt(running ? 'running' : 'completed', running ? 'Command continues in Forge; do not re-run it.' : 'Command finished in an ephemeral executor.', running ? { kind: 'human', message: 'Open the returned status URL for the final result.' } : 'none', {
         ...withoutControlPlaneIds(value),
-        ...(typeof value.chat_operation_id === 'string' ? { operation_id: value.chat_operation_id } : {}),
         repository_ref: `${input.repository.owner}/${input.repository.repo}#${selectedRef}`,
         remote_persisted: false,
         executor_filesystem: 'ephemeral'
@@ -527,7 +536,6 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
       }
       return receipt('approval_required', 'Deployment is staged for human approval and pinned to this repository ref.', { kind: 'human', message: 'Open the approval URL. Forge will execute and verify the deployment without another chat call.' }, {
         ...withoutControlPlaneIds(value),
-        ...(typeof value.chat_operation_id === 'string' ? { operation_id: value.chat_operation_id } : {}),
         repository_ref: `${input.repository.owner}/${input.repository.repo}#${selectedRef}`
       });
     },
@@ -550,7 +558,6 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
       const state = status.state === 'failed' || status.state === 'expired' || status.state === 'approval_required' || status.state === 'running' ? status.state : 'completed';
       return receipt(state, String(status.summary ?? 'Recovered Forge operation status.'), state === 'approval_required' ? { kind: 'human', message: 'Open the returned approval URL.' } : 'none', {
         ...withoutControlPlaneIds(status),
-        ...(typeof status.chat_operation_id === 'string' ? { operation_id: status.chat_operation_id } : {})
       });
     }
   };
