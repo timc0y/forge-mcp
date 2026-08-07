@@ -17,6 +17,7 @@ interface ApprovedChatDeployPayload {
   accountId?: unknown;
   mapEnv?: unknown;
   expectedUrl?: unknown;
+  requested_ref?: unknown;
 }
 
 function requiredString(value: unknown, name: string): string {
@@ -45,6 +46,7 @@ export async function startApprovedChatDeploy(env: Env, input: {
   const command = requiredString(input.payload.command, 'the approved command');
   const cwd = requiredString(input.payload.cwd, 'the approved working directory');
   const workflow = requiredString(input.payload.workflow, 'the approved workflow') as DeployWorkflowId;
+  const requestedRef = typeof input.payload.requested_ref === 'string' ? input.payload.requested_ref : undefined;
   const store = new ChatOperationStore(env.METADATA);
   try {
     const attached = await vaultService(env).attachedEnv(input.tenantId as TenantId, input.workspaceId);
@@ -98,7 +100,8 @@ export async function startApprovedChatDeploy(env: Env, input: {
         process_id: processId as ProcessId,
         expected_url: typeof input.payload.expectedUrl === 'string' ? input.payload.expectedUrl : null,
         workflow,
-        approval_id: input.approvalId
+        approval_id: input.approvalId,
+        ...(requestedRef ? { requested_ref: requestedRef } : {})
       }
     });
     await env.CHAT_OPERATION_WORKFLOW.create({
@@ -109,7 +112,8 @@ export async function startApprovedChatDeploy(env: Env, input: {
     await store.complete(input.tenantId, operationId, {
       state: 'failed',
       summary: 'The approved deployment could not start.',
-      errorMessage: error instanceof Error ? error.message.slice(0, 500) : 'Unknown deployment error.'
+      errorMessage: error instanceof Error ? error.message.slice(0, 500) : 'Unknown deployment error.',
+      result: requestedRef ? { requested_ref: requestedRef } : undefined
     }).catch(() => undefined);
     throw error;
   }
@@ -118,7 +122,9 @@ export async function startApprovedChatDeploy(env: Env, input: {
 export async function denyApprovedChatDeploy(env: Env, tenantId: string, workspaceId: string, payload: ApprovedChatDeployPayload): Promise<void> {
   if (typeof payload.chat_operation_id !== 'string') return;
   await new ChatOperationStore(env.METADATA).complete(tenantId, payload.chat_operation_id, {
-    state: 'failed', summary: 'Deployment was declined by the reviewer.'
+    state: 'failed',
+    summary: 'Deployment was declined by the reviewer.',
+    result: typeof payload.requested_ref === 'string' ? { requested_ref: payload.requested_ref } : undefined
   });
   await discardChatExecutor(env, workspaceId, payload.chat_operation_id);
 }

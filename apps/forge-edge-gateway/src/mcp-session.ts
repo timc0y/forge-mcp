@@ -629,6 +629,26 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         status_url: await issueChatOperationStatusUrl(this.env, input.identity.tenantId, operationId)
       };
     };
+    const requestedRefResult = (requestedRef: string | undefined, effectiveRef: string): Record<string, unknown> =>
+      requestedRef && requestedRef !== effectiveRef ? { requested_ref: requestedRef } : {};
+    const closeExecutorStartup = async (input: {
+      identity: HandlerIdentity;
+      operationId?: string;
+      requestedRef?: string;
+      effectiveRef: string;
+      state: 'completed' | 'failed';
+      summary: string;
+    }): Promise<void> => {
+      if (!input.operationId) return;
+      await new ChatOperationStore(this.env.METADATA).complete(input.identity.tenantId, input.operationId, {
+        state: input.state,
+        summary: input.summary,
+        result: {
+          effective_ref: input.effectiveRef,
+          ...requestedRefResult(input.requestedRef, input.effectiveRef)
+        }
+      }).catch(() => undefined);
+    };
     const prepareExecutor = async (input: {
       identity: HandlerIdentity;
       repository: { owner: string; repo: string };
@@ -688,6 +708,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if ('progress' in prepared) return prepared.progress;
           const workspace = prepared.workspace;
           const repositoryRef = `${repository}#${prepared.ref}`;
+          const requestedRef = input.ref.trim() || prepared.ref;
+          const requestedRefFields = requestedRefResult(requestedRef, prepared.ref);
           try {
             const value = await legacy.forge_shell!({
               workspace, command: input.command, cwd: input.cwd ?? '/workspace/repo', timeout_ms: input.timeoutMs,
@@ -703,7 +725,15 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 id: operationId, tenantId: input.identity.tenantId, repository, repositoryRef,
                 projectId: input.identity.projectId,
                 kind: 'run', state: 'running', summary: 'Command is still running.',
-                result: { workspace_id: workspace, process_id: processId }
+                result: { workspace_id: workspace, process_id: processId, ...requestedRefFields }
+              });
+              await closeExecutorStartup({
+                identity: input.identity,
+                operationId: prepared.startupOperationId,
+                requestedRef,
+                effectiveRef: prepared.ref,
+                state: 'completed',
+                summary: 'Private executor handed the command to its managed operation.'
               });
               await this.env.CHAT_OPERATION_WORKFLOW.create({
                 id: `chat-operation-${operationId}`,
@@ -720,11 +750,27 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               id: operationId, tenantId: input.identity.tenantId, repository, repositoryRef,
               projectId: input.identity.projectId,
               kind: 'run', state: 'completed', summary: String(value.result_summary ?? 'Command finished.'),
-              result: { exit_code: value.exitCode ?? null }
+              result: { exit_code: value.exitCode ?? null, ...requestedRefFields }
+            });
+            await closeExecutorStartup({
+              identity: input.identity,
+              operationId: prepared.startupOperationId,
+              requestedRef,
+              effectiveRef: prepared.ref,
+              state: 'completed',
+              summary: 'Private executor handed the command to its managed operation.'
             });
             await legacy.forge_workspace_destroy!({ workspace, force: false, idempotency_key: `direct-run-cleanup-${operationId}` }).catch(() => undefined);
             return { ...value, effective_ref: prepared.ref, chat_operation_id: operationId };
           } catch (error) {
+            await closeExecutorStartup({
+              identity: input.identity,
+              operationId: prepared.startupOperationId,
+              requestedRef,
+              effectiveRef: prepared.ref,
+              state: 'failed',
+              summary: 'Command failed after private executor startup.'
+            });
             await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-run-failed-${operationId}` }).catch(() => undefined);
             throw error;
           }
@@ -746,6 +792,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           const workspace = prepared.workspace;
           const startupOperationId = prepared.startupOperationId;
           const startupStore = startupOperationId ? new ChatOperationStore(this.env.METADATA) : undefined;
+          const requestedRef = input.target.ref?.trim() || prepared.ref;
+          const requestedRefFields = requestedRefResult(requestedRef, prepared.ref);
           try {
             const value = await legacy.forge_preview!({
               workspace,
@@ -763,7 +811,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               await startupStore.complete(input.identity.tenantId, startupOperationId, {
                 state: 'completed',
                 summary: 'Responsive screenshot evidence captured.',
-                result: { captured: true, effective_ref: prepared.ref }
+                result: { captured: true, effective_ref: prepared.ref, ...requestedRefFields }
               }).catch(() => undefined);
             }
             return { ...value, effective_ref: prepared.ref };
@@ -772,7 +820,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               await startupStore.complete(input.identity.tenantId, startupOperationId, {
                 state: 'failed',
                 summary: 'Screenshot failed after private executor startup.',
-                result: { effective_ref: prepared.ref },
+                result: { effective_ref: prepared.ref, ...requestedRefFields },
                 errorMessage: 'Screenshot failed after private executor startup.'
               }).catch(() => undefined);
             }
@@ -841,9 +889,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if ('progress' in prepared) return prepared.progress;
           const workspace = prepared.workspace;
           const repositoryRef = `${repository}#${prepared.ref}`;
+          const requestedRef = input.ref.trim() || prepared.ref;
+          const requestedRefFields = requestedRefResult(requestedRef, prepared.ref);
           try {
             for (const secret of selected.selected) await vault.attach(tenantId, secret.id, workspace);
-            return await legacy.forge_deploy!({ workspace, profile_id: profile.profile_id, workflow: 'auto', include_output: false, idempotency_key: `direct-deploy-${input.repository.owner}-${input.repository.repo}-${prepared.ref}-${profile.profile_id}`.slice(0, 190) }) as Record<string, unknown>;
+            const value = await legacy.forge_deploy!({ workspace, profile_id: profile.profile_id, workflow: 'auto', include_output: false, idempotency_key: `direct-deploy-${input.repository.owner}-${input.repository.repo}-${prepared.ref}-${profile.profile_id}`.slice(0, 190) }) as Record<string, unknown>;
+            await closeExecutorStartup({
+              identity: input.identity,
+              operationId: prepared.startupOperationId,
+              requestedRef,
+              effectiveRef: prepared.ref,
+              state: 'completed',
+              summary: 'Private executor handed the deployment to its managed operation.'
+            });
+            return { ...value, ...requestedRefFields };
           } catch (error) {
             const forge = toForgeError(error);
             const details = forge.details ?? {};
@@ -859,12 +918,20 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 kind: 'deploy',
                 state: 'approval_required',
                 summary: 'Deployment is waiting for human approval.',
-                result: { workspace_id: workspace, approval_id: details.approval_id }
+                result: { workspace_id: workspace, approval_id: details.approval_id, ...requestedRefFields }
               });
               const row = await this.env.METADATA.prepare(
                 'SELECT request_payload FROM approvals WHERE id = ? AND tenant_id = ?'
               ).bind(details.approval_id, input.identity.tenantId).first<{ request_payload: string }>();
               if (!row) {
+                await closeExecutorStartup({
+                  identity: input.identity,
+                  operationId: prepared.startupOperationId,
+                  requestedRef,
+                  effectiveRef: prepared.ref,
+                  state: 'failed',
+                  summary: 'Deployment approval could not be recorded after private executor startup.'
+                });
                 await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-deploy-missing-approval-${operationId}` }).catch(() => undefined);
                 throw error;
               }
@@ -877,8 +944,17 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 project_id: input.identity.projectId,
                 repository,
                 repository_ref: repositoryRef,
+                ...requestedRefFields,
                 status_url: statusUrl
               }), details.approval_id, input.identity.tenantId).run();
+              await closeExecutorStartup({
+                identity: input.identity,
+                operationId: prepared.startupOperationId,
+                requestedRef,
+                effectiveRef: prepared.ref,
+                state: 'completed',
+                summary: 'Private executor handed the deployment to human approval.'
+              });
               return {
                 state: 'approval_required',
                 summary: forge.message,
@@ -888,6 +964,14 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 chat_operation_id: operationId
               };
             }
+            await closeExecutorStartup({
+              identity: input.identity,
+              operationId: prepared.startupOperationId,
+              requestedRef,
+              effectiveRef: prepared.ref,
+              state: 'failed',
+              summary: 'Deployment failed after private executor startup.'
+            });
             await legacy.forge_workspace_destroy!({ workspace, force: true, idempotency_key: `direct-deploy-failed-${operationId}` }).catch(() => undefined);
             throw error;
           }

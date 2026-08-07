@@ -265,7 +265,8 @@ export async function reconcileChatOperation(env: Env, tenantId: string, operati
         exit_code: exitCode,
         deployment_url: deploymentUrl,
         http_status: httpStatus,
-        worker_name: parseWranglerWorkerName(output)
+        worker_name: parseWranglerWorkerName(output),
+        ...(typeof operation.result.requested_ref === 'string' ? { requested_ref: operation.result.requested_ref } : {})
       }
     });
   } else {
@@ -274,7 +275,11 @@ export async function reconcileChatOperation(env: Env, tenantId: string, operati
     await store.complete(tenantId, operation.id, {
       state: exitCode === 0 ? 'completed' : 'failed',
       summary: exitCode === 0 ? 'Command completed successfully.' : `Command failed${exitCode === null ? '.' : ` with exit ${exitCode}.`}`,
-      result: { exit_code: exitCode, ...(outputTail ? { output_tail: outputTail } : {}) }
+      result: {
+        exit_code: exitCode,
+        ...(outputTail ? { output_tail: outputTail } : {}),
+        ...(typeof operation.result.requested_ref === 'string' ? { requested_ref: operation.result.requested_ref } : {})
+      }
     });
   }
   await discardChatExecutor(env, workspaceId, operation.id);

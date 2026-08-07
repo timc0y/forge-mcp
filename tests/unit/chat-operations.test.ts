@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const workspaceState = vi.hoisted(() => ({ state: 'provisioning' }));
+const workspaceState = vi.hoisted(() => ({
+  state: 'provisioning',
+  waited: { timedOut: false, process: { exitCode: 0 } },
+  logs: { data: 'completed output' }
+}));
 
 vi.mock('../../apps/forge-edge-gateway/src/workspace-operations', () => ({
   workspaceOperations: () => ({
     getAuthorizationBinding: async () => ({ state: workspaceState.state }),
-    requestDestroy: async () => ({ state: 'destroyed' })
+    requestDestroy: async () => ({ state: 'destroyed' }),
+    processWait: async () => workspaceState.waited,
+    processLogs: async () => workspaceState.logs
   })
 }));
 
@@ -91,6 +97,8 @@ function memoryDb(): D1Database {
 describe('chat operation registry', () => {
   beforeEach(() => {
     workspaceState.state = 'provisioning';
+    workspaceState.waited = { timedOut: false, process: { exitCode: 0 } };
+    workspaceState.logs = { data: 'completed output' };
   });
 
   it('persists a terminal receipt and supports semantic repository recovery', async () => {
@@ -193,6 +201,34 @@ describe('chat operation registry', () => {
       summary: 'Responsive screenshot evidence captured.',
       result: { captured: true, effective_ref: 'forge/screenshot' }
     });
+  });
+
+  it('preserves the original branch alias when a managed command completes', async () => {
+    const db = memoryDb();
+    const store = new ChatOperationStore(db);
+    await store.create({
+      id: 'op_command',
+      tenantId: 'ten_a',
+      projectId: 'prj_a',
+      repository: 'acme/site',
+      repositoryRef: 'acme/site#forge/generated',
+      kind: 'run',
+      state: 'running',
+      summary: 'Command is still running.',
+      result: { workspace_id: 'ws_private', process_id: 'proc_private', requested_ref: 'main' }
+    });
+
+    const completed = await reconcileChatOperation(
+      { METADATA: db } as never,
+      'ten_a',
+      (await store.get('ten_a', 'op_command'))!
+    );
+
+    expect(completed).toMatchObject({
+      state: 'completed',
+      result: { exit_code: 0, requested_ref: 'main' }
+    });
+    expect(matchesChatOperationReference(completed, 'acme/site#forge/generated', 'main')).toBe(true);
   });
 
   it('does not recover a different branch through repository-wide status lookup', () => {
