@@ -556,7 +556,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       repository: { owner: string; repo: string };
       ref: string;
       kind: 'run' | 'screenshot' | 'deploy';
-    }): Promise<{ workspace: string; ref: string } | { progress: Record<string, unknown> } | undefined> => {
+    }): Promise<{ workspace: string; ref: string; startupOperationId?: string } | { progress: Record<string, unknown> } | undefined> => {
       const repository = `${input.repository.owner}/${input.repository.repo}`;
       const repositoryRef = `${repository}#${input.ref}`;
       const store = new ChatOperationStore(this.env.METADATA);
@@ -573,7 +573,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       const workspace = current.result?.workspace_id;
       const effectiveRef = current.repository_ref?.split('#', 2)[1];
       if (current.state !== 'running' || typeof workspace !== 'string' || typeof effectiveRef !== 'string' || !effectiveRef) return undefined;
-      if (current.result?.executor_ready === true) return { workspace, ref: effectiveRef };
+      if (current.result?.executor_ready === true) return { workspace, ref: effectiveRef, startupOperationId: current.id };
       if (current.result?.executor_starting !== true) return undefined;
       return {
         progress: {
@@ -635,7 +635,7 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
       ref: string;
       kind: 'run' | 'screenshot' | 'deploy';
       operationId?: string;
-    }): Promise<{ workspace: string; ref: string } | { progress: Record<string, unknown> }> => {
+    }): Promise<{ workspace: string; ref: string; startupOperationId?: string } | { progress: Record<string, unknown> }> => {
       const existing = await existingExecutor(input);
       if (existing) return existing;
       const prepared = await workspaceFor(input.repository, input.ref);
@@ -744,6 +744,8 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           });
           if ('progress' in prepared) return prepared.progress;
           const workspace = prepared.workspace;
+          const startupOperationId = prepared.startupOperationId;
+          const startupStore = startupOperationId ? new ChatOperationStore(this.env.METADATA) : undefined;
           try {
             const value = await legacy.forge_preview!({
               workspace,
@@ -757,7 +759,24 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
               })),
               viewports: input.viewports
             }) as Record<string, unknown>;
+            if (startupStore && startupOperationId) {
+              await startupStore.complete(input.identity.tenantId, startupOperationId, {
+                state: 'completed',
+                summary: 'Responsive screenshot evidence captured.',
+                result: { captured: true, effective_ref: prepared.ref }
+              }).catch(() => undefined);
+            }
             return { ...value, effective_ref: prepared.ref };
+          } catch (error) {
+            if (startupStore && startupOperationId) {
+              await startupStore.complete(input.identity.tenantId, startupOperationId, {
+                state: 'failed',
+                summary: 'Screenshot failed after private executor startup.',
+                result: { effective_ref: prepared.ref },
+                errorMessage: 'Screenshot failed after private executor startup.'
+              }).catch(() => undefined);
+            }
+            throw error;
           } finally {
             await legacy.forge_workspace_destroy!({
               workspace,

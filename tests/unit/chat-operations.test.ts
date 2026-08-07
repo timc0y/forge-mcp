@@ -167,6 +167,34 @@ describe('chat operation registry', () => {
     });
   });
 
+  it('closes a startup operation when the deferred screenshot succeeds', async () => {
+    const db = memoryDb();
+    const store = new ChatOperationStore(db);
+    await store.create({
+      id: 'op_screenshot',
+      tenantId: 'ten_a',
+      projectId: 'prj_a',
+      repository: 'acme/site',
+      repositoryRef: 'acme/site#forge/screenshot',
+      kind: 'screenshot',
+      state: 'running',
+      summary: 'Private executor is ready. Retry forge_screenshot with the same repository and branch; no screenshot has run yet.',
+      result: { workspace_id: 'ws_private', executor_starting: false, executor_ready: true }
+    });
+
+    await store.complete('ten_a', 'op_screenshot', {
+      state: 'completed',
+      summary: 'Responsive screenshot evidence captured.',
+      result: { captured: true, effective_ref: 'forge/screenshot' }
+    });
+
+    await expect(store.get('ten_a', 'op_screenshot')).resolves.toMatchObject({
+      state: 'completed',
+      summary: 'Responsive screenshot evidence captured.',
+      result: { captured: true, effective_ref: 'forge/screenshot' }
+    });
+  });
+
   it('does not recover a different branch through repository-wide status lookup', () => {
     const operation = {
       repository_ref: 'acme/site#forge/a',
