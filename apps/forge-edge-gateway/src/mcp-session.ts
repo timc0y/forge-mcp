@@ -893,9 +893,9 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
                 : operation.kind === 'deploy'
                   ? 'forge_deploy'
                   : undefined;
-            const next_action = operation.result?.executor_ready === true && retryTool
+            const next_action = operation.state === 'running' && operation.result?.executor_ready === true && retryTool
               ? { kind: 'tool' as const, tool: retryTool, message: `Private executor is ready. Retry ${retryTool} with the same repository and branch; no work has run yet.` }
-              : operation.result?.executor_starting === true
+              : operation.state === 'running' && operation.result?.executor_starting === true
                 ? { kind: 'human' as const, message: 'Private executor is still starting. This status is branch-addressed; retry the original Forge action with the same repository and branch when it is ready.' }
                 : undefined;
             return {
