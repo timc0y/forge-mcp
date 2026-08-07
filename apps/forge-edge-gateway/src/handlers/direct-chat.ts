@@ -38,7 +38,7 @@ export interface DirectRepository {
 
 export interface DirectReceipt extends Record<string, unknown> {
   /** A chat-safe terminal/continuation state; never requires a hidden id. */
-  state: 'completed' | 'running' | 'approval_required' | 'failed' | 'expired';
+  state: 'completed' | 'running' | 'approval_required' | 'failed' | 'denied' | 'expired';
   summary: string;
   next_action: 'none' | { kind: 'tool' | 'human'; message: string; tool?: string };
 }
@@ -80,6 +80,15 @@ export interface DirectChatPrivateOperations {
     baseRef?: string;
     title?: string;
     body?: string;
+  }): Promise<Record<string, unknown>>;
+  /** Queue a human-approved pull-request merge without exposing approval state. */
+  merge(input: {
+    identity: HandlerIdentity;
+    repository: DirectRepository;
+    pullRequest: number;
+    mergeMethod: 'merge' | 'squash' | 'rebase';
+    expectedHeadSha?: string;
+    idempotencyKey?: string;
   }): Promise<Record<string, unknown>>;
   /** Optional operation registry/status-page seam. It is intentionally not D1-owned here. */
   status?(input: { identity: HandlerIdentity; reference: string }): Promise<Record<string, unknown> | null>;
@@ -144,7 +153,7 @@ function publicNextAction(value: unknown): DirectReceipt['next_action'] | undefi
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const candidate = value as Record<string, unknown>;
   if ((candidate.kind !== 'tool' && candidate.kind !== 'human') || typeof candidate.message !== 'string') return undefined;
-  const publicTools = new Set(['forge_run', 'forge_screenshot', 'forge_deploy', 'forge_status']);
+  const publicTools = new Set(['forge_run', 'forge_screenshot', 'forge_deploy', 'forge_submit', 'forge_merge', 'forge_status']);
   if (candidate.tool !== undefined && (typeof candidate.tool !== 'string' || !publicTools.has(candidate.tool))) return undefined;
   return {
     kind: candidate.kind,
@@ -335,7 +344,7 @@ function asCommitFiles(files: DirectEditFile[], branch: string, baseSha: string,
 }
 
 /**
- * Build the ten direct-chat capabilities.  `privateOperations` deliberately
+ * Build the eleven direct-chat capabilities.  `privateOperations` deliberately
  * owns all executor, approval and status persistence so no public tool learns
  * how to drive the control plane.
  */
@@ -601,10 +610,54 @@ export function directChatHandlers(env: Env, deps: DirectChatDependencies) {
       });
     },
 
+    async merge(input: { repository: DirectRepository; pullRequest: number; mergeMethod?: 'merge' | 'squash' | 'rebase'; expectedHeadSha?: string; idempotencyKey?: string }): Promise<DirectReceipt> {
+      const value = await deps.privateOperations.merge({
+        identity: identity(),
+        repository: input.repository,
+        pullRequest: input.pullRequest,
+        mergeMethod: input.mergeMethod ?? 'merge',
+        ...(input.expectedHeadSha ? { expectedHeadSha: input.expectedHeadSha } : {}),
+        ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {})
+      });
+      const { state: privateState, summary: _summary, next_action: _nextAction, ...publicValue } = withoutControlPlaneIds(value);
+      const merged = publicValue.merged === true;
+      const state = merged
+        ? 'completed'
+        : privateState === 'failed'
+          ? 'failed'
+          : privateState === 'denied'
+            ? 'denied'
+          : privateState === 'running'
+            ? 'running'
+            : 'approval_required';
+      return receipt(
+        state,
+        merged
+          ? 'Pull request merged and verified on GitHub.'
+          : state === 'failed'
+            ? 'Pull request merge could not be completed; request a fresh forge_merge if the recorded failure is non-retryable.'
+            : state === 'denied'
+              ? 'Pull request merge was declined; GitHub was not changed.'
+            : state === 'running'
+              ? 'Pull request merge is executing in Forge.'
+              : 'Pull request merge is queued for human approval.',
+        merged
+          ? 'none'
+          : state === 'failed'
+            ? { kind: 'tool', tool: 'forge_merge', message: 'Request a fresh forge_merge with the current pull-request head; the failed merge row is not retryable.' }
+            : state === 'denied'
+              ? 'none'
+            : state === 'running'
+              ? { kind: 'human', message: 'Open the returned approval URL for the final merge receipt.' }
+          : { kind: 'human', message: 'Open the approval URL. Forge will perform and verify the merge without another chat call.' },
+        publicValue
+      );
+    },
+
     async status(reference: string): Promise<DirectReceipt> {
       const status = await deps.privateOperations.status?.({ identity: identity(), reference });
       if (!status) return receipt('completed', 'No active Forge operation matches this reference.', 'none');
-      const state = status.state === 'failed' || status.state === 'expired' || status.state === 'approval_required' || status.state === 'running' ? status.state : 'completed';
+      const state = status.state === 'failed' || status.state === 'expired' || status.state === 'approval_required' || status.state === 'running' || status.state === 'denied' ? status.state : 'completed';
       const next = publicNextAction(status.next_action) ?? (state === 'approval_required' ? { kind: 'human', message: 'Open the returned approval URL.' } : 'none');
       return receipt(state, String(status.summary ?? 'Recovered Forge operation status.'), next, {
         ...withoutControlPlaneIds(status),
@@ -704,8 +757,16 @@ export function directChatToolHandlers(env: Env, deps: DirectChatDependencies): 
     forge_submit: async (input) => wireResult(await direct.submit({
       repository: parseRepository(input.repository),
       branch: String(input.ref),
+      ...(typeof input.base_ref === 'string' ? { baseRef: input.base_ref } : {}),
       ...(typeof input.title === 'string' ? { title: input.title } : {}),
       ...(typeof input.body === 'string' ? { body: input.body } : {})
+    })),
+    forge_merge: async (input) => wireResult(await direct.merge({
+      repository: parseRepository(input.repository),
+      pullRequest: Number(input.pull_request),
+      mergeMethod: (input.merge_method === undefined ? 'merge' : String(input.merge_method)) as 'merge' | 'squash' | 'rebase',
+      ...(typeof input.expected_head_sha === 'string' ? { expectedHeadSha: input.expected_head_sha } : {}),
+      ...(typeof input.idempotency_key === 'string' ? { idempotencyKey: input.idempotency_key } : {})
     })),
     forge_status: async (input) => wireResult(await direct.status(String(input.target ?? '')))
   };

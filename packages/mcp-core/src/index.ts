@@ -58,7 +58,7 @@ const interaction = z.object({
  * and exactly one useful next action.
  */
 const compactReceipt = {
-  state: z.enum(['completed', 'running', 'approval_required', 'failed', 'expired']),
+  state: z.enum(['completed', 'running', 'approval_required', 'failed', 'denied', 'expired']),
   summary: z.string().min(1).max(2000),
   next_action: z.union([
     z.literal('none'),
@@ -81,6 +81,19 @@ const compactReceipt = {
 } satisfies ZodRawShape;
 
 const receipt = () => ({ ...compactReceipt });
+const mergeReceipt = () => ({
+  ...compactReceipt,
+  pull_request: z.number().int().optional(),
+  pull_request_url: z.string().url().optional(),
+  merge_sha: z.string().optional(),
+  head_sha: z.string().optional(),
+  base: z.string().optional(),
+  head: z.string().optional(),
+  merge_method: z.enum(['merge', 'squash', 'rebase']).optional(),
+  error: z.string().optional(),
+  retryable: z.boolean().optional(),
+  merge_failed: z.boolean().optional()
+});
 
 const editFile = z.object({
   path,
@@ -172,14 +185,34 @@ export const forgeTools = [
     name: 'forge_submit',
     title: 'Submit for review',
     description: 'Seal an intent branch and submit its verified GitHub revision for deferred review and draft pull-request creation.',
-    inputSchema: { repository, ref: intentRef, title: z.string().min(1).max(256).optional(), body: z.string().max(60_000).optional(), idempotency_key: idempotencyKey },
+    inputSchema: {
+      repository,
+      ref: intentRef,
+      base_ref: branchRef,
+      title: z.string().min(1).max(256).optional(),
+      body: z.string().max(60_000).optional(),
+      idempotency_key: idempotencyKey
+    },
     outputSchema: receipt(), sideEffect: 'external', approval: 'deferred'
+  },
+  {
+    name: 'forge_merge',
+    title: 'Merge pull request',
+    description: 'Merge an existing GitHub pull request after fresh head, check, review, and branch-protection checks. Forge queues human approval and performs the merge itself; draft pull requests are made ready as part of the approved merge, without another chat call.',
+    inputSchema: {
+      repository,
+      pull_request: z.number().int().min(1).max(10_000_000).describe('GitHub pull request number.'),
+      merge_method: z.enum(['merge', 'squash', 'rebase']).default('merge'),
+      expected_head_sha: z.string().regex(/^[0-9a-f]{40}$/iu).optional().describe('Optional exact head commit guard. Forge always rereads the pull request before approval and merge.'),
+      idempotency_key: idempotencyKey
+    },
+    outputSchema: mergeReceipt(), sideEffect: 'external', approval: 'deferred'
   },
   {
     name: 'forge_status',
     title: 'Status',
-    description: 'Recover the latest Forge result for a repository/ref or durable operation ID. Never restarts work and is not required for normal flows.',
-    inputSchema: { target: z.string().min(1).max(1000).optional().describe('owner/repo, owner/repo#ref, or operation ID from a prior receipt. Omit to recover the most recent operation.') },
+    description: 'Recover the latest Forge result for a repository/ref, owner/repo#pr/<number>, or durable operation ID. Never restarts work and is not required for normal flows.',
+    inputSchema: { target: z.string().min(1).max(1000).optional().describe('owner/repo, owner/repo#ref, owner/repo#pr/<number>, or operation ID from a prior receipt. Omit to recover the most recent operation.') },
     outputSchema: receipt(), sideEffect: 'none', approval: 'none'
   }
 ] as const satisfies readonly ForgeToolDefinition[];

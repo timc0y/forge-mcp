@@ -9,7 +9,7 @@ describe('ordinary Chat direct journeys', () => {
     expect(names).toEqual([
       'forge_repositories', 'forge_search', 'forge_read', 'forge_edit',
       'forge_run', 'forge_screenshot', 'forge_environments', 'forge_deploy',
-      'forge_submit', 'forge_status'
+      'forge_submit', 'forge_merge', 'forge_status'
     ]);
     expect(names.join(' ')).not.toMatch(/workspace|process|task|secret|artifact|preview/u);
   });
@@ -17,7 +17,7 @@ describe('ordinary Chat direct journeys', () => {
   it('supports discover, inspect, durable edit, verify, screenshot, and submit', () => {
     expect(names).toEqual(expect.arrayContaining([
       'forge_repositories', 'forge_search', 'forge_read', 'forge_edit',
-      'forge_run', 'forge_screenshot', 'forge_submit'
+      'forge_run', 'forge_screenshot', 'forge_submit', 'forge_merge'
     ]));
   });
 

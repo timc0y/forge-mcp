@@ -17,13 +17,15 @@ interface GitHubContentBlob {
 interface PullRequestBody {
   number: number;
   title: string;
+  body?: string | null;
+  html_url?: string;
   draft?: boolean;
   merged?: boolean;
   state: string;
   mergeable: boolean | null;
   mergeable_state?: string;
   merge_commit_sha?: string | null;
-  head: { sha: string };
+  head: { sha: string; ref: string };
   base: { ref: string };
 }
 
@@ -77,9 +79,14 @@ type FragmentSourceResult =
   | { ok: false; kind: 'base_unavailable'; branchMissing: true }
   | { ok: false; kind: 'provider'; status: number; operation: 'content' | 'ref'; sourceRef: string };
 
-interface PullRequestReadiness {
+export interface PullRequestReadiness {
   number: number;
   title: string;
+  body: string;
+  url: string;
+  draft: boolean;
+  head_ref: string;
+  base_ref: string;
   head_sha: string;
   mergeable: boolean | null;
   mergeable_state: string;
@@ -96,6 +103,23 @@ interface PullRequestReadiness {
   review_decision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | 'NOT_REQUIRED' | 'UNKNOWN';
   safe_to_merge: boolean;
   blockers: string[];
+}
+
+/**
+ * A draft is the one intentional exception to the initial merge verdict: an
+ * approved forge_merge may make it ready immediately before merging. GitHub
+ * reports that transition as draft/null/false, but all check, review, branch
+ * protection, and non-draft merge blockers must still stop the queue.
+ */
+export function deferredMergeQueueBlockers(
+  readiness: Pick<PullRequestReadiness, 'draft' | 'blockers'>
+): string[] {
+  if (!readiness.draft) return [...readiness.blockers];
+  return readiness.blockers.filter((blocker) =>
+    blocker !== 'Still a draft.' &&
+    blocker !== 'GitHub mergeable state is draft, not clean.' &&
+    !/^GitHub mergeable verdict is (?:null|false)\.$/u.test(blocker)
+  );
 }
 
 /** A network or transient provider failure, never a real missing branch/file answer. */
@@ -374,7 +398,25 @@ class GitHubRepositoryOperations {
 
   async readPullRequestReadiness(number: number): Promise<PullRequestReadiness> {
     const pr = await this.call(`/pulls/${number}`);
-    if (pr.status !== 200) throw new Error(`Pull request #${number} read failed with HTTP ${pr.status}.`);
+    if (pr.status !== 200) {
+      const permanent = pr.status === 401 || pr.status === 403 || pr.status === 404 || (pr.status >= 400 && pr.status < 500 && pr.status !== 429);
+      throw new ForgeError({
+        code: pr.status === 401 || pr.status === 403
+          ? 'FORGE_PERMISSION_DENIED'
+          : pr.status === 404
+            ? 'FORGE_FILE_NOT_FOUND'
+            : permanent
+              ? 'FORGE_VALIDATION_FAILED'
+              : 'FORGE_PROVIDER_UNAVAILABLE',
+        message: pr.status === 404
+          ? `Pull request #${number} was not found on GitHub. Check the repository and pull-request number, then retry forge_merge.`
+          : pr.status === 401 || pr.status === 403
+            ? `GitHub denied access while reading pull request #${number}. Reconnect Forge or authorize this repository, then retry forge_merge.`
+            : `GitHub returned HTTP ${pr.status} while reading pull request #${number}. ${permanent ? 'Check the pull-request address and arguments, then retry forge_merge.' : 'Retry forge_merge after GitHub recovers.'}`,
+        retryable: !permanent,
+        details: { pull_request: number, status: pr.status }
+      });
+    }
     const body = pr.json as PullRequestBody;
     const blockers: string[] = [];
     const array = <T>(json: unknown): T[] => Array.isArray(json) ? json as T[] : [];
@@ -492,6 +534,11 @@ class GitHubRepositoryOperations {
     return {
       number: body.number,
       title: body.title,
+      body: body.body ?? '',
+      url: body.html_url ?? '',
+      draft: body.draft === true,
+      head_ref: body.head.ref,
+      base_ref: body.base.ref,
       head_sha: body.head.sha,
       mergeable: body.mergeable,
       mergeable_state: mergeableState,

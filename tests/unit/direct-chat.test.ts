@@ -12,6 +12,7 @@ function handlers(overrides: Partial<DirectChatPrivateOperations> = {}) {
     environments: async () => ({ environments: [] }),
     deploy: async () => ({ approval_url: 'https://forge.test/approvals/apr_1' }),
     submit: async () => ({ approval_url: 'https://forge.test/approvals/apr_2' }),
+    merge: async () => ({ approval_url: 'https://forge.test/approvals/apr_3', pull_request: 7 }),
     ...overrides
   };
   return directChatHandlers({} as Env, { identity, privateOperations });
@@ -98,6 +99,74 @@ describe('direct chat facade', () => {
     expect(result.repository_ref).toBe('acme/web#forge/chat-1');
     expect(result.next_action.kind).toBe('human');
     expect(result.next_action.message).toMatch(/without another chat call/u);
+  });
+
+  it('returns deferred pull-request merge approval without exposing approval ids', async () => {
+    const result = await handlers().merge({ repository, pullRequest: 7 });
+
+    expect(result).toMatchObject({
+      state: 'approval_required',
+      approval_url: 'https://forge.test/approvals/apr_3',
+      pull_request: 7,
+      next_action: { kind: 'human' }
+    });
+    expect(result.next_action.message).toMatch(/without another chat call/u);
+    expect(JSON.stringify(result)).not.toContain('approval_id');
+  });
+
+  it('reports a completed merge as a terminal GitHub receipt', async () => {
+    const result = await handlers({
+      merge: async () => ({
+        merged: true,
+        pull_request: 7,
+        pull_request_url: 'https://github.com/acme/web/pull/7',
+        merge_sha: 'b'.repeat(40),
+        workspace_id: 'private'
+      })
+    }).merge({ repository, pullRequest: 7, mergeMethod: 'squash' });
+
+    expect(result).toMatchObject({
+      state: 'completed',
+      pull_request: 7,
+      pull_request_url: 'https://github.com/acme/web/pull/7',
+      merge_sha: 'b'.repeat(40),
+      next_action: 'none'
+    });
+    expect(result).not.toHaveProperty('workspace_id');
+  });
+
+  it('does not turn a permanent merge failure into an approval-required loop', async () => {
+    const result = await handlers({
+      merge: async () => ({
+        state: 'failed',
+        merge_failed: true,
+        retryable: false,
+        error: 'The pull-request head moved; request a fresh forge_merge.',
+        pull_request: 7
+      })
+    }).merge({ repository, pullRequest: 7 });
+
+    expect(result).toMatchObject({ state: 'failed', retryable: false, merge_failed: true });
+    expect(result.next_action).toMatchObject({ kind: 'tool', tool: 'forge_merge' });
+  });
+
+  it('returns a denied merge as a terminal receipt', async () => {
+    const result = await handlers({
+      merge: async () => ({ state: 'denied', pull_request: 7 })
+    }).merge({ repository, pullRequest: 7 });
+
+    expect(result).toMatchObject({ state: 'denied', summary: expect.stringContaining('declined'), next_action: 'none' });
+  });
+
+  it('preserves denied semantic status without rewriting it as completed', async () => {
+    const result = await handlers({
+      status: async () => ({
+        state: 'denied',
+        summary: 'Pull request merge was declined; GitHub was not changed.'
+      })
+    }).status('acme/web#pr/7');
+
+    expect(result).toMatchObject({ state: 'denied', summary: expect.stringContaining('declined') });
   });
 
   it('keeps screenshot images on the initiating call', async () => {

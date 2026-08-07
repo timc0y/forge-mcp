@@ -35,6 +35,10 @@ import {
   completeApproval,
   getApprovalRecord,
   markApprovalApproved,
+  githubRequestForWorkspace,
+  createDraftPullRequest,
+  mergePullRequest,
+  promoteStagedRef,
   requestApproval,
   requireApproval,
   signedApprovalUrl
@@ -42,7 +46,18 @@ import {
 import { hashArgs, recordToolCall, priorIdenticalFailures, repeatCallGuidance } from './tool-call-log';
 import { appendWorkspaceActivity } from './workspace-activity';
 import { claimExternalMutation, readExternalMutationReceipt, recordExternalMutationReceipt } from './external-mutation-idempotency';
-import { getLatestDeferredActionForBranch } from './deferred-actions';
+import {
+  createDeferredPullRequestMergeAction,
+  executeDeferredAction,
+  getDeferredActionByApproval,
+  getDeferredActionByIdempotencyKey,
+  getLatestDeferredActionForBranch,
+  getLatestDeferredActionForPullRequest,
+  rebindDeferredApproval,
+  type DeferredAction,
+  type DeferredMergeMethod
+} from './deferred-actions';
+import { deferredMergeQueueBlockers, readPullRequestReadiness } from './github-repository';
 import { systemToolHandlers } from './handlers/system';
 import { taskToolHandlers } from './handlers/tasks';
 import { reviewArtifactToolHandlers } from './handlers/review-artifacts';
@@ -89,6 +104,125 @@ function annotateProgressPotential(result: unknown, state: ProgressStreakState, 
       ...view,
       ...(warning ? { warning } : {})
     }
+  };
+}
+
+/**
+ * Replay one durable direct-chat merge receipt. The idempotency key is bound to
+ * the pinned PR/head/method in deferred_actions, so retries never reread a new
+ * head and accidentally turn a retry into a different merge intent.
+ */
+async function directDeferredMergeReceipt(
+  env: Env,
+  identity: HandlerIdentity,
+  repository: { provider: 'github'; owner: string; name: string },
+  input: { pullRequest: number; mergeMethod: DeferredMergeMethod; expectedHeadSha?: string },
+  deferred: DeferredAction
+): Promise<Record<string, unknown>> {
+  const expectedHeadSha = input.expectedHeadSha?.toLowerCase();
+  const intentChanged = deferred.action !== 'pull_request.merge' ||
+    deferred.pullRequestNumber !== input.pullRequest ||
+    deferred.mergeMethod !== input.mergeMethod ||
+    (expectedHeadSha !== undefined && deferred.commitSha.toLowerCase() !== expectedHeadSha);
+  if (intentChanged) {
+    throw new ForgeError({
+      code: 'FORGE_WORKSPACE_CONFLICT',
+      message: 'This idempotency_key is already bound to a different pull-request head or merge method. Retry the original forge_merge arguments, or use a fresh idempotency_key for a new intent.',
+      retryable: false,
+      details: {
+        pull_request: deferred.pullRequestNumber,
+        head_sha: deferred.commitSha,
+        merge_method: deferred.mergeMethod
+      }
+    });
+  }
+
+  const pullRequestUrl = deferred.result?.pr_url || `https://github.com/${repository.owner}/${repository.name}/pull/${input.pullRequest}`;
+  let current = deferred;
+  if (current.state === 'completed' && current.result) {
+    return {
+      repository: `${repository.owner}/${repository.name}`,
+      repository_ref: `${repository.owner}/${repository.name}#pr/${input.pullRequest}`,
+      merged: true,
+      pull_request: current.result.pr_number,
+      pull_request_url: current.result.pr_url,
+      merge_sha: current.result.merge_sha ?? ''
+    };
+  }
+
+  let approval = await getApprovalRecord(env, identity.tenantId, current.approvalId);
+  const approvalUsable = approval && (approval.state === 'pending' || approval.state === 'approved') && Date.parse(approval.expiresAt) > Date.now();
+  if ((current.state === 'awaiting_approval' || (current.state === 'failed' && current.retryable !== false)) && !approvalUsable) {
+    const reminted = await requestApproval(
+      env,
+      identity,
+      `repository:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}`,
+      'pull_request.merge',
+      `Merge pull request #${input.pullRequest}`,
+      {
+        action: 'merge',
+        owner: repository.owner,
+        repo: repository.name,
+        number: input.pullRequest,
+        headSha: current.commitSha,
+        head: current.branch,
+        base: current.base,
+        mergeMethod: input.mergeMethod,
+        ...(current.idempotencyKey ? { idempotency_key: current.idempotencyKey } : {})
+      }
+    );
+    await rebindDeferredApproval(env, current.id, reminted.approval_id);
+    current = { ...current, approvalId: reminted.approval_id, updatedAt: new Date().toISOString() };
+    approval = {
+      id: reminted.approval_id,
+      state: reminted.already_approved ? 'approved' : 'pending',
+      expiresAt: reminted.expires_at
+    };
+  }
+  if (approval?.state === 'approved' && current.retryable !== false && (current.state === 'awaiting_approval' || current.state === 'failed')) {
+    current = await executeDeferredAction(env, current, {
+      promoteStagedRef,
+      createDraftPullRequest,
+      mergePullRequest
+    });
+    if (current.state === 'completed' && current.result) {
+      return {
+        repository: `${repository.owner}/${repository.name}`,
+        repository_ref: `${repository.owner}/${repository.name}#pr/${input.pullRequest}`,
+        merged: true,
+        pull_request: current.result.pr_number,
+        pull_request_url: current.result.pr_url,
+        merge_sha: current.result.merge_sha ?? ''
+      };
+    }
+  }
+
+  const approvalUrl = approval && current.retryable !== false && current.state !== 'completed' && current.state !== 'denied' &&
+    (approval.state === 'pending' || approval.state === 'approved') && Date.parse(approval.expiresAt) > Date.now()
+    ? await signedApprovalUrl(env, approval.id, identity.tenantId, approval.expiresAt)
+    : undefined;
+  const failedPermanently = current.state === 'failed' && current.retryable === false;
+  const state = failedPermanently
+    ? 'failed'
+    : current.state === 'denied'
+      ? 'denied'
+      : current.state === 'executing'
+        ? 'running'
+        : 'approval_required';
+  return {
+    repository: `${repository.owner}/${repository.name}`,
+    repository_ref: `${repository.owner}/${repository.name}#pr/${input.pullRequest}`,
+    state,
+    ...(state === 'approval_required' ? { approval_required: true } : {}),
+    ...(failedPermanently ? { merge_failed: true, retryable: false } : {}),
+    pull_request: current.pullRequestNumber ?? input.pullRequest,
+    pull_request_url: pullRequestUrl,
+    head_sha: current.commitSha,
+    base: current.base,
+    head: current.branch,
+    merge_method: current.mergeMethod ?? input.mergeMethod,
+    ...(approvalUrl ? { approval_url: approvalUrl } : {}),
+    ...(current.error ? { error: current.error } : {})
   };
 }
 
@@ -527,6 +661,23 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         workspace,
         ref: typeof created.current_branch === 'string' && created.current_branch.trim() ? created.current_branch : ref
       };
+    };
+    const repositoryDefaultBranch = async (identity: SessionProps, repository: { owner: string; repo: string }): Promise<string> => {
+      const request = await githubRequestForWorkspace(this.env, identity, {
+        repository: { provider: 'github', owner: repository.owner, name: repository.repo }
+      });
+      const response = await request(`/repos/${repository.owner}/${repository.repo}`);
+      if (response.status !== 200) {
+        throw new ForgeError({
+          code: 'FORGE_PROVIDER_UNAVAILABLE',
+          message: `Forge could not read the default branch for ${repository.owner}/${repository.repo} (GitHub HTTP ${response.status}). Retry the submission.`,
+          retryable: response.status >= 500,
+          details: { repository: `${repository.owner}/${repository.repo}`, status: response.status }
+        });
+      }
+      const branch = String((response.json as { default_branch?: string }).default_branch ?? '').trim();
+      if (!branch) throw new ForgeError({ code: 'FORGE_PROVIDER_UNAVAILABLE', message: `GitHub did not return a default branch for ${repository.owner}/${repository.repo}. Retry forge_submit after GitHub returns repository metadata.`, retryable: true });
+      return branch;
     };
     const ensureExecutorReady = async (workspace: string): Promise<void> => {
       const identity = this.identity();
@@ -970,10 +1121,150 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
         submit: async (input) => {
           const { workspace } = await workspaceFor(input.repository, input.branch);
           try {
-            return await legacy.forge_merge!({ workspace, pr_base: input.baseRef ?? 'main', title: input.title, body: input.body ?? '', idempotency_key: `direct-submit-${input.repository.owner}-${input.repository.repo}-${input.branch}`.slice(0, 190) }) as Record<string, unknown>;
+            const baseRef = input.baseRef ?? await repositoryDefaultBranch(input.identity, input.repository);
+            return await legacy.forge_merge!({ workspace, pr_base: baseRef, title: input.title, body: input.body ?? '', idempotency_key: `direct-submit-${input.repository.owner}-${input.repository.repo}-${input.branch}`.slice(0, 190) }) as Record<string, unknown>;
           } finally {
             await legacy.forge_workspace_destroy!({ workspace, force: false, idempotency_key: `direct-submit-cleanup-${input.repository.owner}-${input.repository.repo}-${input.branch}`.slice(0, 190) }).catch(() => undefined);
           }
+        },
+        merge: async (input) => {
+          const identity = input.identity;
+          const owner = input.repository.owner;
+          const repo = input.repository.repo;
+          const repository = { provider: 'github' as const, owner, name: repo };
+          const mergeMethod = input.mergeMethod as DeferredMergeMethod;
+          // A stable caller key is a durable address. Replay the existing row
+          // before contacting GitHub so a retry remains useful even if the
+          // provider is temporarily unavailable or the PR head has moved.
+          if (input.idempotencyKey) {
+            const existing = await getDeferredActionByIdempotencyKey(
+              this.env,
+              identity.tenantId,
+              identity.projectId,
+              repository,
+              input.idempotencyKey
+            );
+            if (existing) {
+              return directDeferredMergeReceipt(this.env, identity, repository, {
+                pullRequest: input.pullRequest,
+                mergeMethod,
+                ...(input.expectedHeadSha ? { expectedHeadSha: input.expectedHeadSha } : {})
+              }, existing);
+            }
+          }
+          const request = await githubRequestForWorkspace(this.env, identity, { repository });
+          const base = `/repos/${owner}/${repo}`;
+          let readiness;
+          try {
+            readiness = await readPullRequestReadiness(request, base, input.pullRequest);
+          } catch (error) {
+            if (error instanceof ForgeError) throw error;
+            throw new ForgeError({
+              code: 'FORGE_PROVIDER_UNAVAILABLE',
+              message: error instanceof Error ? error.message : `GitHub could not read pull request #${input.pullRequest}.`,
+              retryable: true,
+              details: { repository: `${owner}/${repo}`, pull_request: input.pullRequest }
+            });
+          }
+          const pullRequestUrl = readiness.url || `https://github.com/${owner}/${repo}/pull/${input.pullRequest}`;
+          if (readiness.already_merged) {
+            return {
+              repository: `${owner}/${repo}`,
+              repository_ref: `${owner}/${repo}#pr/${input.pullRequest}`,
+              merged: true,
+              pull_request: readiness.number,
+              pull_request_url: pullRequestUrl,
+              merge_sha: readiness.merge_commit_sha ?? readiness.head_sha
+            };
+          }
+          const expectedHeadSha = input.expectedHeadSha?.toLowerCase() ?? readiness.head_sha;
+          if (expectedHeadSha !== readiness.head_sha) {
+            throw new ForgeError({
+              code: 'FORGE_WORKSPACE_CONFLICT',
+              message: `Pull request #${input.pullRequest} moved to ${readiness.head_sha}, so Forge refused to queue a merge for the head ${expectedHeadSha}. Read the pull request again, then retry with the new expected head.`,
+              retryable: false,
+              details: { pull_request: input.pullRequest, expected_head_sha: expectedHeadSha, current_head_sha: readiness.head_sha }
+            });
+          }
+          // A draft is an explicit, supported exception: the approval means
+          // "make this PR ready and merge this exact head". Every other blocker
+          // still prevents queuing, so approval cannot be used as a bypass.
+          const queueBlockers = deferredMergeQueueBlockers(readiness);
+          if (queueBlockers.length) {
+            throw new ForgeError({
+              code: 'FORGE_VALIDATION_FAILED',
+              message: `Pull request #${input.pullRequest} is not ready to queue: ${queueBlockers.join(' ')} Nothing was changed. Fix the blockers and retry forge_merge.`,
+              retryable: false,
+              details: { pull_request: input.pullRequest, blockers: queueBlockers, head_sha: readiness.head_sha }
+            });
+          }
+          const approval = await requestApproval(
+            this.env,
+            identity,
+            `repository:${owner.toLowerCase()}/${repo.toLowerCase()}`,
+            'pull_request.merge',
+            `Merge pull request #${input.pullRequest}`,
+            {
+              action: 'merge',
+              owner,
+              repo,
+              number: input.pullRequest,
+              headSha: expectedHeadSha,
+              head: readiness.head_ref,
+              base: readiness.base_ref,
+              mergeMethod,
+              ...(input.idempotencyKey ? { idempotency_key: input.idempotencyKey } : {})
+            }
+          );
+          let deferred = await getDeferredActionByApproval(this.env, identity.tenantId, approval.approval_id);
+          if (!deferred) {
+            try {
+              deferred = await createDeferredPullRequestMergeAction(this.env, {
+                tenantId: identity.tenantId,
+                projectId: identity.projectId,
+                repository,
+                githubRepositoryId: await this.env.METADATA.prepare(
+                  "SELECT github_repository_id AS id FROM repositories WHERE tenant_id=?1 AND provider='github' AND owner=?2 AND name=?3 LIMIT 1"
+                ).bind(identity.tenantId, owner, repo)
+                  .first<{ id: string | null }>().then((row) => row?.id ?? null).catch(() => null),
+                approvalId: approval.approval_id,
+                pullRequestNumber: input.pullRequest,
+                headRef: readiness.head_ref,
+                baseRef: readiness.base_ref,
+                headSha: expectedHeadSha,
+                title: readiness.title,
+                body: readiness.body.slice(0, 60_000),
+                mergeMethod,
+                ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {})
+              });
+            } catch (error) {
+              // The unique deferred-action key is the race-safe claim. If a
+              // second request arrived between the lookup and INSERT, replay
+              // the winner instead of surfacing a duplicate-work failure.
+              if (input.idempotencyKey) {
+                const raced = await getDeferredActionByIdempotencyKey(
+                  this.env,
+                  identity.tenantId,
+                  identity.projectId,
+                  repository,
+                  input.idempotencyKey
+                );
+                if (raced) {
+                  return directDeferredMergeReceipt(this.env, identity, repository, {
+                    pullRequest: input.pullRequest,
+                    mergeMethod,
+                    ...(input.expectedHeadSha ? { expectedHeadSha: input.expectedHeadSha } : {})
+                  }, raced);
+                }
+              }
+              throw error;
+            }
+          }
+          return directDeferredMergeReceipt(this.env, identity, repository, {
+            pullRequest: input.pullRequest,
+            mergeMethod,
+            expectedHeadSha
+          }, deferred);
         },
         status: async (input) => {
           const store = new ChatOperationStore(this.env.METADATA);
@@ -1016,39 +1307,70 @@ export class ForgeMcpSession extends McpAgent<Env, unknown, SessionProps> {
           if (repository && requestedBranch) {
             const [owner, name] = repository.split('/', 2);
             if (owner && name) {
-              const deferred = await getLatestDeferredActionForBranch(
-                this.env,
-                input.identity.tenantId,
-                input.identity.projectId,
-                { owner, name },
-                requestedBranch
-              );
+              const pullRequestMatch = /^(?:pr|pull)\/(\d+)$/iu.exec(requestedBranch);
+              const deferred = pullRequestMatch
+                ? await getLatestDeferredActionForPullRequest(
+                    this.env,
+                    input.identity.tenantId,
+                    input.identity.projectId,
+                    { owner, name },
+                    Number(pullRequestMatch[1])
+                  )
+                : await getLatestDeferredActionForBranch(
+                    this.env,
+                    input.identity.tenantId,
+                    input.identity.projectId,
+                    { owner, name },
+                    requestedBranch
+                  );
               if (deferred) {
                 const approval = await getApprovalRecord(this.env, input.identity.tenantId, deferred.approvalId);
-                const approvalUrl = approval && approval.state === 'pending' && Date.parse(approval.expiresAt) > Date.now()
+                const approvalUrl = approval && deferred.retryable !== false && deferred.state !== 'completed' && deferred.state !== 'denied'
+                  && (approval.state === 'pending' || approval.state === 'approved')
+                  && Date.parse(approval.expiresAt) > Date.now()
                   ? await signedApprovalUrl(this.env, approval.id, input.identity.tenantId, approval.expiresAt)
                   : undefined;
+                const mergeAction = deferred.action === 'pull_request.merge';
                 const state = deferred.state === 'awaiting_approval'
                   ? 'approval_required'
                   : deferred.state === 'executing'
                     ? 'running'
                     : deferred.state === 'failed'
                       ? 'failed'
+                      : deferred.state === 'denied'
+                        ? 'denied'
                       : deferred.state === 'expired'
                         ? 'expired'
                         : 'completed';
                 return {
-                  kind: 'submit',
+                  kind: mergeAction ? 'merge' : 'submit',
                   state,
-                  summary: deferred.state === 'awaiting_approval'
-                    ? 'Submission is awaiting human approval.'
-                    : deferred.state === 'completed'
-                      ? `Submission completed${deferred.result?.pr_url ? `: ${deferred.result.pr_url}` : '.'}`
-                      : deferred.error ?? `Submission is ${deferred.state}.`,
+                  summary: mergeAction
+                    ? deferred.state === 'awaiting_approval'
+                      ? 'Pull request merge is awaiting human approval.'
+                      : deferred.state === 'executing'
+                        ? 'Forge is rechecking and merging the pull request.'
+                        : deferred.state === 'completed'
+                          ? `Pull request #${deferred.pullRequestNumber ?? '?'} merged${deferred.result?.pr_url ? `: ${deferred.result.pr_url}` : '.'}`
+                          : deferred.state === 'denied'
+                            ? `Pull request #${deferred.pullRequestNumber ?? '?'} merge was declined; GitHub was not changed.`
+                          : deferred.error ?? `Pull request merge is ${deferred.state}.`
+                    : deferred.state === 'awaiting_approval'
+                      ? 'Submission is awaiting human approval.'
+                      : deferred.state === 'completed'
+                        ? `Submission completed${deferred.result?.pr_url ? `: ${deferred.result.pr_url}` : '.'}`
+                        : deferred.state === 'denied'
+                          ? 'Submission was declined; GitHub was not changed.'
+                        : deferred.error ?? `Submission is ${deferred.state}.`,
                   repository,
                   repository_ref: `${repository}#${requestedBranch}`,
                   ...(approvalUrl ? { approval_url: approvalUrl } : {}),
-                  ...(deferred.result ? { result: deferred.result } : {})
+                  ...(deferred.pullRequestNumber ? { pull_request: deferred.pullRequestNumber } : {}),
+                  ...(deferred.mergeMethod ? { merge_method: deferred.mergeMethod } : {}),
+                  ...(deferred.result ? { result: deferred.result } : {}),
+                  ...(deferred.state === 'failed' && deferred.retryable === false
+                    ? { next_action: { kind: 'tool', tool: 'forge_merge', message: 'Request a fresh forge_merge with the current pull-request head; this failed merge cannot be retried from the old approval.' } }
+                    : {})
                 };
               }
             }

@@ -15,8 +15,10 @@ import {
   executeDeferredAction,
   getDeferredActionByApproval,
   listPendingDeferredActions,
-  type DeferredAction
+  type DeferredAction,
+  type DeferredMergeMethod
 } from './deferred-actions';
+import { readPullRequestReadiness } from './github-repository';
 import { dashboardFirstPrompts } from './mcp-guidance';
 import { denyApprovedChatDeploy, startApprovedChatDeploy } from './chat-deploy';
 
@@ -163,8 +165,8 @@ export async function signedApprovalUrl(
 
 /**
  * Pending sync approvals (shell / deploy / PR mutate / secret) for the portal
- * review queue. Deferred work.submit rows are listed separately via
- * deferred_actions — including them here would double-count.
+ * review queue. Deferred work.submit and pull_request.merge rows are listed
+ * separately via deferred_actions — including them here would double-count.
  */
 export async function listPendingSyncApprovals(
   env: Env,
@@ -176,6 +178,7 @@ export async function listPendingSyncApprovals(
     `SELECT id, requested_action, reason, expires_at, workspace_id FROM approvals
       WHERE tenant_id=?1 AND state='pending' AND expires_at > ?2
         AND requested_action != 'work.submit'
+        AND requested_action != 'pull_request.merge'
       ORDER BY expires_at DESC LIMIT ?3`
   ).bind(tenantId, nowIso, limit).all<{
     id: string;
@@ -894,8 +897,16 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
     const when = age < 60 ? `${age}m ago` : age < 1440 ? `${Math.round(age / 60)}h ago` : `${Math.round(age / 1440)}d ago`;
     const status = action.state === 'failed'
       ? '<strong class="bad">needs another look</strong>'
-      : action.state === 'executing' ? 'opening pull request…' : 'waiting for you';
-    return `<li><span><strong>${escapeHtml(action.title)}</strong><small>${escapeHtml(action.repository.owner)}/${escapeHtml(action.repository.name)} · ${escapeHtml(action.branch)} → ${escapeHtml(action.base)} · ${action.filesChanged} file${action.filesChanged === 1 ? '' : 's'} · ${escapeHtml(when)} · ${status}</small></span><a class="btn" href="/approvals/${escapeHtml(action.approvalId)}">Review</a></li>`;
+      : action.state === 'executing'
+        ? action.action === 'pull_request.merge' ? 'merging…' : 'opening pull request…'
+        : 'waiting for you';
+    const label = action.action === 'pull_request.merge' && action.pullRequestNumber
+      ? `Merge pull request #${action.pullRequestNumber}`
+      : action.title;
+    const detail = action.action === 'pull_request.merge'
+      ? `#${action.pullRequestNumber ?? '?'} · ${action.branch} → ${action.base}`
+      : `${action.branch} → ${action.base} · ${action.filesChanged} file${action.filesChanged === 1 ? '' : 's'}`;
+    return `<li><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(action.repository.owner)}/${escapeHtml(action.repository.name)} · ${escapeHtml(detail)} · ${escapeHtml(when)} · ${status}</small></span><a class="btn" href="/approvals/${escapeHtml(action.approvalId)}">Review</a></li>`;
   };
   const syncLabel = (action: string) => {
     switch (action) {
@@ -921,7 +932,7 @@ export async function appDashboard(request: Request, env: Env): Promise<Response
   const reviewSection = reviewQueueFailed
     ? `<section class="section alert"><h2>Waiting for your review</h2><p><strong>Could not load the review queue.</strong> Refresh in a moment — agents may still be waiting on approvals that are not listed here right now.</p></section>`
     : reviewCount
-    ? `<section class="section alert"><h2>Waiting for your review <span class="badge">${reviewCount}</span></h2><p>Deferred submissions open the draft pull request when you approve — take your time. Sync approvals (shell, deploy, PR change, secret) unlock a live agent and expire in about two hours.</p><ul class="list">${reviewItems}</ul></section>`
+    ? `<section class="section alert"><h2>Waiting for your review <span class="badge">${reviewCount}</span></h2><p>Deferred submissions open draft pull requests, and approved pull-request merges complete in Forge when you approve — take your time. Sync approvals (shell, deploy, PR change, secret) unlock a live agent and expire in about two hours.</p><ul class="list">${reviewItems}</ul></section>`
     : '';
   const accessSection = pendingAccess.length
     ? `<section class="section alert"><h2>Access requests <span class="badge">${pendingAccess.length}</span></h2><p>These people signed in and are waiting for you. Until you approve them they cannot use Forge at all.</p><ul class="list">${
@@ -1103,7 +1114,7 @@ export async function requestApproval(
   env: Env,
   identity: Pick<AuthenticatedContext, 'tenantId' | 'subject'>,
   workspaceId: string,
-  action: 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy' | 'deploy.profile',
+  action: 'pull_request.create' | 'pull_request.mutate' | 'pull_request.merge' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy' | 'deploy.profile',
   reason: string,
   payload: Record<string, unknown>
 ): Promise<{ approval_id: string; approval_url: string; expires_at: string; already_approved: boolean }> {
@@ -1136,7 +1147,7 @@ export async function requestApproval(
   // Chat-facing submissions and deploys are both deferred: Forge performs the
   // external write after approval without an MCP caller waiting to redeem it.
   // They therefore need a human-scale window rather than the sync 120 minutes.
-  const deferred = action === 'work.submit' || action === 'cloudflare.deploy';
+  const deferred = action === 'work.submit' || action === 'pull_request.merge' || action === 'cloudflare.deploy';
   const ttlRaw = deferred
     ? Number(env.FORGE_DEFERRED_APPROVAL_TTL_MINUTES)
     : Number(env.FORGE_APPROVAL_TTL_MINUTES);
@@ -1162,7 +1173,7 @@ export async function requireApproval(
   identity: Pick<AuthenticatedContext, 'tenantId'>,
   approvalId: string,
   workspaceId: string,
-  action: 'pull_request.create' | 'pull_request.mutate' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy' | 'deploy.profile',
+  action: 'pull_request.create' | 'pull_request.mutate' | 'pull_request.merge' | 'shell.exec' | 'work.submit' | 'secret.attach' | 'cloudflare.deploy' | 'deploy.profile',
   expected: Record<string, unknown>,
   options: { consume?: boolean } = {}
 ): Promise<void> {
@@ -1437,6 +1448,7 @@ export async function approvalPreviewEndpoint(
   }
   const action = await getDeferredActionByApproval(env, viewer.tenantId, approvalId);
   if (!action) return new Response('Not found', { status: 404 });
+  if (action.action !== 'work.submit') return new Response('Preview is only available for submitted changes.', { status: 404 });
 
   const stub = (innerEnv: Env, workspaceId: string) =>
     innerEnv.WORKSPACE_COORDINATORS.get(innerEnv.WORKSPACE_COORDINATORS.idFromName(workspaceId)) as unknown as never;
@@ -1465,14 +1477,35 @@ export async function approvalPreviewEndpoint(
   return new Response(JSON.stringify(safe), { headers });
 }
 
-/** Status banner for a deferred submission, shown above the diff. */
+/** Status banner for a deferred action, shown above the details. */
 function renderDeferredOutcome(action: DeferredAction): string {
+  if (action.action === 'pull_request.merge') {
+    const number = action.pullRequestNumber ?? '?';
+    const url = action.result?.pr_url;
+    if (action.state === 'completed' && action.result) {
+      const mergeSha = action.result.merge_sha ? ` at <code>${escapeHtml(action.result.merge_sha.slice(0, 12))}</code>` : '';
+      return `<div class="outcome ok"><strong>Pull request #${number} merged.</strong>${url ? ` <a href="${escapeHtml(url)}">Open it on GitHub</a>.` : ''}${mergeSha}</div>`;
+    }
+    if (action.state === 'failed') {
+      const retry = action.retryable !== false
+        ? 'Nothing was claimed as merged; approve again to retry after Forge rereads GitHub.'
+        : 'Nothing was claimed as merged; request a fresh forge_merge with the current pull-request head.';
+      return `<div class="outcome bad"><strong>Could not merge pull request #${number}.</strong> ${escapeHtml(action.error ?? 'Unknown error.')} ${retry}</div>`;
+    }
+    if (action.state === 'denied') {
+      return `<div class="outcome bad"><strong>Merge declined.</strong> Pull request #${number} was not changed.</div>`;
+    }
+    return `<div class="outcome"><strong>Waiting on you — no rush.</strong> Forge will reread checks and branch protection, make pull request #${number} ready if it is a draft, and merge the approved head without another chat call.</div>`;
+  }
   const target = `${escapeHtml(action.branch)} → ${escapeHtml(action.base)}`;
   if (action.state === 'completed' && action.result) {
     return `<div class="outcome ok"><strong>Merged into the queue.</strong> Forge pushed ${target} and opened <a href="${escapeHtml(action.result.pr_url)}">draft pull request #${action.result.pr_number}</a>.</div>`;
   }
   if (action.state === 'failed') {
-    return `<div class="outcome bad"><strong>Could not complete this submission.</strong> ${escapeHtml(action.error ?? 'Unknown error.')} The commits are safe on <code>${escapeHtml(action.stagedRef)}</code>; approving again retries.</div>`;
+    const retry = action.retryable !== false
+      ? 'approving again retries.'
+      : 'request a fresh forge_submit; this approval cannot be retried.';
+    return `<div class="outcome bad"><strong>Could not complete this submission.</strong> ${escapeHtml(action.error ?? 'Unknown error.')} The commits are safe on <code>${escapeHtml(action.stagedRef)}</code>; ${retry}</div>`;
   }
   if (action.state === 'denied') {
     return `<div class="outcome bad"><strong>Declined.</strong> Nothing was pushed. The commits remain on <code>${escapeHtml(action.stagedRef)}</code>.</div>`;
@@ -1534,7 +1567,7 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
   // deferred row is 'failed'. The page used to claim "approving again retries"
   // while refusing every POST — leave a real retry path.
   const deferredRetryable = Boolean(
-    deferredForGate && deferredForGate.state === 'failed' && (row.state === 'approved' || row.state === 'pending')
+    deferredForGate && deferredForGate.state === 'failed' && deferredForGate.retryable !== false && (row.state === 'approved' || row.state === 'pending')
   );
   if (request.method === 'POST') {
     // Every refusal below renders a real page naming the cause. These used to
@@ -1597,7 +1630,7 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     const deferred = deferredForGate;
     if (deferred) {
       if (decision === 'approved') {
-        const executed = await executeDeferredAction(env, deferred, { promoteStagedRef, createDraftPullRequest }).catch((error) => {
+        const executed = await executeDeferredAction(env, deferred, { promoteStagedRef, createDraftPullRequest, mergePullRequest }).catch((error) => {
           console.error('forge_deferred_execute_failed', {
             deferredId: deferred.id,
             name: error instanceof Error ? error.name : 'unknown'
@@ -1609,14 +1642,16 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
           // deferred row failed if execute threw before it could.
           if (!executed) {
             await env.METADATA.prepare(
-              "UPDATE deferred_actions SET state='failed', error=?1, updated_at=?2 WHERE id=?3 AND state IN ('awaiting_approval','executing')"
+              "UPDATE deferred_actions SET state='failed', error=?1, retryable=1, updated_at=?2 WHERE id=?3 AND state IN ('awaiting_approval','executing')"
             ).bind(
-              'Could not open the pull request. Approve again to retry.',
+              deferred.action === 'pull_request.merge'
+                ? 'Could not merge the pull request. Approve again to retry.'
+                : 'Could not open the pull request. Approve again to retry.',
               new Date().toISOString(),
               deferred.id
             ).run().catch(() => undefined);
           }
-        } else {
+        } else if (deferred.action === 'work.submit') {
           await releaseReviewPreview(env, deferred.id, async (workspaceId) => {
             const destroyId = workflowInstanceId('destroy', workspaceId as WorkspaceId);
             const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId)) as unknown as {
@@ -1631,17 +1666,19 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
         }
       } else {
         await denyDeferredAction(env, deferred.id).catch(() => undefined);
-        await releaseReviewPreview(env, deferred.id, async (workspaceId) => {
-          const destroyId = workflowInstanceId('destroy', workspaceId as WorkspaceId);
-          const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId)) as unknown as {
-            requestDestroy: (input: { idempotencyKey: string; force: boolean }) => Promise<unknown>;
-          };
-          await stub.requestDestroy({ idempotencyKey: `review-preview-${destroyId}`, force: true });
-          await env.DESTROY_WORKFLOW.create({
-            id: destroyId,
-            params: { workspaceId: workspaceId as WorkspaceId, idempotencyKey: `review-preview-${destroyId}`, preserveArtifacts: false, force: true }
+        if (deferred.action === 'work.submit') {
+          await releaseReviewPreview(env, deferred.id, async (workspaceId) => {
+            const destroyId = workflowInstanceId('destroy', workspaceId as WorkspaceId);
+            const stub = env.WORKSPACE_COORDINATORS.get(env.WORKSPACE_COORDINATORS.idFromName(workspaceId)) as unknown as {
+              requestDestroy: (input: { idempotencyKey: string; force: boolean }) => Promise<unknown>;
+            };
+            await stub.requestDestroy({ idempotencyKey: `review-preview-${destroyId}`, force: true });
+            await env.DESTROY_WORKFLOW.create({
+              id: destroyId,
+              params: { workspaceId: workspaceId as WorkspaceId, idempotencyKey: `review-preview-${destroyId}`, preserveArtifacts: false, force: true }
+            });
           });
-        });
+        }
       }
     } else if (directChatDeploy) {
       if (decision === 'approved') {
@@ -1702,7 +1739,7 @@ export async function approvalPage(request: Request, env: Env, approvalId: strin
     : '';
   // On-demand live preview. Provisioning takes far longer than a request, so the
   // button only kicks it off and the page polls until there is a URL to open.
-  const previewBlock = deferredAction && deferredAction.state === 'awaiting_approval'
+  const previewBlock = deferredAction && deferredAction.action === 'work.submit' && deferredAction.state === 'awaiting_approval'
     ? `<div class="preview" id="pv" data-endpoint="${escapeHtml(`${env.FORGE_PUBLIC_ORIGIN}/approvals/${approvalId}/preview${token ? `?t=${encodeURIComponent(token)}` : ''}`)}">
 <div class="pvhead"><strong>See it running</strong><span class="pvstatus" id="pvs">Not started</span></div>
 <p class="pvnote">Builds a throwaway workspace from the staged commit and starts the dev server, so you can click through the change before approving. Takes a minute or so, and is cleaned up automatically.</p>
@@ -1756,9 +1793,11 @@ poll();})();</script>`
       ? `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
       : '';
   const approveLabel = deferredRetryable
-    ? 'Retry opening pull request'
-    : deferredAction
-      ? 'Approve &amp; open pull request'
+    ? deferredAction?.action === 'pull_request.merge' ? 'Retry merge' : 'Retry opening pull request'
+    : deferredAction?.action === 'pull_request.merge'
+      ? 'Approve &amp; merge pull request'
+      : deferredAction
+        ? 'Approve &amp; open pull request'
       : directChatDeploy
         ? 'Approve &amp; deploy'
         : 'Approve once';
@@ -1880,6 +1919,105 @@ export async function createDraftPullRequest(
     { method: 'POST', headers: githubHeaders(token), body: JSON.stringify({ ...input, draft: true }) }
   );
   return { number: result.number, url: result.html_url, state: result.state };
+}
+
+/**
+ * Complete a deferred pull-request merge after the human clicks the approval
+ * link. Every invocation rereads GitHub, pins the approved head SHA, makes a
+ * draft ready when necessary, rechecks mergeability, merges, and reads back the
+ * result. The approval page can therefore finish the operation with no chat
+ * caller and no opaque id held in model context.
+ */
+export async function mergePullRequest(
+  env: Env,
+  identity: Pick<AuthenticatedContext, 'tenantId' | 'projectId'>,
+  repository: RepositoryRef,
+  input: { number: number; expectedHeadSha: string; mergeMethod: DeferredMergeMethod }
+): Promise<{ number: number; url: string; mergeSha: string }> {
+  const request = await githubRequestForWorkspace(env, identity, { repository });
+  const base = `/repos/${repository.owner}/${repository.name}`;
+  const read = () => readPullRequestReadiness(request, base, input.number);
+  let readiness = await read();
+  if (readiness.already_merged) {
+    return {
+      number: readiness.number,
+      url: readiness.url || `https://github.com/${repository.owner}/${repository.name}/pull/${readiness.number}`,
+      mergeSha: readiness.merge_commit_sha ?? readiness.head_sha
+    };
+  }
+  if (readiness.head_sha !== input.expectedHeadSha) {
+    throw new ForgeError({
+      code: 'FORGE_STALE_REVISION',
+      message: `Pull request #${input.number} moved from ${input.expectedHeadSha.slice(0, 12)} to ${readiness.head_sha.slice(0, 12)} while waiting for approval. Forge did not merge it; review the new head and retry forge_merge for a fresh approval.`,
+      retryable: false,
+      details: { pull_request: input.number, expected_head_sha: input.expectedHeadSha, current_head_sha: readiness.head_sha }
+    });
+  }
+
+  if (readiness.draft) {
+    const ready = await request(`${base}/pulls/${input.number}`, { method: 'PATCH', body: { draft: false } });
+    if (ready.status !== 200) {
+      throw new ForgeError({
+        code: 'FORGE_PROVIDER_UNAVAILABLE',
+        message: `GitHub returned HTTP ${ready.status} while making pull request #${input.number} ready to merge. Nothing was merged; retry the approved action.`,
+        retryable: ready.status >= 500,
+        details: { pull_request: input.number, operation: 'mark_ready' }
+      });
+    }
+    // Making a draft ready can race with a branch update or change the provider's
+    // mergeability verdict, so the checks are deliberately repeated afterwards.
+    readiness = await read();
+    if (readiness.already_merged) {
+      return {
+        number: readiness.number,
+        url: readiness.url || `https://github.com/${repository.owner}/${repository.name}/pull/${readiness.number}`,
+        mergeSha: readiness.merge_commit_sha ?? readiness.head_sha
+      };
+    }
+    if (readiness.head_sha !== input.expectedHeadSha) {
+      throw new ForgeError({
+        code: 'FORGE_STALE_REVISION',
+        message: `Pull request #${input.number} moved while it was being made ready. Forge did not merge it; review the new head and retry forge_merge for a fresh approval.`,
+        retryable: false,
+        details: { pull_request: input.number, expected_head_sha: input.expectedHeadSha, current_head_sha: readiness.head_sha }
+      });
+    }
+  }
+
+  if (!readiness.safe_to_merge) {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: `Pull request #${input.number} is no longer safe to merge: ${readiness.blockers.join(' ')} Nothing was merged; fix the blockers and retry forge_merge for a fresh approval.`,
+      retryable: false,
+      details: { pull_request: input.number, blockers: readiness.blockers, head_sha: readiness.head_sha }
+    });
+  }
+  const merged = await request(`${base}/pulls/${input.number}/merge`, {
+    method: 'PUT',
+    body: { merge_method: input.mergeMethod, sha: input.expectedHeadSha }
+  });
+  if (merged.status !== 200 || (merged.json as { merged?: boolean }).merged !== true) {
+    throw new ForgeError({
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      message: `GitHub did not merge pull request #${input.number} (HTTP ${merged.status}). Nothing was claimed as merged; retry the approved action after checking the pull request.`,
+      retryable: merged.status >= 500,
+      details: { pull_request: input.number, head_sha: input.expectedHeadSha }
+    });
+  }
+  const readBack = await read();
+  if (!readBack.already_merged) {
+    throw new ForgeError({
+      code: 'FORGE_PROVIDER_UNAVAILABLE',
+      message: `GitHub accepted the merge of pull request #${input.number}, but the read-back did not report it merged. Retry the same approved action before claiming success.`,
+      retryable: true,
+      details: { pull_request: input.number, head_sha: input.expectedHeadSha }
+    });
+  }
+  return {
+    number: readBack.number,
+    url: readBack.url || `https://github.com/${repository.owner}/${repository.name}/pull/${readBack.number}`,
+    mergeSha: readBack.merge_commit_sha ?? String((merged.json as { sha?: string }).sha ?? readBack.head_sha)
+  };
 }
 
 async function verifyWebhook(request: Request, secret: string): Promise<ArrayBuffer> {

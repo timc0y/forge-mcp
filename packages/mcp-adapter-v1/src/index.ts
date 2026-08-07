@@ -36,6 +36,7 @@ const TOOL_INVOCATION_STATUS: Partial<Record<string, ToolInvocationStatus>> = {
   forge_environments: { invoking: 'Loading environments…', invoked: 'Environments ready' },
   forge_deploy: { invoking: 'Requesting deployment…', invoked: 'Deployment requested' },
   forge_submit: { invoking: 'Submitting for review…', invoked: 'Review submitted' },
+  forge_merge: { invoking: 'Requesting merge…', invoked: 'Merge requested' },
   forge_status: { invoking: 'Checking status…', invoked: 'Status ready' }
 };
 

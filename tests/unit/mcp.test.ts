@@ -12,6 +12,7 @@ const PUBLIC_TOOL_NAMES = [
   'forge_environments',
   'forge_deploy',
   'forge_submit',
+  'forge_merge',
   'forge_status'
 ];
 
@@ -22,14 +23,14 @@ function tool(name: string) {
 }
 
 describe('Forge direct-chat MCP contract', () => {
-  it('exposes exactly the ten direct tools and no control-plane catalog', () => {
+  it('exposes exactly the eleven direct tools and no control-plane catalog', () => {
     expect(forgeTools.map((entry) => entry.name)).toEqual(PUBLIC_TOOL_NAMES);
     expect(new Set(forgeTools.map((entry) => entry.name)).size).toBe(PUBLIC_TOOL_NAMES.length);
 
     for (const forbidden of [
       'forge_workspace_create', 'forge_task_create', 'forge_files_read',
       'forge_shell', 'forge_process_wait', 'forge_preview',
-      'forge_deploy_profiles', 'forge_merge', 'forge_site_review'
+      'forge_deploy_profiles', 'forge_site_review'
     ]) {
       expect(forgeTools.some((entry) => entry.name === forbidden), forbidden).toBe(false);
     }
@@ -48,6 +49,11 @@ describe('Forge direct-chat MCP contract', () => {
     const screenshot = tool('forge_screenshot').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
     expect(screenshot.target.safeParse('https://example.com').success).toBe(true);
     expect(screenshot.target.safeParse('').success).toBe(false);
+
+    const merge = tool('forge_merge').inputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    expect(merge.pull_request.safeParse(7).success).toBe(true);
+    expect(merge.pull_request.safeParse(0).success).toBe(false);
+    expect(tool('forge_merge').approval).toBe('deferred');
 
     for (const definition of forgeTools) {
       const receipt = definition.outputSchema as Record<string, { safeParse(value: unknown): { success: boolean } }>;

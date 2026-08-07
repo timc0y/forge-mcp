@@ -47,3 +47,18 @@ sequenceDiagram
   BrowserProvider->>R2 ArtifactStore: store evidence
   BrowserProvider-->>MCP client: artifact references
 ```
+
+## 5. Direct-chat Pull-request Merge
+```mermaid
+sequenceDiagram
+  ChatGPT->>Forge: forge_merge(repository, pull_request, merge_method)
+  Forge->>GitHub API: fresh PR + checks + reviews + branch protection
+  Forge->>D1 metadata: store pinned head SHA + deferred approval
+  Forge-->>ChatGPT: approval URL + pull-request receipt
+  Human->>Forge approval page: approve
+  Forge->>GitHub API: reread head and checks
+  Forge->>GitHub API: make draft ready when needed
+  Forge->>GitHub API: merge pinned head
+  Forge->>GitHub API: read PR back and verify merged SHA
+  Forge-->>Human: durable merge receipt
+```
