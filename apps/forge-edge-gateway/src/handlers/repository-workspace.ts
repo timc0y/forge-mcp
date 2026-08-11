@@ -12,7 +12,7 @@ import { LAZY_REQUESTED_NEXT_ACTIONS } from '@forge/application';
 import { type LegacyForgeToolHandlers, utf8Bytes } from '@forge/mcp-core';
 import { verifyFeatureBranchOnOrigin } from '../merge-guards';
 import { D1TaskStore } from '@forge/metadata-d1';
-import { analyzeDiff, selectContext } from '@forge/insight';
+import { analyzeDiff, createForgeContextPack, selectContext } from '@forge/insight';
 import type { RepositoryRef } from '@forge/task-core';
 import { workflowInstanceId } from '@forge/workflows-cloudflare';
 import { assertForgeBranch, isAgentForgeBranch } from '@forge/policy';
@@ -839,7 +839,8 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
       },
       forge_diff_metadata: async (input) => {
         const identity = deps.identity();
-        const workspace = await liveControlPlaneCoordinator(env, identity, await resolveWorkspaceId(env, identity, workspaceAddress(input)));
+        const workspaceId = await resolveWorkspaceId(env, identity, workspaceAddress(input));
+        const workspace = await liveControlPlaneCoordinator(env, identity, workspaceId);
         const binding = await workspace.getAuthorizationBinding();
         const branch = binding.currentBranch ?? binding.requestedRef;
         const base = input.base === undefined ? binding.requestedRef : text(input.base);
@@ -868,8 +869,41 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
           `+++ b/${file.filename}`,
           file.patch ?? `Binary or oversized ${file.status} file (${file.additions} additions, ${file.deletions} deletions)`
         ].join('\n')).join('\n');
+        const createdAt = new Date().toISOString();
+        const contextPack = createForgeContextPack({
+          scope: {
+            workspaceId,
+            tenantId: identity.tenantId,
+            projectId: identity.projectId,
+            repository: binding.repository,
+          },
+          subject: {
+            kind: 'repository.diff',
+            id: `${base}...${branch}`,
+            label: `${binding.repository.owner}/${binding.repository.name} comparison`,
+          },
+          createdAt,
+          sources: [{
+            id: 'github-comparison',
+            kind: 'repository.diff',
+            label: 'Authorised GitHub branch comparison',
+            locator: { type: 'opaque', value: `${binding.repository.owner}/${binding.repository.name}@${base}...${branch}` },
+            capturedAt: createdAt,
+            classification: 'private',
+          }],
+          observations: [{
+            id: 'observation:github-comparison',
+            kind: 'observation.repository.diff-metadata',
+            statement: `GitHub comparison reported ${(body.files ?? []).length} changed files and ${body.ahead_by ?? 0} commits ahead.`,
+            evidence: [{ sourceId: 'github-comparison', locator: { type: 'whole_source' } }],
+            provenance: { kind: 'system', id: 'forge', version: '1' },
+            status: 'observed',
+            createdAt,
+          }],
+        });
         return asRecord({
           ...analyzeDiff(diff),
+          context_pack: contextPack,
           source: 'github',
           base,
           head: branch,
@@ -1487,7 +1521,12 @@ export function repositoryWorkspaceToolHandlers(env: Env, deps: RepositoryWorksp
         // Give the reviewer something readable to decide on. Best-effort: a
         // missing summariser must never be what stops work being submitted.
         if (!title.trim() && aiEnabled(env) && diff.trim()) {
-          const summary = await summarizeDiffForPr(env, diff, { branch, base: prBase }).catch(() => undefined);
+          const summary = await summarizeDiffForPr(env, diff, {
+            branch,
+            base: prBase,
+            tenantId: identity.tenantId,
+            projectId: identity.projectId,
+          }).catch(() => undefined);
           if (summary) {
             title = summary.title;
             if (!body.trim()) body = summary.body;

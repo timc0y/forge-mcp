@@ -265,7 +265,11 @@ importers:
 
   packages/git-github: {}
 
-  packages/insight: {}
+  packages/insight:
+    dependencies:
+      '@timcoy/context-core':
+        specifier: file:../../../context-core
+        version: file:../context-core
 
   packages/mcp-adapter-v1:
     dependencies:
@@ -1180,6 +1184,10 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@timcoy/context-core@file:../context-core':
+    resolution: {directory: ../context-core, type: directory}
+    engines: {node: '>=20'}
 
   '@tootallnate/quickjs-emscripten@0.23.0':
     resolution: {integrity: sha512-C5Mc6rdnsaJDjO3UpGW/CQTHtCKaYlScZTly4JIu97Jxo/odCiH0ITnDXSJPTOrEKk/ycSZ0AOgTmkDtkOsvIA==}
@@ -3036,6 +3044,8 @@ snapshots:
   '@speed-highlight/core@1.2.17': {}
 
   '@standard-schema/spec@1.1.0': {}
+
+  '@timcoy/context-core@file:../context-core': {}
 
   '@tootallnate/quickjs-emscripten@0.23.0': {}
 

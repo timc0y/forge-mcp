@@ -6,6 +6,7 @@
 // llama-3.1-8b-instruct-fast model, roughly ~50-200 neurons per invocation.
 
 import type { Env } from './env';
+import { assertForgeWorkersAiAllowed } from '@forge/insight';
 
 const MODEL = '@cf/meta/llama-3.1-8b-instruct-fast';
 const MAX_DIFF_CHARS = 8000;
@@ -84,9 +85,9 @@ interface PrSummary {
  * fallback derived from the changed paths.
  */
 export async function summarizeDiffForPr(
-  env: Pick<Env, 'AI'>,
+  env: Pick<Env, 'AI' | 'FORGE_INFERENCE_POLICY' | 'FORGE_APPROVED_CLOUD_PROVIDERS'>,
   diff: string,
-  ctx: { branch: string; base: string }
+  ctx: { branch: string; base: string; tenantId?: string; projectId?: string }
 ): Promise<PrSummary> {
   const dirs = topLevelDirs(diff);
   const fallback: PrSummary = {
@@ -94,6 +95,13 @@ export async function summarizeDiffForPr(
     body: prFallbackBody(diff)
   };
   try {
+    assertForgeWorkersAiAllowed({
+      env,
+      tenantId: ctx.tenantId ?? 'system',
+      projectId: ctx.projectId ?? 'commit-summary',
+      purpose: 'forge.commit-summary',
+      classification: 'private',
+    });
     const condensed = condenseDiff(diff);
     const output = await env.AI.run(MODEL, {
       messages: [
@@ -132,10 +140,21 @@ function prFallbackBody(diff: string): string {
  * Generate a one-line conventional-commit subject (plus optional short body)
  * from a diff. Never throws — falls back to `chore: update <top dirs>`.
  */
-export async function generateCommitMessage(env: Pick<Env, 'AI'>, diff: string): Promise<string> {
+export async function generateCommitMessage(
+  env: Pick<Env, 'AI' | 'FORGE_INFERENCE_POLICY' | 'FORGE_APPROVED_CLOUD_PROVIDERS'>,
+  diff: string,
+  workspace: { tenantId?: string; projectId?: string } = {},
+): Promise<string> {
   const dirs = topLevelDirs(diff);
   const fallback = `chore: update ${dirs.join(', ') || 'workspace'}`;
   try {
+    assertForgeWorkersAiAllowed({
+      env,
+      tenantId: workspace.tenantId ?? 'system',
+      projectId: workspace.projectId ?? 'commit-message',
+      purpose: 'forge.commit-message',
+      classification: 'private',
+    });
     const condensed = condenseDiff(diff);
     const output = await env.AI.run(MODEL, {
       messages: [

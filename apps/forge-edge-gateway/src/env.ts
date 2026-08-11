@@ -26,6 +26,10 @@ export interface Env {
   AI: Ai;
   // Kill switch for the Workers AI features. AI is ON unless this is 'true'/'1'.
   FORGE_AI_DISABLED?: string;
+  // Inference boundary for the existing Workers AI calls. `cloudflare-workers-ai`
+  // is the built-in default; any later external provider needs an explicit list entry.
+  FORGE_INFERENCE_POLICY?: string;
+  FORGE_APPROVED_CLOUD_PROVIDERS?: string;
   /** Cloudflare AI Gateway used only for bounded site-route planning. */
   FORGE_SITE_REVIEW_GATEWAY_ID?: string;
   FORGE_SITE_REVIEW_MODEL?: string;

@@ -78,6 +78,15 @@ describe('generateCommitMessage', () => {
     const message = await generateCommitMessage(envWith({ throws: true }), DIFF);
     expect(message).toBe('chore: update apps, packages');
   });
+  it('falls back without calling Workers AI when the policy is local only', async () => {
+    let calls = 0;
+    const env = {
+      AI: { run: async () => { calls += 1; return { response: 'feat: should not run' }; } },
+      FORGE_INFERENCE_POLICY: 'local_only',
+    } as never;
+    expect(await generateCommitMessage(env, DIFF)).toBe('chore: update apps, packages');
+    expect(calls).toBe(0);
+  });
 });
 
 describe('summarizeDiffForPr', () => {

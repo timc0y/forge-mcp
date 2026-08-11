@@ -1,1 +1,1 @@
-{"name":"@forge/insight","version":"0.1.0","type":"module","exports":"./src/index.ts","scripts":{"typecheck":"tsc -p tsconfig.json --noEmit"}}
+{"name":"@forge/insight","version":"0.1.0","type":"module","exports":"./src/index.ts","dependencies":{"@timcoy/context-core":"file:../../../context-core"},"scripts":{"typecheck":"tsc -p tsconfig.json --noEmit"}}

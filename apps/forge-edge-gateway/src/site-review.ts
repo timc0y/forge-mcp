@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { assertForgeWorkersAiAllowed } from '@forge/insight';
 import { ids, type ArtifactId, type SiteReviewId, type TenantId, type WorkspaceId } from '@forge/core';
 import { R2ArtifactStore } from '@forge/artifacts-r2';
 import { CloudflareBrowserProvider } from '@forge/browser-cloudflare';
@@ -159,6 +160,13 @@ async function selectPlan(env: Env, review: SiteReview, routes: string[]): Promi
   const model = env.FORGE_SITE_REVIEW_MODEL?.trim();
   if (!gatewayId || !model) return { routes: fallback, source: 'deterministic_fallback' };
   try {
+    assertForgeWorkersAiAllowed({
+      env,
+      tenantId: review.tenantId,
+      projectId: review.projectId,
+      purpose: 'forge.site-review-route-plan',
+      classification: 'public',
+    });
     const gateway = (env.AI as unknown as { gateway(id: string): { run(model: string, input: unknown): Promise<unknown> } }).gateway(gatewayId);
     const result = await gateway.run(model, {
       messages: [

@@ -1,0 +1,10 @@
+{
+  "id": "forge-insight",
+  "version": "1",
+  "title": "Forge Insight",
+  "kinds": ["source", "analysis", "context"],
+  "consumes": ["source.repository", "source.review"],
+  "produces": ["observation.code", "claim.engineering"],
+  "actions": ["action.review.prepare"],
+  "dataAccess": "case_scoped"
+}
