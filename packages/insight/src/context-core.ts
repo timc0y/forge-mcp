@@ -8,7 +8,7 @@ import type {
   SubjectRef,
   WorkspaceRef,
 } from '@timcoy/context-core';
-import { evaluateInferenceRequest } from '@timcoy/context-core';
+import { evaluateInferenceRequest, validateContextPack } from '@timcoy/context-core';
 
 export const FORGE_PRODUCT_ID = 'forge';
 
@@ -28,11 +28,18 @@ function providerList(value: string | null | undefined): string[] {
 export function resolveForgeInferencePolicy(env: ForgeInferenceEnvironment): InferencePolicy {
   const requestedMode = env.FORGE_INFERENCE_POLICY?.trim();
   const approvedCloudProviders = providerList(env.FORGE_APPROVED_CLOUD_PROVIDERS);
+  const mode = requestedMode === 'local_only' || requestedMode === 'redacted_cloud' || requestedMode === 'approved_cloud'
+    ? requestedMode
+    : 'approved_cloud';
   return {
-    mode: requestedMode === 'local_only' || requestedMode === 'redacted_cloud' || requestedMode === 'approved_cloud'
-      ? requestedMode
-      : 'approved_cloud',
+    mode,
+    scope: { kind: 'product', productId: FORGE_PRODUCT_ID },
     approvedCloudProviders: approvedCloudProviders.length ? approvedCloudProviders : ['cloudflare-workers-ai'],
+    cloudClassifications: mode === 'local_only'
+      ? []
+      : mode === 'redacted_cloud'
+        ? ['public', 'private', 'sensitive']
+        : ['public', 'private'],
   };
 }
 
@@ -90,7 +97,7 @@ export interface ForgeContextPackInput {
  * in Forge's authorised repository plane rather than this portable snapshot.
  */
 export function createForgeContextPack(input: ForgeContextPackInput): ContextPack {
-  return {
+  const result = validateContextPack({
     schemaVersion: 1,
     id: `forge:${input.scope.workspaceId}:${input.subject.kind}:${input.subject.id}`,
     workspace: forgeContextWorkspace(input.scope),
@@ -102,5 +109,9 @@ export function createForgeContextPack(input: ForgeContextPackInput): ContextPac
     decisions: [],
     actions: [],
     training: { disposition: 'excluded' },
-  };
+  });
+  if (!result.ok) {
+    throw new Error(`Forge context pack failed validation: ${result.issues.map(({ path }) => path).join(', ')}`);
+  }
+  return result.value;
 }

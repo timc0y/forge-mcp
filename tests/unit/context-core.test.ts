@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createForgeContextPack, forgeContextWorkspace } from '@forge/insight';
+import { createForgeContextPack, forgeContextWorkspace, resolveForgeInferencePolicy } from '@forge/insight';
 
 const scope = {
   workspaceId: 'workspace-1',
@@ -9,6 +9,10 @@ const scope = {
 };
 
 describe('Forge Context Core adapter', () => {
+  it('binds the environment policy to Forge rather than an unrelated product', () => {
+    expect(resolveForgeInferencePolicy({}).scope).toEqual({ kind: 'product', productId: 'forge' });
+  });
+
   it('keeps the context boundary at tenant/project while the subject is an ephemeral workspace', () => {
     expect(forgeContextWorkspace(scope)).toEqual({
       productId: 'forge',
@@ -47,5 +51,14 @@ describe('Forge Context Core adapter', () => {
 
     expect(pack.observations[0]?.evidence[0]?.sourceId).toBe('diff-1');
     expect(pack.training).toEqual({ disposition: 'excluded' });
+  });
+
+  it('rejects an invalid pack at the adapter boundary', () => {
+    expect(() => createForgeContextPack({
+      scope,
+      subject: { kind: 'review.repository', id: 'review-1' },
+      createdAt: 'not-a-date',
+      sources: [],
+    })).toThrow(/failed validation/i);
   });
 });
