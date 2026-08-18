@@ -1,23 +1,32 @@
-# Simple profile
+# Simple
 
 ## Reality
 
-- Users: ChatGPT and Claude users operating authorised GitHub workspaces from ordinary conversations.
-- Operators: repository owners configuring GitHub App access, credentials, ephemeral compute and Cloudflare deployment.
-- External consumers: MCP clients, GitHub App installations, workflow definitions and the Forge web/worker surfaces.
-- Public contracts: MCP tools, OpenAPI/schema artifacts, capability boundaries, audit events and workflow state transitions.
-- Persistent production data: D1 metadata, R2 artifacts, credentials, audit records and saved environment/workflow state.
-- Compatibility obligations: preserve authorised repository scope, schema migrations and tool contracts used by existing clients.
-- Current scale and failure consequences: remote code execution and repository mutation; boundary failure can expose credentials, alter code or run untrusted workloads.
+- User/operator: Tim only.
+- Purpose: Let Tim use Codex inside ChatGPT to inspect and change his authorised GitHub repositories. Do not design for other users or hosts.
+- External surface: Remote MCP actions for repository inspection, editing, execution, preview, deployment, submission, and merging.
+- Persistent data: GitHub is the durable repository plane. Cloudflare bindings support metadata, artifacts, coordination, and approvals; live status of every configured resource is not independently proven here.
+- Compatibility: Preserve the actions Tim currently uses and the safety boundaries around them; generic tenant, OAuth, Claude, and client code is not evidence of a multi-user obligation.
 
-## Architecture boundary
+## Preserve
 
-Forge supplies guarded GitHub access, ephemeral compute and browser evidence. The host chat owns reasoning; Forge is not an autonomous project manager, permanent development machine or product-review authority.
+- Repository-scoped authorization, approval gates, credential isolation, audit/idempotency records, durable branches, verified receipts, and ephemeral-executor cleanup.
 
-## Deletion proof
+## Current boundary
 
-- Dead code: `pnpm catalog:measure` and repository searches, with explicit checks for schema-, workflow- and tool-registered entry points.
-- Types or compiler: `pnpm typecheck`.
-- Behaviour: `pnpm test`, plus focused tool or end-to-end tests for changed capabilities.
-- Build: `pnpm check`.
-- Public surface: regenerate and compare schemas/OpenAPI, inspect MCP tool registration and run boundary checks.
+- MCP backend for Codex in ChatGPT to do Tim's repository work. It is not a multi-user product, general agent platform, permanent development machine, or autonomous project manager.
+
+## Ordinary paths
+
+- Extend an existing bounded MCP action through its policy, workflow, approval, and receipt path. Keep durable changes in GitHub and execution state ephemeral.
+
+## Proof
+
+- `pnpm check`
+- Focused `pnpm test` or `pnpm test:e2e`
+- `pnpm schemas:check`
+- Inspect MCP tool and schema registration together.
+
+## Reconsider when
+
+- Tim explicitly authorises another user, another host, or durable autonomous work; establish auth, privacy, cost, and compatibility obligations first.
