@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="Forge">
+  <title>Forge</title>
+  <!--
+    One silhouette, three masses: face, waist, base. No strokes, no curves — it
+    knocks out of any background, and flat facets keep the profile readable when
+    an avatar renders it small. The base is drawn wider than the face so the
+    mark sits planted rather than top-heavy.
+  -->
+  <path fill="currentColor" d="
+    M3 21 L17 15 L54 15 L57 18 L57 24 L54 27 L38 27
+    L38 37 L48 37 L54 50 L10 50 L16 37 L26 37 L26 27 L17 27 Z" />
+</svg>

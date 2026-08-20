@@ -1,83 +1,144 @@
 import type { Env } from './env';
-import { page } from './ui';
+import { escapeHtml, page } from './ui';
 
 /**
  * The one page a person can read.
  *
- * Forge deliberately has no dashboard, no console and no observer API — the
- * previous system had all three and every one was a surface to keep working,
- * secure and honest. This is not that. It is the mount point, which would
- * otherwise be a 404, and it answers the only questions someone can have before
- * they are a user: what is this, how do I connect it, and where does the GitHub
- * App go. Once connected, everything happens in the chat.
+ * Forge has no dashboard, no console and no observer API — the previous system
+ * had all three and each was a surface to keep working, secure and honest. This
+ * is the mount point, which would otherwise be a 404, and it answers only what
+ * someone can ask before they are a user: what is this, how do I connect it,
+ * where does the GitHub App go. Once connected, everything happens in the chat.
  *
- * Self-contained on purpose: no external stylesheet, script, font or image, so
- * it renders the same on a phone with a bad connection as anywhere else, and
- * loading it tells no third party that you use Forge.
+ * Written to be scanned, not read. A person arriving here wants the server URL
+ * and the install link; the prose exists to make those two make sense, and it
+ * is kept short enough that skipping it costs nothing.
  */
 
+/** One icon set, one stroke weight, drawn rather than borrowed from a font. */
+const ICONS: Record<string, string> = {
+  read: '<path d="M3 5.5h6a2.5 2.5 0 0 1 2.5 2.5v9A2 2 0 0 0 9.5 15H3Zm18 0h-6A2.5 2.5 0 0 0 12.5 8v9A2 2 0 0 1 14.5 15H21Z"/>',
+  edit: '<path d="M4 20h16"/><path d="M14.5 4.5 19 9 9.5 18.5 4.5 20l1.5-5Z"/>',
+  merge: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7"/><path d="M8.5 6.6c4 .6 5.6 2.4 6.6 5"/>',
+  discard: '<path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.5 7l1 12.5h9L17.5 7"/>',
+  see: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>'
+};
+
+function icon(name: string, muted = false): string {
+  return (
+    `<svg class="ico${muted ? ' mut' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
+    `stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] ?? ''}</svg>`
+  );
+}
+
+/**
+ * The product in one picture: you talk, Forge writes to GitHub, and what it
+ * sees comes back. Drawn rather than described, because the loop is the whole
+ * idea and a paragraph of it is the thing people skip.
+ */
+function loop(): string {
+  const node = (x: number, label: string, sub: string) =>
+    `<g transform="translate(${x} 34)">` +
+    `<rect x="-58" y="-26" width="116" height="52" rx="12" fill="var(--panel)" stroke="var(--line)"/>` +
+    `<text x="0" y="-3" text-anchor="middle" fill="var(--ink)" font-size="13" font-weight="600">${label}</text>` +
+    `<text x="0" y="14" text-anchor="middle" fill="var(--muted)" font-size="10.5">${sub}</text></g>`;
+
+  return (
+    '<svg class="loop" viewBox="0 0 620 128" role="img" ' +
+    'aria-label="You ask in a chat, Forge commits to GitHub, and what it sees comes back to you.">' +
+    '<defs><marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">' +
+    '<path d="M0 0.5 7 4 0 7.5Z" fill="var(--muted)"/></marker></defs>' +
+    node(70, 'You', 'in any chat') +
+    node(310, 'Forge', 'five tools') +
+    node(550, 'GitHub', 'the only copy') +
+    '<path d="M132 34h100" stroke="var(--muted)" fill="none" marker-end="url(#ar)"/>' +
+    '<path d="M372 34h100" stroke="var(--muted)" fill="none" marker-end="url(#ar)"/>' +
+    '<path d="M550 66v26q0 12-12 12H82q-12 0-12-12V66" stroke="var(--muted)" fill="none" ' +
+    'stroke-dasharray="4 4" marker-end="url(#ar)"/>' +
+    '<text x="310" y="121" text-anchor="middle" fill="var(--muted)" font-size="10.5">' +
+    'commits, diffs and screenshots come back</text>' +
+    '</svg>'
+  );
+}
+
+const TOOLS: Array<[string, string, string, boolean]> = [
+  ['read', 'forge_read', 'Your repos, a repo&rsquo;s files, or what a change did', false],
+  ['edit', 'forge_edit', 'Writes files. Makes the repo and the change if new', false],
+  ['merge', 'forge_merge', 'Sends one link to land a change on main', true],
+  ['discard', 'forge_discard', 'Sends one link to throw a change away', true],
+  ['see', 'forge_see', 'Screenshots a public page, hands back the images', false]
+];
+
+const LIMITS: Array<[string, string]> = [
+  ['Free', 'research preview, open to anyone'],
+  ['30', 'screenshots per day'],
+  ['Unlimited', 'reads, commits and merges'],
+  ['Nothing', 'runs — no builds, no deploys']
+];
+
+const REFUSALS: Array<[string, string, string]> = [
+  ['edit', 'Touch main', 'Only a merge you approved moves your default branch'],
+  ['see', 'See private pages', 'Captures need a URL that is already public'],
+  ['read', 'Keep a copy', 'GitHub is the only place your work lives']
+];
 
 export function landingPage(env: Env): Response {
   const origin = env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, '');
   const mcp = `${origin}/mcp`;
   const install = `https://github.com/apps/${env.GITHUB_APP_SLUG}/installations/new`;
 
-  const body = `<h1>Forge</h1>
-<p class="lead">Hands and eyes for a mind that can only talk.</p>
+  const tools = TOOLS.map(
+    ([ico, name, what, gated]) =>
+      `<li>${icon(ico, !gated)}<b>${name}</b><p>${what}</p>` +
+      `<span class="you${gated ? ' yes' : ''}">${gated ? 'you approve' : 'no approval'}</span></li>`
+  ).join('');
 
-<p>A chat has judgement and no way to act. It cannot hold a filesystem, cannot loop, and forgets an identifier the moment a conversation is summarised. Forge gives it two organs and nothing else: <strong>durable authoring in GitHub</strong>, and <strong>sight of rendered pages</strong>. GitHub holds the memory.</p>
+  const limits = LIMITS.map(([big, small]) => `<div><b>${big}</b><span>${small}</span></div>`).join('');
 
-<p>Think of something on a walk, and a repository exists with the plan in it before you get home. Iterate on a page from your phone, look at it, change it, look again.</p>
+  const refusals = REFUSALS.map(
+    ([ico, name, why]) => `<li>${icon(ico, true)}<b>${name}</b><p>${why}</p><span class="you"></span></li>`
+  ).join('');
 
-<div class="section alert"><p><strong>Forge does not run your code.</strong> No containers, no shell, no builds, no deployments. It writes to GitHub and it looks at pages that are already public. That is the whole of it.</p></div>
+  const body = `
+<section class="hero">
+  <h1 class="rise">Build on GitHub<br>from a chat.</h1>
+  <p class="lead rise">Forge gives an ordinary conversation two things it has never had:
+    <b>hands</b> that write real commits, and <b>eyes</b> that see a rendered page.</p>
+  <div class="endpoint"><span>Server</span><code>${escapeHtml(mcp)}</code></div>
+  <div class="row"><a class="btn primary" href="${escapeHtml(install)}">Install the GitHub App</a>
+    <a class="btn" href="#setup">How it works</a></div>
+</section>
 
-<h2>The five tools</h2>
-<table>
-<tr><th>Tool</th><th>What it does</th><th class="gate">Needs you</th></tr>
-<tr><td><code>forge_read</code></td><td>Your repositories, a repository's files, what a change did, or the contents of specific files</td><td class="gate">no</td></tr>
-<tr><td><code>forge_edit</code></td><td>Writes files. Creates the repository if it is new, and the change if the intent is new</td><td class="gate">no</td></tr>
-<tr><td><code>forge_merge</code></td><td>Sends you one link to land a change on <code>main</code></td><td class="gate"><strong>yes</strong></td></tr>
-<tr><td><code>forge_discard</code></td><td>Sends you one link to throw a change away</td><td class="gate"><strong>yes</strong></td></tr>
-<tr><td><code>forge_see</code></td><td>Screenshots a public URL and hands back the images</td><td class="gate">no</td></tr>
-</table>
+${loop()}
 
-<h3>You never name a branch</h3>
-<p>Describe the work — <em>"pricing section"</em> — and say those words again to continue it. Every reply lists what is open in that repository, so nothing has to be remembered between messages. A commit is on GitHub the moment the tool returns; there is nothing to push or confirm afterwards.</p>
+<h2>Five tools. Two need you.</h2>
+<ul class="tools">${tools}</ul>
+<p class="note">You never name a branch — describe the work, and say those words again to continue it.
+  A commit is on GitHub the moment a tool returns.</p>
 
-<h3>Two things need your hand</h3>
-<p><code>main</code> moves only through a merge you approved, and a change is only thrown away if you say so. Both send you a single link showing exactly what would land or be lost. The link keeps working after the conversation ends, so you can decide later, on any device.</p>
+<h2 id="setup">Setting up</h2>
+<ol class="steps">
+  <li><div><h3>Add the server to your client</h3>
+    <p>ChatGPT: Settings → Apps &amp; Connectors → Advanced → Developer mode.
+      Claude: Settings → Connectors.</p>
+    <code class="block">${escapeHtml(mcp)}</code></div></li>
+  <li><div><h3>Continue with GitHub</h3>
+    <p>Your client opens a Forge page, then GitHub asks whether to let Forge act as you.
+      That is the last time tokens come up.</p></div></li>
+  <li><div><h3>Choose what it may touch</h3>
+    <p>Authorizing says who you are. Installing says which repositories — all of them or a few,
+      changeable any time from GitHub.</p>
+    <div class="row"><a class="btn" href="${escapeHtml(install)}">Install the App</a></div></div></li>
+</ol>
 
-<h2>Getting set up</h2>
-
-<div class="section alert"><p>Forge is a <strong>free research preview</strong>, open to anyone with a GitHub account. Captures are limited to 30 a day per person; everything else is unlimited because it runs against your own GitHub allowance.</p></div>
-
-<h3>1. Add Forge to your client</h3>
-<p>The server URL is:</p>
-<pre><code>${mcp}</code></pre>
-<p><strong>ChatGPT</strong> — Settings → Apps &amp; Connectors → Advanced → Developer mode, then add a connector with that URL.</p>
-<p><strong>Claude</strong> — Settings → Connectors → Add custom connector, with that URL. Or from Claude Code:</p>
-<pre><code>claude mcp add --transport http --scope user forge ${mcp}</code></pre>
-
-<h3>2. Authorize it</h3>
-<p>Your client opens a Forge page saying what it is about to be allowed to do. Continue with GitHub from there. GitHub asks whether to let Forge act as you, and that is the last time you have to think about tokens.</p>
-
-<h3>3. Install the GitHub App</h3>
-<p>Authorizing tells Forge who you are. Installing tells it <em>which repositories it may touch</em>. They are separate on purpose, and Forge cannot reach anything until you choose:</p>
-<pre><code>${install}</code></pre>
-<p>Pick every repository or only some. You can change it whenever you like, from GitHub, without involving Forge. Repositories Forge creates for you are reachable automatically.</p>
-
-<h3>4. Say what you want</h3>
-<p class="note">"Make me a repo called weather-notes with a plan doc in it." · "Read the homepage of my site repo and tighten the copy." · "Screenshot example.com on phone and desktop." · "Merge the pricing section change."</p>
+<h2>What it costs</h2>
+<div class="spec">${limits}</div>
 
 <h2>What it will not do</h2>
-<ul>
-<li>Run, build, test or deploy anything.</li>
-<li>Write to <code>main</code> without you approving it.</li>
-<li>Screenshot anything that is not already publicly reachable.</li>
-<li>Keep a copy of your repository. GitHub is the only place your work lives.</li>
-</ul>
+<ul class="tools">${refusals}</ul>
 
-<footer>Forge is open source: <a href="https://github.com/timc0y/forge-mcp">github.com/timc0y/forge-mcp</a>. Captures expire after 30 days, approval links after 7.</footer>`;
+<footer>Open source at <a href="https://github.com/timc0y/forge-mcp">github.com/timc0y/forge-mcp</a>.
+  Screenshot links last 30 days, approval links 7.</footer>`;
 
   return page({
     title: 'Forge — build on GitHub from a chat',
@@ -86,6 +147,9 @@ export function landingPage(env: Env): Response {
     // The one page meant to be found. Every other surface is about somebody's
     // branch or somebody's screenshot and is deliberately not indexed.
     index: true,
-    cache: 'public,max-age=300'
+    cache: 'public,max-age=300',
+    css:
+      '.loop{display:block;width:100%;height:auto;margin:2.6rem 0 .5rem}' +
+      '@media(max-width:560px){.loop{display:none}}'
   });
 }

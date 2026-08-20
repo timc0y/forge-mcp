@@ -25,8 +25,8 @@
  */
 export function forgeGlyph(size = 24): string {
   return (
-    `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">` +
-    '<path d="M4 7.6H18l3.8 2a.5.5 0 0 1 0 .9L18 12.4h-3.7v3.2h3.2a1.15 1.15 0 0 1 1.15 1.15V18.6H5.35v-1.85A1.15 1.15 0 0 1 6.5 15.6h3.2v-3.2H6.3A2.3 2.3 0 0 1 4 10.1V7.6Z" fill="currentColor"/>' +
+    `<svg width="${size}" height="${size}" viewBox="0 0 64 64" fill="none" aria-hidden="true">` +
+    '<path fill="currentColor" d="M3 21 L17 15 L54 15 L57 18 L57 24 L54 27 L38 27 L38 37 L48 37 L54 50 L10 50 L16 37 L26 37 L26 27 L17 27 Z"/>' +
     '</svg>'
   );
 }
@@ -64,9 +64,9 @@ p{margin:0 0 .7rem;color:var(--muted);text-wrap:pretty;overflow-wrap:anywhere}
 .card,.section{padding:1.25rem;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
 .section{margin-bottom:1rem}
 .section.plain{background:transparent;border:0;padding:0}
-.section.alert{border-left:3px solid var(--ink)}
-.section.good{border-left:3px solid var(--ok);background:var(--ok-bg)}
-.section.bad{border-left:3px solid var(--bad);background:var(--bad-bg)}
+.section.alert{border-color:var(--ink);background:transparent}
+.section.good{border-color:var(--ok);background:var(--ok-bg)}
+.section.bad{border-color:var(--bad);background:var(--bad-bg)}
 .section p:last-child{margin-bottom:0}
 .badge{display:inline-grid;place-items:center;min-width:24px;height:24px;padding:0 .45rem;border-radius:12px;background:var(--ink);color:var(--bg);font-size:.78rem;font-weight:600;vertical-align:middle}
 .note{font-size:.88rem}
@@ -90,7 +90,61 @@ figcaption{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:
 figure img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:10px;display:block}
 footer{border-top:1px solid var(--line);margin-top:2.5rem;padding:1.4rem 0 2.4rem;color:var(--muted);font-size:.85rem}
 @media(max-width:640px){.row{flex-direction:column;align-items:stretch}.row .btn,.row button{width:100%}ul.list li>span{flex:1 1 100%}.kv{flex-direction:column;gap:.1rem}.kv span{flex:none}}
-@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+/* The surfaces we did not draw. Left at browser defaults they belong to no
+   design system, and they are the cheapest tell that a page was assembled. */
+::selection{background:var(--ink);color:var(--bg)}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px;border:3px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+input,textarea{caret-color:var(--ink)}
+a{text-underline-offset:.18em;text-decoration-thickness:1px}
+li::marker{color:var(--muted)}
+:root{scrollbar-color:var(--line) var(--bg);scrollbar-width:thin}
+
+/* Hero */
+.hero{padding:3.5rem 0 1rem}
+.hero h1{margin:0 0 1rem;font-size:clamp(2.4rem,7vw,4.2rem);letter-spacing:-.045em;line-height:.98}
+.hero .lead{font-size:clamp(1.15rem,2.4vw,1.45rem);max-width:34ch;line-height:1.35;margin-bottom:1.8rem}
+.hero .lead b{font-weight:600}
+.endpoint{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;border:1px solid var(--line);border-radius:12px;padding:.7rem .9rem;background:var(--panel);max-width:38rem}
+.endpoint code{flex:1 1 16rem;font-size:.9rem}
+.endpoint span{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}
+
+/* Drawn icons: one library, one stroke weight. */
+.ico{width:20px;height:20px;flex:0 0 auto;color:var(--ink)}
+.ico.mut{color:var(--muted)}
+
+/* The tool list: a rail, not a grid of identical cards. */
+.tools{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.tools li{display:grid;grid-template-columns:20px minmax(0,10rem) minmax(0,1fr) auto;gap:.9rem;align-items:baseline;padding:.95rem .25rem;border-bottom:1px solid var(--line)}
+.tools li .ico{align-self:center}
+.tools b{font-weight:600;font-size:.95rem}
+.tools p{margin:0;font-size:.92rem}
+.tools .you{font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);white-space:nowrap}
+.tools .you.yes{color:var(--ink);font-weight:600}
+@media(max-width:640px){.tools li{grid-template-columns:20px 1fr;row-gap:.3rem}.tools li p{grid-column:2}.tools li .you{grid-column:2}}
+
+/* Ordered setup: the sequence is the information. */
+.steps{list-style:none;counter-reset:s;margin:0;padding:0;display:grid;gap:1.5rem}
+.steps li{counter-increment:s;display:grid;grid-template-columns:2.1rem 1fr;gap:1rem;align-items:start}
+.steps li::before{content:counter(s);display:grid;place-items:center;width:2.1rem;height:2.1rem;border-radius:50%;background:var(--ink);color:var(--bg);font-size:.85rem;font-weight:600}
+.steps h3{margin:.25rem 0 .3rem}
+.steps .code{margin-top:.55rem}
+
+/* Compact spec strip instead of a paragraph of numbers. */
+.spec{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.spec div{padding:1rem 1.1rem;background:var(--bg)}
+.spec b{display:block;font-size:1.35rem;letter-spacing:-.02em;margin-bottom:.15rem}
+.spec span{color:var(--muted);font-size:.82rem}
+
+/* One authored moment, from an already-visible default. */
+@media(prefers-reduced-motion:no-preference){
+  .rise{animation:rise .7s cubic-bezier(.16,1,.3,1) both}
+  .rise:nth-of-type(2){animation-delay:.06s}
+  @keyframes rise{from{opacity:0;transform:translateY(10px);filter:blur(6px)}to{opacity:1;transform:none;filter:none}}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 `.trim();
 
 export interface PageOptions {

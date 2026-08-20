@@ -1,3 +1,5 @@
+<img src="assets/forge-app-icon.svg" width="72" alt="">
+
 # Forge
 
 Hands and eyes for a mind that can only talk.
@@ -30,6 +32,7 @@ a human approved.
   what the tools do.
 - **[Operating Forge](./docs/operating-forge.md)** — config, secrets, cost.
 - [`worker/`](./worker) — the implementation.
+- [`assets/`](./assets) — the mark, and the app icon in both tones.
 - [`SIMPLE.md`](./SIMPLE.md) — the design profile: what is real, what is
   preserved, and the precedents that must not be re-litigated.
 - [`docs/plans/forge-v1.md`](./docs/plans/forge-v1.md) — the plan this was built to.
