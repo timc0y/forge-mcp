@@ -56,7 +56,13 @@ async function credentialForApproval(env: Env, approvalId: string): Promise<Awai
   return githubRequest(env, row.installation_id);
 }
 
-async function handleApproval(env: Env, request: Request, url: URL, id: string): Promise<Response> {
+async function handleApproval(
+  env: Env,
+  request: Request,
+  url: URL,
+  id: string,
+  ctx: ExecutionContext
+): Promise<Response> {
   const token = url.searchParams.get('t') ?? '';
 
   // GET renders; only POST decides.
@@ -84,7 +90,7 @@ async function handleApproval(env: Env, request: Request, url: URL, id: string):
     return approvalPage(env, id, 'invalid');
   }
 
-  return resolveApproval(env, id, token, decision, gh);
+  return resolveApproval(env, id, token, decision, gh, (promise) => ctx.waitUntil(promise));
 }
 
 /**
@@ -167,7 +173,7 @@ export default {
 
       const approval = /^\/approvals\/([A-Za-z0-9-]+)$/.exec(path);
       if (approval?.[1]) {
-        return await handleApproval(env, request, url, approval[1]);
+        return await handleApproval(env, request, url, approval[1], ctx);
       }
 
       if (path === '/mcp') {

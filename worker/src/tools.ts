@@ -140,6 +140,7 @@ async function run(
     // The code, never the message: a message can carry a path or a repository
     // name, and analytics is not where the user's work belongs.
     track('tool_called', { tool, ok: false, code: error.code, ms: Date.now() - started });
+    if (error.code === 'FORGE_QUOTA_EXCEEDED') track('quota_refused', { tool });
     // Code and tool only: an error message can carry file contents or a repo
     // name, and this line goes to a log Forge's operators read, not the user.
     console.error('forge_tool_failed', { tool, code: error.code });
@@ -524,6 +525,12 @@ async function requestAct(
   // the comparison stored beside it already carries those numbers, and a
   // second copy of a measurement is a second thing that can disagree.
   const approval = await requestApproval(ctx.env, ctx.identity, { act, repo, change, comparison, headSha: head });
+  ctx.track('approval_requested', {
+    act,
+    files: size.files,
+    commits: comparison.aheadBy,
+    truncated: comparison.truncated
+  });
 
   // The one fact each decision turns on, stated in the result rather than only
   // on the approval page: a human may read this summary and never open the link.
@@ -666,6 +673,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           input.message?.trim() || input.intent,
           input.files
         );
+        if (commit.outcome === 'committed') {
+          ctx.track('change_committed', { files: commit.paths.length, created_repo: created });
+        }
         // Everything past this line is decoration on work that is already on
         // GitHub, and none of it may throw.
         //
@@ -783,7 +793,14 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         viewports: z.array(z.enum(['phone', 'tablet', 'desktop'])).optional()
       },
       outputSchema: {
-        page: z.object({ url: z.string(), title: z.string(), shown: z.array(z.string()) }).optional(),
+        page: z
+          .object({
+            url: z.string(),
+            title: z.string(),
+            shown: z.array(z.string()),
+            outline: z.array(z.string()).optional()
+          })
+          .optional(),
         gallery: z.string().optional().describe('A link to these images that works in any client, and later.'),
         quota: z.string().optional(),
         // Not the shared receipt fields: a capture has no repository, so it has
@@ -813,8 +830,16 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           // less than throwing away evidence the caller cannot ask for twice.
           console.error('forge_capture_unmetered', { userId: ctx.identity.userId });
         }
+        ctx.track('capture_taken', {
+          requested: viewports.length,
+          captured: shot.images.length,
+          failures: shot.failures.length
+        });
 
         const limits = shot.failures.map((failure) => `${failure.viewport}: ${failure.reason}`);
+        if (shot.outlineTruncated) {
+          limits.push(`The semantic outline was capped at ${shot.outline.length} lines.`);
+        }
 
         // Always true, and never previously said: a capture is the first
         // screenful, not the page. A model told only "captured at phone and
@@ -856,7 +881,12 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${quota.unlimited ? '' : ` ${quota.used + 1} of ${quota.limit} captures used today.`}`,
           structured: withLimits(
             {
-              page: { url: shot.url, title: shot.title, shown },
+              page: {
+                url: shot.url,
+                title: shot.title,
+                shown,
+                ...(shot.outline.length === 0 ? {} : { outline: shot.outline })
+              },
               ...(gallery === null ? {} : { gallery }),
               ...(quota.unlimited ? {} : { quota: `${quota.used + 1} of ${quota.limit} used today` })
             },

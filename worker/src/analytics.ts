@@ -20,6 +20,7 @@ export type ForgeEvent =
   | 'tool_called'
   | 'user_signed_up'
   | 'user_connected'
+  | 'change_committed'
   | 'approval_requested'
   | 'approval_resolved'
   | 'capture_taken'

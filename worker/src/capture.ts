@@ -23,6 +23,11 @@ const CAPTURE_BUDGET_MS = 45_000;
  */
 const NAVIGATION_HEADROOM_MS = 5_000;
 
+/** A useful page outline must stay much smaller than the images beside it. */
+const MAX_OUTLINE_LINES = 80;
+const MAX_OUTLINE_DEPTH = 8;
+const MAX_OUTLINE_LINE_CHARS = 220;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -41,6 +46,56 @@ function describeFailure(parsed: unknown, fallback: string): string {
   if (!isRecord(parsed) || !Array.isArray(parsed.errors)) return fallback;
   const first = parsed.errors[0];
   return isRecord(first) && typeof first.message === 'string' ? first.message : fallback;
+}
+
+/**
+ * Turn Cloudflare's accessibility tree into a small reading order.
+ *
+ * Roles and names are enough for visual review: headings, navigation, links,
+ * controls and landmarks. Browser state fields and unnamed wrapper nodes are
+ * deliberately omitted. The cap is disclosed to the caller rather than letting
+ * a long page silently consume the rest of the chat context.
+ */
+function accessibilityOutline(tree: unknown): { lines: string[]; truncated: boolean } {
+  const lines: string[] = [];
+  let truncated = false;
+
+  const text = (value: unknown): string =>
+    typeof value === 'string' || typeof value === 'number'
+      ? String(value).replace(/\s+/g, ' ').trim()
+      : '';
+
+  const visit = (value: unknown, depth: number): void => {
+    if (!isRecord(value)) return;
+    if (depth > MAX_OUTLINE_DEPTH || lines.length >= MAX_OUTLINE_LINES) {
+      truncated = true;
+      return;
+    }
+
+    const role = text(value.role);
+    const name = text(value.name);
+    const nodeValue = text(value.valuetext) || text(value.value);
+    const level = typeof value.level === 'number' ? ` level ${value.level}` : '';
+
+    if (role && (name || nodeValue || role === 'RootWebArea')) {
+      const indent = '  '.repeat(Math.min(depth, 6));
+      const named = name ? `: ${name}` : '';
+      const valued = nodeValue && nodeValue !== name ? ` = ${nodeValue}` : '';
+      lines.push(`${indent}${role}${level}${named}${valued}`.slice(0, MAX_OUTLINE_LINE_CHARS));
+    }
+
+    const children = Array.isArray(value.children) ? value.children : [];
+    for (const child of children) {
+      if (lines.length >= MAX_OUTLINE_LINES) {
+        truncated = true;
+        break;
+      }
+      visit(child, depth + 1);
+    }
+  };
+
+  visit(tree, 0);
+  return { lines, truncated };
 }
 
 /** Decoded byte size from a base64 string's length, without decoding it. */
@@ -238,5 +293,14 @@ export async function capture(env: Env, url: string, viewports: Viewport[]): Pro
     });
   }
 
-  return { url: target.toString(), images, title, structure, failures };
+  const outline = accessibilityOutline(structure);
+  return {
+    url: target.toString(),
+    images,
+    title,
+    outline: outline.lines,
+    outlineTruncated: outline.truncated,
+    structure,
+    failures
+  };
 }
