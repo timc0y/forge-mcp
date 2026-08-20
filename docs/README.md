@@ -6,6 +6,10 @@ to install the GitHub App, what the five tools do, and the limits.
 **[Operating Forge](./operating-forge.md)** — configuration, secrets, analytics,
 cost, and the things that will bite.
 
+**[Going live](./going-live.md)** — everything between here and strangers using
+it: the two review processes, what each actually requires, and the one
+requirement that does not fit Forge.
+
 **[Forge V1 plan](./plans/forge-v1.md)** — the design this was built to.
 
 **[Research](./research/)** — the record of what the first Forge learned. The
