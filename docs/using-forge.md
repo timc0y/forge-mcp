@@ -81,7 +81,7 @@ Authorizing tells Forge **who you are**. Installing tells it **which
 repositories it may touch**. They are deliberately separate.
 
 ```
-https://github.com/apps/forge-mcp-cloud/installations/new
+https://github.com/apps/forge-mcp-github-app/installations/new
 ```
 
 Choose all your repositories or only some. Change it whenever you like, from
