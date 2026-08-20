@@ -118,7 +118,17 @@ export async function storeGallery(
     return null;
   }
 
-  return `${env.FORGE_PUBLIC_ORIGIN}/see/${id}?t=${encodeURIComponent(await sign(env, id))}`;
+  try {
+    return `${env.FORGE_PUBLIC_ORIGIN}/see/${id}?t=${encodeURIComponent(await sign(env, id))}`;
+  } catch {
+    // Storage is only useful when Forge can return a working bearer link. Keep
+    // the tool's evidence-inline guarantee and remove the unreachable copy.
+    await Promise.allSettled([
+      env.ARTIFACTS.delete(objectKey),
+      env.METADATA.prepare('DELETE FROM captures WHERE id = ?1').bind(id).run()
+    ]);
+    return null;
+  }
 }
 
 /**
