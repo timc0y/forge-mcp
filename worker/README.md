@@ -27,6 +27,18 @@ Plus four HTTP routes: `/mcp`, the OAuth endpoints, `/approvals/:id`, `/health`.
 The router derives that mount path from `FORGE_PUBLIC_ORIGIN`, so moving it is a
 config change rather than a code change. `forge.timcoy.uk` is a different worker.
 
+## Testing a deployment
+
+```sh
+worker/scripts/smoke.sh                      # against timcoy.uk/forge
+worker/scripts/smoke.sh https://other/forge  # anywhere else
+```
+
+Everything reachable without GitHub credentials: the mount path, the auth
+boundary, both OAuth discovery spellings, dynamic client registration (which
+exercises D1 for real), PKCE hardening, and that an unknown approval or capture
+answers the same as a wrong token.
+
 ## Running it
 
 ```sh
