@@ -148,6 +148,12 @@ ${loop()}
     // branch or somebody's screenshot and is deliberately not indexed.
     index: true,
     cache: 'public,max-age=300',
+    head:
+      `<meta property="og:title" content="Forge — build on GitHub from a chat">` +
+      `<meta property="og:description" content="Hands that write real commits, and eyes that see a rendered page.">` +
+      `<meta property="og:image" content="${escapeHtml(origin)}/icon.png">` +
+      `<meta property="og:url" content="${escapeHtml(origin)}">` +
+      `<meta name="twitter:card" content="summary">`,
     css:
       '.loop{display:block;width:100%;height:auto;margin:2.6rem 0 .5rem}' +
       '@media(max-width:560px){.loop{display:none}}'

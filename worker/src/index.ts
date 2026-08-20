@@ -11,6 +11,7 @@ import {
 import { approvalPage, resolveApproval } from './approve';
 import { galleryPage } from './gallery';
 import { landingPage } from './landing';
+import { iconResponse } from './icon';
 import { githubRequest } from './github';
 import type { Env } from './env';
 import { toForgeError } from './errors';
@@ -122,6 +123,12 @@ export default {
       if (path === '/' || path === '') {
         return landingPage(env);
       }
+
+      // The mark, at a stable URL for a favicon, an unfurler and anyone who
+      // needs the file. Before auth, because none of those three can carry a
+      // token.
+      const icon = iconResponse(path);
+      if (icon) return icon;
 
       if (path === '/health') {
         return Response.json({ status: 'ok' });

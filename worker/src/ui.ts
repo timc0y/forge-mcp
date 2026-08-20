@@ -159,6 +159,8 @@ export interface PageOptions {
   home?: string;
   /** Extra CSS appended after the shared sheet. */
   css?: string;
+  /** Extra <head> markup — social cards and the like. */
+  head?: string;
   status?: number;
   /** The front page wants indexing; a page about someone's branch does not. */
   index?: boolean;
@@ -172,7 +174,7 @@ export interface PageOptions {
  * type and dark-mode behaviour by construction rather than by remembering.
  */
 export function page(options: PageOptions): Response {
-  const { title, body, home, css = '', status = 200, index = false, cache = 'private,no-store' } = options;
+  const { title, body, home, css = '', head = '', status = 200, index = false, cache = 'private,no-store' } = options;
 
   const mark = `<span class="box">${forgeGlyph(19)}</span>Forge`;
 
@@ -181,6 +183,10 @@ export function page(options: PageOptions): Response {
       '<meta name="viewport" content="width=device-width,initial-scale=1">' +
       `<title>${escapeHtml(title)}</title>` +
       `<meta name="robots" content="${index ? 'index,follow' : 'noindex,nofollow'}">` +
+      // Only when the mount is known: a relative icon path resolves against the
+      // current URL, which on a path mount is the wrong place.
+      (home ? `<link rel="icon" href="${escapeHtml(home)}/favicon.svg">` : '') +
+      head +
       `<style>${BASE_CSS}${css}</style></head>` +
       '<body><a class="skip" href="#main">Skip to content</a>' +
       `<div class="wrap"><div class="topbar">` +
@@ -197,7 +203,7 @@ export function page(options: PageOptions): Response {
         'referrer-policy': 'no-referrer',
         // Inline styles and inline images only. Nothing here loads from a
         // network, which is what keeps these pages private to open.
-        'content-security-policy': "default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'self'",
+        'content-security-policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; form-action 'self'",
         ...(options.headers ?? {})
       }
     }

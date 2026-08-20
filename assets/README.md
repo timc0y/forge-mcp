@@ -15,5 +15,15 @@ Upload `forge-app-icon-512.png` at **Settings → Developer settings → GitHub 
 corners itself; the tile already carries its own radius so it survives either
 way.
 
-The same path is compiled into `worker/src/ui.ts` as `forgeGlyph()`, so the site
-and the avatar are one mark rather than two that drifted.
+It is also served, so there is a stable URL for a favicon, a link unfurler, and
+anyone who needs the file without cloning:
+
+| URL | |
+|---|---|
+| `https://timcoy.uk/forge/icon.png` | 512×512, dark tile |
+| `https://timcoy.uk/forge/icon-light.png` | 512×512, light tile |
+| `https://timcoy.uk/forge/favicon.svg` | the glyph alone, no tile |
+
+The same path is compiled into `worker/src/ui.ts` as `forgeGlyph()`, so the site,
+the favicon, the social card and the GitHub App avatar are one mark rather than
+four that drifted.
