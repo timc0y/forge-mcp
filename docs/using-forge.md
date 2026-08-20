@@ -62,13 +62,14 @@ asked to make a repository, name a branch, or open a pull request first.
 
 ## Getting connected
 
-> **ChatGPT availability changes by plan and surface.** As of 20 August 2026,
-> OpenAI documents read/fetch custom MCP access for Pro and full write/modify
-> access for supported Business, Enterprise and Edu web workspaces. Deep
-> Research is read-only, and custom MCP apps are not available in the native
-> mobile app. See the dated
-> [availability note](./research/chatgpt-availability-2026-08-20.md) before
-> treating any client behaviour as a contract.
+> **ChatGPT availability changes by account, rollout, plan and surface.** OpenAI
+> currently documents read/fetch custom MCP access for Pro and full write/modify
+> access for supported Business, Enterprise and Edu web workspaces. However, the
+> production ChatGPT web session recorded on 20 August 2026 successfully used
+> Forge's write tools from a browser on an iPhone. Deep Research remains
+> read-only, and the native mobile app is documented as unsupported. See the
+> dated [availability note](./research/chatgpt-availability-2026-08-20.md) rather
+> than treating either the documentation or one account as a universal contract.
 
 ### 1. Add the server to your client
 

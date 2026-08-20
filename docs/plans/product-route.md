@@ -23,11 +23,14 @@ source maintainer who already alternates between ChatGPT and a coding agent.
 They understand GitHub, value draft pull requests and sometimes notice or plan
 work away from a terminal.
 
-The first plausible buyer is a small product team using a ChatGPT Business,
-Enterprise or Edu workspace. Current ChatGPT availability makes teams a more
-natural paid target than individual Pro users: the dated
+The first plausible buyer is a small product team. Business, Enterprise and Edu
+workspaces have publicly documented controls for write actions, while the
+production Forge session also demonstrated writes in a ChatGPT runtime outside
+that simple documented matrix. Teams remain the stronger paid hypothesis because
+governance, shared workflows and support create a buying reason; not because
+individual ChatGPT sessions are necessarily read-only. The dated
 [availability note](../research/chatgpt-availability-2026-08-20.md) records the
-constraint.
+discrepancy.
 
 ## Three core jobs
 
