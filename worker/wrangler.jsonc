@@ -1,0 +1,93 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "forge",
+  // Two accounts are reachable from this login; naming one keeps deploys from
+  // depending on whichever happens to be selected.
+  "account_id": "04d3e478b1ddf0f5147120cacbf430de",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // No cron. Nothing here needs sweeping, because nothing is allocated that
+  // could leak: no containers, no slots, no workspaces to reap.
+
+  "workers_dev": true,
+
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": true }
+  },
+  "upload_source_maps": true,
+
+  "vars": {
+    "FORGE_ENVIRONMENT": "production",
+    // Deliberately workers.dev, not forge.timcoy.uk: that hostname still serves
+    // Forge 1. Every OAuth redirect and approval link is minted against this
+    // value, so it must name the worker that will actually answer them. Move it
+    // at cutover, together with the route.
+    "FORGE_PUBLIC_ORIGIN": "https://forge.timcoy72.workers.dev",
+    "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
+    "GITHUB_APP_ID": "4281819",
+    "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
+    "GITHUB_APP_SLUG": "forge-mcp-cloud",
+    "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
+    "FORGE_CAPTURE_DAILY_LIMIT": "30"
+  },
+
+  // Secrets, set with `wrangler secret put`, never in this file:
+  //   GITHUB_APP_PRIVATE_KEY, GITHUB_APP_CLIENT_SECRET,
+  //   FORGE_SIGNING_KEY, CLOUDFLARE_API_TOKEN
+  //
+  // CLOUDFLARE_API_TOKEN is scoped to Browser Rendering only. Capture goes
+  // through the REST Quick Action rather than a `browser` binding: Quick
+  // Actions bill browser hours alone, while binding-driven sessions also bill
+  // per concurrent browser.
+
+  "d1_databases": [
+    {
+      "binding": "METADATA",
+      "database_name": "forge-v1-production",
+      "database_id": "403cb9a9-cac2-424e-a075-905c49fc3306",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Rendered captures only. Set a lifecycle rule on this bucket (30 days is
+  // plenty) — nothing here deletes, so expiry is the bucket's job.
+  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "forge-v1-captures" }],
+
+  "durable_objects": {
+    "bindings": [{ "class_name": "ForgeMcpSession", "name": "MCP_SESSIONS" }]
+  },
+
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ForgeMcpSession"] }],
+
+  "env": {
+    "development": {
+      "name": "forge-development",
+      "workers_dev": true,
+      "vars": {
+        "FORGE_ENVIRONMENT": "development",
+        "FORGE_PUBLIC_ORIGIN": "https://forge-development.timcoy72.workers.dev",
+        "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
+        "GITHUB_APP_ID": "4281819",
+        "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
+        "GITHUB_APP_SLUG": "forge-mcp-cloud",
+        "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
+        "FORGE_CAPTURE_DAILY_LIMIT": "30"
+      },
+      "d1_databases": [
+        {
+          "binding": "METADATA",
+          "database_name": "forge-v1-development",
+          "database_id": "366320dc-0d18-46c9-86cc-6713a51f295b",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "forge-v1-captures-development" }],
+      "durable_objects": {
+        "bindings": [{ "class_name": "ForgeMcpSession", "name": "MCP_SESSIONS" }]
+      }
+    }
+  }
+}

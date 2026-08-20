@@ -1,0 +1,15 @@
+# Local development only. Production sets these with `wrangler secret put`.
+FORGE_DEV_AUTH_TOKEN=replace-me
+
+# Signs access tokens and approval links, and derives the key that encrypts the
+# stored GitHub user credential. 32+ random bytes. Rotating it invalidates all
+# three at once.
+FORGE_SIGNING_KEY=replace-with-at-least-32-random-bytes
+
+# A GitHub App with Contents: write, Pull requests: write, Metadata: read, and
+# expiring user tokens enabled.
+GITHUB_APP_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+GITHUB_APP_CLIENT_SECRET=replace-me
+
+# Scoped to Browser Rendering only.
+CLOUDFLARE_API_TOKEN=replace-me

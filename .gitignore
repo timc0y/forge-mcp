@@ -1,0 +1,19 @@
+node_modules/
+dist/
+coverage/
+.wrangler/
+.dev.vars
+.env
+*.log
+.DS_Store
+artifacts/
+.tmp/
+*.tsbuildinfo
+worker/src/worker-configuration.d.ts
+
+*.tsbuildinfo
+
+# Claude Code local state and agent worktrees
+.claude/
+.pnpm-store/
+.firecrawl/

@@ -1,0 +1,54 @@
+# Forge
+
+Hands and eyes for a mind that can only talk.
+
+An ordinary ChatGPT conversation — often on a phone — has judgement and no way
+to act. Forge gives it two organs: durable authoring in GitHub, and sight of
+rendered pages. GitHub holds the memory. Nothing here runs code.
+
+## Five tools
+
+| Tool | Gate |
+|---|---|
+| `forge_read` — repos → tree → a change → file contents or patches | free |
+| `forge_edit` — write files; creates the repo and the change if new | free |
+| `forge_merge` — returns one link a human opens | **approved** |
+| `forge_discard` — returns one link a human opens | **approved** |
+| `forge_see` — capture a public URL | free, quota'd |
+
+You never name a branch. Describe the intent — "pricing section" — and say those
+words again to continue that change. Every result lists the repo's open changes,
+so nothing has to be remembered between turns. `main` moves only through a merge
+a human approved.
+
+## Where things are
+
+- [`worker/`](./worker) — the implementation. Start at its README.
+- [`SIMPLE.md`](./SIMPLE.md) — the design profile: what is real, what is
+  preserved, and the precedents that must not be re-litigated.
+- [`docs/plans/forge-v1.md`](./docs/plans/forge-v1.md) — the plan this was built to.
+- [`docs/research/`](./docs/research) — the record. Read
+  [`forge-history-tool-learnings.md`](./docs/research/forge-history-tool-learnings.md)
+  before changing anything: it is a register of production failures and the
+  invariants they bought.
+
+## Working on it
+
+```sh
+pnpm check      # types and invariants
+pnpm dev
+```
+
+## History
+
+The first Forge ran code. It had containers, an executor, workspaces, shell,
+previews, deployments, and forty-five MCP tools. Nearly every production failure
+it recorded traced to compute holding state GitHub did not — lost workspace ids,
+local-only edits a reaper could erase, commands dying in the transport while
+continuing remotely. Each fix was a mitigation; the cause remained and kept
+producing recovery tools, so the catalog grew back after every cut.
+
+Running code moved elsewhere, which removed the executor's last justification.
+What replaced it is two organs, five tools, one durable plane and no second copy
+of anything. The old implementation is in this repository's history; its
+lessons are in `docs/research/` and its invariants are in `SIMPLE.md`.

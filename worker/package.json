@@ -1,0 +1,25 @@
+{
+  "name": "@forge/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config wrangler.jsonc --env development",
+    "deploy": "wrangler deploy --config wrangler.jsonc --env=\"\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "agents": "0.17.3",
+    "jose": "6.2.2",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260712.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.9",
+    "wrangler": "4.110.0",
+    "@types/node": "24.10.1"
+  }
+}
