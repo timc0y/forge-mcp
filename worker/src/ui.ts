@@ -1,8 +1,8 @@
 /**
  * One design system for every HTML surface Forge serves.
  *
- * There are four — the landing page, the consent screen, the approval page and
- * a stored capture — and the temptation is to style each where it lives, since
+ * There are five — the landing page, privacy notice, consent screen, approval
+ * page and a stored capture — and the temptation is to style each where it lives, since
  * each is only a few lines of CSS. The first Forge did exactly that and wrote
  * down what it cost: different palettes, different buttons and three different
  * Forge marks, so that someone who arrived at the front page and then approved

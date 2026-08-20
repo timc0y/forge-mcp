@@ -793,14 +793,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         viewports: z.array(z.enum(['phone', 'tablet', 'desktop'])).optional()
       },
       outputSchema: {
-        page: z
-          .object({
-            url: z.string(),
-            title: z.string(),
-            shown: z.array(z.string()),
-            outline: z.array(z.string()).optional()
-          })
-          .optional(),
+        page: z.object({ url: z.string(), title: z.string(), shown: z.array(z.string()) }).optional(),
         gallery: z.string().optional().describe('A link to these images that works in any client, and later.'),
         quota: z.string().optional(),
         // Not the shared receipt fields: a capture has no repository, so it has
@@ -874,24 +867,29 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         }
 
         const shown = kept.map((image) => image.viewport);
+        const content: Content[] = [];
+        if (shot.outline.length > 0) {
+          content.push({
+            type: 'text',
+            text: `Page structure (accessibility reading order):\n${shot.outline.join('\n')}`
+          });
+        }
+
         // A label before each image: MCP image content carries no caption of
         // its own, so without this the model sees two pictures and cannot say
         // which one is the phone.
-        const content = kept.flatMap((image): Content[] => [
-          { type: 'text', text: image.viewport },
-          { type: 'image', data: image.base64, mimeType: 'image/png' }
-        ]);
+        for (const image of kept) {
+          content.push(
+            { type: 'text', text: image.viewport },
+            { type: 'image', data: image.base64, mimeType: 'image/png' }
+          );
+        }
 
         return {
           summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${quota.unlimited ? '' : ` ${quota.used + 1} of ${quota.limit} captures used today.`}`,
           structured: withLimits(
             {
-              page: {
-                url: shot.url,
-                title: shot.title,
-                shown,
-                ...(shot.outline.length === 0 ? {} : { outline: shot.outline })
-              },
+              page: { url: shot.url, title: shot.title, shown },
               ...(gallery === null ? {} : { gallery }),
               ...(quota.unlimited ? {} : { quota: `${quota.used + 1} of ${quota.limit} used today` })
             },

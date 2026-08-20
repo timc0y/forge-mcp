@@ -27,6 +27,10 @@ The production trace now proves OAuth, repository access, capture, durable edit,
 semantic recovery and approval preparation. The remaining release proof is one
 completed merge, one completed discard and the important refusal paths.
 
+The public `timcoy.uk` project listing still describes executor-era Forge as a
+private Linux-workspace experiment. Update that entry to the current safe
+ChatGPT-to-GitHub handoff before sending design partners to either page.
+
 ## "Public" is three separate things
 
 They get conflated, and only one of them is done.
