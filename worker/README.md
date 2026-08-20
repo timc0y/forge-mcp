@@ -1,86 +1,96 @@
-# Forge V1
+# Forge worker
 
-Hands and eyes for a mind that can only talk. See [`../SIMPLE.md`](../SIMPLE.md)
-for the design profile and [`../docs/plans/forge-v1.md`](../docs/plans/forge-v1.md)
-for the plan.
+The production implementation of Forge: a hosted handoff between a conversation
+and GitHub. See [`../SIMPLE.md`](../SIMPLE.md) for the design profile,
+[`../docs/plans/forge-v1.md`](../docs/plans/forge-v1.md) for the architecture and
+[`../docs/plans/product-route.md`](../docs/plans/product-route.md) for the active
+product plan.
 
-This directory is self-contained: it has no workspace dependencies and installs
-on its own, which is why removing the old system will not disturb it.
+This directory is deliberately self-contained. It has no workspace dependencies
+and can install, type-check, test and deploy on its own.
 
-## The surface
+## Public surface
 
-Five tools, none with a mode or action parameter.
+Five MCP tools, none with a mode or action parameter:
 
 | Tool | Gate |
 |---|---|
-| `forge_read` — repos → tree → a change → file contents or patches | free |
-| `forge_edit` — write files; creates the repo and the change if new | free |
+| `forge_read` — repositories → tree → change → file contents or patches | free |
+| `forge_edit` — durable GitHub writes on a draft change | free |
 | `forge_merge` — returns a link a human opens | **approved** |
 | `forge_discard` — returns a link a human opens | **approved** |
-| `forge_see` — screenshot a public URL | free, quota'd |
+| `forge_see` — public-page screenshots plus a compact semantic outline | free, quota'd |
 
-Plus four HTTP routes: `/mcp`, the OAuth endpoints, `/approvals/:id`, `/health`.
+HTTP route families:
+
+- `/` — landing or GitHub installation return page
+- `/privacy` — public operational privacy notice
+- `/mcp` — authenticated MCP transport
+- `/.well-known/oauth-*` and `/oauth/*` — discovery and OAuth 2.1/PKCE
+- `/approvals/:id` — durable merge and discard decisions
+- `/see/:id` — signed hosted capture
+- `/health` and icon assets
+
+There is no dashboard, observer API, task console or repository mirror.
 
 ## Where it runs
 
-`https://timcoy.uk/forge` — a path on an existing site, not its own hostname.
-The router derives that mount path from `FORGE_PUBLIC_ORIGIN`, so moving it is a
-config change rather than a code change. `forge.timcoy.uk` is a different worker.
-
-## Testing a deployment
-
-```sh
-worker/scripts/smoke.sh                      # against timcoy.uk/forge
-worker/scripts/smoke.sh https://other/forge  # anywhere else
-```
-
-Everything reachable without GitHub credentials: the mount path, the auth
-boundary, both OAuth discovery spellings, dynamic client registration (which
-exercises D1 for real), PKCE hardening, and that an unknown approval or capture
-answers the same as a wrong token.
+Production is mounted at `https://timcoy.uk/forge`, a path rather than its own
+hostname. The router derives the mount from `FORGE_PUBLIC_ORIGIN`, so the origin,
+OAuth issuer and generated links cannot quietly disagree.
 
 ## Running it
 
 ```sh
-pnpm install --ignore-workspace
+pnpm install --ignore-workspace --frozen-lockfile
 pnpm typecheck
 pnpm test
 pnpm dev
 ```
 
-## Before it can deploy
+From the repository root:
 
-`wrangler.jsonc` carries `TODO` where real values belong:
+```sh
+pnpm check
+worker/scripts/smoke.sh
+```
 
-- `GITHUB_APP_ID`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_SLUG` — a GitHub App with
-  **Contents: write**, **Pull requests: write**, **Metadata: read**, and
-  **expiring user tokens enabled** (otherwise there is no refresh token and the
-  stored credential never rotates).
-- `database_id` for both environments — `wrangler d1 create forge-production`.
-- Two R2 buckets — `wrangler r2 bucket create forge-captures` (and
-  `-development`). Put a 30-day lifecycle rule on each: nothing in the code
-  deletes a capture, so expiry is the bucket's job.
+The unauthenticated smoke script covers the mount, OAuth discovery and PKCE
+boundary, dynamic client registration, invalid approval and capture links, and
+the MCP authentication boundary. A real ChatGPT/GitHub run is recorded separately
+under [`../docs/test-runs/`](../docs/test-runs/).
 
-Secrets, via `wrangler secret put`:
+## Deployment configuration
 
-- `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_SECRET`
-- `FORGE_SIGNING_KEY` — 32+ random bytes. Signs access tokens and approval
-  links, and derives the key that encrypts stored GitHub credentials. Rotating
-  it invalidates all three at once.
-- `CLOUDFLARE_API_TOKEN` — scoped to Browser Rendering only.
+Committed, non-secret configuration lives in `wrangler.jsonc`. Production and
+development D1 databases, R2 buckets, Durable Object bindings, routes and GitHub
+App identifiers are already named there.
 
-Invites are rows: `INSERT INTO invites (code, note, created_at) VALUES (...)`.
-No user can be created without one.
+Required secrets:
 
-## What is deliberately absent
+- `GITHUB_APP_PRIVATE_KEY` — PKCS#8 PEM
+- `GITHUB_APP_CLIENT_SECRET`
+- `FORGE_SIGNING_KEY` — 32+ random bytes
+- `CLOUDFLARE_API_TOKEN` — Browser Rendering only
+- `POSTHOG_API_KEY` — optional; absence makes analytics a no-op
 
-No containers, shell, builds, deploys, previews, or hosting. No site crawl,
-no observer API, no dashboard. No Workers AI, no Workflows. One Durable Object,
-one database, one bucket, one meter.
+The GitHub App needs **Contents: write**, **Pull requests: write** and
+**Metadata: read**. Expiring user tokens should be enabled so the encrypted
+credential used only for repository creation can rotate.
 
-`forge_see` returns images inline **and** stores a rendered page at one signed
-link. Both, because MCP clients disagree about whether they render inline
-images — at least one passes the base64 to the model as text — and because a
-human deciding on a merge tomorrow needs the evidence to still exist. Forge 1
-learned this in both directions: retrieval-only failed a non-agentic chat, and
-inline-only fails a client that will not draw it.
+The preview is open to anyone who completes GitHub OAuth and installs the App.
+There is no invite table or invite code. Cost is bounded by a per-user daily
+capture quota; repository calls use each person's own GitHub installation rate
+limit.
+
+## Deliberate boundary
+
+No containers, shell, builds, tests, deployment, preview hosting, private-page
+browsing or site crawl. One Durable Object, one database, one capture bucket and
+one paid action.
+
+`forge_see` returns images inline and stores a signed HTML copy because MCP
+clients disagree about rendering image content. The same Cloudflare snapshot
+also returns an accessibility tree; Forge now reduces it to a bounded semantic
+outline so a model can reason about page structure without receiving the raw
+browser tree.

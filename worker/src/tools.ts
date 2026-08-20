@@ -140,6 +140,7 @@ async function run(
     // The code, never the message: a message can carry a path or a repository
     // name, and analytics is not where the user's work belongs.
     track('tool_called', { tool, ok: false, code: error.code, ms: Date.now() - started });
+    if (error.code === 'FORGE_QUOTA_EXCEEDED') track('quota_refused', { tool });
     // Code and tool only: an error message can carry file contents or a repo
     // name, and this line goes to a log Forge's operators read, not the user.
     console.error('forge_tool_failed', { tool, code: error.code });
@@ -524,6 +525,12 @@ async function requestAct(
   // the comparison stored beside it already carries those numbers, and a
   // second copy of a measurement is a second thing that can disagree.
   const approval = await requestApproval(ctx.env, ctx.identity, { act, repo, change, comparison, headSha: head });
+  ctx.track('approval_requested', {
+    act,
+    files: size.files,
+    commits: comparison.aheadBy,
+    truncated: comparison.truncated
+  });
 
   // The one fact each decision turns on, stated in the result rather than only
   // on the approval page: a human may read this summary and never open the link.
@@ -666,6 +673,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           input.message?.trim() || input.intent,
           input.files
         );
+        if (commit.outcome === 'committed') {
+          ctx.track('change_committed', { files: commit.paths.length, created_repo: created });
+        }
         // Everything past this line is decoration on work that is already on
         // GitHub, and none of it may throw.
         //
@@ -813,8 +823,16 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           // less than throwing away evidence the caller cannot ask for twice.
           console.error('forge_capture_unmetered', { userId: ctx.identity.userId });
         }
+        ctx.track('capture_taken', {
+          requested: viewports.length,
+          captured: shot.images.length,
+          failures: shot.failures.length
+        });
 
         const limits = shot.failures.map((failure) => `${failure.viewport}: ${failure.reason}`);
+        if (shot.outlineTruncated) {
+          limits.push(`The semantic outline was capped at ${shot.outline.length} lines.`);
+        }
 
         // Always true, and never previously said: a capture is the first
         // screenful, not the page. A model told only "captured at phone and
@@ -838,19 +856,34 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         // Stored before the images are trimmed for transport: the hosted copy
         // is the one place every viewport survives, including any the payload
         // budget drops below.
-        const gallery = await storeGallery(ctx.env, shot, new Date().toISOString());
+        const gallery = await storeGallery(
+          ctx.env,
+          shot,
+          new Date().toISOString(),
+          ctx.identity.userId
+        );
         if (gallery === null && shot.images.length > 0) {
           limits.push('These images could not be saved to a link, so they exist only in this reply.');
         }
 
         const shown = kept.map((image) => image.viewport);
+        const content: Content[] = [];
+        if (shot.outline.length > 0) {
+          content.push({
+            type: 'text',
+            text: `Page structure (accessibility reading order):\n${shot.outline.join('\n')}`
+          });
+        }
+
         // A label before each image: MCP image content carries no caption of
         // its own, so without this the model sees two pictures and cannot say
         // which one is the phone.
-        const content = kept.flatMap((image): Content[] => [
-          { type: 'text', text: image.viewport },
-          { type: 'image', data: image.base64, mimeType: 'image/png' }
-        ]);
+        for (const image of kept) {
+          content.push(
+            { type: 'text', text: image.viewport },
+            { type: 'image', data: image.base64, mimeType: 'image/png' }
+          );
+        }
 
         return {
           summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${quota.unlimited ? '' : ` ${quota.used + 1} of ${quota.limit} captures used today.`}`,

@@ -4,9 +4,9 @@
 #
 # Covers everything reachable without GitHub credentials: the router and its
 # mount path, the auth boundary, both OAuth discovery spellings, dynamic client
-# registration (which exercises D1 for real), PKCE hardening, and the rule that
-# an unknown approval or capture must answer identically to a wrong token so the
-# URL cannot be used to learn what exists.
+# registration (which exercises D1 for real), PKCE hardening, the public privacy
+# notice, and the rule that an unknown approval or capture must answer identically
+# to a wrong token so the URL cannot be used to learn what exists.
 #
 #   worker/scripts/smoke.sh [base-url]
 #
@@ -29,6 +29,8 @@ chk "mount root survives a query"    "Forge"          "$(body "$B?x=1")"
 chk "post-install is acknowledged"   "installed"      "$(body "$B?installation_id=1&setup_action=install")"
 chk "page names the server url"      "/forge/mcp"     "$(body $B)"
 chk "page links the github app"      "installations/new" "$(body $B)"
+chk "privacy page answers"           "Privacy"        "$(body $B/privacy)"
+chk "privacy page names deletion"    "deleted"        "$(body $B/privacy)"
 chk "site root untouched"            "200"            "$(code https://timcoy.uk/)"
 
 echo "── auth boundary"
@@ -70,7 +72,7 @@ chk "approval rejects PUT"           "405"            "$(code -X PUT $B/approval
 chk "unknown capture 404s"           "404"            "$(code $B/see/11111111-1111-1111-1111-111111111111?t=wrong)"
 
 echo "── one design system"
-for path in "" "/approvals/11111111-1111-1111-1111-111111111111?t=x" "/see/11111111-1111-1111-1111-111111111111?t=x"; do
+for path in "" "/privacy" "/approvals/11111111-1111-1111-1111-111111111111?t=x" "/see/11111111-1111-1111-1111-111111111111?t=x"; do
   html="$(body "$B$path")"
   chk "shared shell on ${path:-/}"    'class="mark"'      "$html"
   chk "skip link on ${path:-/}"       'Skip to content'   "$html"

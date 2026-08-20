@@ -188,9 +188,15 @@ export interface CaptureImage {
 export interface Capture {
   url: string;
   images: CaptureImage[];
-  /** Page title and text outline, so the model can reason as well as look. */
   title: string;
-  /** Accessibility tree, when the snapshot returned one. */
+  /**
+   * Bounded, human-readable lines derived from the accessibility tree. The raw
+   * tree stays internal: this is enough structure for the model without paying
+   * the context cost of every browser node and state field.
+   */
+  outline: string[];
+  outlineTruncated: boolean;
+  /** Accessibility tree, retained only for code that needs the source shape. */
   structure?: unknown;
   /** Viewports that failed, and why. Partial evidence beats none. */
   failures: Array<{ viewport: Viewport; reason: string }>;

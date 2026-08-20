@@ -20,6 +20,7 @@ import { escapeHtml, page } from './ui';
  */
 
 const CONTEXT = 'forge.gallery.v1';
+const CAPTURE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 async function sign(env: Env, id: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -76,20 +77,56 @@ function render(shot: Capture, capturedAt: string): string {
  * design: the images are already in hand and already paid for, so a bucket
  * failure must cost the link, never the evidence.
  */
-export async function storeGallery(env: Env, shot: Capture, capturedAt: string): Promise<string | null> {
+export async function storeGallery(
+  env: Env,
+  shot: Capture,
+  capturedAt: string,
+  userId: string
+): Promise<string | null> {
   if (shot.images.length === 0) return null;
+
+  const id = crypto.randomUUID();
+  const objectKey = `captures/${id}.html`;
+  const capturedMs = Date.parse(capturedAt);
+  const createdAt = Number.isNaN(capturedMs) ? new Date() : new Date(capturedMs);
+  const expiresAt = new Date(createdAt.getTime() + CAPTURE_TTL_MS);
+
   try {
-    const id = crypto.randomUUID();
     const document = await page({
       title: shot.title || 'Forge capture',
-      body: render(shot, capturedAt),
+      body: render(shot, createdAt.toISOString()),
       home: env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, '')
     }).text();
-    await env.ARTIFACTS.put(`captures/${id}.html`, document, {
+    await env.ARTIFACTS.put(objectKey, document, {
       httpMetadata: { contentType: 'text/html; charset=utf-8' }
     });
+  } catch {
+    return null;
+  }
+
+  try {
+    await env.METADATA.prepare(
+      `INSERT INTO captures (id, user_id, object_key, created_at, expires_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)`
+    )
+      .bind(id, userId, objectKey, createdAt.toISOString(), expiresAt.toISOString())
+      .run();
+  } catch {
+    // An unowned object cannot be honoured in an account-deletion request.
+    // Remove it rather than returning a link Forge can no longer account for.
+    await env.ARTIFACTS.delete(objectKey).catch(() => undefined);
+    return null;
+  }
+
+  try {
     return `${env.FORGE_PUBLIC_ORIGIN}/see/${id}?t=${encodeURIComponent(await sign(env, id))}`;
   } catch {
+    // Storage is only useful when Forge can return a working bearer link. Keep
+    // the tool's evidence-inline guarantee and remove the unreachable copy.
+    await Promise.allSettled([
+      env.ARTIFACTS.delete(objectKey),
+      env.METADATA.prepare('DELETE FROM captures WHERE id = ?1').bind(id).run()
+    ]);
     return null;
   }
 }
@@ -124,8 +161,33 @@ export async function galleryPage(env: Env, id: string, token: string): Promise<
 
   if (!constantTimeEqual(token, await sign(env, id))) return missing;
 
-  const object = await env.ARTIFACTS.get(`captures/${id}.html`);
-  if (!object) return missing;
+  // Rows exist for captures made after migration 0002. A missing row is treated
+  // as a legacy capture and left to the bucket lifecycle, so the migration does
+  // not break links minted before ownership was recorded. A failed D1 read is
+  // not treated as a missing row: retention and deletion controls fail closed.
+  const row = await env.METADATA.prepare(
+    'SELECT object_key, expires_at FROM captures WHERE id = ?1'
+  )
+    .bind(id)
+    .first<{ object_key: string; expires_at: string }>();
+
+  const objectKey = row?.object_key ?? `captures/${id}.html`;
+  const expiresMs = row ? Date.parse(row.expires_at) : Number.POSITIVE_INFINITY;
+  if (row && (!Number.isFinite(expiresMs) || expiresMs <= Date.now())) {
+    await Promise.allSettled([
+      env.ARTIFACTS.delete(objectKey),
+      env.METADATA.prepare('DELETE FROM captures WHERE id = ?1').bind(id).run()
+    ]);
+    return missing;
+  }
+
+  const object = await env.ARTIFACTS.get(objectKey);
+  if (!object) {
+    if (row) {
+      await env.METADATA.prepare('DELETE FROM captures WHERE id = ?1').bind(id).run().catch(() => undefined);
+    }
+    return missing;
+  }
 
   return new Response(object.body, { status: 200, headers });
 }

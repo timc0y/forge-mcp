@@ -33,6 +33,7 @@ import type {
 import { formatRepo } from './contracts';
 import type { Env } from './env';
 import { ForgeError } from './errors';
+import { analyticsFor } from './analytics';
 import { escapeHtml, page } from './ui';
 
 /**
@@ -224,11 +225,13 @@ export async function resolveApproval(
   id: string,
   token: string,
   decision: 'approve' | 'reject',
-  request: GitHubRequest
+  request: GitHubRequest,
+  waitUntil?: (promise: Promise<unknown>) => void
 ): Promise<Response> {
   const loaded = await loadApproval(env, id, token);
   if (loaded.kind === 'settled') return loaded.response;
   const { row, evidence } = loaded;
+  const track = analyticsFor(env, row.user_id, waitUntil);
 
   // Claim the row BEFORE touching GitHub. A conditional update on state is the
   // only lock this system has, and it is enough: two simultaneous clicks race
@@ -258,6 +261,7 @@ export async function resolveApproval(
           : 'Not discarded. The change is untouched and still open.'
     };
     await recordOutcome(env, id, 'rejected', outcome);
+    track('approval_resolved', { act: row.act, decision: 'reject', ok: true });
     return renderOutcome(row, evidence, 'rejected', outcome);
   }
 
@@ -272,6 +276,7 @@ export async function resolveApproval(
   // the honest way to try again.
   const state: ApprovalState = outcome.ok ? 'approved' : 'failed';
   await recordOutcome(env, id, state, outcome);
+  track('approval_resolved', { act: row.act, decision: 'approve', ok: outcome.ok });
   return renderOutcome(row, evidence, state, outcome);
 }
 
