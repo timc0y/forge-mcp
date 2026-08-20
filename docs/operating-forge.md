@@ -39,9 +39,9 @@ Secrets, via `wrangler secret put` from `worker/`:
 
 | Secret | Notes |
 |---|---|
-| `GITHUB_APP_PRIVATE_KEY` | `wrangler secret put GITHUB_APP_PRIVATE_KEY < key.pem` |
+| `GITHUB_APP_PRIVATE_KEY` | PKCS#8 PEM (`BEGIN PRIVATE KEY`). Convert GitHub's PKCS#1 download with `openssl pkcs8 -topk8 -nocrypt` before `wrangler secret put`. |
 | `GITHUB_APP_CLIENT_SECRET` | |
-| `FORGE_SIGNING_KEY` | 32+ random bytes. Signs access tokens **and** approval links **and** derives the key encrypting stored GitHub credentials. Rotating it invalidates all three at once and forces everyone to sign in again |
+| `FORGE_SIGNING_KEY` | 32+ random bytes. Signs access and non-expiring, client-bound refresh tokens **and** approval links **and** derives the key encrypting stored GitHub credentials. Rotating it invalidates all of them at once and forces everyone to sign in again. Otherwise an OAuth connection remains valid until its Forge user is deleted |
 | `CLOUDFLARE_API_TOKEN` | Scoped to Browser Rendering only |
 | `POSTHOG_API_KEY` | Optional. Unset means no analytics, not broken analytics |
 

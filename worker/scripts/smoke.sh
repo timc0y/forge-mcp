@@ -44,6 +44,8 @@ chk "auth-server (append)"           '"issuer"'       "$(body $B/.well-known/oau
 chk "auth-server (rfc8414)"          '"issuer"'       "$(body https://timcoy.uk/.well-known/oauth-authorization-server/forge)"
 chk "issuer names the mount"         'timcoy.uk/forge' "$(body $B/.well-known/oauth-authorization-server)"
 chk "PKCE S256 advertised"           'S256'           "$(body $B/.well-known/oauth-authorization-server)"
+chk "offline access advertised"      'offline_access' "$(body $B/.well-known/oauth-authorization-server)"
+chk "refresh grant advertised"       'refresh_token'  "$(body $B/.well-known/oauth-authorization-server)"
 
 echo "── dynamic client registration (exercises D1)"
 REG=$(body -X POST $B/oauth/register -H 'content-type: application/json' \
@@ -59,6 +61,7 @@ CID=$(echo "$REG" | sed -n 's/.*"client_id":"\([^"]*\)".*/\1/p')
 chk "rejects plain PKCE"             "400"            "$(code "$B/oauth/authorize?client_id=$CID&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector_platform_oauth_redirect&response_type=code&code_challenge=abc&code_challenge_method=plain")"
 chk "rejects unknown client"         "400"            "$(code "$B/oauth/authorize?client_id=not-a-client&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fcb&response_type=code&code_challenge=abc&code_challenge_method=S256")"
 chk "token rejects bad grant"        "invalid_grant"  "$(body -X POST $B/oauth/token -H 'content-type: application/x-www-form-urlencoded' -d 'grant_type=authorization_code&code=nope&code_verifier=xyz&client_id='"$CID")"
+chk "token rejects bad refresh"      "invalid_grant"  "$(body -X POST $B/oauth/token -H 'content-type: application/x-www-form-urlencoded' -d 'grant_type=refresh_token&refresh_token=nope&client_id='"$CID")"
 
 echo "── approvals and captures are not oracles"
 chk "unknown approval is not a 500"  "404"            "$(code $B/approvals/11111111-1111-1111-1111-111111111111?t=wrong)"

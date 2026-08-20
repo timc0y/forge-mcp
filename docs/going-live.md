@@ -15,13 +15,13 @@ sources before acting on the stages that depend on them.
 | D1, R2, Durable Object, routes | ✅ |
 | GitHub App created, public, installable by any account | ✅ |
 | `FORGE_SIGNING_KEY`, `GITHUB_APP_CLIENT_SECRET` | ✅ (secret verified against GitHub) |
-| `GITHUB_APP_PRIVATE_KEY` | ❌ **blocks every tool** |
-| `CLOUDFLARE_API_TOKEN` | ❌ blocks `forge_see` |
+| `GITHUB_APP_PRIVATE_KEY` | ✅ PKCS#8 secret verified by session startup |
+| `CLOUDFLARE_API_TOKEN` | ✅ Browser Rendering request verified |
 | One end-to-end run by a human | ❌ never happened |
 | Privacy policy | ❌ required by both review processes |
 | Support contact | ❌ required by GitHub Marketplace |
 
-Nothing below matters until the private key is in and a real run has happened.
+The remaining proof is a real end-to-end run from ChatGPT.
 
 ## "Public" is three separate things
 
@@ -45,8 +45,16 @@ install link. Everything else is distribution.
 
 ```sh
 cd worker
-pnpm exec wrangler secret put GITHUB_APP_PRIVATE_KEY --env="" < ~/Downloads/<file>.pem
+openssl pkcs8 -topk8 -nocrypt \
+  -in ~/Downloads/<file>.pem \
+  -out ~/.config/forge-mcp/github-app-private-key.pkcs8.pem
+pnpm exec wrangler secret put GITHUB_APP_PRIVATE_KEY --env="" \
+  < ~/.config/forge-mcp/github-app-private-key.pkcs8.pem
 ```
+
+GitHub downloads a PKCS#1 PEM (`BEGIN RSA PRIVATE KEY`), while Forge imports
+PKCS#8 (`BEGIN PRIVATE KEY`). Uploading the download unchanged lets OAuth finish
+but makes authenticated MCP startup fail before any tools are registered.
 
 **Browser Rendering token.** [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
 → Create Custom Token → Browser Rendering: Edit, scoped to the `tims` account.

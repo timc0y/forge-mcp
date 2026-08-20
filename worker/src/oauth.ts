@@ -5,11 +5,11 @@
  * thing that knows who anyone is. So every endpoint here does one of two jobs:
  * hand the browser to GitHub, or turn what GitHub said into a Forge token.
  *
- * There is no refresh token. A refresh token is a second long-lived credential
- * to store, rotate, revoke and get wrong, and it buys a shorter access token —
- * but the access token is already revocable, because `authenticate` re-reads
- * the user row on every request and a deleted user's tokens die immediately.
- * One credential with a real expiry is the smaller of the two designs.
+ * ChatGPT needs offline_access so a connection survives an access-token expiry.
+ * The refresh token is signed and client-bound. It has no calendar expiry:
+ * deleting the user row or rotating the signing key revokes it. That keeps a
+ * connection alive until the user or operator explicitly ends it, without
+ * adding another credential table.
  *
  * There is also no pending-authorization table. The authorize request has to
  * survive a round trip through GitHub, and the only place to put it is the
@@ -29,20 +29,13 @@ import { githubUserRequest } from './github';
 import { storeUserCredential } from './user-token';
 import { analyticsFor } from './analytics';
 import { escapeHtml, page as ui } from './ui';
-import { issueToken } from './identity';
+import { issueRefreshToken, issueToken, verifyRefreshToken } from './identity';
 
 /**
- * Thirty days.
- *
- * The client is often a phone, and re-authorizing means a browser hop, a GitHub
- * login and a return trip — friction a person feels every single time. Anything
- * on the order of an hour would need a refresh token to be usable, which is the
- * credential this design deliberately does not have. Thirty days is long enough
- * that a preview user authorizes roughly monthly, and short enough that a token
- * copied out of a client's storage is not a permanent grant. Revocation does
- * not wait for it: deleting the user row invalidates every token that names it.
+ * Access is short-lived; the refresh grant keeps the connection alive until it
+ * is explicitly revoked without making every API bearer long-lived.
  */
-const ACCESS_TOKEN_SECONDS = 30 * 24 * 60 * 60;
+const ACCESS_TOKEN_SECONDS = 60 * 60;
 
 /** Long enough to redeem immediately, short enough to be worthless if leaked. */
 const AUTHORIZATION_CODE_MS = 10 * 60 * 1000;
@@ -98,12 +91,6 @@ export function protectedResourceMetadata(env: Env): Response {
   });
 }
 
-/**
- * No `scopes_supported`, and the `scope` parameter is ignored wherever it
- * appears. There is one identity and one set of powers: a token either speaks
- * for a user or it does not. Advertising a scope would invite a client to ask
- * for something this server cannot refuse differently.
- */
 export function authorizationServerMetadata(env: Env): Response {
   const origin = env.FORGE_PUBLIC_ORIGIN;
   return json({
@@ -112,7 +99,8 @@ export function authorizationServerMetadata(env: Env): Response {
     token_endpoint: `${origin}/oauth/token`,
     registration_endpoint: `${origin}/oauth/register`,
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    scopes_supported: ['offline_access'],
     token_endpoint_auth_methods_supported: ['none'],
     code_challenge_methods_supported: ['S256']
   });
@@ -171,7 +159,7 @@ export async function registerClient(env: Env, request: Request): Promise<Respon
       client_name: clientName,
       redirect_uris: redirectUris,
       token_endpoint_auth_method: 'none',
-      grant_types: ['authorization_code'],
+      grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code']
     },
     201
@@ -372,10 +360,12 @@ export async function token(env: Env, request: Request): Promise<Response> {
   const body = await parseBody(request);
   if (!body) return oauthError('invalid_request', 'The token request body could not be read.', 400);
 
-  if ((body.get('grant_type') ?? '') !== 'authorization_code') {
+  const grantType = body.get('grant_type') ?? '';
+  if (grantType === 'refresh_token') return refreshAccess(env, body);
+  if (grantType !== 'authorization_code') {
     return oauthError(
       'unsupported_grant_type',
-      'Forge issues long-lived access tokens and supports the authorization_code grant only.',
+      'Forge supports authorization_code and refresh_token grants.',
       400
     );
   }
@@ -406,10 +396,37 @@ export async function token(env: Env, request: Request): Promise<Response> {
     .run();
   if ((spent.meta.changes ?? 0) !== 1) return invalidGrant();
 
+  const refreshToken = await issueRefreshToken(env, row.user_id, row.client_id);
   return json({
     access_token: await issueToken(env, row.user_id, ACCESS_TOKEN_SECONDS),
     token_type: 'Bearer',
-    expires_in: ACCESS_TOKEN_SECONDS
+    expires_in: ACCESS_TOKEN_SECONDS,
+    refresh_token: refreshToken,
+    scope: 'offline_access'
+  });
+}
+
+async function refreshAccess(env: Env, body: URLSearchParams): Promise<Response> {
+  const clientId = body.get('client_id') ?? '';
+  const refreshToken = body.get('refresh_token') ?? '';
+  if (!clientId || !refreshToken) return invalidGrant();
+
+  const userId = await verifyRefreshToken(env, refreshToken, clientId);
+  if (!userId) return invalidGrant();
+
+  // Refresh tokens have no calendar expiry. User deletion and signing-key
+  // rotation are the two deliberate revocation mechanisms.
+  const user = await env.METADATA.prepare('SELECT id FROM users WHERE id = ?1')
+    .bind(userId)
+    .first<{ id: string }>();
+  if (!user) return invalidGrant();
+
+  return json({
+    access_token: await issueToken(env, userId, ACCESS_TOKEN_SECONDS),
+    token_type: 'Bearer',
+    expires_in: ACCESS_TOKEN_SECONDS,
+    refresh_token: refreshToken,
+    scope: 'offline_access'
   });
 }
 
@@ -758,4 +775,3 @@ function consentPage(clientName: string): Response {
 <p class="note">Forge is a free research preview. After GitHub asks, you choose which repositories it may reach — and you can change that later without involving Forge.</p>`
   );
 }
-

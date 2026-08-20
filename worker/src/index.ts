@@ -175,7 +175,30 @@ export default {
         // rather than re-derived inside, so a session can never outlive or
         // disagree with the token that opened it.
         const identity = await authenticate(env, request);
-        return ForgeMcpSession.serve('/mcp', { binding: 'MCP_SESSIONS' }).fetch(request, env, {
+        // ChatGPT probes the stateless 2026-07-28 protocol first. The current
+        // Agents transport implements the initialized 2025 protocol, whose
+        // correct response to the new discovery RPC is a 404 JSON-RPC
+        // Method-not-found error. That status is what tells a dual-era client
+        // to fall back; passing the probe into the old transport yields 400
+        // instead and aborts discovery entirely.
+        if (request.headers.get('mcp-method') === 'server/discover') {
+          const message = await request.clone().json().catch(() => null) as { id?: unknown } | null;
+          return Response.json(
+            {
+              jsonrpc: '2.0',
+              id: message?.id ?? null,
+              error: { code: -32601, message: 'Method not found' }
+            },
+            { status: 404 }
+          );
+        }
+        // The public Worker is mounted at /forge, but the Agents router is
+        // mounted at /mcp. It matches the URL it receives, not the normalized
+        // `path` above, so hand it the same stripped path the outer router used.
+        const sessionUrl = new URL(request.url);
+        sessionUrl.pathname = path;
+        const sessionRequest = new Request(sessionUrl, request);
+        return ForgeMcpSession.serve('/mcp', { binding: 'MCP_SESSIONS' }).fetch(sessionRequest, env, {
           ...ctx,
           props: { identity }
         } as ExecutionContext & { props: { identity: typeof identity } });

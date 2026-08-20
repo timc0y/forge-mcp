@@ -25,6 +25,7 @@ import { ForgeError } from './errors';
  * two payloads happen to look like.
  */
 const TOKEN_CONTEXT = 'forge.access.v1';
+const REFRESH_TOKEN_CONTEXT = 'forge.refresh.v1';
 
 /**
  * Two claims. Anything else here would be a copy of a column this request is
@@ -37,6 +38,11 @@ interface Claims {
   exp: number;
 }
 
+interface RefreshClaims {
+  sub: string;
+  client: string;
+}
+
 interface UserRow {
   id: string;
   github_login: string;
@@ -46,7 +52,28 @@ interface UserRow {
 export async function issueToken(env: Env, userId: string, ttlSeconds: number): Promise<string> {
   const claims: Claims = { sub: userId, exp: Math.floor(Date.now() / 1000) + ttlSeconds };
   const payload = encodeBase64Url(new TextEncoder().encode(JSON.stringify(claims)));
-  return `${payload}.${await sign(env, payload)}`;
+  return `${payload}.${await sign(env, TOKEN_CONTEXT, payload)}`;
+}
+
+export async function issueRefreshToken(
+  env: Env,
+  userId: string,
+  clientId: string
+): Promise<string> {
+  const claims: RefreshClaims = { sub: userId, client: clientId };
+  const payload = encodeBase64Url(new TextEncoder().encode(JSON.stringify(claims)));
+  return `${payload}.${await sign(env, REFRESH_TOKEN_CONTEXT, payload)}`;
+}
+
+export async function verifyRefreshToken(
+  env: Env,
+  token: string,
+  clientId: string
+): Promise<string | null> {
+  const claims = await verifiedPayload(env, token, REFRESH_TOKEN_CONTEXT);
+  if (!claims || typeof claims.sub !== 'string' || !claims.sub) return null;
+  if (typeof claims.client !== 'string' || claims.client !== clientId) return null;
+  return claims.sub;
 }
 
 export async function authenticate(env: Env, request: Request): Promise<Identity> {
@@ -156,22 +183,32 @@ async function seededUser(env: Env): Promise<UserRow> {
 // ---------------------------------------------------------------------------
 
 async function verify(env: Env, token: string): Promise<string | null> {
+  const claims = await verifiedPayload(env, token, TOKEN_CONTEXT);
+  if (!claims || typeof claims.sub !== 'string' || !claims.sub) return null;
+  if (typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)) return null;
+  if (claims.exp * 1000 <= Date.now()) return null;
+  return claims.sub;
+}
+
+async function verifiedPayload(
+  env: Env,
+  token: string,
+  context: string
+): Promise<Record<string, unknown> | null> {
   const separator = token.indexOf('.');
   if (separator <= 0) return null;
   const payload = token.slice(0, separator);
   const signature = token.slice(separator + 1);
 
   // Signature before parse, always: nothing downstream should ever see bytes
-  // an attacker chose. The claims are only claims once the HMAC agrees.
-  if (!constantTimeEqual(signature, await sign(env, payload))) return null;
+  // an attacker chose. The context also prevents an access token being used
+  // as a refresh token, or the reverse.
+  if (!constantTimeEqual(signature, await sign(env, context, payload))) return null;
 
-  const claims = decodeClaims(payload);
-  if (!claims) return null;
-  if (claims.exp * 1000 <= Date.now()) return null;
-  return claims.sub;
+  return decodePayload(payload);
 }
 
-async function sign(env: Env, payload: string): Promise<string> {
+async function sign(env: Env, context: string, payload: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(env.FORGE_SIGNING_KEY),
@@ -182,12 +219,12 @@ async function sign(env: Env, payload: string): Promise<string> {
   const signature = await crypto.subtle.sign(
     'HMAC',
     key,
-    new TextEncoder().encode(`${TOKEN_CONTEXT}.${payload}`)
+    new TextEncoder().encode(`${context}.${payload}`)
   );
   return encodeBase64Url(new Uint8Array(signature));
 }
 
-function decodeClaims(payload: string): Claims | null {
+function decodePayload(payload: string): Record<string, unknown> | null {
   let text: string;
   try {
     const padded = payload.replace(/-/g, '+').replace(/_/g, '/');
@@ -202,11 +239,7 @@ function decodeClaims(payload: string): Claims | null {
     const value: unknown = JSON.parse(text);
     if (typeof value !== 'object' || value === null) return null;
     const record = value as Record<string, unknown>;
-    // A token with no expiry would be a permanent grant, so an absent or
-    // non-numeric `exp` is a rejection rather than a default.
-    if (typeof record.sub !== 'string' || !record.sub) return null;
-    if (typeof record.exp !== 'number' || !Number.isFinite(record.exp)) return null;
-    return { sub: record.sub, exp: record.exp };
+    return record;
   } catch {
     return null;
   }
