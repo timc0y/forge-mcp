@@ -85,23 +85,55 @@ async function handleApproval(env: Env, request: Request, url: URL, id: string):
   return resolveApproval(env, id, token, decision, gh);
 }
 
+/**
+ * Where this worker is mounted, derived from the one value that already has to
+ * be right.
+ *
+ * Forge is served at a path (`timcoy.uk/forge`), not a hostname, so every
+ * request arrives with that prefix on it while the router matches bare paths.
+ * FORGE_PUBLIC_ORIGIN is what OAuth redirects and approval links are minted
+ * from, so it must already name the mount point exactly — which makes it the
+ * only honest source for this, and keeps the two from ever disagreeing.
+ *
+ * Mounted at a root origin the prefix is empty and this does nothing.
+ */
+function mountPath(env: Env): string {
+  try {
+    return new URL(env.FORGE_PUBLIC_ORIGIN).pathname.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const path = url.pathname;
+    const mount = mountPath(env);
+    const path =
+      mount && (url.pathname === mount || url.pathname.startsWith(`${mount}/`))
+        ? url.pathname.slice(mount.length) || '/'
+        : url.pathname;
 
     try {
       if (path === '/health') {
         return Response.json({ status: 'ok' });
       }
 
-      // Discovery. Both spellings are served because clients differ on which
-      // they probe, and a wrong guess reads to the user as "connection failed".
-      if (path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') {
-        return protectedResourceMetadata(env);
-      }
-      if (path === '/.well-known/oauth-authorization-server') {
-        return authorizationServerMetadata(env);
+      // Discovery, in every spelling a client might try.
+      //
+      // RFC 8414 says the well-known segment is inserted between host and path,
+      // so an issuer of `https://timcoy.uk/forge` is probed at
+      // `/.well-known/oauth-authorization-server/forge`. Plenty of clients
+      // instead append, giving `/forge/.well-known/oauth-authorization-server`.
+      // Both arrive here — the first unstripped, the second with the mount
+      // removed — and a wrong guess surfaces to the user as nothing more useful
+      // than "connection failed", so both are answered.
+      const wellKnown = /^\/\.well-known\/(oauth-protected-resource|oauth-authorization-server)(\/.*)?$/;
+      const discovery = wellKnown.exec(path) ?? wellKnown.exec(url.pathname);
+      if (discovery) {
+        return discovery[1] === 'oauth-protected-resource'
+          ? protectedResourceMetadata(env)
+          : authorizationServerMetadata(env);
       }
 
       if (path === '/oauth/register') return registerClient(env, request);

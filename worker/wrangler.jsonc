@@ -11,6 +11,21 @@
   // No cron. Nothing here needs sweeping, because nothing is allocated that
   // could leak: no containers, no slots, no workspaces to reap.
 
+  // Served at a path on an existing site, not on its own hostname. The route
+  // must cover the mount point itself and everything under it — `/forge` alone
+  // would not match `/forge/mcp`.
+  "routes": [
+    { "pattern": "timcoy.uk/forge", "zone_name": "timcoy.uk" },
+    { "pattern": "timcoy.uk/forge/*", "zone_name": "timcoy.uk" },
+    // RFC 8414 puts the well-known segment before the path, so these land
+    // outside /forge. Scoped to the two exact prefixes rather than
+    // /.well-known/* so the rest of the site keeps its own.
+    { "pattern": "timcoy.uk/.well-known/oauth-protected-resource/*", "zone_name": "timcoy.uk" },
+    { "pattern": "timcoy.uk/.well-known/oauth-authorization-server/*", "zone_name": "timcoy.uk" }
+  ],
+
+  // Kept on so the workers.dev URL stays available as a fallback while the
+  // route is being proven.
   "workers_dev": true,
 
   "observability": {
@@ -21,11 +36,11 @@
 
   "vars": {
     "FORGE_ENVIRONMENT": "production",
-    // Deliberately workers.dev, not forge.timcoy.uk: that hostname still serves
-    // Forge 1. Every OAuth redirect and approval link is minted against this
-    // value, so it must name the worker that will actually answer them. Move it
-    // at cutover, together with the route.
-    "FORGE_PUBLIC_ORIGIN": "https://forge.timcoy72.workers.dev",
+    // Not forge.timcoy.uk — that hostname still serves Forge 1. Every OAuth
+    // redirect, approval link and capture link is minted from this value, and
+    // the router derives its mount path from it, so the path here is
+    // load-bearing rather than cosmetic.
+    "FORGE_PUBLIC_ORIGIN": "https://timcoy.uk/forge",
     "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,localhost,127.0.0.1",
     "GITHUB_APP_ID": "4281819",
     "GITHUB_APP_CLIENT_ID": "Iv23litNLX2bVU1S6gLC",
@@ -65,7 +80,22 @@
   "env": {
     "development": {
       "name": "forge-development",
-      "workers_dev": true,
+      // Served at a path on an existing site, not on its own hostname. The route
+  // must cover the mount point itself and everything under it — `/forge` alone
+  // would not match `/forge/mcp`.
+  "routes": [
+    { "pattern": "timcoy.uk/forge", "zone_name": "timcoy.uk" },
+    { "pattern": "timcoy.uk/forge/*", "zone_name": "timcoy.uk" },
+    // RFC 8414 puts the well-known segment before the path, so these land
+    // outside /forge. Scoped to the two exact prefixes rather than
+    // /.well-known/* so the rest of the site keeps its own.
+    { "pattern": "timcoy.uk/.well-known/oauth-protected-resource/*", "zone_name": "timcoy.uk" },
+    { "pattern": "timcoy.uk/.well-known/oauth-authorization-server/*", "zone_name": "timcoy.uk" }
+  ],
+
+  // Kept on so the workers.dev URL stays available as a fallback while the
+  // route is being proven.
+  "workers_dev": true,
       "vars": {
         "FORGE_ENVIRONMENT": "development",
         "FORGE_PUBLIC_ORIGIN": "https://forge-development.timcoy72.workers.dev",

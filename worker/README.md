@@ -21,6 +21,12 @@ Five tools, none with a mode or action parameter.
 
 Plus four HTTP routes: `/mcp`, the OAuth endpoints, `/approvals/:id`, `/health`.
 
+## Where it runs
+
+`https://timcoy.uk/forge` — a path on an existing site, not its own hostname.
+The router derives that mount path from `FORGE_PUBLIC_ORIGIN`, so moving it is a
+config change rather than a code change. `forge.timcoy.uk` is a different worker.
+
 ## Running it
 
 ```sh
