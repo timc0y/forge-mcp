@@ -152,23 +152,18 @@ export async function galleryPage(env: Env, id: string, token: string): Promise<
   if (!constantTimeEqual(token, await sign(env, id))) return missing;
 
   // Rows exist for captures made after migration 0002. A missing row is treated
-  // as a legacy capture and left to the bucket lifecycle, so deploying this
-  // migration does not break links minted before ownership was recorded.
-  let row: { object_key: string; expires_at: string } | null = null;
-  try {
-    row = await env.METADATA.prepare(
-      'SELECT object_key, expires_at FROM captures WHERE id = ?1'
-    )
-      .bind(id)
-      .first<{ object_key: string; expires_at: string }>();
-  } catch {
-    // The route remains compatible during a migration rollout. New storage
-    // refuses an untracked object, so this fallback applies only to legacy data
-    // or a temporarily unavailable D1 read.
-  }
+  // as a legacy capture and left to the bucket lifecycle, so the migration does
+  // not break links minted before ownership was recorded. A failed D1 read is
+  // not treated as a missing row: retention and deletion controls fail closed.
+  const row = await env.METADATA.prepare(
+    'SELECT object_key, expires_at FROM captures WHERE id = ?1'
+  )
+    .bind(id)
+    .first<{ object_key: string; expires_at: string }>();
 
   const objectKey = row?.object_key ?? `captures/${id}.html`;
-  if (row && Date.parse(row.expires_at) <= Date.now()) {
+  const expiresMs = row ? Date.parse(row.expires_at) : Number.POSITIVE_INFINITY;
+  if (row && (!Number.isFinite(expiresMs) || expiresMs <= Date.now())) {
     await Promise.allSettled([
       env.ARTIFACTS.delete(objectKey),
       env.METADATA.prepare('DELETE FROM captures WHERE id = ?1').bind(id).run()

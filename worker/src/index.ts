@@ -20,9 +20,9 @@ import { toForgeError } from './errors';
 export { ForgeMcpSession };
 
 /**
- * The whole surface. Five things reach the outside world: the MCP endpoint, the
- * OAuth dance that lets a client reach it, the approval pages where the two
- * irreversible acts are authorized, a stored capture, and health.
+ * The whole surface. Operational capabilities reach the outside world through
+ * the MCP endpoint, OAuth, approval pages and stored captures. The landing,
+ * privacy notice, icons and health route are public information surfaces only.
  *
  * There is no dashboard, no observer API, no task or workspace console. Every
  * one of those existed in the previous system and every one was a surface to

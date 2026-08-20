@@ -101,8 +101,12 @@ identically to a wrong token.
 
 ## Migrations
 
+Apply migrations before deploying worker code that depends on them. Migration
+`0002_capture_ownership.sql` is required before the privacy and capture-retention
+changes can safely go live.
+
 ```sh
-wrangler d1 migrations apply forge-v1-production --remote
+pnpm exec wrangler d1 migrations apply forge-v1-production --remote
 ```
 
 ## Things that will bite

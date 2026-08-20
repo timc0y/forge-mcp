@@ -24,6 +24,7 @@ Five MCP tools, none with a mode or action parameter:
 HTTP route families:
 
 - `/` — landing or GitHub installation return page
+- `/privacy` — public operational privacy notice
 - `/mcp` — authenticated MCP transport
 - `/.well-known/oauth-*` and `/oauth/*` — discovery and OAuth 2.1/PKCE
 - `/approvals/:id` — durable merge and discard decisions
