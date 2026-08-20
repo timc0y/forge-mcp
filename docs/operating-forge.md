@@ -59,9 +59,12 @@ send is fire-and-forget, every failure is swallowed, and an unset API key makes
 the module a no-op. If PostHog is down, Forge does not notice.
 
 Events are `forge_tool_called`, `forge_user_signed_up`, `forge_user_connected`,
-`forge_approval_requested`, `forge_approval_resolved`, `forge_capture_taken`,
-`forge_quota_refused`. Properties are shape only — which tool, whether it
-worked, the error code, how long it took.
+`forge_change_committed`, `forge_approval_requested`,
+`forge_approval_resolved`, `forge_capture_taken` and `forge_quota_refused`.
+Properties are shape only — which tool, whether it worked, elapsed time, file
+count, viewport count, action and outcome. `forge_change_committed` is the
+primary activation event; a preceding `forge_capture_taken` is the stronger
+visual-review signal.
 
 Deliberately never sent: file contents, patches, commit messages, intents,
 captured URLs, repository names, tokens. Those are the user's work, and none of
@@ -112,5 +115,6 @@ wrangler d1 migrations apply forge-v1-production --remote
   links.
 - **R2 will not delete a non-empty bucket**, and wrangler has no bulk delete.
   Set a lifecycle rule to expire the objects, then delete the bucket.
-- **Deleting a Worker does not delete its containers.** Check
-  `wrangler containers list` after removing anything that used them.
+- **Historical deployments may still have executor-era containers.** The current
+  worker creates none, but check `wrangler containers list` before assuming an
+  old deployment was fully removed.

@@ -17,11 +17,15 @@ sources before acting on the stages that depend on them.
 | `FORGE_SIGNING_KEY`, `GITHUB_APP_CLIENT_SECRET` | ✅ (secret verified against GitHub) |
 | `GITHUB_APP_PRIVATE_KEY` | ✅ PKCS#8 secret verified by session startup |
 | `CLOUDFLARE_API_TOKEN` | ✅ Browser Rendering request verified |
-| One end-to-end run by a human | ❌ never happened |
+| ChatGPT read, capture, write and approval preparation | ✅ recorded 20 August 2026 |
+| Merge approval completed and verified | ❌ not yet recorded |
+| Discard approval completed and verified | ❌ not yet recorded |
 | Privacy policy | ❌ required by both review processes |
-| Support contact | ❌ required by GitHub Marketplace |
+| Support contact | ✅ GitHub issues |
 
-The remaining proof is a real end-to-end run from ChatGPT.
+The production trace now proves OAuth, repository access, capture, durable edit,
+semantic recovery and approval preparation. The remaining release proof is one
+completed merge, one completed discard and the important refusal paths.
 
 ## "Public" is three separate things
 
@@ -67,18 +71,26 @@ pnpm exec wrangler secret put CLOUDFLARE_API_TOKEN --env=""
 
 ## Stage 2 — Prove it once
 
-Connect from a real client and run the whole loop. Nothing here is testable any
-other way: 39 smoke checks and 14 unit tests cannot reach a GitHub write, an
-approval, or a capture.
+A partial production run is recorded in
+[`test-runs/production-chatgpt-smoke-2026-08-20.md`](./test-runs/production-chatgpt-smoke-2026-08-20.md).
+It reached a real repository, returned screenshots, committed a file, read the
+change back and prepared both kinds of approval. Automated checks cannot prove
+the remaining human-click paths.
 
-1. Connect, authorize, install.
-2. `forge_edit` into a repository that does not exist → it is created, the change
-   opens, the commit is on GitHub before the reply lands.
-3. `forge_read` the change → the diff comes back.
-4. `forge_edit` again with the same intent → continues the same change.
-5. `forge_see` a public URL → images inline **and** at the link.
-6. `forge_merge` → open the link on a phone → approve → check `main` moved.
-7. `forge_discard` a second change → confirm the branch is gone.
+Observed already:
+
+1. Connect, authorize and install.
+2. Read a real repository and recover an open change by its human name.
+3. Commit a file and read the resulting diff back from GitHub.
+4. Capture a public URL with phone and desktop images inline and at a link.
+5. Prepare both merge and discard approval links.
+
+Still to record:
+
+6. Continue an existing change with the same intent.
+7. Open a merge link on a phone, approve it and confirm the default branch moved.
+8. Open a discard link for a second disposable change and confirm its pull
+   request closed and branch disappeared.
 
 Then the failure paths, which matter more:
 
@@ -193,8 +205,8 @@ relevant description, a pricing plan, a working privacy policy link, and a
 support link or email. Verified-publisher status and the 100-install minimum
 apply only to **paid** apps.
 
-So it is achievable — but it buys discovery you may not want yet, on a product
-with no end-to-end run. The public app page at
+So it is achievable — but it buys discovery you may not want yet, while the
+approval-completion paths still lack a recorded production run. The public app page at
 `github.com/apps/forge-mcp-github-app` already lets anyone install. Revisit once
 there are users.
 
@@ -224,13 +236,12 @@ matches everything else.
 
 ## Order
 
-1. Two secrets. *(minutes)*
-2. One end-to-end run, recorded. *(an hour)*
-3. Rate limiting rule, billing alert, support contact. *(an hour)*
-4. Privacy policy, served. *(half a day)*
-5. Decide the stored-credential question before submitting anything.
-6. Identity and domain verification. *(days, out of your hands)*
-7. Reviewer account with sample data, test cases, submit. *(a day, then weeks)*
+1. Complete and record one merge and one discard approval, plus the refusal paths.
+2. Add the rate-limiting rule and billing alert.
+3. Serve a truthful privacy policy and write the account-deletion runbook.
+4. Decide the stored-credential question before submitting anything.
+5. Identity and domain verification. *(days, out of your hands)*
+6. Reviewer account with sample data, test cases, submit. *(a day, then weeks)*
 
 Stages 1–4 make Forge genuinely usable by anyone you hand the URL to. Stage 7 is
 distribution, and it is the only part with a gatekeeper.

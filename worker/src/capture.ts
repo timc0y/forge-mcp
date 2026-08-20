@@ -28,6 +28,20 @@ const MAX_OUTLINE_LINES = 80;
 const MAX_OUTLINE_DEPTH = 8;
 const MAX_OUTLINE_LINE_CHARS = 220;
 
+/** Roles that remain useful landmarks even when the page gives them no name. */
+const OUTLINE_ROLES_WITHOUT_NAMES = new Set([
+  'RootWebArea',
+  'banner',
+  'navigation',
+  'main',
+  'complementary',
+  'contentinfo',
+  'form',
+  'region',
+  'list',
+  'table'
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -56,7 +70,7 @@ function describeFailure(parsed: unknown, fallback: string): string {
  * deliberately omitted. The cap is disclosed to the caller rather than letting
  * a long page silently consume the rest of the chat context.
  */
-function accessibilityOutline(tree: unknown): { lines: string[]; truncated: boolean } {
+export function accessibilityOutline(tree: unknown): { lines: string[]; truncated: boolean } {
   const lines: string[] = [];
   let truncated = false;
 
@@ -77,7 +91,7 @@ function accessibilityOutline(tree: unknown): { lines: string[]; truncated: bool
     const nodeValue = text(value.valuetext) || text(value.value);
     const level = typeof value.level === 'number' ? ` level ${value.level}` : '';
 
-    if (role && (name || nodeValue || role === 'RootWebArea')) {
+    if (role && (name || nodeValue || OUTLINE_ROLES_WITHOUT_NAMES.has(role))) {
       const indent = '  '.repeat(Math.min(depth, 6));
       const named = name ? `: ${name}` : '';
       const valued = nodeValue && nodeValue !== name ? ` = ${nodeValue}` : '';

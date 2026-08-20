@@ -98,7 +98,8 @@ contents:
 - Complete the plan/model/surface test matrix.
 - Deploy the job-led landing page.
 - Record the production demonstration.
-- Confirm activation events are emitted and contain shape only.
+- Deploy and verify the activation events now emitted by the worker; confirm
+  they contain shape only.
 
 ### Week 2 — qualified users
 
@@ -143,8 +144,8 @@ acquisition trick rather than a durable product.
 
 1. Compatibility proof and honest messaging.
 2. Activation measurement.
-3. Better visual evidence: compact semantic outline, then full-page and explicit
-   multi-route review if demanded.
+3. The compact semantic outline is implemented. Validate whether users next
+   need full-page capture, explicit multi-route review or before/after evidence.
 4. Team governance if workspace pilots appear.
 5. Billing only after a paid boundary is proven.
 
