@@ -2,11 +2,23 @@
 
 # Forge
 
-Hands and eyes for a mind that can only talk.
+Think in ChatGPT. Commit safely to GitHub.
 
-An ordinary ChatGPT conversation — often on a phone — has judgement and no way
-to act. Forge gives it two organs: durable authoring in GitHub, and sight of
-rendered pages. GitHub holds the memory. Nothing here runs code.
+Forge is the hosted handoff between a conversation and a repository. Research,
+visual reviews and small edits become real commits and draft pull requests.
+GitHub remains the only copy, and `main` moves only after a human approves it.
+
+Forge complements Codex, Claude Code, Cursor and OpenCode. It does not run,
+build, test, serve or deploy code.
+
+## Three useful first jobs
+
+- **Research → repository** — save a plan, decision or brief where the next
+  coding session can use it.
+- **Live page → visual review** — capture phone and desktop, then turn the
+  findings into a document or a small corrective change.
+- **Small edit → draft pull request** — fix copy, CSS or documentation from a
+  conversation without touching `main`.
 
 ## Five tools
 
@@ -24,7 +36,9 @@ so nothing has to be remembered between turns. `main` moves only through a merge
 a human approved.
 
 **Free research preview** — open to anyone with a GitHub account, at
-**<https://timcoy.uk/forge>**.
+**<https://timcoy.uk/forge>**. Client support varies by plan and surface; the
+[current ChatGPT availability note](./docs/research/chatgpt-availability-2026-08-20.md)
+records what is documented and what still needs testing.
 
 ## Where things are
 
@@ -35,7 +49,9 @@ a human approved.
 - [`assets/`](./assets) — the mark, and the app icon in both tones.
 - [`SIMPLE.md`](./SIMPLE.md) — the design profile: what is real, what is
   preserved, and the precedents that must not be re-litigated.
-- [`docs/plans/forge-v1.md`](./docs/plans/forge-v1.md) — the plan this was built to.
+- [`docs/plans/forge-v1.md`](./docs/plans/forge-v1.md) — the architecture this was built to.
+- [`docs/plans/product-route.md`](./docs/plans/product-route.md) — the active adoption,
+  measurement and revenue plan.
 - [`docs/research/`](./docs/research) — the record. Read
   [`forge-history-tool-learnings.md`](./docs/research/forge-history-tool-learnings.md)
   before changing anything: it is a register of production failures and the

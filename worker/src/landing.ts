@@ -63,10 +63,16 @@ function loop(): string {
 
 const TOOLS: Array<[string, string, string, boolean]> = [
   ['read', 'forge_read', 'Your repos, a repo&rsquo;s files, or what a change did', false],
-  ['edit', 'forge_edit', 'Writes files. Makes the repo and the change if new', false],
+  ['edit', 'forge_edit', 'Commits files on a draft change; makes the repo if new', false],
   ['merge', 'forge_merge', 'Sends one link to land a change on main', true],
   ['discard', 'forge_discard', 'Sends one link to throw a change away', true],
-  ['see', 'forge_see', 'Screenshots a public page, hands back the images', false]
+  ['see', 'forge_see', 'Captures a public page at phone and desktop', false]
+];
+
+const USE_CASES: Array<[string, string]> = [
+  ['Research &rarr; repository', 'Save a plan, decision or brief where the next coding session can use it.'],
+  ['Live page &rarr; visual review', 'See phone and desktop, then record the findings or make a small correction.'],
+  ['Small edit &rarr; draft PR', 'Fix copy, CSS or documentation without opening a terminal or touching main.']
 ];
 
 const LIMITS: Array<[string, string]> = [
@@ -77,6 +83,7 @@ const LIMITS: Array<[string, string]> = [
 ];
 
 const REFUSALS: Array<[string, string, string]> = [
+  ['edit', 'Run code', 'Use a coding agent for builds, tests, commands and deployments'],
   ['edit', 'Touch main', 'Only a merge you approved moves your default branch'],
   ['see', 'See private pages', 'Captures need a URL that is already public'],
   ['read', 'Keep a copy', 'GitHub is the only place your work lives']
@@ -113,11 +120,11 @@ export function installedPage(env: Env, action: string): Response {
 
 <div class="section alert">
   <p><b>Already connected in a chat?</b> Nothing else to do — go back and ask for something.</p>
-  <p class="note">&ldquo;Make me a repo called weather-notes with a plan doc in it.&rdquo;</p>
+  <p class="note">&ldquo;Review my homepage on phone and desktop, then save the findings in the site repository.&rdquo;</p>
 </div>
 
 <h2>Not connected yet?</h2>
-<p>Add this server to ChatGPT (Settings → Apps &amp; Connectors → Advanced → Developer mode)
+<p>Add this server to ChatGPT (Settings → Apps → Advanced settings → Developer mode)
   or Claude (Settings → Connectors):</p>
 <code class="block">${escapeHtml(mcp)}</code>
 <p class="note">You will be asked to continue with GitHub once. That is the last time tokens come up.</p>
@@ -139,6 +146,10 @@ export function landingPage(env: Env): Response {
       `<span class="you${gated ? ' yes' : ''}">${gated ? 'you approve' : 'no approval'}</span></li>`
   ).join('');
 
+  const useCases = USE_CASES.map(
+    ([name, what]) => `<article class="card"><h3>${name}</h3><p>${what}</p></article>`
+  ).join('');
+
   const limits = LIMITS.map(([big, small]) => `<div><b>${big}</b><span>${small}</span></div>`).join('');
 
   const refusals = REFUSALS.map(
@@ -147,13 +158,18 @@ export function landingPage(env: Env): Response {
 
   const body = `
 <section class="hero">
-  <h1 class="rise">Build on GitHub<br>from a chat.</h1>
-  <p class="lead rise">Forge gives an ordinary conversation two things it has never had:
-    <b>hands</b> that write real commits, and <b>eyes</b> that see a rendered page.</p>
+  <h1 class="rise">Think in ChatGPT.<br>Commit safely to GitHub.</h1>
+  <p class="lead rise">Forge is the safe handoff between a conversation and your repository:
+    research, visual reviews and small edits become <b>real commits</b> and <b>draft pull requests</b>.
+    It never runs code or touches <code>main</code> without you.</p>
+  <div class="row"><a class="btn primary" href="#setup">Connect Forge</a>
+    <a class="btn" href="${escapeHtml(install)}">Choose repositories</a></div>
   <div class="endpoint"><span>Server</span><code>${escapeHtml(mcp)}</code></div>
-  <div class="row"><a class="btn primary" href="${escapeHtml(install)}">Install the GitHub App</a>
-    <a class="btn" href="#setup">How it works</a></div>
+  <p class="note">Client support varies by plan and surface. Read and screenshot tools remain useful where write actions are unavailable.</p>
 </section>
+
+<h2>Three useful first jobs</h2>
+<div class="usecases">${useCases}</div>
 
 ${loop()}
 
@@ -165,9 +181,10 @@ ${loop()}
 <h2 id="setup">Setting up</h2>
 <ol class="steps">
   <li><div><h3>Add the server to your client</h3>
-    <p>ChatGPT: Settings → Apps &amp; Connectors → Advanced → Developer mode.
+    <p>ChatGPT: Settings → Apps → Advanced settings → Developer mode.
       Claude: Settings → Connectors.</p>
-    <code class="block">${escapeHtml(mcp)}</code></div></li>
+    <code class="block">${escapeHtml(mcp)}</code>
+    <p class="note">ChatGPT custom write support currently depends on plan, workspace and surface. Use the actions your client enables.</p></div></li>
   <li><div><h3>Continue with GitHub</h3>
     <p>Your client opens a Forge page, then GitHub asks whether to let Forge act as you.
       That is the last time tokens come up.</p></div></li>
@@ -184,10 +201,11 @@ ${loop()}
 <ul class="tools">${refusals}</ul>
 
 <footer>Open source at <a href="https://github.com/timc0y/forge-mcp">github.com/timc0y/forge-mcp</a>.
-  Screenshot links last 30 days, approval links 7.</footer>`;
+  <a href="https://github.com/timc0y/forge-mcp/issues">Support</a>. Screenshot links last 30 days,
+  approval links 7.</footer>`;
 
   return page({
-    title: 'Forge — build on GitHub from a chat',
+    title: 'Forge — think in ChatGPT, commit safely to GitHub',
     body,
     home: origin,
     // The one page meant to be found. Every other surface is about somebody's
@@ -195,13 +213,16 @@ ${loop()}
     index: true,
     cache: 'public,max-age=300',
     head:
-      `<meta property="og:title" content="Forge — build on GitHub from a chat">` +
-      `<meta property="og:description" content="Hands that write real commits, and eyes that see a rendered page.">` +
+      `<meta property="og:title" content="Forge — think in ChatGPT, commit safely to GitHub">` +
+      `<meta property="og:description" content="Turn research, visual reviews and small edits into safe GitHub changes.">` +
       `<meta property="og:image" content="${escapeHtml(origin)}/icon.png">` +
       `<meta property="og:url" content="${escapeHtml(origin)}">` +
       `<meta name="twitter:card" content="summary">`,
     css:
+      '.usecases{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.75rem;margin:.7rem 0 2rem}' +
+      '.usecases h3{margin:0 0 .35rem}.usecases p{margin:0}.hero .endpoint{margin-top:1rem}' +
       '.loop{display:block;width:100%;height:auto;margin:2.6rem 0 .5rem}' +
+      '@media(max-width:720px){.usecases{grid-template-columns:1fr}}' +
       '@media(max-width:560px){.loop{display:none}}'
   });
 }

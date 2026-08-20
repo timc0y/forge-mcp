@@ -1,7 +1,18 @@
 # Using Forge
 
-Forge gives a chat two organs: **durable authoring in GitHub**, and **sight of
-rendered pages**. It does not run your code. GitHub holds everything.
+Think in ChatGPT. Commit safely to GitHub.
+
+Forge is the hosted handoff between a conversation and a repository. It turns
+research, visual reviews and small edits into durable commits and draft pull
+requests. It does not run your code, and GitHub remains the only copy.
+
+Start with one of three jobs:
+
+- Save a plan, decision or brief in the repository where the next coding session
+  can use it.
+- Capture a public page at phone and desktop, then record the findings or make a
+  small correction.
+- Fix copy, CSS or documentation from a conversation without touching `main`.
 
 Free research preview, open to anyone with a GitHub account.
 
@@ -51,14 +62,22 @@ asked to make a repository, name a branch, or open a pull request first.
 
 ## Getting connected
 
+> **ChatGPT availability changes by plan and surface.** As of 20 August 2026,
+> OpenAI documents read/fetch custom MCP access for Pro and full write/modify
+> access for supported Business, Enterprise and Edu web workspaces. Deep
+> Research is read-only, and custom MCP apps are not available in the native
+> mobile app. See the dated
+> [availability note](./research/chatgpt-availability-2026-08-20.md) before
+> treating any client behaviour as a contract.
+
 ### 1. Add the server to your client
 
 ```
 https://timcoy.uk/forge/mcp
 ```
 
-**ChatGPT** — Settings → Apps & Connectors → Advanced → Developer mode, then add
-a connector with that URL.
+**ChatGPT** — Settings → Apps → Advanced settings → Developer mode, then add
+a custom app with that URL.
 
 **Claude** — Settings → Connectors → Add custom connector. Or from Claude Code:
 
@@ -92,11 +111,11 @@ Until you install it, tools will tell you so and give you this link.
 
 ### 4. Say what you want
 
-> "Make me a repo called weather-notes with a plan doc in it."
+> "Research our caching options and save the decision in docs/decisions."
 >
-> "Read the homepage in my site repo and tighten the copy."
+> "Screenshot the homepage on phone and desktop, then write the visual review into the site repo."
 >
-> "Screenshot example.com on phone and desktop."
+> "Tighten the homepage copy and put it on a draft change."
 >
 > "What's changed in the pricing section?"
 >
