@@ -4,7 +4,7 @@ import { escapeHtml, page } from './ui';
 /** A public, operational privacy notice derived from what the worker stores. */
 export function privacyPage(env: Env): Response {
   const origin = env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, '');
-  const support = 'https://github.com/timc0y/forge-mcp/issues';
+  const contact = 'https://timcoy.uk/';
 
   return page({
     title: 'Forge — privacy',
@@ -66,10 +66,9 @@ export function privacyPage(env: Env): Response {
   <li>Disconnect Forge from your chat client to stop that client using it.</li>
   <li>Ask for the Forge account and its mapped captures to be deleted.</li>
 </ul>
-<p>For support or deletion, open an issue at
-  <a href="${escapeHtml(support)}">github.com/timc0y/forge-mcp/issues</a> and ask for a
-  private response route. Do not put tokens, private repository details or other sensitive
-  information in a public issue.</p>
+<p>For support or deletion, use one of the public contact links at
+  <a href="${escapeHtml(contact)}">timcoy.uk</a> and ask for a private response route.
+  Do not send tokens, private repository details or captured-page contents.</p>
 
 <h2>Security and changes</h2>
 <p>Forge uses repository-scoped GitHub App access, encrypted storage for the one user
@@ -78,6 +77,6 @@ export function privacyPage(env: Env): Response {
   processors or retention behaviour changes.</p>
 
 <footer><a href="${escapeHtml(origin)}">Back to Forge</a> ·
-  <a href="${escapeHtml(support)}">Support</a></footer>`
+  <a href="${escapeHtml(contact)}">About &amp; contact</a></footer>`
   });
 }

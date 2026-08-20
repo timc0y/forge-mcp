@@ -200,9 +200,8 @@ ${loop()}
 <h2>What it will not do</h2>
 <ul class="tools">${refusals}</ul>
 
-<footer>Open source at <a href="https://github.com/timc0y/forge-mcp">github.com/timc0y/forge-mcp</a>.
-  <a href="${escapeHtml(origin)}/privacy">Privacy</a> ·
-  <a href="https://github.com/timc0y/forge-mcp/issues">Support</a>. Screenshot links last 30 days,
+<footer>Free research preview. <a href="${escapeHtml(origin)}/privacy">Privacy</a> ·
+  <a href="https://timcoy.uk/">About &amp; contact</a>. Screenshot links last 30 days,
   approval links 7.</footer>`;
 
   return page({

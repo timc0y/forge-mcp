@@ -21,7 +21,7 @@ sources before acting on the stages that depend on them.
 | Merge approval completed and verified | ❌ not yet recorded |
 | Discard approval completed and verified | ❌ not yet recorded |
 | Privacy policy | 🟡 implemented at `/privacy`; deploy and verify |
-| Support contact | ✅ GitHub issues |
+| Support contact | 🟡 public contact links exist; dedicated support address still needed |
 
 The production trace now proves OAuth, repository access, capture, durable edit,
 semantic recovery and approval preparation. The remaining release proof is one
@@ -119,8 +119,11 @@ a bad pair.
 **Log retention.** Observability is on. Decide how long, and say so in the
 privacy policy.
 
-**Support.** A public thing needs somewhere to complain to. An email or a GitHub
-issues link is enough, and Marketplace requires one.
+**Support.** The worker links to the public contact routes on `timcoy.uk`, which
+is enough for design partners but not a durable product support channel. Add a
+dedicated email or public support repository before directory or Marketplace
+submission. The source repository is currently private, so linking strangers to
+its Issues page would only produce a 404.
 
 **Deletion.** Capture ownership is recorded from migration 0002 onward, and the
 manual procedure is in [`account-deletion.md`](./account-deletion.md). Apply the
@@ -240,7 +243,7 @@ and R2 lifecycle before changing its status to complete.
 ## Order
 
 1. Complete and record one merge and one discard approval, plus the refusal paths.
-2. Add the rate-limiting rule and billing alert.
+2. Add the rate-limiting rule, billing alert and dedicated support contact.
 3. Apply migration 0002, deploy and verify the privacy route and deletion runbook.
 4. Decide the stored-credential question before submitting anything.
 5. Identity and domain verification. *(days, out of your hands)*
