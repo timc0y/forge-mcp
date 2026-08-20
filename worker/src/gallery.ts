@@ -1,5 +1,6 @@
 import type { Capture } from './contracts';
 import type { Env } from './env';
+import { escapeHtml, page } from './ui';
 
 /**
  * A hosted copy of a capture, and why it exists.
@@ -45,13 +46,6 @@ function constantTimeEqual(left: string, right: string): boolean {
   return difference === 0;
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(
-    /[&<>"']/g,
-    (character) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] ?? character
-  );
-}
 
 function render(shot: Capture, capturedAt: string): string {
   const images = shot.images
@@ -68,20 +62,12 @@ function render(shot: Capture, capturedAt: string): string {
     .join('');
 
   return (
-    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
-    `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-    `<title>${escapeHtml(shot.title || shot.url)}</title><style>` +
-    `body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:24px;background:Canvas;color:CanvasText}` +
-    `h1{font-size:1.1rem;margin:0 0 4px}a{color:inherit}p{margin:0 0 24px;opacity:.7;font-size:.9rem}` +
-    `figure{margin:0 0 32px}figcaption{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;opacity:.6;margin-bottom:8px}` +
-    `img{max-width:100%;height:auto;border:1px solid rgba(128,128,128,.35);border-radius:6px;display:block}` +
-    `ul{font-size:.9rem;opacity:.7}</style></head><body>` +
     `<h1>${escapeHtml(shot.title || 'Capture')}</h1>` +
-    `<p><a href="${escapeHtml(shot.url)}">${escapeHtml(shot.url)}</a> · captured ${escapeHtml(capturedAt)} · ` +
-    `each image is the top of the page at that viewport, not the full page.</p>` +
+    `<p class="lead"><a href="${escapeHtml(shot.url)}">${escapeHtml(shot.url)}</a></p>` +
+    `<div class="section alert"><p>Captured ${escapeHtml(capturedAt)}. Each image is the top of the page ` +
+    `at that viewport, not the full page.</p></div>` +
     images +
-    (notes ? `<ul>${notes}</ul>` : '') +
-    `</body></html>`
+    (notes ? `<div class="section"><p>Not captured:</p><ul class="list">${notes}</ul></div>` : '')
   );
 }
 
@@ -94,7 +80,12 @@ export async function storeGallery(env: Env, shot: Capture, capturedAt: string):
   if (shot.images.length === 0) return null;
   try {
     const id = crypto.randomUUID();
-    await env.ARTIFACTS.put(`captures/${id}.html`, render(shot, capturedAt), {
+    const document = await page({
+      title: shot.title || 'Forge capture',
+      body: render(shot, capturedAt),
+      home: env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, '')
+    }).text();
+    await env.ARTIFACTS.put(`captures/${id}.html`, document, {
       httpMetadata: { contentType: 'text/html; charset=utf-8' }
     });
     return `${env.FORGE_PUBLIC_ORIGIN}/see/${id}?t=${encodeURIComponent(await sign(env, id))}`;
@@ -117,8 +108,17 @@ export async function galleryPage(env: Env, id: string, token: string): Promise<
     'content-security-policy': "default-src 'none'; img-src data:; style-src 'unsafe-inline'"
   };
 
-  const missing = new Response('<!doctype html><title>Not found</title><p>This capture link is not valid.', {
+  // A bad token and a missing object answer identically, and both wear the
+  // same shell as everything else — a page that looks unlike the product is
+  // its own kind of tell.
+  const missing = page({
     status: 404,
+    title: 'Forge — capture not found',
+    body:
+      '<h1>This capture link is not valid</h1>' +
+      '<div class="section alert"><p>It may have expired, or the link may be incomplete. ' +
+      'Captures are kept for 30 days.</p></div>',
+    home: env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, ''),
     headers
   });
 

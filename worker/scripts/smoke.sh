@@ -62,6 +62,13 @@ chk "approval POST needs a decision" "400"            "$(code -X POST $B/approva
 chk "approval rejects PUT"           "405"            "$(code -X PUT $B/approvals/11111111-1111-1111-1111-111111111111?t=wrong)"
 chk "unknown capture 404s"           "404"            "$(code $B/see/11111111-1111-1111-1111-111111111111?t=wrong)"
 
+echo "── one design system"
+for path in "" "/approvals/11111111-1111-1111-1111-111111111111?t=x" "/see/11111111-1111-1111-1111-111111111111?t=x"; do
+  html="$(body "$B$path")"
+  chk "shared shell on ${path:-/}"    'class="mark"'      "$html"
+  chk "skip link on ${path:-/}"       'Skip to content'   "$html"
+done
+
 echo "── nothing leaks"
 ALL="$(body $B/health)$(body $B/.well-known/oauth-authorization-server)$REG$(body -X POST $B/mcp -d '{}')"
 for s in "BEGIN PRIVATE KEY" "GITHUB_APP" "CLOUDFLARE_API" "FORGE_SIGNING_KEY" "Iv23li"; do

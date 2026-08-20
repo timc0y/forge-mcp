@@ -28,6 +28,7 @@ import { isForgeError } from './errors';
 import { githubUserRequest } from './github';
 import { storeUserCredential } from './user-token';
 import { analyticsFor } from './analytics';
+import { escapeHtml, page as ui } from './ui';
 import { issueToken } from './identity';
 
 /**
@@ -704,10 +705,6 @@ const HTML_ESCAPES: Record<string, string> = {
   "'": '&#39;'
 };
 
-/** A client name arrives from an unauthenticated registration call. Treat it as hostile. */
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => HTML_ESCAPES[character] ?? character);
-}
 
 /**
  * No external CSS, script, font or image — partly so the page renders in an
@@ -715,52 +712,26 @@ function escapeHtml(value: string): string {
  * party who would learn this URL. `Canvas`/`CanvasText` are the reader's own
  * system colours, which is a whole theme system for free.
  */
-const STYLE = `
-:root{color-scheme:light dark}
-*{box-sizing:border-box}
-body{margin:0;padding:24px 16px 64px;background:Canvas;color:CanvasText;
-font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-main{max-width:32rem;margin:0 auto}
-h1{font-size:1.45rem;line-height:1.25;margin:0 0 .35rem}
-.lead{margin:0 0 1.6rem;color:GrayText}
-.box{border:1px solid GrayText;border-radius:10px;padding:14px 16px;margin:0 0 1.2rem}
-label{display:block;font-weight:600;margin:0 0 .4rem}
-label span{font-weight:400;color:GrayText}
-input{width:100%;min-height:46px;padding:.7rem;border:1px solid GrayText;border-radius:10px;
-background:Canvas;color:CanvasText;font:inherit}
-input:focus-visible{outline:2px solid CanvasText;outline-offset:2px}
-button{font:inherit;margin-top:1.2rem;padding:.75rem 1.35rem;border-radius:9px;
-border:1px solid CanvasText;background:CanvasText;color:Canvas;cursor:pointer}
-.note{color:GrayText;font-size:.9rem}
-`;
-
 function page(status: number, title: string, body: string): Response {
-  return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
-      `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-      `<meta name="robots" content="noindex,nofollow">` +
-      `<title>${escapeHtml(title)}</title><style>${STYLE}</style></head>` +
-      `<body><main>${body}</main></body></html>`,
-    {
-      status,
-      headers: {
-        'content-type': 'text/html; charset=utf-8',
-        // The query string of this page is part of an authorization request.
-        // Never cache it, never leak it in a Referer, never let it be framed.
-        'cache-control': 'no-store, private',
-        'referrer-policy': 'no-referrer',
-        'x-robots-tag': 'noindex, nofollow',
-        // `form-action` names GitHub as well as self: the consent form posts
-        // here and this origin answers with a redirect to GitHub. CSP3 says a
-        // redirect after a form post is not re-checked, but browsers have
-        // enforced it against the redirect target before, and a fix for that
-        // would look like the sign-in silently failing in one browser.
-        'content-security-policy':
-          "default-src 'none'; style-src 'unsafe-inline'; " +
-          "form-action 'self' https://github.com; base-uri 'none'; frame-ancestors 'none'"
-      }
+  return ui({
+    status,
+    title,
+    body,
+    headers: {
+      // The query string of this page is part of an authorization request.
+      // Never cache it, never leak it in a Referer, never let it be framed.
+      'cache-control': 'no-store, private',
+      'x-robots-tag': 'noindex, nofollow',
+      // `form-action` names GitHub as well as self: the consent form posts here
+      // and this origin answers with a redirect to GitHub. CSP3 says a redirect
+      // after a form post is not re-checked, but browsers have enforced it
+      // against the redirect target before, and a fix for that would look like
+      // the sign-in silently failing in one browser.
+      'content-security-policy':
+        "default-src 'none'; style-src 'unsafe-inline'; " +
+        "form-action 'self' https://github.com; base-uri 'none'; frame-ancestors 'none'"
     }
-  );
+  });
 }
 
 function problem(status: number, heading: string, detail: string): Response {

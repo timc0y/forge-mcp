@@ -33,6 +33,7 @@ import type {
 import { formatRepo } from './contracts';
 import type { Env } from './env';
 import { ForgeError } from './errors';
+import { escapeHtml, page } from './ui';
 
 /**
  * Long enough that a link mailed to yourself on a Friday still works, short
@@ -540,22 +541,6 @@ function base64Url(bytes: ArrayBuffer): string {
 // Rendering
 // ---------------------------------------------------------------------------
 
-const HTML_ESCAPES: Record<string, string> = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;'
-};
-
-/**
- * Every interpolated value goes through this. Branch names, file paths, repo
- * names and GitHub error messages are all attacker-influenced: a repository can
- * be named `<script>` and a file path can contain quotes.
- */
-function escapeHtml(value: unknown): string {
-  return String(value ?? '').replace(/[&<>"']/g, (character) => HTML_ESCAPES[character] ?? character);
-}
 
 /**
  * No external CSS, script, font or image — partly so the page renders in an
@@ -563,60 +548,20 @@ function escapeHtml(value: unknown): string {
  * third party who would learn this URL. `Canvas`/`CanvasText` are the reader's
  * own system colours, which is a whole theme system for free.
  */
-const STYLE = `
-:root{color-scheme:light dark}
-*{box-sizing:border-box}
-body{margin:0;padding:24px 16px 64px;background:Canvas;color:CanvasText;
-font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-main{max-width:42rem;margin:0 auto}
-h1{font-size:1.45rem;line-height:1.25;margin:0 0 .35rem}
-.lead{margin:0 0 1.4rem;color:GrayText}
-.box{border:1px solid GrayText;border-radius:10px;padding:14px 16px;margin:0 0 1.2rem}
-.box.good{border-width:2px}
-.box.bad{border-width:2px;border-color:#cf222e}
-dl{display:grid;grid-template-columns:auto 1fr;gap:.35rem 1rem;margin:0 0 1.2rem;font-size:.94rem}
-dt{color:GrayText}
-dd{margin:0;overflow-wrap:anywhere}
-code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em}
-h2{font-size:.85rem;text-transform:uppercase;letter-spacing:.06em;color:GrayText;margin:1.4rem 0 .5rem}
-ul.files{list-style:none;margin:0;padding:0;border:1px solid GrayText;border-radius:10px}
-ul.files li{display:flex;gap:.75rem;align-items:baseline;justify-content:space-between;
-padding:.5rem .75rem;border-top:1px solid GrayText}
-ul.files li:first-child{border-top:0}
-.path{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;overflow-wrap:anywhere}
-.st{color:GrayText;font-size:.8rem}
-.counts{white-space:nowrap;font-size:.85rem}
-.add{color:#1a7f37}
-.del{color:#cf222e}
-.note{color:GrayText;font-size:.9rem}
-form{display:flex;gap:.75rem;flex-wrap:wrap;margin:1.6rem 0 0}
-button{font:inherit;padding:.75rem 1.35rem;border-radius:9px;border:1px solid CanvasText;
-background:transparent;color:inherit;cursor:pointer}
-button.go{background:CanvasText;color:Canvas}
-button.danger{background:#b3261e;border-color:#b3261e;color:#fff}
-`;
-
 function shell(status: number, title: string, body: string): Response {
-  return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
-      `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-      `<meta name="robots" content="noindex,nofollow">` +
-      `<title>${escapeHtml(title)}</title><style>${STYLE}</style></head>` +
-      `<body><main>${body}</main></body></html>`,
-    {
-      status,
-      headers: {
-        'content-type': 'text/html; charset=utf-8',
-        // The URL is the credential. Never cache it, never send it in a Referer
-        // header, never let it be framed, and never let it load anything.
-        'cache-control': 'no-store, private',
-        'referrer-policy': 'no-referrer',
-        'x-robots-tag': 'noindex, nofollow',
-        'content-security-policy':
-          "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-      }
+  return page({
+    status,
+    title,
+    body,
+    headers: {
+      // The URL is the credential. Never cache it, never send it in a Referer
+      // header, never let it be framed, and never let it load anything.
+      'cache-control': 'no-store, private',
+      'x-robots-tag': 'noindex, nofollow',
+      'content-security-policy':
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
     }
-  );
+  });
 }
 
 function problem(status: number, heading: string, detail: string): Response {
