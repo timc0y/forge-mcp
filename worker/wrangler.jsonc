@@ -11,11 +11,15 @@
   // No cron. Nothing here needs sweeping, because nothing is allocated that
   // could leak: no containers, no slots, no workspaces to reap.
 
-  // Served at a path on an existing site, not on its own hostname. The route
-  // must cover the mount point itself and everything under it — `/forge` alone
-  // would not match `/forge/mcp`.
+  // Served at a path on an existing site, not on its own hostname.
+  //
+  // The trailing `*` on the mount point is load-bearing, not tidiness: an exact
+  // route matches the path only, so `timcoy.uk/forge` does NOT match
+  // `timcoy.uk/forge?installation_id=1`, and GitHub always appends a query when
+  // it returns someone from installing the App. Without the wildcard that
+  // redirect fell through to the site's own 404.
   "routes": [
-    { "pattern": "timcoy.uk/forge", "zone_name": "timcoy.uk" },
+    { "pattern": "timcoy.uk/forge*", "zone_name": "timcoy.uk" },
     { "pattern": "timcoy.uk/forge/*", "zone_name": "timcoy.uk" },
     // RFC 8414 puts the well-known segment before the path, so these land
     // outside /forge. Scoped to the two exact prefixes rather than
@@ -87,22 +91,7 @@
   "env": {
     "development": {
       "name": "forge-development",
-      // Served at a path on an existing site, not on its own hostname. The route
-  // must cover the mount point itself and everything under it — `/forge` alone
-  // would not match `/forge/mcp`.
-  "routes": [
-    { "pattern": "timcoy.uk/forge", "zone_name": "timcoy.uk" },
-    { "pattern": "timcoy.uk/forge/*", "zone_name": "timcoy.uk" },
-    // RFC 8414 puts the well-known segment before the path, so these land
-    // outside /forge. Scoped to the two exact prefixes rather than
-    // /.well-known/* so the rest of the site keeps its own.
-    { "pattern": "timcoy.uk/.well-known/oauth-protected-resource/*", "zone_name": "timcoy.uk" },
-    { "pattern": "timcoy.uk/.well-known/oauth-authorization-server/*", "zone_name": "timcoy.uk" }
-  ],
-
-  // Kept on so the workers.dev URL stays available as a fallback while the
-  // route is being proven.
-  "workers_dev": true,
+      "workers_dev": true,
       "vars": {
         "FORGE_ENVIRONMENT": "development",
         "FORGE_PUBLIC_ORIGIN": "https://forge-development.timcoy72.workers.dev",

@@ -10,7 +10,7 @@ import {
 } from './oauth';
 import { approvalPage, resolveApproval } from './approve';
 import { galleryPage } from './gallery';
-import { landingPage } from './landing';
+import { installedPage, landingPage } from './landing';
 import { iconResponse } from './icon';
 import { githubRequest } from './github';
 import type { Env } from './env';
@@ -121,7 +121,11 @@ export default {
       // answers what this is and how to connect it, because otherwise the URL a
       // person is handed is a 404.
       if (path === '/' || path === '') {
-        return landingPage(env);
+        // GitHub returns people here after installing, with setup_action set.
+        // They have already decided what Forge is; what they need now is
+        // confirmation and the one step that might be left.
+        const setup = url.searchParams.get('setup_action');
+        return setup ? installedPage(env, setup) : landingPage(env);
       }
 
       // The mark, at a stable URL for a favicon, an unfurler and anyone who

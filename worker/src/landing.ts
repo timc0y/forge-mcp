@@ -82,6 +82,52 @@ const REFUSALS: Array<[string, string, string]> = [
   ['read', 'Keep a copy', 'GitHub is the only place your work lives']
 ];
 
+/**
+ * Where GitHub returns someone after they install the App.
+ *
+ * It sends them to the Setup URL with `installation_id` and `setup_action`, and
+ * the honest answer to "I just installed this" is not the page that explains
+ * what Forge is — they have already decided. It is: it worked, here is the one
+ * thing left to do.
+ *
+ * Which thing that is depends on how they arrived, and Forge cannot tell:
+ * installing from GitHub directly is a perfectly normal way to find it, and
+ * those people have no client connected yet. So both steps are stated, shortest
+ * first, and neither is presented as an error.
+ */
+export function installedPage(env: Env, action: string): Response {
+  const origin = env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, '');
+  const mcp = `${origin}/mcp`;
+  const updated = action === 'update';
+
+  return page({
+    title: updated ? 'Forge — access updated' : 'Forge — installed',
+    home: origin,
+    body: `
+<h1>${updated ? 'Access updated' : 'Forge is installed'}</h1>
+<p class="lead">${
+      updated
+        ? 'Forge can now reach exactly the repositories you chose.'
+        : 'Forge can reach the repositories you chose, and nothing else.'
+    }</p>
+
+<div class="section alert">
+  <p><b>Already connected in a chat?</b> Nothing else to do — go back and ask for something.</p>
+  <p class="note">&ldquo;Make me a repo called weather-notes with a plan doc in it.&rdquo;</p>
+</div>
+
+<h2>Not connected yet?</h2>
+<p>Add this server to ChatGPT (Settings → Apps &amp; Connectors → Advanced → Developer mode)
+  or Claude (Settings → Connectors):</p>
+<code class="block">${escapeHtml(mcp)}</code>
+<p class="note">You will be asked to continue with GitHub once. That is the last time tokens come up.</p>
+
+<div class="row"><a class="btn" href="${escapeHtml(origin)}">What Forge does</a></div>
+
+<footer>Change which repositories Forge may touch any time from GitHub, without involving Forge.</footer>`
+  });
+}
+
 export function landingPage(env: Env): Response {
   const origin = env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, '');
   const mcp = `${origin}/mcp`;

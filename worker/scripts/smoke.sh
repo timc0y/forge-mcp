@@ -23,6 +23,10 @@ echo "── liveness"
 chk "health answers"                 '{"status":"ok"}' "$(body $B/health)"
 chk "unknown route 404s"             "404"            "$(code $B/nope)"
 chk "mount root serves the page"     "Forge"          "$(body $B)"
+# GitHub always appends a query when returning from an install, and an exact
+# Cloudflare route does not match one. This is that regression.
+chk "mount root survives a query"    "Forge"          "$(body "$B?x=1")"
+chk "post-install is acknowledged"   "installed"      "$(body "$B?installation_id=1&setup_action=install")"
 chk "page names the server url"      "/forge/mcp"     "$(body $B)"
 chk "page links the github app"      "installations/new" "$(body $B)"
 chk "site root untouched"            "200"            "$(code https://timcoy.uk/)"
