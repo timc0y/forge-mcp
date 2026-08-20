@@ -863,7 +863,12 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         // Stored before the images are trimmed for transport: the hosted copy
         // is the one place every viewport survives, including any the payload
         // budget drops below.
-        const gallery = await storeGallery(ctx.env, shot, new Date().toISOString());
+        const gallery = await storeGallery(
+          ctx.env,
+          shot,
+          new Date().toISOString(),
+          ctx.identity.userId
+        );
         if (gallery === null && shot.images.length > 0) {
           limits.push('These images could not be saved to a link, so they exist only in this reply.');
         }

@@ -11,6 +11,7 @@ import {
 import { approvalPage, resolveApproval } from './approve';
 import { galleryPage } from './gallery';
 import { installedPage, landingPage } from './landing';
+import { privacyPage } from './privacy';
 import { iconResponse } from './icon';
 import { githubRequest } from './github';
 import type { Env } from './env';
@@ -132,6 +133,10 @@ export default {
         // confirmation and the one step that might be left.
         const setup = url.searchParams.get('setup_action');
         return setup ? installedPage(env, setup) : landingPage(env);
+      }
+
+      if (path === '/privacy') {
+        return privacyPage(env);
       }
 
       // The mark, at a stable URL for a favicon, an unfurler and anyone who

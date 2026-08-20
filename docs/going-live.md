@@ -20,7 +20,7 @@ sources before acting on the stages that depend on them.
 | ChatGPT read, capture, write and approval preparation | ✅ recorded 20 August 2026 |
 | Merge approval completed and verified | ❌ not yet recorded |
 | Discard approval completed and verified | ❌ not yet recorded |
-| Privacy policy | ❌ required by both review processes |
+| Privacy policy | 🟡 implemented at `/privacy`; deploy and verify |
 | Support contact | ✅ GitHub issues |
 
 The production trace now proves OAuth, repository access, capture, durable edit,
@@ -122,10 +122,11 @@ privacy policy.
 **Support.** A public thing needs somewhere to complain to. An email or a GitHub
 issues link is enough, and Marketplace requires one.
 
-**Deletion.** Someone will ask you to delete their data. Today that is one
-`DELETE FROM users WHERE github_login = ?` plus their approvals and captures.
-Write it down before you need it — the privacy policy has to promise something
-you can actually do.
+**Deletion.** Capture ownership is recorded from migration 0002 onward, and the
+manual procedure is in [`account-deletion.md`](./account-deletion.md). Apply the
+migration before deploying the worker change. Legacy captures are not mapped to
+a user and must expire through the bucket lifecycle unless the requester supplies
+their capture link.
 
 ## Stage 4 — The ChatGPT plugin directory
 
@@ -225,12 +226,14 @@ to be true, which means writing it from what the system does:
   patches, intents, captured URLs or repository names.
 - **Recipients:** GitHub, Cloudflare (hosting, browser rendering), PostHog
   (analytics) if enabled.
-- **Retention:** captures 30 days, approvals 7 days, account data until deletion
-  is requested.
-- **Controls:** revoke the App from GitHub at any time; request deletion.
+- **Retention:** captures expire after 30 days. Approval links expire after seven
+  days, but approval records currently remain until account deletion; do not
+  describe link expiry as record deletion.
+- **Controls:** revoke the App from GitHub at any time; disconnect the client;
+  request deletion through the documented operator procedure.
 
-Serve it at `/forge/privacy` on the shared page shell, so the link is stable and
-matches everything else.
+The worker now serves this notice at `/forge/privacy`. Verify the production route
+and R2 lifecycle before changing its status to complete.
 
 ---
 
@@ -238,10 +241,10 @@ matches everything else.
 
 1. Complete and record one merge and one discard approval, plus the refusal paths.
 2. Add the rate-limiting rule and billing alert.
-3. Serve a truthful privacy policy and write the account-deletion runbook.
+3. Apply migration 0002, deploy and verify the privacy route and deletion runbook.
 4. Decide the stored-credential question before submitting anything.
 5. Identity and domain verification. *(days, out of your hands)*
 6. Reviewer account with sample data, test cases, submit. *(a day, then weeks)*
 
-Stages 1–4 make Forge genuinely usable by anyone you hand the URL to. Stage 7 is
-distribution, and it is the only part with a gatekeeper.
+Steps 1–3 make Forge safe to put in front of design partners. Step 6 is public
+distribution, and it is the only part with an external gatekeeper.

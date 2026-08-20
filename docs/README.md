@@ -8,7 +8,9 @@ measurement and revenue plan. This is where positioning and commercial
 hypotheses live; the architecture plan stays architectural.
 
 **[Operating Forge](./operating-forge.md)** — configuration, secrets, analytics,
-cost, and the things that will bite.
+cost, and the things that will bite. The
+[account-deletion runbook](./account-deletion.md) is the manual privacy-control
+procedure.
 
 **[Going live](./going-live.md)** — everything between the current deployment
 and strangers relying on it: production proof, hardening, privacy and review.
