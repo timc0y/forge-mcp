@@ -2,9 +2,9 @@
 
 ## Reality
 
-- Users: Tim, plus invited research-preview users. Each installs the GitHub App
-  themselves, so each brings their own GitHub credentials and their own GitHub
-  rate limit. Tenancy is therefore load-bearing again, not inert.
+- Users: anyone with a GitHub account — an open research preview. Each installs
+  the GitHub App themselves, so each brings their own credentials and their own
+  GitHub rate limit. Tenancy is therefore load-bearing, not inert.
 - Client: an ordinary ChatGPT conversation, often on a phone. It is not an agent.
   It cannot loop, poll, retain an identifier across turns, or recover from a
   partial sequence. Codex and Claude may connect to the same surface but must not
@@ -14,7 +14,10 @@
 - Durable plane: GitHub. Forge holds no copy of repository state. What Forge
   stores is identity, approvals, capture artifacts, and receipts.
 - Cost: GitHub work is metered per user by GitHub itself and costs Forge nothing.
-  Page capture is the only user action that spends Forge's money.
+  Page capture is the only user action that spends Forge's money, so it is the
+  only action with a number on it. What keeps an open preview affordable is a
+  daily ceiling per person, not a gate at the door: a limit degrades for one
+  person on one day, where a gate refuses everyone who does not know somebody.
 - Compatibility: only the tools currently advertised to ChatGPT. The published
   catalog is a frozen snapshot until re-scanned, so a tool change is a release
   event, not an edit.
@@ -137,6 +140,6 @@ Forge hosts nothing.
 - Looking at one page at a time stops being enough, and crawling a whole site
   earns back a workflow, an artifact store, and a gallery to hold the overflow.
 - Comparing two arbitrary refs is needed, rather than reading a change.
-- Capture volume makes per-user friction insufficient to hold cost.
-- The preview stops being invite-only, which turns abuse and privacy into
-  first-order obligations rather than bounded ones.
+- Capture volume makes the daily ceiling insufficient to hold cost.
+- The preview stops being free, which turns billing, refunds and support into
+  obligations this design has never carried.

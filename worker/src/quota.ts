@@ -1,13 +1,36 @@
-/**
- * The two ledgers that keep an invite-only preview affordable: how many
- * captures a user has spent today, and which invite let them in. `main` is
- * GitHub's problem; these two D1 tables are the only state Forge itself owns
- * for capture. Nowhere else touches `capture_usage` or `invites`.
- */
 import type { Env } from './env';
 import { ForgeError } from './errors';
 
+/**
+ * The only meter in the product.
+ *
+ * GitHub work costs Forge nothing: every user installs the App themselves, so
+ * reads, commits and merges are metered against their own installation limit.
+ * Capture is the one action that spends Forge's money, so it is the one action
+ * with a number attached.
+ *
+ * The preview is open to anyone. This limit is what makes that affordable — a
+ * ceiling per person per day, rather than a gate that refuses everyone who
+ * does not already know somebody.
+ */
+
 const DEFAULT_DAILY_LIMIT = 30;
+
+/**
+ * Logins the daily limit does not apply to. Comma separated, compared without
+ * case, because a GitHub login is not case sensitive and a limit that depends
+ * on capitalisation is a bug waiting for a bad day.
+ *
+ * This is the operator's own escape hatch, set in config. There is no path from
+ * inside the product that grants it, and no tier it belongs to.
+ */
+function unlimited(env: Env, login: string): boolean {
+  return (env.FORGE_UNLIMITED_LOGINS ?? '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(login.toLowerCase());
+}
 
 /** UTC calendar day as `YYYY-MM-DD`. A user's local day is not the meter's day. */
 function utcDay(date: Date): string {
@@ -29,7 +52,17 @@ function resetsAt(now: Date): string {
   return `${utcDay(tomorrow)} 00:00 UTC`;
 }
 
-export async function checkCaptureQuota(env: Env, userId: string): Promise<{ used: number; limit: number }> {
+/**
+ * Refuses before any browser time is spent, and says when the limit lifts. A
+ * quota that refuses without naming its own reset is a dead end.
+ */
+export async function checkCaptureQuota(
+  env: Env,
+  userId: string,
+  login: string
+): Promise<{ used: number; limit: number; unlimited: boolean }> {
+  if (unlimited(env, login)) return { used: 0, limit: 0, unlimited: true };
+
   const now = new Date();
   const limit = dailyLimit(env);
   const row = await env.METADATA.prepare('SELECT count FROM capture_usage WHERE user_id = ?1 AND day = ?2')
@@ -41,13 +74,17 @@ export async function checkCaptureQuota(env: Env, userId: string): Promise<{ use
     throw new ForgeError({
       code: 'FORGE_QUOTA_EXCEEDED',
       message: `Daily capture limit of ${limit} reached. It resets at ${resetsAt(now)}.`,
-      details: { used, limit }
+      details: { used, limit, resets: resetsAt(now) }
     });
   }
 
-  return { used, limit };
+  return { used, limit, unlimited: false };
 }
 
+/**
+ * Counted after the capture succeeds, so a failed one never spends someone's
+ * day.
+ */
 export async function recordCapture(env: Env, userId: string): Promise<void> {
   // Insert-or-increment in one statement: a read-then-write here is how two
   // captures that land in the same instant both read 0 and both write 1.
@@ -57,24 +94,4 @@ export async function recordCapture(env: Env, userId: string): Promise<void> {
   )
     .bind(userId, utcDay(new Date()))
     .run();
-}
-
-export async function claimInvite(env: Env, code: string, userId: string): Promise<void> {
-  // `claimed_by IS NULL` is the whole atomicity story: two simultaneous claims
-  // of the same code race on this UPDATE, and only one of them can change a
-  // row that still has a NULL claimant. `meta.changes` says which one did.
-  const result = await env.METADATA.prepare(
-    'UPDATE invites SET claimed_by = ?1, claimed_at = ?2 WHERE code = ?3 AND claimed_by IS NULL'
-  )
-    .bind(userId, new Date().toISOString(), code)
-    .run();
-
-  if ((result.meta.changes ?? 0) !== 1) {
-    // Identical message whether the code never existed or was already spent —
-    // distinguishing the two would let a caller enumerate valid codes.
-    throw new ForgeError({
-      code: 'FORGE_VALIDATION_FAILED',
-      message: 'That invite code is not valid.'
-    });
-  }
 }

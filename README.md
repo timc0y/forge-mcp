@@ -21,9 +21,15 @@ words again to continue that change. Every result lists the repo's open changes,
 so nothing has to be remembered between turns. `main` moves only through a merge
 a human approved.
 
+**Free research preview** — open to anyone with a GitHub account, at
+**<https://timcoy.uk/forge>**.
+
 ## Where things are
 
-- [`worker/`](./worker) — the implementation. Start at its README.
+- **[Using Forge](./docs/using-forge.md)** — connect it, install the App, and
+  what the tools do.
+- **[Operating Forge](./docs/operating-forge.md)** — config, secrets, cost.
+- [`worker/`](./worker) — the implementation.
 - [`SIMPLE.md`](./SIMPLE.md) — the design profile: what is real, what is
   preserved, and the precedents that must not be re-litigated.
 - [`docs/plans/forge-v1.md`](./docs/plans/forge-v1.md) — the plan this was built to.
@@ -35,8 +41,9 @@ a human approved.
 ## Working on it
 
 ```sh
-pnpm check      # types and invariants
+pnpm check                # types and invariants
 pnpm dev
+worker/scripts/smoke.sh   # 28 checks against the deployment
 ```
 
 ## History

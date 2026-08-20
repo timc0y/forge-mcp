@@ -16,6 +16,7 @@ import { githubRequest } from './github';
 import { userRequestFor } from './user-token';
 import { ForgeError } from './errors';
 import { registerTools } from './tools';
+import { analyticsFor } from './analytics';
 import { INSTRUCTIONS } from './instructions';
 
 const SERVER_NAME = 'Forge';
@@ -44,9 +45,15 @@ export class ForgeMcpSession extends McpAgent<Env, never, { identity: Identity }
       });
     }
 
+    // Keyed by the Forge user id, not the GitHub login: a login can be renamed
+    // and the analytics would then show one person as two.
+    const track = analyticsFor(this.env, identity.userId, (promise) => this.ctx.waitUntil(promise));
+    track('user_connected');
+
     registerTools(this.server, {
       env: this.env,
       identity,
+      track,
       // Minted once per session against the user's own installation, so every
       // repository call spends their GitHub rate limit and not Forge's.
       gh: await githubRequest(this.env, identity.installationId),

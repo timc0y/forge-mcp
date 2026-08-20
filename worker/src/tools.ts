@@ -41,10 +41,13 @@ import { capture } from './capture';
 import { storeGallery } from './gallery';
 import { checkCaptureQuota, recordCapture } from './quota';
 import { requestApproval } from './approve';
+import type { Analytics } from './analytics';
 
 export interface ToolContext {
   env: Env;
   identity: Identity;
+  /** Fire-and-forget. Never awaited, never able to fail a call. */
+  track: Analytics;
   /** The user's own installation. Everything that touches a repository. */
   gh: GitHubRequest;
   /** Authenticated as the human. Only creating a repository needs it. */
@@ -115,19 +118,28 @@ function withLimits(structured: Record<string, unknown>, limits: string[]): Reco
  * no terminal failure can arrive wrapped in a success envelope: a failure is
  * `isError` with the code and the message, and nothing else.
  */
-async function run(tool: string, work: () => Promise<ToolOutcome>): Promise<{
+async function run(
+  tool: string,
+  track: Analytics,
+  work: () => Promise<ToolOutcome>
+): Promise<{
   content: Content[];
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 }> {
+  const started = Date.now();
   try {
     const outcome = await work();
+    track('tool_called', { tool, ok: true, ms: Date.now() - started });
     return {
       structuredContent: outcome.structured,
       content: [{ type: 'text', text: outcome.summary }, ...(outcome.content ?? [])]
     };
   } catch (thrown) {
     const error = toForgeError(thrown);
+    // The code, never the message: a message can carry a path or a repository
+    // name, and analytics is not where the user's work belongs.
+    track('tool_called', { tool, ok: false, code: error.code, ms: Date.now() - started });
     // Code and tool only: an error message can carry file contents or a repo
     // name, and this line goes to a log Forge's operators read, not the user.
     console.error('forge_tool_failed', { tool, code: error.code });
@@ -575,7 +587,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       }
     },
     async (input) =>
-      run('forge_read', async () => {
+      run('forge_read', ctx.track, async () => {
         if (input.repo === undefined) {
           if (input.change !== undefined || input.paths !== undefined) {
             throw new ForgeError({
@@ -629,7 +641,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       }
     },
     async (input) =>
-      run('forge_edit', async () => {
+      run('forge_edit', ctx.track, async () => {
         const repo = resolveRepo(ctx, input.repo);
         const { base, created } = await resolveWriteTarget(ctx, repo, input.intent, input.private ?? true);
         const branch = changeBranch(input.intent);
@@ -740,7 +752,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         'openai/toolInvocation/invoked': 'Approval ready'
       }
     },
-    async (input) => run('forge_merge', () => requestAct(ctx, 'merge', input.repo, input.change))
+    async (input) => run('forge_merge', ctx.track, () => requestAct(ctx, 'merge', input.repo, input.change))
   );
 
   server.registerTool(
@@ -757,7 +769,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         'openai/toolInvocation/invoked': 'Approval ready'
       }
     },
-    async (input) => run('forge_discard', () => requestAct(ctx, 'discard', input.repo, input.change))
+    async (input) => run('forge_discard', ctx.track, () => requestAct(ctx, 'discard', input.repo, input.change))
   );
 
   server.registerTool(
@@ -788,11 +800,11 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       }
     },
     async (input) =>
-      run('forge_see', async () => {
+      run('forge_see', ctx.track, async () => {
         const viewports = input.viewports?.length ? input.viewports : DEFAULT_VIEWPORTS;
         // Checked before spending Cloudflare's browser minutes, recorded after
         // they are spent — a capture that failed entirely is never charged.
-        const quota = await checkCaptureQuota(ctx.env, ctx.identity.userId);
+        const quota = await checkCaptureQuota(ctx.env, ctx.identity.userId, ctx.identity.githubLogin);
         const shot = await capture(ctx.env, input.url, viewports);
         try {
           await recordCapture(ctx.env, ctx.identity.userId);
@@ -841,12 +853,12 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         ]);
 
         return {
-          summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}. ${quota.used + 1} of ${quota.limit} captures used today.`,
+          summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${quota.unlimited ? '' : ` ${quota.used + 1} of ${quota.limit} captures used today.`}`,
           structured: withLimits(
             {
               page: { url: shot.url, title: shot.title, shown },
               ...(gallery === null ? {} : { gallery }),
-              quota: `${quota.used + 1} of ${quota.limit} used today`
+              ...(quota.unlimited ? {} : { quota: `${quota.used + 1} of ${quota.limit} used today` })
             },
             limits
           ),

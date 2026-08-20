@@ -6,7 +6,6 @@ CREATE TABLE IF NOT EXISTS users (
   github_user_id  TEXT NOT NULL UNIQUE,
   github_login    TEXT NOT NULL,
   installation_id TEXT,
-  invite_code     TEXT,
   -- Encrypted at rest (AES-GCM, key derived from FORGE_SIGNING_KEY). Held only
   -- so Forge can create a repository on the user's account, which an
   -- installation token cannot do. Revoked by clearing these columns.
@@ -15,15 +14,6 @@ CREATE TABLE IF NOT EXISTS users (
   github_token_expires_at TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL
-);
-
--- Bounding who can sign up is the cheapest cost control there is.
-CREATE TABLE IF NOT EXISTS invites (
-  code       TEXT PRIMARY KEY,
-  note       TEXT,
-  claimed_by TEXT REFERENCES users(id),
-  claimed_at TEXT,
-  created_at TEXT NOT NULL
 );
 
 -- OAuth, kept only as long as a token lives.

@@ -10,6 +10,7 @@ import {
 } from './oauth';
 import { approvalPage, resolveApproval } from './approve';
 import { galleryPage } from './gallery';
+import { landingPage } from './landing';
 import { githubRequest } from './github';
 import type { Env } from './env';
 import { toForgeError } from './errors';
@@ -115,6 +116,13 @@ export default {
         : url.pathname;
 
     try {
+      // The mount point. Not a dashboard and not a console — the one page that
+      // answers what this is and how to connect it, because otherwise the URL a
+      // person is handed is a 404.
+      if (path === '/' || path === '') {
+        return landingPage(env);
+      }
+
       if (path === '/health') {
         return Response.json({ status: 'ok' });
       }

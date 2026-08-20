@@ -1,16 +1,19 @@
 # Documentation
 
-- [Forge V1 plan](./plans/forge-v1.md) — the five tools, the phases, the cost model.
-- [Research](./research/) — the record of what the first Forge learned.
-- [Test runs](./test-runs/) — traces recorded against production from a client
-  that may stop after any tool call. Measured behaviour, not inference: worth
-  reading before assuming what a non-agentic host does with a result.
+**[Using Forge](./using-forge.md)** — what the words mean, how to connect, how
+to install the GitHub App, what the five tools do, and the limits.
 
-The single most valuable file here is
-[`research/forge-history-tool-learnings.md`](./research/forge-history-tool-learnings.md):
+**[Operating Forge](./operating-forge.md)** — configuration, secrets, analytics,
+cost, and the things that will bite.
+
+**[Forge V1 plan](./plans/forge-v1.md)** — the design this was built to.
+
+**[Research](./research/)** — the record of what the first Forge learned. The
+most valuable file here is
+[`forge-history-tool-learnings.md`](./research/forge-history-tool-learnings.md):
 a register of production failures and the invariants they bought. `SIMPLE.md` at
-the repository root carries the ones that still bind.
+the repository root carries the ones that still bind, each with the condition
+that would invalidate it.
 
-Documentation of the previous runtime — architecture, operations, security,
-tool catalogue — was removed with the implementation it described. It is in
-this repository's git history.
+**[Test runs](./test-runs/)** — traces recorded against production from a client
+that may stop after any tool call. Measured behaviour, not inference.

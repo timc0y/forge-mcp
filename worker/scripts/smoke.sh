@@ -22,6 +22,9 @@ body() { curl -s --max-time 25 "$@"; }
 echo "── liveness"
 chk "health answers"                 '{"status":"ok"}' "$(body $B/health)"
 chk "unknown route 404s"             "404"            "$(code $B/nope)"
+chk "mount root serves the page"     "Forge"          "$(body $B)"
+chk "page names the server url"      "/forge/mcp"     "$(body $B)"
+chk "page links the github app"      "installations/new" "$(body $B)"
 chk "site root untouched"            "200"            "$(code https://timcoy.uk/)"
 
 echo "── auth boundary"

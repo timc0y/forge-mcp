@@ -38,6 +38,18 @@ export interface Env {
 
   /** Captures allowed per user per UTC day. Absent means the default in quota.ts. */
   FORGE_CAPTURE_DAILY_LIMIT?: string;
+  /**
+   * GitHub logins exempt from the daily limits, comma separated.
+   *
+   * The preview is open to anyone, and the limit exists so that "open" cannot
+   * become expensive. This is the operator's own escape hatch, not a tier —
+   * there is no way for a user to be granted it from inside the product.
+   */
+  FORGE_UNLIMITED_LOGINS?: string;
+
+  /** Analytics. Unset means no analytics at all, not degraded analytics. */
+  POSTHOG_API_KEY?: string;
+  POSTHOG_HOST?: string;
   /** Development only. Bypasses OAuth with a fixed bearer token. */
   FORGE_DEV_AUTH_TOKEN?: string;
 }

@@ -27,8 +27,8 @@ import type { Env } from './env';
 import { isForgeError } from './errors';
 import { githubUserRequest } from './github';
 import { storeUserCredential } from './user-token';
+import { analyticsFor } from './analytics';
 import { issueToken } from './identity';
-import { claimInvite } from './quota';
 
 /**
  * Thirty days.
@@ -49,7 +49,7 @@ const AUTHORIZATION_CODE_MS = 10 * 60 * 1000;
 /**
  * Long enough to log into GitHub on a phone, or to create an account mid-flow.
  * Short enough that a state URL captured from a browser's history is not a
- * standing invitation to claim the invite code inside it.
+ * standing invitation to replay it.
  */
 const STATE_MS = 30 * 60 * 1000;
 
@@ -82,7 +82,6 @@ interface FlowState {
   challenge: string;
   /** The MCP client's `state`, returned untouched. It is their CSRF defence. */
   clientState: string;
-  invite: string;
   exp: number;
 }
 
@@ -231,7 +230,6 @@ export async function authorize(env: Env, request: Request): Promise<Response> {
     redirect: redirectUri,
     challenge,
     clientState: url.searchParams.get('state') ?? '',
-    invite: (form?.get('invite') ?? '').trim().slice(0, 100),
     exp: Date.now() + STATE_MS
   };
 
@@ -283,8 +281,12 @@ export async function callback(env: Env, request: Request): Promise<Response> {
     );
   }
 
-  const userId = await findOrCreateUser(env, account, state.invite);
-  if (!userId) return invitePage();
+  const found = await findOrCreateUser(env, account);
+  if (!found) {
+    return problem(500, 'Forge could not create your account', 'Nothing was created. Try connecting again.');
+  }
+  const userId = found.id;
+  if (found.created) analyticsFor(env, userId)('user_signed_up');
 
   // Kept solely so `forge_edit` can create a repository later, when nobody is
   // present to authorize anything. See user-token.ts for why this is the one
@@ -325,15 +327,17 @@ export async function callback(env: Env, request: Request): Promise<Response> {
 }
 
 /**
- * Returns null when the invite gate refuses. The caller renders one page for
- * every refusal, so an absent code, an unknown code and a spent code are
- * indistinguishable from outside.
+ * Find the user behind this GitHub account, or make one.
+ *
+ * The preview is open: anyone who can authorize the App becomes a user. What
+ * stops "open" from becoming "expensive" is the daily limit in quota.ts, not a
+ * gate at the door — a limit degrades for one person on one day, where a gate
+ * refuses everybody who did not already know somebody.
  */
 async function findOrCreateUser(
   env: Env,
-  account: { id: string; login: string },
-  invite: string
-): Promise<string | null> {
+  account: { id: string; login: string }
+): Promise<{ id: string; created: boolean } | null> {
   const existing = await env.METADATA.prepare('SELECT id FROM users WHERE github_user_id = ?1')
     .bind(account.id)
     .first<{ id: string }>();
@@ -344,35 +348,19 @@ async function findOrCreateUser(
     await env.METADATA.prepare('UPDATE users SET github_login = ?2, updated_at = ?3 WHERE id = ?1')
       .bind(existing.id, account.login, new Date().toISOString())
       .run();
-    return existing.id;
+    return { id: existing.id, created: false };
   }
 
-  if (!invite) return null;
-
-  // The row has to exist before the invite can point at it: `invites.claimed_by`
-  // is a foreign key into `users`. So the user is created, the claim is
-  // attempted, and a refused claim removes the row again — the row is only ever
-  // reachable by a caller who already got past `claimInvite`.
   const userId = crypto.randomUUID();
   const now = new Date().toISOString();
   await env.METADATA.prepare(
-    `INSERT INTO users (id, github_user_id, github_login, installation_id, invite_code, created_at, updated_at)
-     VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?5)`
+    `INSERT INTO users (id, github_user_id, github_login, installation_id, created_at, updated_at)
+     VALUES (?1, ?2, ?3, NULL, ?4, ?4)`
   )
-    .bind(userId, account.id, account.login, invite, now)
+    .bind(userId, account.id, account.login, now)
     .run();
 
-  try {
-    await claimInvite(env, invite, userId);
-  } catch (error) {
-    await env.METADATA.prepare('DELETE FROM users WHERE id = ?1').bind(userId).run();
-    // A non-invite failure is still a refusal here; there is nothing to tell
-    // the browser that would not also tell it whether the code was real.
-    if (!isForgeError(error)) throw error;
-    return null;
-  }
-
-  return userId;
+  return { id: userId, created: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -593,14 +581,12 @@ async function openState(env: Env, value: string): Promise<FlowState | null> {
   if (typeof exp !== 'number' || !Number.isFinite(exp) || exp <= Date.now()) return null;
   if (typeof record.client !== 'string' || typeof record.redirect !== 'string') return null;
   if (typeof record.challenge !== 'string' || typeof record.clientState !== 'string') return null;
-  if (typeof record.invite !== 'string') return null;
 
   return {
     client: record.client,
     redirect: record.redirect,
     challenge: record.challenge,
     clientState: record.clientState,
-    invite: record.invite,
     exp
   };
 }
@@ -796,21 +782,9 @@ function consentPage(clientName: string): Response {
     `<h1>Connect Forge</h1>
 <p class="lead">This lets <strong>${escapeHtml(clientName)}</strong> work on GitHub as you — reading repositories, writing to change branches, and asking you to approve anything that lands on <code>main</code>.</p>
 <form method="post">
-<label for="invite">Invite code <span>— first time only</span></label>
-<input id="invite" name="invite" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
 <button type="submit">Continue with GitHub</button>
 </form>
-<p class="note">Forge is an invite-only preview. If you have connected before, leave this blank.</p>`
+<p class="note">Forge is a free research preview. After GitHub asks, you choose which repositories it may reach — and you can change that later without involving Forge.</p>`
   );
 }
 
-/** One page for every invite refusal, so it cannot be used to test codes. */
-function invitePage(): Response {
-  return page(
-    403,
-    'Forge — invite needed',
-    `<h1>Forge is invite-only</h1>
-<div class="box"><p>This GitHub account is not signed up, and the invite code with this request was not accepted. Nothing was created.</p></div>
-<p class="note">Ask for an invite code, then connect again from your client.</p>`
-  );
-}
