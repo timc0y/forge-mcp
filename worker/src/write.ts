@@ -421,10 +421,16 @@ async function statTextFile(
 ): Promise<number | null> {
   const response = await request(`${api}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`);
   if (response.status === 404) return null;
-  if (response.status !== 200) return null;
+  if (response.status !== 200) throw githubError(response, `metadata read of ${path}`);
   const body = response.json as { type?: string; size?: number } | null;
-  if (!body || body.type !== 'file') return null;
-  return typeof body.size === 'number' ? body.size : null;
+  if (!body || body.type !== 'file' || typeof body.size !== 'number') {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: `${path} exists but GitHub did not return regular-file metadata for it, so Forge will not replace it wholesale.`,
+      details: { path }
+    });
+  }
+  return body.size;
 }
 
 async function readTextFile(

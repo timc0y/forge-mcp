@@ -39,7 +39,7 @@ import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
 import { capture } from './capture';
 import { storeGallery } from './gallery';
-import { checkCaptureQuota, recordCapture } from './quota';
+import { releaseCaptureQuota, reserveCaptureQuota } from './quota';
 import { requestApproval } from './approve';
 import type { Analytics } from './analytics';
 
@@ -524,7 +524,14 @@ async function requestAct(
   // `change` goes in as it came out of GitHub, without `stats` copied onto it:
   // the comparison stored beside it already carries those numbers, and a
   // second copy of a measurement is a second thing that can disagree.
-  const approval = await requestApproval(ctx.env, ctx.identity, { act, repo, change, comparison, headSha: head });
+  const approval = await requestApproval(ctx.env, ctx.identity, {
+    act,
+    repo,
+    change,
+    comparison,
+    headSha: head,
+    baseBranch: base
+  });
   ctx.track('approval_requested', {
     act,
     files: size.files,
@@ -790,7 +797,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         'Screenshot a page that is already public, at phone and desktop unless told otherwise. The images come back with this call; there is nothing to fetch afterwards.',
       inputSchema: {
         url: z.string().describe('A public http(s) URL. Private and local addresses are refused.'),
-        viewports: z.array(z.enum(['phone', 'tablet', 'desktop'])).optional()
+        viewports: z.array(z.enum(['phone', 'tablet', 'desktop'])).max(3).optional()
       },
       outputSchema: {
         page: z.object({ url: z.string(), title: z.string(), shown: z.array(z.string()) }).optional(),
@@ -811,17 +818,21 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     },
     async (input) =>
       run('forge_see', ctx.track, async () => {
-        const viewports = input.viewports?.length ? input.viewports : DEFAULT_VIEWPORTS;
-        // Checked before spending Cloudflare's browser minutes, recorded after
-        // they are spent — a capture that failed entirely is never charged.
-        const quota = await checkCaptureQuota(ctx.env, ctx.identity.userId, ctx.identity.githubLogin);
-        const shot = await capture(ctx.env, input.url, viewports);
+        const requestedViewports = input.viewports?.length ? input.viewports : DEFAULT_VIEWPORTS;
+        const viewports = [...new Set(requestedViewports)];
+        // Reserve atomically before spending browser minutes. If every viewport
+        // fails, release the reservation; successful/partial captures keep it.
+        const quota = await reserveCaptureQuota(ctx.env, ctx.identity.userId, ctx.identity.githubLogin);
+        let shot;
         try {
-          await recordCapture(ctx.env, ctx.identity.userId);
-        } catch {
-          // The images exist and were paid for. Losing the meter row is worth
-          // less than throwing away evidence the caller cannot ask for twice.
-          console.error('forge_capture_unmetered', { userId: ctx.identity.userId });
+          shot = await capture(ctx.env, input.url, viewports);
+        } catch (error) {
+          if (!quota.unlimited && quota.day) {
+            await releaseCaptureQuota(ctx.env, ctx.identity.userId, quota.day).catch(() => {
+              console.error('forge_capture_quota_release_failed', { userId: ctx.identity.userId });
+            });
+          }
+          throw error;
         }
         ctx.track('capture_taken', {
           requested: viewports.length,
@@ -830,6 +841,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         });
 
         const limits = shot.failures.map((failure) => `${failure.viewport}: ${failure.reason}`);
+        if (viewports.length < requestedViewports.length) {
+          limits.push('Duplicate viewport requests were collapsed so each viewport is rendered at most once.');
+        }
         if (shot.outlineTruncated) {
           limits.push(`The semantic outline was capped at ${shot.outline.length} lines.`);
         }
@@ -886,12 +900,12 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         }
 
         return {
-          summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${quota.unlimited ? '' : ` ${quota.used + 1} of ${quota.limit} captures used today.`}`,
+          summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${quota.unlimited ? '' : ` ${quota.used} of ${quota.limit} captures used today.`}`,
           structured: withLimits(
             {
               page: { url: shot.url, title: shot.title, shown },
               ...(gallery === null ? {} : { gallery }),
-              ...(quota.unlimited ? {} : { quota: `${quota.used + 1} of ${quota.limit} used today` })
+              ...(quota.unlimited ? {} : { quota: `${quota.used} of ${quota.limit} used today` })
             },
             limits
           ),

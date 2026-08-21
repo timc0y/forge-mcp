@@ -18,14 +18,13 @@ import type { Env } from './env';
 import { ForgeError } from './errors';
 
 /**
- * Domain separation. `FORGE_SIGNING_KEY` also signs approval links, and an
- * approval token is a bare HMAC over a UUID with no structure around it.
- * Prefixing a context string to the signed message means a signature minted
- * for one purpose can never be presented as the other, regardless of what the
- * two payloads happen to look like.
+ * Domain separation. `FORGE_SIGNING_KEY` also signs approval links. Access
+ * tokens carry this context so an approval signature can never be presented as
+ * an access token. Refresh tokens are separate opaque, rotating credentials.
  */
 const TOKEN_CONTEXT = 'forge.access.v1';
-const REFRESH_TOKEN_CONTEXT = 'forge.refresh.v1';
+/** Sliding inactivity window for a client connection. */
+const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Two claims. Anything else here would be a copy of a column this request is
@@ -38,9 +37,13 @@ interface Claims {
   exp: number;
 }
 
-interface RefreshClaims {
-  sub: string;
-  client: string;
+interface RefreshTokenRow {
+  family_id: string;
+  user_id: string;
+  client_id: string;
+  expires_at: string;
+  used_at: string | null;
+  revoked_at: string | null;
 }
 
 interface UserRow {
@@ -58,22 +61,86 @@ export async function issueToken(env: Env, userId: string, ttlSeconds: number): 
 export async function issueRefreshToken(
   env: Env,
   userId: string,
-  clientId: string
+  clientId: string,
+  familyId = crypto.randomUUID()
 ): Promise<string> {
-  const claims: RefreshClaims = { sub: userId, client: clientId };
-  const payload = encodeBase64Url(new TextEncoder().encode(JSON.stringify(claims)));
-  return `${payload}.${await sign(env, REFRESH_TOKEN_CONTEXT, payload)}`;
+  const token = `fr_${encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)))}`;
+  const now = new Date();
+  await env.METADATA.prepare(
+    `INSERT INTO oauth_refresh_tokens
+       (token_hash, family_id, user_id, client_id, expires_at, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+  )
+    .bind(
+      await sha256(token),
+      familyId,
+      userId,
+      clientId,
+      new Date(now.getTime() + REFRESH_TOKEN_TTL_MS).toISOString(),
+      now.toISOString()
+    )
+    .run();
+  return token;
 }
 
-export async function verifyRefreshToken(
+/**
+ * Spend one refresh token exactly once and replace it with another in the same
+ * family. Reusing a spent/revoked token revokes the remaining family, which
+ * turns a stolen-token race into a reconnect instead of a persistent fork.
+ */
+export async function rotateRefreshToken(
   env: Env,
   token: string,
   clientId: string
-): Promise<string | null> {
-  const claims = await verifiedPayload(env, token, REFRESH_TOKEN_CONTEXT);
-  if (!claims || typeof claims.sub !== 'string' || !claims.sub) return null;
-  if (typeof claims.client !== 'string' || claims.client !== clientId) return null;
-  return claims.sub;
+): Promise<{ userId: string; refreshToken: string } | null> {
+  if (!token.startsWith('fr_')) return null;
+  const hash = await sha256(token);
+  const row = await env.METADATA.prepare(
+    `SELECT r.family_id, r.user_id, r.client_id, r.expires_at, r.used_at, r.revoked_at
+       FROM oauth_refresh_tokens r
+       JOIN users u ON u.id = r.user_id
+      WHERE r.token_hash = ?1`
+  )
+    .bind(hash)
+    .first<RefreshTokenRow>();
+  if (!row || row.client_id !== clientId) return null;
+
+  const expires = Date.parse(row.expires_at);
+  if (!Number.isFinite(expires) || expires <= Date.now()) {
+    await revokeRefreshFamily(env, row.family_id);
+    return null;
+  }
+  if (row.used_at || row.revoked_at) {
+    await revokeRefreshFamily(env, row.family_id);
+    return null;
+  }
+
+  const spent = await env.METADATA.prepare(
+    `UPDATE oauth_refresh_tokens
+        SET used_at = ?1
+      WHERE token_hash = ?2 AND used_at IS NULL AND revoked_at IS NULL`
+  )
+    .bind(new Date().toISOString(), hash)
+    .run();
+  if ((spent.meta.changes ?? 0) !== 1) {
+    await revokeRefreshFamily(env, row.family_id);
+    return null;
+  }
+
+  return {
+    userId: row.user_id,
+    refreshToken: await issueRefreshToken(env, row.user_id, row.client_id, row.family_id)
+  };
+}
+
+async function revokeRefreshFamily(env: Env, familyId: string): Promise<void> {
+  await env.METADATA.prepare(
+    `UPDATE oauth_refresh_tokens
+        SET revoked_at = ?1
+      WHERE family_id = ?2 AND revoked_at IS NULL`
+  )
+    .bind(new Date().toISOString(), familyId)
+    .run();
 }
 
 export async function authenticate(env: Env, request: Request): Promise<Identity> {
@@ -206,6 +273,12 @@ async function verifiedPayload(
   if (!constantTimeEqual(signature, await sign(env, context, payload))) return null;
 
   return decodePayload(payload);
+}
+
+async function sha256(value: string): Promise<string> {
+  return encodeBase64Url(
+    new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))
+  );
 }
 
 async function sign(env: Env, context: string, payload: string): Promise<string> {

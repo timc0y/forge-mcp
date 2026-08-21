@@ -70,6 +70,8 @@ type ApprovalRow = {
 interface Evidence {
   change: Change;
   comparison: Comparison;
+  /** Destination shown when the approval was created. Optional for legacy rows. */
+  baseBranch?: string;
 }
 
 /** What actually happened, written once, read by every later click. */
@@ -122,7 +124,11 @@ export async function requestApproval(
   const id = crypto.randomUUID();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + APPROVAL_TTL_MS);
-  const evidence: Evidence = { change: req.change, comparison: req.comparison };
+  const evidence: Evidence = {
+    change: req.change,
+    comparison: req.comparison,
+    baseBranch: req.baseBranch
+  };
 
   await env.METADATA.prepare(
     `INSERT INTO approvals
@@ -301,6 +307,32 @@ async function performMerge(
   if (number === null) {
     return { decision: 'approve', ok: false, detail: 'This change no longer has a pull request to merge.' };
   }
+  if (evidence.baseBranch) {
+    const pull = await request(`/repos/${row.repo_owner}/${row.repo_name}/pulls/${number}`);
+    if (pull.status !== 200) {
+      return {
+        decision: 'approve',
+        ok: false,
+        detail: `Could not re-check the pull request destination (status ${pull.status}). Nothing was merged. Ask for a fresh approval.`
+      };
+    }
+    const currentBase = (pull.json as { base?: { ref?: unknown } } | null)?.base?.ref;
+    if (typeof currentBase !== 'string') {
+      return {
+        decision: 'approve',
+        ok: false,
+        detail: 'GitHub did not return the pull request destination. Nothing was merged. Ask for a fresh approval.'
+      };
+    }
+    if (currentBase !== evidence.baseBranch) {
+      return {
+        decision: 'approve',
+        ok: false,
+        detail: `Refused: this pull request now targets ${currentBase}, not ${evidence.baseBranch} as shown when you approved it. Nothing was merged. Ask for a fresh approval.`
+      };
+    }
+  }
+
   const response = await request(
     `/repos/${row.repo_owner}/${row.repo_name}/pulls/${number}/merge`,
     {
@@ -367,9 +399,23 @@ async function performDiscard(
   const current = await request(
     `/repos/${row.repo_owner}/${row.repo_name}/git/ref/heads/${encodePath(row.branch)}`
   );
-  if (current.status >= 200 && current.status < 300) {
+  if (current.status !== 404) {
+    if (current.status !== 200) {
+      return {
+        decision: 'approve',
+        ok: false,
+        detail: `Nothing was discarded. Forge could not verify the branch head (status ${current.status}), so it refused to delete work it could not prove was unchanged.`
+      };
+    }
     const head = (current.json as { object?: { sha?: string } } | null)?.object?.sha;
-    if (typeof head === 'string' && head !== row.head_sha) {
+    if (typeof head !== 'string') {
+      return {
+        decision: 'approve',
+        ok: false,
+        detail: 'Nothing was discarded. GitHub returned the branch without a readable head commit, so Forge refused to delete it.'
+      };
+    }
+    if (head !== row.head_sha) {
       return {
         decision: 'approve',
         ok: false,
@@ -380,8 +426,8 @@ async function performDiscard(
       };
     }
   }
-  // A ref that cannot be read is not a reason to stop: 404 means it is already
-  // gone, which is the outcome being asked for anyway.
+  // 404 alone is safe to treat as already gone; every other unreadable state
+  // fails closed above.
 
   if (number !== null) {
     const closed = await request(`/repos/${row.repo_owner}/${row.repo_name}/pulls/${number}`, {
@@ -590,7 +636,7 @@ function renderDecision(row: ApprovalRow, evidence: Evidence, id: string, token:
   const heading = merge ? 'Merge this change?' : 'Discard this change?';
   // Relative, so the POST always returns to the origin the human actually
   // loaded — no cross-origin bounce, and `form-action 'self'` holds.
-  const action = `/approvals/${encodeURIComponent(id)}?t=${encodeURIComponent(token)}`;
+  const action = `?t=${encodeURIComponent(token)}`;
 
   const consequence = merge
     ? `<p>Approving puts these commits on the default branch of <strong>${escapeHtml(formatRepoRow(row))}</strong>. Forge does the merge itself when you press the button — nothing is waiting on the conversation that asked.</p>`
@@ -674,6 +720,7 @@ function details(row: ApprovalRow, evidence: Evidence): string {
     ['Change', change.name],
     ['Branch', row.branch],
     ['Head', short(row.head_sha)],
+    ['Base', evidence.baseBranch ?? 'default branch at request time'],
     ['Size', comparisonTotals(evidence.comparison)],
     ['Commits', `${evidence.comparison.aheadBy} ahead, ${evidence.comparison.behindBy} behind`]
   ];
