@@ -823,7 +823,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         // Reserve atomically before spending browser minutes. If every viewport
         // fails, release the reservation; successful/partial captures keep it.
         const quota = await reserveCaptureQuota(ctx.env, ctx.identity.userId, ctx.identity.githubLogin);
-        let shot;
+        let shot: Awaited<ReturnType<typeof capture>>;
         try {
           shot = await capture(ctx.env, input.url, viewports);
         } catch (error) {

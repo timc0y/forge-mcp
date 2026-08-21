@@ -121,8 +121,15 @@ Cloudflare **Rate Limiting rules** on `/forge/mcp` and on `/oauth/register`,
 dynamic client registration are intentionally public.
 
 **Cost.** Set a **Cloudflare notification** for Workers Paid spend. The capture
-ceiling bounds the browser hours, but "open to anyone" and "no billing alert" is
-a bad pair.
+ceiling bounds browser hours per authenticated account, but "open to anyone" and
+"no billing alert" is still a bad pair.
+
+**Dependencies and history.** Dependabot now watches npm and GitHub Actions.
+Run a full-history secret scan before treating a public release as clean: deleting
+a credential from `main` does not remove it from old commits. Treat a history
+finding as credential rotation work, not merely a file removal. The MCP SDK
+remains pinned until its lockfile is deliberately refreshed; review its current
+advisories and resolved transitive versions before deployment.
 
 **Log retention.** Observability is on. Decide how long, and say so in the
 privacy policy.

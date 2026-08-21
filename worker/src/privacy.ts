@@ -15,7 +15,7 @@ export function privacyPage(env: Env): Response {
 <h1>Privacy</h1>
 <p class="lead">Forge stores the minimum state needed to connect your GitHub account,
   prepare reviewable changes, show captures later and carry out decisions you approve.</p>
-<p class="note">Last updated 20 August 2026.</p>
+<p class="note">Last updated 21 August 2026.</p>
 
 <h2>What Forge stores</h2>
 <div class="section">
