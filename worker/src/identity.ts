@@ -63,7 +63,7 @@ export async function issueRefreshToken(
   env: Env,
   userId: string,
   clientId: string,
-  familyId = crypto.randomUUID()
+  familyId: string = crypto.randomUUID()
 ): Promise<string> {
   const token = `fr_${encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)))}`;
   const now = new Date();
