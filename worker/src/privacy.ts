@@ -28,7 +28,8 @@ export function privacyPage(env: Env): Response {
   <p>Registered client names and redirect addresses, hashes of short-lived authorization
     codes, and the user id they belong to. Forge access tokens are signed. Refresh tokens
     are opaque, client-bound, rotate on every use and are stored only as hashes; inactive
-    refresh tokens expire after 30 days.</p>
+    refresh tokens expire after 30 days. Used and expired token records are removed with
+    the Forge account and may remain until then so replay can be detected.</p>
 
   <h3>Changes and approvals</h3>
   <p>GitHub remains the only copy of repository files. For a requested merge or discard,

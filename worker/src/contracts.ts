@@ -158,7 +158,7 @@ export interface ApprovalRequest {
   /** The head this decision was made against; a moved head invalidates it. */
   headSha: string;
   /** The default-branch destination shown to the human when approval was minted. */
-  baseBranch: string;
+  baseBranch?: string;
 }
 
 export interface ApprovalReceipt {
