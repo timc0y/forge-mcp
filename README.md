@@ -8,8 +8,9 @@ Forge is the hosted handoff between a conversation and a repository. Research,
 visual reviews and small edits become real commits and draft pull requests.
 GitHub remains the only copy, and `main` moves only after a human approves it.
 
-Forge complements Codex, Claude Code, Cursor and OpenCode. It does not run,
-build, test, serve or deploy code.
+Forge complements Codex, Claude Code, Cursor and OpenCode. It has no runner and
+does not build, test, serve or deploy code itself. Its GitHub commits are normal
+GitHub writes, so repository automation may react to them.
 
 ## Three useful first jobs
 

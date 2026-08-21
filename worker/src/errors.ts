@@ -45,7 +45,9 @@ export function toForgeError(error: unknown): ForgeError {
   if (isForgeError(error)) return error;
   return new ForgeError({
     code: 'FORGE_UPSTREAM_UNAVAILABLE',
-    message: error instanceof Error ? error.message : 'An unexpected failure occurred.',
+    // Unexpected exception text is operator detail: libraries may include
+    // request bodies, paths or credentials in it. Public failures stay fixed.
+    message: 'An unexpected failure occurred while handling this request.',
     retryable: true
   });
 }

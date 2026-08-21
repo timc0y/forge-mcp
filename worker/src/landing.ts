@@ -79,7 +79,7 @@ const LIMITS: Array<[string, string]> = [
   ['Free', 'research preview, open to anyone'],
   ['30', 'screenshots per day'],
   ['Unlimited', 'reads, commits and merges'],
-  ['Nothing', 'runs — no builds, no deploys']
+  ['No runner', 'Forge does not execute code; repository automation may react to commits']
 ];
 
 const REFUSALS: Array<[string, string, string]> = [

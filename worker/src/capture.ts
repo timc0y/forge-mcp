@@ -121,6 +121,22 @@ function base64ByteLength(base64: string): number {
 const IPV4_LITERAL = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
 /**
+ * Browser-side redirect/resource guard. The initial URL is validated below,
+ * but Chrome may later follow a redirect to a literal private destination.
+ * These patterns make Browser Rendering refuse those requests too. A hostname
+ * that resolves privately is a separate DNS boundary and remains something the
+ * platform must refuse; arbitrary public-host capture cannot use a hostname
+ * allowlist without changing the product.
+ */
+const BLOCKED_REQUEST_PATTERNS = [
+  '^https?://localhost(?::\\d+)?(?:/|$)',
+  '^https?://[^/]+\\.(?:localhost|local)(?::\\d+)?(?:/|$)',
+  '^https?://(?:127(?:\\.\\d{1,3}){3}|10(?:\\.\\d{1,3}){3}|192\\.168(?:\\.\\d{1,3}){2}|169\\.254(?:\\.\\d{1,3}){2}|172\\.(?:1[6-9]|2\\d|3[01])(?:\\.\\d{1,3}){2})(?::\\d+)?(?:/|$)',
+  '^https?://\\[(?:::1|f[cd][0-9a-f:]*|fe[89ab][0-9a-f:]*)\\](?::\\d+)?(?:/|$)',
+  '^https?://metadata\\.google\\.internal(?::\\d+)?(?:/|$)'
+];
+
+/**
  * True for any spelling of an IPv4 or IPv6 literal. The WHATWG URL parser
  * already folds every alternate IPv4 encoding — hex, octal, decimal integer,
  * short forms like `127.1` — into canonical dotted-decimal in `.hostname`,
@@ -214,7 +230,8 @@ async function captureViewport(env: Env, url: URL, viewport: Viewport, remaining
           screenshotOptions: { fullPage: false },
           // /snapshot requires at least two formats; these two are the only
           // ones `Capture` has fields for, so nothing else is worth paying for.
-          formats: ['screenshot', 'accessibilityTree']
+          formats: ['screenshot', 'accessibilityTree'],
+          rejectRequestPattern: BLOCKED_REQUEST_PATTERNS
         }),
         signal: controller.signal
       }
@@ -271,6 +288,13 @@ export async function capture(env: Env, url: string, viewports: Viewport[]): Pro
       message: 'At least one viewport must be requested.'
     });
   }
+  if (viewports.length > 3) {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: 'At most three viewports can be captured in one call.'
+    });
+  }
+  const requestedViewports = [...new Set(viewports)];
 
   const target = assertPublicUrl(url);
   const deadline = Date.now() + CAPTURE_BUDGET_MS;
@@ -278,7 +302,7 @@ export async function capture(env: Env, url: string, viewports: Viewport[]): Pro
   // One request per viewport, fired together: a slow phone capture must not
   // delay or sink a desktop capture that already finished.
   const outcomes = await Promise.all(
-    viewports.map((viewport) => captureViewport(env, target, viewport, deadline - Date.now()))
+    requestedViewports.map((viewport) => captureViewport(env, target, viewport, deadline - Date.now()))
   );
 
   const images: CaptureImage[] = [];

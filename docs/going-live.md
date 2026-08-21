@@ -112,13 +112,24 @@ most useful documents in this repository; this one deserves the same.
 Things that are fine while it is you, and not fine when it is not.
 
 **Abuse.** `forge_see` makes Forge an HTTP client aimed at user-supplied URLs.
-Public-host enforcement is the whole defence and it is unit-tested — but add a
-Cloudflare **Rate Limiting rule** on `/forge/mcp` before you advertise, because
-the quota is per user and account creation is free.
+The worker rejects local/literal-IP targets, blocks literal private redirect
+patterns inside Browser Rendering, caps a call at three viewports, deduplicates
+them and reserves quota atomically. That still does **not** replace an edge rate
+limit or make arbitrary-host rendering equivalent to a hostname allowlist. Keep
+Cloudflare **Rate Limiting rules** on `/forge/mcp` and on `/oauth/register`,
+`/oauth/authorize` and `/oauth/token` before advertising; account creation and
+dynamic client registration are intentionally public.
 
 **Cost.** Set a **Cloudflare notification** for Workers Paid spend. The capture
-ceiling bounds the browser hours, but "open to anyone" and "no billing alert" is
-a bad pair.
+ceiling bounds browser hours per authenticated account, but "open to anyone" and
+"no billing alert" is still a bad pair.
+
+**Dependencies and history.** Dependabot now watches npm and GitHub Actions.
+Run a full-history secret scan before treating a public release as clean: deleting
+a credential from `main` does not remove it from old commits. Treat a history
+finding as credential rotation work, not merely a file removal. The MCP SDK
+remains pinned until its lockfile is deliberately refreshed; review its current
+advisories and resolved transitive versions before deployment.
 
 **Log retention.** Observability is on. Decide how long, and say so in the
 privacy policy.
@@ -248,7 +259,7 @@ and R2 lifecycle before changing its status to complete.
 
 1. Complete and record one merge and one discard approval, plus the refusal paths.
 2. Add the rate-limiting rule, billing alert and dedicated support contact.
-3. Apply migration 0002, deploy and verify the privacy route and deletion runbook.
+3. Apply migrations 0002 and 0003, deploy and verify the privacy route, OAuth reconnect/refresh and deletion runbook.
 4. Decide the stored-credential question before submitting anything.
 5. Identity and domain verification. *(days, out of your hands)*
 6. Reviewer account with sample data, test cases, submit. *(a day, then weeks)*

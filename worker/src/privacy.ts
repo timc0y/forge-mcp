@@ -15,7 +15,7 @@ export function privacyPage(env: Env): Response {
 <h1>Privacy</h1>
 <p class="lead">Forge stores the minimum state needed to connect your GitHub account,
   prepare reviewable changes, show captures later and carry out decisions you approve.</p>
-<p class="note">Last updated 20 August 2026.</p>
+<p class="note">Last updated 21 August 2026.</p>
 
 <h2>What Forge stores</h2>
 <div class="section">
@@ -26,8 +26,10 @@ export function privacyPage(env: Env): Response {
 
   <h3>OAuth connection</h3>
   <p>Registered client names and redirect addresses, hashes of short-lived authorization
-    codes, and the user id they belong to. Forge access and refresh tokens are signed;
-    the refresh token is held by your client rather than stored in a separate Forge table.</p>
+    codes, and the user id they belong to. Forge access tokens are signed. Refresh tokens
+    are opaque, client-bound, rotate on every use and are stored only as hashes; inactive
+    refresh tokens expire after 30 days. Used and expired token records are removed with
+    the Forge account and may remain until then so replay can be detected.</p>
 
   <h3>Changes and approvals</h3>
   <p>GitHub remains the only copy of repository files. For a requested merge or discard,

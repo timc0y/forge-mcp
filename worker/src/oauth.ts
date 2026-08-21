@@ -6,10 +6,9 @@
  * hand the browser to GitHub, or turn what GitHub said into a Forge token.
  *
  * ChatGPT needs offline_access so a connection survives an access-token expiry.
- * The refresh token is signed and client-bound. It has no calendar expiry:
- * deleting the user row or rotating the signing key revokes it. That keeps a
- * connection alive until the user or operator explicitly ends it, without
- * adding another credential table.
+ * Refresh tokens are opaque, client-bound, stored only as hashes, expire after
+ * inactivity, and rotate on every use. A replayed token is refused rather than
+ * remaining a standing bearer credential.
  *
  * There is also no pending-authorization table. The authorize request has to
  * survive a round trip through GitHub, and the only place to put it is the
@@ -29,7 +28,7 @@ import { githubUserRequest } from './github';
 import { storeUserCredential } from './user-token';
 import { analyticsFor } from './analytics';
 import { escapeHtml, page as ui } from './ui';
-import { issueRefreshToken, issueToken, verifyRefreshToken } from './identity';
+import { issueRefreshToken, issueToken, rotateRefreshToken } from './identity';
 
 /**
  * Access is short-lived; the refresh grant keeps the connection alive until it
@@ -411,21 +410,14 @@ async function refreshAccess(env: Env, body: URLSearchParams): Promise<Response>
   const refreshToken = body.get('refresh_token') ?? '';
   if (!clientId || !refreshToken) return invalidGrant();
 
-  const userId = await verifyRefreshToken(env, refreshToken, clientId);
-  if (!userId) return invalidGrant();
-
-  // Refresh tokens have no calendar expiry. User deletion and signing-key
-  // rotation are the two deliberate revocation mechanisms.
-  const user = await env.METADATA.prepare('SELECT id FROM users WHERE id = ?1')
-    .bind(userId)
-    .first<{ id: string }>();
-  if (!user) return invalidGrant();
+  const rotated = await rotateRefreshToken(env, refreshToken, clientId);
+  if (!rotated) return invalidGrant();
 
   return json({
-    access_token: await issueToken(env, userId, ACCESS_TOKEN_SECONDS),
+    access_token: await issueToken(env, rotated.userId, ACCESS_TOKEN_SECONDS),
     token_type: 'Bearer',
     expires_in: ACCESS_TOKEN_SECONDS,
-    refresh_token: refreshToken,
+    refresh_token: rotated.refreshToken,
     scope: 'offline_access'
   });
 }

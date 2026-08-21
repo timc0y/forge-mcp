@@ -42,7 +42,9 @@ and no id to carry.
 
 **A commit is durable the moment a tool returns.** There is no push step, no
 staging area, no "unsaved" state. If `forge_edit` reports success, the commit is
-on GitHub with a SHA and a URL you can open. If it fails, nothing happened.
+on GitHub with a SHA and a URL you can open. Forge has no runner of its own, but
+normal repository automation (for example GitHub Actions triggered by a push)
+may react to that commit just as it would to any other GitHub write.
 
 **`main` moves only when you say so.** Forge writes to change branches and never
 to your default branch. Landing anything is a separate act that needs your hand.
@@ -162,8 +164,12 @@ else.
 ### forge_see
 
 The URL must already be publicly reachable. Private addresses, local addresses
-and IP literals are refused. Images come back inline with the call **and** at a
-link, because clients disagree about which of the two they will display.
+and IP literals are refused, and Browser Rendering is told to reject redirects
+to literal local/private destinations. Arbitrary-host capture still relies on
+the rendering platform's network boundary for hostname-to-private-IP resolution;
+it is not equivalent to a fixed hostname allowlist. Images come back inline with
+the call **and** at a link, because clients disagree about which of the two they
+will display.
 
 Each image is the top of the page at that viewport, not the full scrollable
 page. Default viewports are phone and desktop.

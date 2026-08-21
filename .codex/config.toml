@@ -1,5 +1,5 @@
 [mcp_servers.forge]
-url = "https://forge.timcoy.uk/mcp"
+url = "https://timcoy.uk/forge/mcp"
 auth = "oauth"
 tool_timeout_sec = 60
 default_tools_approval_mode = "prompt"

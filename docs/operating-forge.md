@@ -41,7 +41,7 @@ Secrets, via `wrangler secret put` from `worker/`:
 |---|---|
 | `GITHUB_APP_PRIVATE_KEY` | PKCS#8 PEM (`BEGIN PRIVATE KEY`). Convert GitHub's PKCS#1 download with `openssl pkcs8 -topk8 -nocrypt` before `wrangler secret put`. |
 | `GITHUB_APP_CLIENT_SECRET` | |
-| `FORGE_SIGNING_KEY` | 32+ random bytes. Signs access and non-expiring, client-bound refresh tokens **and** approval links **and** derives the key encrypting stored GitHub credentials. Rotating it invalidates all of them at once and forces everyone to sign in again. Otherwise an OAuth connection remains valid until its Forge user is deleted |
+| `FORGE_SIGNING_KEY` | 32+ random bytes. Signs access and approval/capture links, fingerprints rotating refresh-token families, and derives the key encrypting stored GitHub credentials. Rotating it invalidates all of them at once and forces everyone to sign in again |
 | `CLOUDFLARE_API_TOKEN` | Scoped to Browser Rendering only |
 | `POSTHOG_API_KEY` | Optional. Unset means no analytics, not broken analytics |
 
@@ -71,6 +71,15 @@ captured URLs, repository names, tokens. Those are the user's work, and none of
 them are needed to know whether the product is usable. `distinct_id` is the
 Forge user id, not the GitHub login, because a login can be renamed and would
 then look like two people.
+
+## Public abuse boundary
+
+The in-code capture quota is atomic and each call renders each named viewport at
+most once, but it is not the internet-facing rate limiter. Keep Cloudflare rate
+limits on `/forge/mcp` and the OAuth mutation endpoints (`/oauth/register`,
+`/oauth/authorize`, `/oauth/token`), and keep a Workers Paid spend notification.
+Dynamic client registration is necessarily public and otherwise provides an
+unbounded way to create D1 rows.
 
 ## Cost
 
@@ -102,8 +111,11 @@ identically to a wrong token.
 ## Migrations
 
 Apply migrations before deploying worker code that depends on them. Migration
-`0002_capture_ownership.sql` is required before the privacy and capture-retention
-changes can safely go live.
+`0002_capture_ownership.sql` records capture ownership. Migration
+`0003_security_hardening.sql` adds rotating, hashed OAuth refresh tokens and is
+required **before** deploying code that issues them. Existing signed refresh
+tokens intentionally stop working after that deploy, so connected clients may
+need one GitHub reconnect.
 
 ```sh
 pnpm exec wrangler d1 migrations apply forge-v1-production --remote
