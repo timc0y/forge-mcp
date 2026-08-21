@@ -2,7 +2,7 @@
 
 What it takes to put Forge in front of strangers, in the order it has to happen.
 
-Written 2026-08-20. The two review processes below change; re-read the linked
+Written 2026-08-21. The two review processes below change; re-read the linked
 sources before acting on the stages that depend on them.
 
 ---
@@ -18,18 +18,18 @@ sources before acting on the stages that depend on them.
 | `GITHUB_APP_PRIVATE_KEY` | ✅ PKCS#8 secret verified by session startup |
 | `CLOUDFLARE_API_TOKEN` | ✅ Browser Rendering request verified |
 | ChatGPT read, capture, write and approval preparation | ✅ recorded 20 August 2026 |
-| Merge approval completed and verified | ❌ not yet recorded |
-| Discard approval completed and verified | ❌ not yet recorded |
-| Privacy policy | 🟡 implemented at `/privacy`; deploy and verify |
+| Merge approval completed and verified | ✅ recorded 21 August 2026 |
+| Discard approval completed and verified | ✅ recorded 21 August 2026 |
+| Privacy policy | ✅ deployed and verified at `/forge/privacy` |
 | Support contact | 🟡 public contact links exist; dedicated support address still needed |
 
-The production trace now proves OAuth, repository access, capture, durable edit,
-semantic recovery and approval preparation. The remaining release proof is one
-completed merge, one completed discard and the important refusal paths.
+The production traces now prove OAuth, repository access, capture, durable edit,
+semantic recovery, completed merge and completed discard. The remaining
+deployment work is the Cloudflare edge rate limit, Workers Paid spend alert and
+dedicated support contact.
 
-The public `timcoy.uk` project listing still describes executor-era Forge as a
-private Linux-workspace experiment. Update that entry to the current safe
-ChatGPT-to-GitHub handoff before sending design partners to either page.
+The public `timcoy.uk` project listing now describes Forge as the current safe
+ChatGPT-to-GitHub handoff.
 
 ## "Public" is three separate things
 
@@ -81,20 +81,18 @@ It reached a real repository, returned screenshots, committed a file, read the
 change back and prepared both kinds of approval. Automated checks cannot prove
 the remaining human-click paths.
 
-Observed already:
+Recorded:
 
 1. Connect, authorize and install.
 2. Read a real repository and recover an open change by its human name.
 3. Commit a file and read the resulting diff back from GitHub.
 4. Capture a public URL with phone and desktop images inline and at a link.
 5. Prepare both merge and discard approval links.
-
-Still to record:
-
 6. Continue an existing change with the same intent.
-7. Open a merge link on a phone, approve it and confirm the default branch moved.
-8. Open a discard link for a second disposable change and confirm its pull
-   request closed and branch disappeared.
+7. Approve PR #66 through the mounted approval path and confirm merge commit
+   `8e688c81af3219fd2ecd4507e2717e191d27d571` reached `main`.
+8. Discard disposable PR #75 through the mounted approval path and confirm its
+   pull request closed and `forge/mounted-approval-live-smoke` disappeared.
 
 Then the failure paths, which matter more:
 
@@ -104,8 +102,8 @@ Then the failure paths, which matter more:
 - The 31st capture in a day → refused with a reset time (temporarily lower
   `FORGE_CAPTURE_DAILY_LIMIT` rather than taking 31 screenshots).
 
-**Record what happens in `docs/test-runs/`.** The first Forge's traces are the
-most useful documents in this repository; this one deserves the same.
+The hardening and deployment proof is recorded in
+[`test-runs/production-hardening-2026-08-21.md`](./test-runs/production-hardening-2026-08-21.md).
 
 ## Stage 3 — Harden for strangers
 
@@ -224,8 +222,7 @@ relevant description, a pricing plan, a working privacy policy link, and a
 support link or email. Verified-publisher status and the 100-install minimum
 apply only to **paid** apps.
 
-So it is achievable — but it buys discovery you may not want yet, while the
-approval-completion paths still lack a recorded production run. The public app page at
+So it is achievable — but it buys discovery you may not want yet. The public app page at
 `github.com/apps/forge-mcp-github-app` already lets anyone install. Revisit once
 there are users.
 
@@ -250,16 +247,16 @@ to be true, which means writing it from what the system does:
 - **Controls:** revoke the App from GitHub at any time; disconnect the client;
   request deletion through the documented operator procedure.
 
-The worker now serves this notice at `/forge/privacy`. Verify the production route
-and R2 lifecycle before changing its status to complete.
+The worker serves this notice at `/forge/privacy`, and the production route is
+verified. Verify the R2 lifecycle before treating retention as complete.
 
 ---
 
 ## Order
 
-1. Complete and record one merge and one discard approval, plus the refusal paths.
-2. Add the rate-limiting rule, billing alert and dedicated support contact.
-3. Apply migrations 0002 and 0003, deploy and verify the privacy route, OAuth reconnect/refresh and deletion runbook.
+1. Complete and record one merge and one discard approval, plus the refusal paths. ✅
+2. Add the rate-limiting rule, billing alert and dedicated support contact. 🟡
+3. Apply migrations 0002 and 0003, deploy and verify the privacy route, OAuth reconnect/refresh and deletion runbook. ✅
 4. Decide the stored-credential question before submitting anything.
 5. Identity and domain verification. *(days, out of your hands)*
 6. Reviewer account with sample data, test cases, submit. *(a day, then weeks)*

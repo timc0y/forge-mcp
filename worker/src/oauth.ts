@@ -423,7 +423,11 @@ async function refreshAccess(env: Env, body: URLSearchParams): Promise<Response>
 }
 
 function invalidGrant(): Response {
-  return oauthError('invalid_grant', 'The authorization code is not valid, has expired, or has been used.', 400);
+  return oauthError(
+    'invalid_grant',
+    'This Forge connection is no longer valid. Reconnect Forge to continue.',
+    400
+  );
 }
 
 // ---------------------------------------------------------------------------

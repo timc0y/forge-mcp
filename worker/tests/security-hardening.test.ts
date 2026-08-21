@@ -3,6 +3,7 @@ import type { Env } from '../src/env';
 import { capture } from '../src/capture';
 import { approvalPage } from '../src/approve';
 import { toForgeError } from '../src/errors';
+import { token } from '../src/oauth';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -125,5 +126,18 @@ describe('public exposure hardening', () => {
     const error = toForgeError(new Error('secret=should-never-be-public'));
     expect(error.message).not.toContain('should-never-be-public');
     expect(error.code).toBe('FORGE_UPSTREAM_UNAVAILABLE');
+  });
+
+  it('tells a stale OAuth connection how to recover', async () => {
+    const response = await token({} as Env, new Request('https://example.com/forge/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token' })
+    }));
+    const body = await response.json() as { error?: string; error_description?: string };
+
+    expect(response.status).toBe(400);
+    expect(body.error).toBe('invalid_grant');
+    expect(body.error_description).toContain('Reconnect Forge');
   });
 });
