@@ -48,6 +48,7 @@ Run the following as one SQL file or transaction after the R2 objects are gone:
 BEGIN TRANSACTION;
 DELETE FROM captures WHERE user_id = 'FORGE_USER_ID';
 DELETE FROM approvals WHERE user_id = 'FORGE_USER_ID';
+DELETE FROM oauth_refresh_tokens WHERE user_id = 'FORGE_USER_ID';
 DELETE FROM oauth_codes WHERE user_id = 'FORGE_USER_ID';
 DELETE FROM capture_usage WHERE user_id = 'FORGE_USER_ID';
 DELETE FROM users WHERE id = 'FORGE_USER_ID';
@@ -61,9 +62,9 @@ Forge user.
 
 ```sh
 pnpm exec wrangler d1 execute forge-v1-production --remote --json \
-  --command="SELECT id FROM users WHERE id = 'FORGE_USER_ID'; SELECT count(*) AS approvals FROM approvals WHERE user_id = 'FORGE_USER_ID'; SELECT count(*) AS captures FROM captures WHERE user_id = 'FORGE_USER_ID';"
+  --command="SELECT id FROM users WHERE id = 'FORGE_USER_ID'; SELECT count(*) AS approvals FROM approvals WHERE user_id = 'FORGE_USER_ID'; SELECT count(*) AS refresh_tokens FROM oauth_refresh_tokens WHERE user_id = 'FORGE_USER_ID'; SELECT count(*) AS captures FROM captures WHERE user_id = 'FORGE_USER_ID';"
 ```
 
-The user query must return no row and both counts must be zero. Record only the
+The user query must return no row and all counts must be zero. Record only the
 request date, completion date and Forge user id in the operator's private support
 record; do not retain the deleted evidence there.

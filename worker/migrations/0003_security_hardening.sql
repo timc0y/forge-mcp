@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
   family_id  TEXT NOT NULL,
   user_id    TEXT NOT NULL REFERENCES users(id),
   client_id  TEXT NOT NULL REFERENCES oauth_clients(client_id),
+  key_tag    TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   used_at    TEXT,
   revoked_at TEXT,

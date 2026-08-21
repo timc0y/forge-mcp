@@ -26,8 +26,9 @@ export function privacyPage(env: Env): Response {
 
   <h3>OAuth connection</h3>
   <p>Registered client names and redirect addresses, hashes of short-lived authorization
-    codes, and the user id they belong to. Forge access and refresh tokens are signed;
-    the refresh token is held by your client rather than stored in a separate Forge table.</p>
+    codes, and the user id they belong to. Forge access tokens are signed. Refresh tokens
+    are opaque, client-bound, rotate on every use and are stored only as hashes; inactive
+    refresh tokens expire after 30 days.</p>
 
   <h3>Changes and approvals</h3>
   <p>GitHub remains the only copy of repository files. For a requested merge or discard,

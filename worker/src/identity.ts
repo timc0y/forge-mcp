@@ -41,6 +41,7 @@ interface RefreshTokenRow {
   family_id: string;
   user_id: string;
   client_id: string;
+  key_tag: string;
   expires_at: string;
   used_at: string | null;
   revoked_at: string | null;
@@ -68,14 +69,15 @@ export async function issueRefreshToken(
   const now = new Date();
   await env.METADATA.prepare(
     `INSERT INTO oauth_refresh_tokens
-       (token_hash, family_id, user_id, client_id, expires_at, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+       (token_hash, family_id, user_id, client_id, key_tag, expires_at, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
   )
     .bind(
       await sha256(token),
       familyId,
       userId,
       clientId,
+      await signingKeyTag(env),
       new Date(now.getTime() + REFRESH_TOKEN_TTL_MS).toISOString(),
       now.toISOString()
     )
@@ -96,7 +98,7 @@ export async function rotateRefreshToken(
   if (!token.startsWith('fr_')) return null;
   const hash = await sha256(token);
   const row = await env.METADATA.prepare(
-    `SELECT r.family_id, r.user_id, r.client_id, r.expires_at, r.used_at, r.revoked_at
+    `SELECT r.family_id, r.user_id, r.client_id, r.key_tag, r.expires_at, r.used_at, r.revoked_at
        FROM oauth_refresh_tokens r
        JOIN users u ON u.id = r.user_id
       WHERE r.token_hash = ?1`
@@ -104,6 +106,10 @@ export async function rotateRefreshToken(
     .bind(hash)
     .first<RefreshTokenRow>();
   if (!row || row.client_id !== clientId) return null;
+  if (row.key_tag !== (await signingKeyTag(env))) {
+    await revokeRefreshFamily(env, row.family_id);
+    return null;
+  }
 
   const expires = Date.parse(row.expires_at);
   if (!Number.isFinite(expires) || expires <= Date.now()) {
@@ -279,6 +285,12 @@ async function sha256(value: string): Promise<string> {
   return encodeBase64Url(
     new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))
   );
+}
+
+async function signingKeyTag(env: Env): Promise<string> {
+  // Non-secret fingerprint: rotating the signing key invalidates refresh-token
+  // families as well as access/approval/capture tokens and stored credentials.
+  return (await sha256(`forge.refresh.key:${env.FORGE_SIGNING_KEY}`)).slice(0, 22);
 }
 
 async function sign(env: Env, context: string, payload: string): Promise<string> {
