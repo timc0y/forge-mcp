@@ -316,7 +316,8 @@ async function performMerge(
         detail: `Could not re-check the pull request destination (status ${pull.status}). Nothing was merged. Ask for a fresh approval.`
       };
     }
-    const currentBase = (pull.json as { base?: { ref?: unknown } } | null)?.base?.ref;
+    const pullRequest = pull.json as { base?: { ref?: unknown }; draft?: unknown; node_id?: unknown } | null;
+    const currentBase = pullRequest?.base?.ref;
     if (typeof currentBase !== 'string') {
       return {
         decision: 'approve',
@@ -330,6 +331,34 @@ async function performMerge(
         ok: false,
         detail: `Refused: this pull request now targets ${currentBase}, not ${evidence.baseBranch} as shown when you approved it. Nothing was merged. Ask for a fresh approval.`
       };
+    }
+    if (pullRequest?.draft === true) {
+      if (typeof pullRequest.node_id !== 'string') {
+        return {
+          decision: 'approve',
+          ok: false,
+          detail: 'GitHub returned the draft pull request without an identifier. Nothing was merged. Ask for a fresh approval.'
+        };
+      }
+      const ready = await request('/graphql', {
+        method: 'POST',
+        body: {
+          query: 'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }',
+          variables: { id: pullRequest.node_id }
+        }
+      });
+      const readyJson = ready.json as { data?: { markPullRequestReadyForReview?: { pullRequest?: { isDraft?: unknown } } }; errors?: unknown } | null;
+      if (
+        ready.status !== 200 ||
+        readyJson?.errors !== undefined ||
+        readyJson?.data?.markPullRequestReadyForReview?.pullRequest?.isDraft !== false
+      ) {
+        return {
+          decision: 'approve',
+          ok: false,
+          detail: `GitHub refused to mark this draft pull request ready for review (status ${ready.status}). Nothing was merged.`
+        };
+      }
     }
   }
 
