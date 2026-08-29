@@ -3,7 +3,7 @@ import type { Env } from '../src/env';
 import { capture } from '../src/capture';
 import { approvalPage } from '../src/approve';
 import { toForgeError } from '../src/errors';
-import { token } from '../src/oauth';
+import { registerClient, token } from '../src/oauth';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -139,5 +139,28 @@ describe('public exposure hardening', () => {
     expect(response.status).toBe(400);
     expect(body.error).toBe('invalid_grant');
     expect(body.error_description).toContain('Reconnect Forge');
+  });
+
+  it('registers the hosted MCP clients Forge supports', async () => {
+    const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+    const env = {
+      FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS:
+        'chatgpt.com,openai.com,claude.ai,anthropic.com,grok.com,vscode.dev,oauth-redirect.googleusercontent.com,localhost,127.0.0.1',
+      METADATA: { prepare: () => ({ bind: () => ({ run }) }) }
+    } as unknown as Env;
+    const redirectUris = [
+      'https://grok.com/connectors-oauth-exchange-code/',
+      'https://vscode.dev/redirect',
+      'https://oauth-redirect.googleusercontent.com/r/forge'
+    ];
+    const response = await registerClient(env, new Request('https://example.com/oauth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: 'hosted clients', redirect_uris: redirectUris })
+    }));
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ redirect_uris: redirectUris });
+    expect(run).toHaveBeenCalledOnce();
   });
 });

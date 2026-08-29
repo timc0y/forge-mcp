@@ -51,7 +51,7 @@ chk "refresh grant advertised"       'refresh_token'  "$(body $B/.well-known/oau
 
 echo "── dynamic client registration (exercises D1)"
 REG=$(body -X POST $B/oauth/register -H 'content-type: application/json' \
-  -d '{"client_name":"smoke","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"]}')
+  -d '{"client_name":"smoke","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect","https://grok.com/connectors-oauth-exchange-code/","https://vscode.dev/redirect","https://oauth-redirect.googleusercontent.com/r/forge"]}')
 chk "registers an allowed redirect"  'client_id'      "$REG"
 chk "no client secret issued"        ''               "$(echo "$REG" | grep -o client_secret)"
 BAD=$(body -X POST $B/oauth/register -H 'content-type: application/json' \
