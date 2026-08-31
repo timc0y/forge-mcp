@@ -41,16 +41,16 @@
 ## Current boundary
 
 Two organs. **Hands**: durable authoring in GitHub. **Eyes**: capture of
-already-public URLs. Five tools, none with a mode parameter. `main` is reachable
-only through a merge a human approved.
+already-public URLs. Five tools. Ordinary edits can update the default branch.
+Work that needs review uses the repository's one fixed `forge` branch.
 
 Forge does not run, build, test, serve, or deploy code. T3 Code owns that.
 Forge hosts nothing.
 
 ## Ordinary paths
 
-- Write: blobs → tree → commit → guarded ref update, on a change branch, never
-  on the default branch.
+- Write: blobs → tree → commit → guarded ref update. Ordinary work goes to the
+  default branch. Proposed work goes to the fixed `forge` branch.
 - Any question about difference: `compare base...head`. It answers the diff,
   whether a change is safe to discard, whether it has diverged, and what a merge
   would contain.
@@ -108,20 +108,22 @@ Forge hosts nothing.
 - **Invalidation condition**: a write path that GitHub does not arbitrate.
 - **Concepts avoided**: locks, leases, model-supplied idempotency keys.
 
-### Branches are unasked, not invisible
+### One branch means one pending decision
 
-- **Need**: never make a chat choose or remember a ref.
-- **Tempting complexity**: opaque change handles, session keying, hidden state.
-- **Observed native fact**: `bd8d130` showed opaque IDs are exactly what
-  summarisation removes; human-meaningful addresses survive it.
-- **Simple solution**: the intent names the change, and the branch is a
-  deterministic slug of it. Every receipt lists the repo's open changes, so the
-  next turn can continue by name without remembering anything.
-- **Why sufficient here**: the model states intent anyway; the receipt carries
-  the state so nothing else must.
-- **Invalidation condition**: intent rephrasing forks changes often enough to
-  confuse a human looking at the list.
-- **Concepts avoided**: change ids, session state, branch vocabulary in chat.
+- **Need**: planning work must become repository truth without a forgotten pull
+  request, while proposed implementation still needs review.
+- **Tempting complexity**: classify paths, name branches from each intent, or
+  keep session state.
+- **Observed owner decision**: the model knows whether work needs review from
+  the conversation. A repository needs no more than one pending Forge decision.
+- **Simple solution**: an ordinary edit updates the default branch. A proposed
+  edit uses the fixed `forge` branch. Later proposed edits continue it.
+- **Why sufficient here**: the commit message and pull request describe the
+  work. The branch only records that Forge made it.
+- **Invalidation condition**: users need two independent Forge proposals open
+  in one repository at the same time.
+- **Concepts avoided**: path classification, branch naming, change ids and
+  session state.
 
 ## Proof
 

@@ -74,8 +74,8 @@ export function privacyPage(env: Env): Response {
 
 <h2>Security and changes</h2>
 <p>Forge uses repository-scoped GitHub App access, encrypted storage for the one user
-  credential, signed capture and approval links, and explicit approval before the default
-  branch moves or a change is discarded. This notice will be updated when the stored data,
+  credential, signed capture and approval links, and explicit approval before Forge merges
+  or discards a proposed change. This notice will be updated when the stored data,
   processors or retention behaviour changes.</p>
 
 <footer><a href="${escapeHtml(origin)}">Back to Forge</a> ·

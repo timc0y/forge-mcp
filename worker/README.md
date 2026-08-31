@@ -11,12 +11,12 @@ and can install, type-check, test and deploy on its own.
 
 ## Public surface
 
-Five MCP tools, none with a mode or action parameter:
+Five MCP tools:
 
 | Tool | Gate |
 |---|---|
 | `forge_read` — repositories → tree → change → file contents or patches | free |
-| `forge_edit` — durable GitHub writes on a draft change | free |
+| `forge_edit` — durable GitHub writes, direct or on the fixed `forge` change | free |
 | `forge_merge` — returns a link a human opens | **approved** |
 | `forge_discard` — returns a link a human opens | **approved** |
 | `forge_see` — public-page screenshots plus a compact semantic outline | free, quota'd |

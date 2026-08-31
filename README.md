@@ -5,8 +5,8 @@
 Think in ChatGPT. Commit safely to GitHub.
 
 Forge is the hosted handoff between a conversation and a repository. Research,
-visual reviews and small edits become real commits and draft pull requests.
-GitHub remains the only copy, and `main` moves only after a human approves it.
+plans and routine content become real commits. Work that needs review goes on
+Forge's one change branch and becomes a draft pull request.
 
 Forge complements Codex, Claude Code, Cursor and OpenCode. It has no runner and
 does not build, test, serve or deploy code itself. Its GitHub commits are normal
@@ -26,15 +26,14 @@ GitHub writes, so repository automation may react to them.
 | Tool | Gate |
 |---|---|
 | `forge_read` — repos → tree → a change → file contents or patches | free |
-| `forge_edit` — write files; creates the repo and the change if new | free |
+| `forge_edit` — write files directly or on Forge's one change | free |
 | `forge_merge` — returns one link a human opens | **approved** |
 | `forge_discard` — returns one link a human opens | **approved** |
 | `forge_see` — capture a public URL | free, quota'd |
 
-You never name a branch. Describe the intent — "pricing section" — and say those
-words again to continue that change. Every result lists the repo's open changes,
-so nothing has to be remembered between turns. `main` moves only through a merge
-a human approved.
+You never name a branch. Forge commits plans, research, direction and routine
+content directly. Work that needs review uses the fixed `forge` branch. There
+can be only one open Forge change in a repository.
 
 **Free research preview** — open to anyone with a GitHub account, at
 **<https://timcoy.uk/forge>**. Client support varies by plan and surface; the

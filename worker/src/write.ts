@@ -752,7 +752,7 @@ function receipt(
   };
 }
 
-/** Branch names contain slashes (`forge/pricing-section`), which must survive. */
+/** Keep separators in legacy branch names when the GitHub API receives the path. */
 function encodePath(value: string): string {
   return value.split('/').map(encodeURIComponent).join('/');
 }

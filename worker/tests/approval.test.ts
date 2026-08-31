@@ -10,10 +10,10 @@ it('marks a draft pull request ready before merging it', async () => {
   const token = btoa(String.fromCharCode(...signature)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const row = {
     id, user_id: 'user-1', act: 'merge', repo_owner: 'octocat', repo_name: 'hello-world',
-    branch: 'forge/test', head_sha: '0123456789abcdef', state: 'pending', result_json: null,
+    branch: 'forge', head_sha: '0123456789abcdef', state: 'pending', result_json: null,
     created_at: '2026-08-25T00:00:00.000Z', expires_at: '2099-08-25T00:00:00.000Z', resolved_at: null,
     evidence_json: JSON.stringify({
-      change: { name: 'test', branch: 'forge/test', number: 1, draft: true, updatedAt: '' },
+      change: { name: 'forge', branch: 'forge', number: 1, draft: true, updatedAt: '' },
       comparison: { status: 'ahead', aheadBy: 1, behindBy: 0, files: [], truncated: false },
       baseBranch: 'main'
     })
@@ -23,7 +23,7 @@ it('marks a draft pull request ready before merging it', async () => {
     async run() { return { meta: { changes: sql.includes("state = 'pending'") ? 1 : 0 } }; }
   }; } }; } };
   const calls: string[] = [];
-  const request = async (path: string, init?: { method?: string }) => {
+  const request = async (path: string, init?: { method?: string; body?: unknown }) => {
     calls.push(`${init?.method ?? 'GET'} ${path}`);
     if (path.endsWith('/pulls/1')) return { status: 200, json: { base: { ref: 'main' }, draft: true, node_id: 'PR_node' }, text: '', headers: new Headers() };
     if (path === '/graphql') return { status: 200, json: { data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } }, text: '', headers: new Headers() };
@@ -35,7 +35,8 @@ it('marks a draft pull request ready before merging it', async () => {
   expect(calls).toEqual([
     'GET /repos/octocat/hello-world/pulls/1',
     'POST /graphql',
-    'PUT /repos/octocat/hello-world/pulls/1/merge'
+    'PUT /repos/octocat/hello-world/pulls/1/merge',
+    'PATCH /repos/octocat/hello-world/git/refs/heads/forge'
   ]);
   expect(await response.text()).toContain('Merged');
 });

@@ -26,11 +26,9 @@ There are three nouns, and you only ever handle two of them.
 tomorrow your repositories would look completely normal, because everything it
 did was an ordinary commit.
 
-**Change** — a piece of work in flight. It is a branch and a draft pull request,
-but you never say either of those words. You say what the work is *for* —
-"pricing section" — and saying those words again continues it. Every reply lists
-what is open in that repository, so nothing has to be remembered between
-messages, and a summarised conversation can pick up where it left off.
+**Change** — work held for review. Forge uses one fixed `forge` branch and one
+draft pull request. Each new proposed edit continues it. A repository cannot
+have two active Forge changes.
 
 **Capture** — a screenshot of a page that is already public, returned inline and
 at a link.
@@ -46,8 +44,9 @@ on GitHub with a SHA and a URL you can open. Forge has no runner of its own, but
 normal repository automation (for example GitHub Actions triggered by a push)
 may react to that commit just as it would to any other GitHub write.
 
-**`main` moves only when you say so.** Forge writes to change branches and never
-to your default branch. Landing anything is a separate act that needs your hand.
+**Routine work becomes repository truth immediately.** Plans, research,
+direction and routine content go to the default branch. Work that needs review
+goes to the Forge change and needs your approval before it lands.
 
 **Two things need approval: merging and discarding.** Everything else is
 additive — a commit only ever adds, and a change you abandon is still there
@@ -57,8 +56,8 @@ many commits would stop being reachable. The link keeps working after the
 conversation ends, so you can decide later, from any device.
 
 **Nothing is created by ceremony.** Write to a repository that does not exist and
-it is created. Write with a new intent and the change is created. You are never
-asked to make a repository, name a branch, or open a pull request first.
+Forge creates it. Ask to hold work for review and Forge creates the one change.
+You do not make a repository, name a branch, or open a pull request first.
 
 ---
 
@@ -131,7 +130,7 @@ Until you install it, tools will tell you so and give you this link.
 | Tool | What it does | Needs you |
 |---|---|---|
 | `forge_read` | One question at four zoom levels: your repositories, one repository's files, what a change did, or the contents of specific files | no |
-| `forge_edit` | Writes files. Creates the repository if new, the change if the intent is new. Never writes to `main` | no |
+| `forge_edit` | Writes files directly, or on the one Forge change when the work needs review | no |
 | `forge_merge` | Returns one link for you to land a change | **yes** |
 | `forge_discard` | Returns one link for you to throw a change away | **yes** |
 | `forge_see` | Screenshots a public URL, inline and at a link | no |
@@ -192,7 +191,7 @@ is why it is the only thing with a number on it.
 ## What Forge will not do
 
 - Run, build, test or deploy anything. Use a coding agent for that.
-- Write to `main` without your approval.
+- Open more than one Forge change in a repository.
 - Capture anything not publicly reachable.
 - Keep a copy of your repository.
 - Show a model your secrets — it holds none of yours.

@@ -399,10 +399,20 @@ async function performMerge(
   }
 
   const sha = stringField(response.json, 'sha');
+  let syncFailed = false;
+  if (sha !== '') {
+    const synced = await request(
+      `/repos/${row.repo_owner}/${row.repo_name}/git/refs/heads/${encodePath(row.branch)}`,
+      { method: 'PATCH', body: { sha, force: false } }
+    );
+    syncFailed = synced.status !== 200 && synced.status !== 404;
+  }
   const merged: Outcome = {
     decision: 'approve',
     ok: true,
-    detail: `Merged "${evidence.change.name}" into the default branch of ${row.repo_owner}/${row.repo_name}.`,
+    detail:
+      `Merged "${evidence.change.name}" into the default branch of ${row.repo_owner}/${row.repo_name}.` +
+      (syncFailed ? ` GitHub did not move ${row.branch} to the merge commit, so check it before you add more proposed work.` : ''),
     url: `https://github.com/${row.repo_owner}/${row.repo_name}/pull/${number}`
   };
   if (sha !== '') merged.sha = sha;
@@ -791,9 +801,8 @@ function origin(env: Env): string {
 }
 
 /**
- * Every change branch contains a slash (`forge/pricing-section`), and GitHub's
- * ref endpoints match on the path itself — percent-encoding the separator makes
- * the ref simply not exist. Encode each segment, keep the slashes.
+ * Legacy Forge branches contain a slash. GitHub matches ref paths directly,
+ * so each segment must keep its separator.
  */
 function encodePath(value: string): string {
   return value.split('/').map(encodeURIComponent).join('/');

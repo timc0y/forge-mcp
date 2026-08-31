@@ -9,11 +9,9 @@
  *    poll, retry something that already happened, or call a tool that does not
  *    exist. The one continuation Forge has is an approval URL a human opens,
  *    and it outlives the conversation.
- * 2. Each result carries the repository's open changes, by name. That is what
- *    replaces client memory: the next turn continues by saying the name this
- *    turn said. Names are the only change address any input accepts, which is
- *    why nothing here returns a pull-request number the model could try to
- *    pass back.
+ * 2. Each result carries the repository's open Forge change. That replaces
+ *    client memory. Nothing here returns a pull-request number that the model
+ *    could try to pass back.
  * 3. Output schemas stay small. The catalog is re-sent on every turn, before
  *    the model reads a single word of the conversation, so a field that only
  *    restates an input or an internal id is a tax paid on every message.
@@ -34,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { changeBranch, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
+import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
 import { capture } from './capture';
@@ -434,7 +432,7 @@ async function readChangeLevel(
 async function resolveWriteTarget(
   ctx: ToolContext,
   repo: RepoRef,
-  intent: string,
+  description: string,
   wantPrivate: boolean
 ): Promise<{ base: string; created: boolean }> {
   try {
@@ -468,7 +466,7 @@ async function resolveWriteTarget(
 
     assertNotNearExisting(repo.name, [...new Set(reachable.map((entry) => entry.repo.split('/')[1] ?? entry.repo))]);
 
-    const created = await createRepo(ctx.ghUser, repo.name, { private: wantPrivate, description: intent });
+    const created = await createRepo(ctx.ghUser, repo.name, { private: wantPrivate, description });
     try {
       return { base: await defaultBranch(ctx.gh, created), created: true };
     } catch {
@@ -624,14 +622,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     {
       title: 'Edit',
       description:
-        'Write files to GitHub. Creates the repository if it does not exist, and creates the change from the intent. Always commits on a change branch with a draft pull request — never on the default branch. The commit is on GitHub before this returns.',
+        'Write files to GitHub. Commit ordinary plans, research, direction and routine content directly by omitting change. Set change only when the work should stay separate for human review; Forge then uses its one fixed branch. Creates the repository if needed. The commit is on GitHub before this returns.',
       inputSchema: {
         repo: z.string().describe('owner/name, or a bare name to create it on your account.'),
-        intent: z
+        change: z
           .string()
-          .describe('A few words naming the work, e.g. "pricing section". Say the same words again to continue it.'),
+          .trim()
+          .min(1)
+          .optional()
+          .describe('Why this work needs review before becoming repository truth. Omit for ordinary durable edits.'),
         files: z.array(fileInput).min(1).max(10),
-        message: z.string().optional().describe('Commit message. Defaults to the intent.'),
+        message: z.string().describe('Commit message saying what changed.'),
         private: z.boolean().optional().describe('Only read when the repository is created. Defaults to true.')
       },
       outputSchema: {
@@ -657,19 +658,29 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     async (input) =>
       run('forge_edit', ctx.track, async () => {
         const repo = resolveRepo(ctx, input.repo);
-        const { base, created } = await resolveWriteTarget(ctx, repo, input.intent, input.private ?? true);
-        const branch = changeBranch(input.intent);
+        const message = input.message.trim();
+        const { base, created } = await resolveWriteTarget(ctx, repo, message, input.private ?? true);
+        const change = input.change;
+        const proposed = change !== undefined;
+        const branch = proposed ? CHANGE_BRANCH : base;
 
-        // The invariant the whole product rests on: `main` is reachable only
-        // through a merge a human approved. changeBranch always prefixes the
-        // slug, so this can only fire if a repository's default branch is
-        // itself a forge/ ref — but an unchecked invariant is not one.
-        if (branch === base) {
+        if (proposed && branch === base) {
           throw new ForgeError({
             code: 'FORGE_VALIDATION_FAILED',
-            message: `"${input.intent}" names ${base}, which is the default branch of ${formatRepo(repo)}. Describe the work differently.`,
+            message: `${base} is both the default branch and Forge's reserved change branch in ${formatRepo(repo)}. Rename the default branch before proposing work.`,
             details: { branch }
           });
+        }
+
+        if (proposed) {
+          const legacy = (await openChanges(ctx.gh, repo)).filter((change) => change.branch !== CHANGE_BRANCH);
+          if (legacy.length > 0) {
+            throw new ForgeError({
+              code: 'FORGE_CONFLICT',
+              message: `Resolve the older Forge change${legacy.length === 1 ? '' : 's'} first: ${changeNames(legacy).join(', ')}. Forge now keeps only one proposed change.`,
+              details: { changes: changeNames(legacy) }
+            });
+          }
         }
 
         const commit = await commitFiles(
@@ -677,7 +688,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           repo,
           branch,
           base,
-          input.message?.trim() || input.intent,
+          message,
           input.files
         );
         if (commit.outcome === 'committed') {
@@ -695,7 +706,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
         let number: number | null = null;
         try {
-          number = await ensureDraftPullRequest(ctx.gh, repo, branch, input.intent, base);
+          if (change !== undefined) number = await ensureDraftPullRequest(ctx.gh, repo, branch, change, base);
         } catch (error) {
           limits.push(
             `The work is committed, but its review pull request could not be opened: ${toForgeError(error).message} ` +
@@ -717,20 +728,20 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           // would never appear in the open-changes list and forge_discard
           // could never address it — a ref only Forge's own no-op created and
           // only a human on github.com could remove. Take it back.
-          if (number === null) {
+          if (proposed && number === null) {
             const ref = branch.split('/').map(encodeURIComponent).join('/');
             const removed = await ctx.gh(`/repos/${repo.owner}/${repo.name}/git/refs/heads/${ref}`, {
               method: 'DELETE'
             });
             if (removed.status >= 200 && removed.status < 300) {
-              limits.push(`No change named "${input.intent}" was opened, because there was nothing to put in it.`);
+              limits.push('No Forge change was opened, because there was nothing to put in it.');
             }
           }
         }
 
         const createdNote = created ? `Created ${formatRepo(repo)}. ` : '';
         return {
-          summary: `${createdNote}${commit.outcome === 'committed' ? 'Committed' : 'Already matched'} ${commit.paths.length} file${commit.paths.length === 1 ? '' : 's'} on "${input.intent}" in ${formatRepo(repo)} (${commit.sha.slice(0, 7)}).${changesSentence(changeNames(changes))}`,
+          summary: `${createdNote}${commit.outcome === 'committed' ? 'Committed' : 'Already matched'} ${commit.paths.length} file${commit.paths.length === 1 ? '' : 's'} ${proposed ? 'on the Forge change' : `to ${base}`} in ${formatRepo(repo)} (${commit.sha.slice(0, 7)}).${changesSentence(changeNames(changes))}`,
           structured: withLimits(
             {
               commit: {
@@ -740,12 +751,12 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
                 url: commit.url,
                 outcome: commit.outcome
               },
-              change: input.intent,
+              ...(proposed ? { change: 'forge' } : {}),
               ...(number === null
                 ? {}
                 : { review: `https://github.com/${repo.owner}/${repo.name}/pull/${number}` }),
               changes: changeNames(changes),
-              next: 'When this change is right, forge_merge asks a human to land it.'
+              next: proposed ? 'When this change is right, forge_merge asks a human to land it.' : 'The edit is now repository truth.'
             },
             limits
           )

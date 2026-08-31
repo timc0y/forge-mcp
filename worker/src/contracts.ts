@@ -39,13 +39,12 @@ export type GitHubRequest = (
 // ---------------------------------------------------------------------------
 
 /**
- * A change is a branch and its draft pull request, addressed by the intent that
- * created it. The chat never sees `branch`; it sees `name`.
+ * A change is Forge's fixed branch and its draft pull request.
  */
 export interface Change {
-  /** The human intent, e.g. "pricing section". */
+  /** The human-readable name. New changes are simply "forge". */
   name: string;
-  /** `forge/pricing-section` — a deterministic slug of `name`. */
+  /** `forge` for new changes. Older open changes may retain `forge/*`. */
   branch: string;
   /** Pull request number once one is open. */
   number: number | null;
@@ -126,9 +125,8 @@ export interface CommitReceipt {
 // ---------------------------------------------------------------------------
 
 /**
- * Every tool result carries the repository's open changes. That is what
- * replaces client memory: the next turn continues by name because this turn
- * said the names. Nothing else in the system stores conversational state.
+ * Every tool result carries the repository's open Forge change. This replaces
+ * client memory. Nothing else in the system stores conversational state.
  */
 export interface Receipt<T> {
   value: T;

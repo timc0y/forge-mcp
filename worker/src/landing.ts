@@ -63,7 +63,7 @@ function loop(): string {
 
 const TOOLS: Array<[string, string, string, boolean]> = [
   ['read', 'forge_read', 'Your repos, a repo&rsquo;s files, or what a change did', false],
-  ['edit', 'forge_edit', 'Commits files on a draft change; makes the repo if new', false],
+  ['edit', 'forge_edit', 'Commits files directly or holds one change for review', false],
   ['merge', 'forge_merge', 'Sends one link to land a change on main', true],
   ['discard', 'forge_discard', 'Sends one link to throw a change away', true],
   ['see', 'forge_see', 'Captures a public page at phone and desktop', false]
@@ -72,7 +72,7 @@ const TOOLS: Array<[string, string, string, boolean]> = [
 const USE_CASES: Array<[string, string]> = [
   ['Research &rarr; repository', 'Save a plan, decision or brief where the next coding session can use it.'],
   ['Live page &rarr; visual review', 'See phone and desktop, then record the findings or make a small correction.'],
-  ['Small edit &rarr; draft PR', 'Fix copy, CSS or documentation without opening a terminal or touching main.']
+  ['Proposed edit &rarr; draft PR', 'Hold implementation or risky work for review before it becomes repository truth.']
 ];
 
 const LIMITS: Array<[string, string]> = [
@@ -84,7 +84,7 @@ const LIMITS: Array<[string, string]> = [
 
 const REFUSALS: Array<[string, string, string]> = [
   ['edit', 'Run code', 'Use a coding agent for builds, tests, commands and deployments'],
-  ['edit', 'Touch main', 'Only a merge you approved moves your default branch'],
+  ['edit', 'Open many changes', 'Each repository has one Forge change'],
   ['see', 'See private pages', 'Captures need a URL that is already public'],
   ['read', 'Keep a copy', 'GitHub is the only place your work lives']
 ];
@@ -161,7 +161,7 @@ export function landingPage(env: Env): Response {
   <h1 class="rise">Think in ChatGPT.<br>Commit safely to GitHub.</h1>
   <p class="lead rise">Forge is the safe handoff between a conversation and your repository:
     research, visual reviews and small edits become <b>real commits</b> and <b>draft pull requests</b>.
-    It never runs code or touches <code>main</code> without you.</p>
+    It never runs code. It holds proposed work for your review.</p>
   <div class="row"><a class="btn primary" href="#setup">Connect Forge</a>
     <a class="btn" href="${escapeHtml(install)}">Choose repositories</a></div>
   <div class="endpoint"><span>Server</span><code>${escapeHtml(mcp)}</code></div>

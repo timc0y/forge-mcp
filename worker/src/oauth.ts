@@ -764,7 +764,7 @@ function consentPage(clientName: string): Response {
     200,
     'Connect Forge',
     `<h1>Connect Forge</h1>
-<p class="lead">This lets <strong>${escapeHtml(clientName)}</strong> work on GitHub as you — reading repositories, writing to change branches, and asking you to approve anything that lands on <code>main</code>.</p>
+<p class="lead">This lets <strong>${escapeHtml(clientName)}</strong> work on GitHub as you: read repositories, save ordinary work, and hold proposed work for your review.</p>
 <form method="post">
 <button type="submit">Continue with GitHub</button>
 </form>
