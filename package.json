@@ -12,6 +12,6 @@
     "typecheck": "pnpm --dir worker typecheck",
     "test": "pnpm --dir worker test",
     "check": "pnpm typecheck && pnpm test",
-    "deploy": "pnpm --dir worker deploy"
+    "deploy": "pnpm --dir worker run deploy"
   }
 }
