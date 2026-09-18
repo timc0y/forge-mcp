@@ -61,69 +61,36 @@ Forge hosts nothing.
 
 ## Precedents
 
-### No executor
-
-- **Need**: run and verify code from a chat.
-- **Tempting complexity**: ephemeral containers, workspace lifecycle, capacity
-  slots, process management, recovery tools.
-- **Observed native fact**: nearly every production failure in this repo's
-  history traces to compute holding state GitHub did not — lost workspace IDs
-  (`5377975`, `bd8d130`), local-only edits a reaper could erase (`ca0a99a`),
-  commands dying in the transport while continuing remotely (`9c78d0f`). Each
-  fix was a mitigation; the cause remained and kept generating recovery tools.
-- **Simple solution**: delete the execution plane. T3 Code runs code.
-- **Why sufficient here**: authoring and capture need no computer that holds the
-  repository.
-- **Invalidation condition**: a user needs to run code and has no other way to.
-- **Concepts avoided**: workspace, executor, container, slot, capacity, process,
-  deferred execution, divergence, checkout recovery, mutation queue.
-
-### A tool it can see is a tool it will call
-
-- **Need**: keep the model choosing correctly.
-- **Tempting complexity**: instructions and error messages that tell it not to.
-- **Observed native fact**: the catalog reached ~64 tools, was cut to 34, regrew,
-  was cut to 38 (`79bf6fc`). Every subsystem failure produced a public recovery
-  tool, and the larger surface then produced selection, ordering, and guidance
-  failures. Guidance naming removed tools regressed four separate times.
-- **Simple solution**: remove the tool. Five remain, and none takes a mode or
-  action parameter — a mode is a tool the model has to pick, wearing a disguise.
-- **Why sufficient here**: a capability the model cannot see costs nothing per
-  turn and cannot be misselected.
-- **Invalidation condition**: a real user need has no expression in the five.
-- **Concepts avoided**: recovery sprawl, tool-selection guidance, catalog churn.
-
-### Optimistic concurrency, no locks
-
-- **Need**: two writes must not silently clobber each other.
-- **Tempting complexity**: leases, mutation queues, idempotency keys the model
-  invents.
-- **Observed native fact**: GitHub already refuses a non-fast-forward ref update,
-  and the merge endpoint returns 409 when `sha` no longer matches the head.
-- **Simple solution**: every mutating call carries the state it expects. On a
-  moved ref, re-apply onto the new head; raise a conflict only when another
-  commit touched a path this write also touches. Never force. An identical tree
-  produces no commit and reports `unchanged`.
-- **Why sufficient here**: there is one writer plane and GitHub arbitrates it.
-- **Invalidation condition**: a write path that GitHub does not arbitrate.
-- **Concepts avoided**: locks, leases, model-supplied idempotency keys.
-
-### One branch means one pending decision
-
-- **Need**: planning work must become repository truth without a forgotten pull
-  request, while proposed implementation still needs review.
-- **Tempting complexity**: classify paths, name branches from each intent, or
-  keep session state.
-- **Observed owner decision**: the model knows whether work needs review from
-  the conversation. A repository needs no more than one pending Forge decision.
-- **Simple solution**: an ordinary edit updates the default branch. A proposed
-  edit uses the fixed `forge` branch. Later proposed edits continue it.
-- **Why sufficient here**: the commit message and pull request describe the
-  work. The branch only records that Forge made it.
-- **Invalidation condition**: users need two independent Forge proposals open
-  in one repository at the same time.
-- **Concepts avoided**: path classification, branch naming, change ids and
-  session state.
+- Execution once kept state outside GitHub. Lost workspace IDs (`5377975`,
+  `bd8d130`), reaped local edits (`ca0a99a`) and commands that outlived transport
+  (`9c78d0f`) caused repeated failures. T3 Code now owns execution. Authoring and
+  capture need no local repository copy. Reconsider if a user needs execution
+  and has no other route. Do not restore workspace, container, capacity, process,
+  checkout-recovery or mutation-queue machinery without that need.
+- The catalog grew to about 64 tools, fell to 34, grew again, then fell to 38
+  (`79bf6fc`). Recovery tools caused more selection and ordering failures;
+  guidance named removed tools in four regressions. Five tools now remain,
+  without mode or action parameters that hide more choices. Reconsider only
+  when a real need has no expression in the five. Remove unnecessary tools
+  rather than add instructions to avoid them.
+- GitHub refuses non-fast-forward ref updates; merge returns 409 when `sha`
+  differs from the head. Each write carries expected state. Reapply on a moved
+  ref; raise a conflict when another commit changed the same path. Never force.
+  An identical tree returns `unchanged` without a commit. GitHub owns concurrency;
+  no locks, leases or model-invented idempotency keys. Reconsider for a write
+  that GitHub cannot arbitrate.
+- One repository has one pending Forge decision. Ordinary edits update the
+  default branch; proposed edits continue the fixed `forge` branch. The model
+  selects review from the conversation; commit and pull-request text describe
+  the work. Do not add path classification, intent-based branch names, change
+  IDs or session state. Reconsider when users need two independent proposals
+  open in one repository.
+- Fast semantic decisions need no server-side index. Vector databases, periodic
+  repo indexing, and background embeddings workers add infrastructure that drifts
+  out of sync with GitHub. TypeSafe Jev evaluates trees, paths, diffs, and security
+  gates on the fly in ~70-200ms using a single non-autoregressive forward pass.
+  Remote GitHub remains the sole source of truth; if Jev is unavailable or
+  unconfigured, Forge degrades cleanly to exact matching and honest receipts.
 
 ## Proof
 

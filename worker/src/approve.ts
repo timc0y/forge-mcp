@@ -33,6 +33,7 @@ import type {
 import { formatRepo } from './contracts';
 import type { Env } from './env';
 import { ForgeError } from './errors';
+import { summarizeChangeImpactWithJev } from './jev';
 import { analyticsFor } from './analytics';
 import { escapeHtml, page } from './ui';
 
@@ -72,6 +73,7 @@ interface Evidence {
   comparison: Comparison;
   /** Destination shown when the approval was created. Optional for legacy rows. */
   baseBranch?: string;
+  impactSummary?: string;
 }
 
 /** What actually happened, written once, read by every later click. */
@@ -124,10 +126,13 @@ export async function requestApproval(
   const id = crypto.randomUUID();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + APPROVAL_TTL_MS);
+  const impactSummary =
+    req.impactSummary ?? (await summarizeChangeImpactWithJev(env, req.change.name, req.comparison));
   const evidence: Evidence = {
     change: req.change,
     comparison: req.comparison,
-    baseBranch: req.baseBranch
+    baseBranch: req.baseBranch,
+    ...(impactSummary ? { impactSummary } : {})
   };
 
   await env.METADATA.prepare(
@@ -688,6 +693,7 @@ function renderDecision(row: ApprovalRow, evidence: Evidence, id: string, token:
     `<h1>${escapeHtml(heading)}</h1>` +
       `<p class="lead">${escapeHtml(evidence.change.name)} · ${escapeHtml(formatRepoRow(row))}</p>` +
       `<div class="box">${consequence}</div>` +
+      (evidence.impactSummary ? `<div class="box"><strong>Assessment:</strong> ${escapeHtml(evidence.impactSummary)}</div>` : "") +
       details(row, evidence) +
       fileList(evidence.comparison) +
       `<form method="post" action="${escapeHtml(action)}">` +

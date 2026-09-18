@@ -157,6 +157,7 @@ export interface ApprovalRequest {
   headSha: string;
   /** The default-branch destination shown to the human when approval was minted. */
   baseBranch?: string;
+  impactSummary?: string;
 }
 
 export interface ApprovalReceipt {

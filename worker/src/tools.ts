@@ -32,6 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
+import { analyzePageOutlineWithJev, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage } from './jev';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
@@ -166,6 +167,38 @@ async function run(
 function resolveRepo(ctx: ToolContext, value: string): RepoRef {
   const trimmed = value.trim();
   return parseRepo(trimmed.includes('/') ? trimmed : `${ctx.identity.githubLogin}/${trimmed}`);
+}
+
+async function resolveRepoTarget(ctx: ToolContext, value: string): Promise<RepoRef> {
+  const trimmed = value.trim();
+  if (trimmed.includes("/")) {
+    return parseRepo(trimmed);
+  }
+
+  const userRepo = parseRepo(`${ctx.identity.githubLogin}/${trimmed}`);
+
+  try {
+    const repos = await listRepos(ctx.gh);
+    const exactNameMatches = repos.filter((r) => {
+      const parts = r.repo.split("/");
+      return parts[1]?.toLowerCase() === trimmed.toLowerCase();
+    });
+
+    if (exactNameMatches.length === 1) {
+      return parseRepo(exactNameMatches[0]!.repo);
+    }
+
+    if (ctx.env.TYPESAFE_API_KEY && repos.length > 0) {
+      const match = await resolveRepoWithJev(ctx.env, trimmed, repos);
+      if (match && match.confidence >= 0.8) {
+        return parseRepo(match.repo);
+      }
+    }
+  } catch {
+    // Fall back to direct userRepo if listing fails
+  }
+
+  return userRepo;
 }
 
 function changeNames(changes: Change[]): string[] {
@@ -303,13 +336,25 @@ async function readTreeLevel(
     openChanges(ctx.gh, repo)
   ]);
 
-  const needle = query?.trim().toLowerCase();
-  // Directories are redundant in a recursive listing: every one of them is
-  // already spelled out inside the paths of the files it holds.
-  const paths = tree.entries
+  const allFilePaths = tree.entries
     .filter((entry) => entry.type === 'file')
-    .map((entry) => entry.path)
-    .filter((path) => (needle ? path.toLowerCase().includes(needle) : true));
+    .map((entry) => entry.path);
+
+  let paths = allFilePaths;
+  let isSemanticSearch = false;
+
+  if (query?.trim()) {
+    const trimmed = query.trim();
+    const semanticResults = await semanticPathTriage(ctx.env, allFilePaths, trimmed);
+    if (semanticResults && semanticResults.length > 0) {
+      paths = semanticResults;
+      isSemanticSearch = true;
+    } else {
+      const needle = trimmed.toLowerCase();
+      paths = allFilePaths.filter((path) => path.toLowerCase().includes(needle));
+    }
+  }
+
   const shown = paths.slice(0, MAX_TREE_ENTRIES);
 
   const limits: string[] = [];
@@ -321,8 +366,14 @@ async function readTreeLevel(
   }
 
   const names = changeNames(changes);
+  const queryNote = isSemanticSearch
+    ? ` matching "${query?.trim()}" (semantically ranked by Jev across ${allFilePaths.length} files)`
+    : query?.trim()
+      ? ` matching "${query.trim()}"`
+      : '';
+
   return {
-    summary: `${formatRepo(repo)} at ${base}: ${shown.length} file${shown.length === 1 ? '' : 's'}.${changesSentence(names)}`,
+    summary: `${formatRepo(repo)} at ${base}: ${shown.length} file${shown.length === 1 ? '' : 's'}${queryNote}.${changesSentence(names)}`,
     structured: withLimits(
       {
         tree: shown,
@@ -330,14 +381,19 @@ async function readTreeLevel(
         next:
           names.length > 0
             ? 'Say a change name to see what it did.'
-            : 'Ask for paths to read any of these files.'
+            : 'Ask for paths to read any of these files (or include query for targeted excerpts).'
       },
       limits
     )
   };
 }
 
-async function readFilesLevel(ctx: ToolContext, repo: RepoRef, paths: string[]): Promise<ToolOutcome> {
+async function readFilesLevel(
+  ctx: ToolContext,
+  repo: RepoRef,
+  paths: string[],
+  query?: string
+): Promise<ToolOutcome> {
   const base = await defaultBranch(ctx.gh, repo);
   const [read, changes] = await Promise.all([
     readFiles(ctx.gh, repo, base, paths, MAX_FILE_BYTES),
@@ -345,15 +401,42 @@ async function readFilesLevel(ctx: ToolContext, repo: RepoRef, paths: string[]):
   ]);
 
   const names = changeNames(changes);
+  const skippedNotes = read.skipped.map((skip) => `${skip.path} ${skip.reason}.`);
+
+  let filesToReturn = read.files;
+  if (query?.trim()) {
+    const trimmed = query.trim();
+    const excerptResults = await Promise.all(
+      read.files.map(async (file) => {
+        const excerpt = await semanticFileExcerpt(ctx.env, file.path, file.content, trimmed);
+        if (excerpt) {
+          skippedNotes.push(
+            `Targeted excerpt for '${trimmed}' in ${file.path} (lines ${excerpt.startLine}-${excerpt.endLine}, confidence ${(excerpt.confidence * 100).toFixed(0)}%). Omit query to read the full file.`
+          );
+          return {
+            path: `${file.path} (lines ${excerpt.startLine}-${excerpt.endLine})`,
+            content: excerpt.content,
+            bytes: excerpt.content.length,
+            truncated: true
+          };
+        }
+        return file;
+      })
+    );
+    filesToReturn = excerptResults;
+  }
+
   return {
-    summary: `${read.files.length} of ${paths.length} file${paths.length === 1 ? '' : 's'} from ${formatRepo(repo)} at ${base}.${changesSentence(names)}`,
+    summary: `${filesToReturn.length} of ${paths.length} file${paths.length === 1 ? '' : 's'} from ${formatRepo(repo)} at ${base}.${changesSentence(names)}`,
     structured: withLimits(
       {
-        files: read.files.map((file) => ({ path: file.path, text: file.content })),
+        files: filesToReturn.map((file) => ({ path: file.path, text: file.content })),
         changes: names,
-        next: 'forge_edit writes these back on a change of its own.'
+        next: query?.trim()
+          ? 'Omit query to read full files, or forge_edit to write changes.'
+          : 'forge_edit writes these back on a change of its own.'
       },
-      read.skipped.map((skip) => `${skip.path} ${skip.reason}.`)
+      skippedNotes
     )
   };
 }
@@ -362,7 +445,8 @@ async function readChangeLevel(
   ctx: ToolContext,
   repo: RepoRef,
   wanted: string,
-  paths: string[] | undefined
+  paths: string[] | undefined,
+  query?: string
 ): Promise<ToolOutcome> {
   const base = await defaultBranch(ctx.gh, repo);
   const change = await findChange(ctx.gh, repo, wanted);
@@ -378,10 +462,24 @@ async function readChangeLevel(
 
   // Files the caller asked about come first, so a cap can never be what
   // removes the one patch they were looking for.
-  const ordered = [
+  let ordered = [
     ...comparison.files.filter((file) => asked.has(file.path)),
     ...comparison.files.filter((file) => !asked.has(file.path))
   ];
+
+  let semanticallyRanked = false;
+  if (query?.trim() && ordered.length > 1) {
+    const trimmed = query.trim();
+    const rankedPaths = await rankChangeFilesWithJev(ctx.env, ordered, trimmed);
+    if (rankedPaths && rankedPaths.length > 0) {
+      semanticallyRanked = true;
+      const pathSet = new Set(rankedPaths);
+      ordered = [
+        ...ordered.filter((f) => pathSet.has(f.path)).sort((a, b) => rankedPaths.indexOf(a.path) - rankedPaths.indexOf(b.path)),
+        ...ordered.filter((f) => !pathSet.has(f.path))
+      ];
+    }
+  }
   const shown = ordered.slice(0, MAX_DIFF_FILES);
   if (ordered.length > shown.length) {
     limits.push(`Showing ${shown.length} of ${ordered.length} changed files.`);
@@ -394,8 +492,9 @@ async function readChangeLevel(
   const changes = await openChanges(ctx.gh, repo);
   const names = changeNames(changes);
 
-  return {
-    summary: `"${change.name}" is ${comparison.status} against ${base}: ${size.files} file${size.files === 1 ? '' : 's'}, +${size.additions}/-${size.deletions}.${changesSentence(names)}`,
+    const queryNote = semanticallyRanked ? ` (ranked for "${query?.trim()}")` : "";
+    return {
+      summary: `"${change.name}" is ${comparison.status} against ${base}: ${size.files} file${size.files === 1 ? "" : "s"}, +${size.additions}/-${size.deletions}${queryNote}.${changesSentence(names)}`,
     structured: withLimits(
       {
         diff: {
@@ -512,7 +611,7 @@ async function requestAct(
   repoInput: string,
   wanted: string
 ): Promise<ToolOutcome> {
-  const repo = resolveRepo(ctx, repoInput);
+  const repo = await resolveRepoTarget(ctx, repoInput);
   const base = await defaultBranch(ctx.gh, repo);
   const change = await findChange(ctx.gh, repo, wanted);
   const comparison = await compare(ctx.gh, repo, base, change.branch);
@@ -610,9 +709,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           return readRepositories(ctx, input.query);
         }
 
-        const repo = resolveRepo(ctx, input.repo);
-        if (input.change !== undefined) return readChangeLevel(ctx, repo, input.change, input.paths);
-        if (input.paths !== undefined && input.paths.length > 0) return readFilesLevel(ctx, repo, input.paths);
+        const repo = await resolveRepoTarget(ctx, input.repo);
+        if (input.change !== undefined) return readChangeLevel(ctx, repo, input.change, input.paths, input.query);
+        if (input.paths !== undefined && input.paths.length > 0) return readFilesLevel(ctx, repo, input.paths, input.query);
         return readTreeLevel(ctx, repo, input.query);
       })
   );
@@ -657,7 +756,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     },
     async (input) =>
       run('forge_edit', ctx.track, async () => {
-        const repo = resolveRepo(ctx, input.repo);
+        const repo = await resolveRepoTarget(ctx, input.repo);
         const message = input.message.trim();
         const { base, created } = await resolveWriteTarget(ctx, repo, message, input.private ?? true);
         const change = input.change;
@@ -689,7 +788,8 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           branch,
           base,
           message,
-          input.files
+          input.files,
+          ctx.env
         );
         if (commit.outcome === 'committed') {
           ctx.track('change_committed', { files: commit.paths.length, created_repo: created });
@@ -891,6 +991,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           limits.push('These images could not be saved to a link, so they exist only in this reply.');
         }
 
+        let jevInsightNote = "";
+        if (shot.outline.length > 0) {
+          const insight = await analyzePageOutlineWithJev(ctx.env, input.url, shot.title, shot.outline);
+          if (insight) {
+            jevInsightNote = ` ${insight.summary}`;
+            if (insight.isErrorPage) {
+              limits.push("Jev detected that this page outline matches an HTTP error or service outage page.");
+            }
+          }
+        }
+
         const shown = kept.map((image) => image.viewport);
         const content: Content[] = [];
         if (shot.outline.length > 0) {
@@ -911,7 +1022,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         }
 
         return {
-          summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${quota.unlimited ? '' : ` ${quota.used} of ${quota.limit} captures used today.`}`,
+          summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${jevInsightNote}${quota.unlimited ? '' : ` ${quota.used} of ${quota.limit} captures used today.`}`,
           structured: withLimits(
             {
               page: { url: shot.url, title: shot.title, shown },
