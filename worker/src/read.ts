@@ -162,6 +162,27 @@ interface GitHubContentFile {
   size?: number;
 }
 
+export interface PathSpec {
+  raw: string;
+  cleanPath: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/**
+ * Parses path line window specifiers like "src/index.ts:10-50" or "src/index.ts:10".
+ */
+export function parsePathRange(rawPath: string): PathSpec {
+  const match = rawPath.match(/^(.+?):(\d+)(?:-(\d+))?$/);
+  if (!match) {
+    return { raw: rawPath, cleanPath: rawPath };
+  }
+  const cleanPath = match[1]!;
+  const startLine = parseInt(match[2]!, 10);
+  const endLine = match[3] ? parseInt(match[3], 10) : undefined;
+  return { raw: rawPath, cleanPath, startLine, endLine };
+}
+
 export async function readFiles(
   request: GitHubRequest,
   repo: RepoRef,
@@ -169,10 +190,11 @@ export async function readFiles(
   paths: string[],
   maxBytes: number
 ): Promise<{ files: Array<{ path: string; content: string; bytes: number; truncated: boolean }>; skipped: Array<{ path: string; reason: string }> }> {
+  const specs = paths.map(parsePathRange);
   const fetched = await Promise.all(
-    paths.map(async (path) => ({
-      path,
-      response: await repoRequest(request, repo, `/contents/${encodeContentPath(path)}?ref=${encodeURIComponent(ref)}`)
+    specs.map(async (spec) => ({
+      spec,
+      response: await repoRequest(request, repo, `/contents/${encodeContentPath(spec.cleanPath)}?ref=${encodeURIComponent(ref)}`)
     }))
   );
 
@@ -205,58 +227,77 @@ export async function readFiles(
   const skipped: Array<{ path: string; reason: string }> = [];
   let spent = 0;
 
-  for (const { path, response } of fetched) {
+  for (const { spec, response } of fetched) {
+    const displayPath = spec.raw;
+    const cleanPath = spec.cleanPath;
+
     if (response.status === 404) {
-      skipped.push({ path, reason: `not found at ${ref}` });
+      skipped.push({ path: displayPath, reason: `not found at ${ref}` });
       continue;
     }
     if (response.status !== 200) {
-      skipped.push({ path, reason: `GitHub returned ${response.status}` });
+      skipped.push({ path: displayPath, reason: `GitHub returned ${response.status}` });
       continue;
     }
 
     const body = response.json as GitHubContentFile | GitHubContentFile[];
     if (Array.isArray(body)) {
-      skipped.push({ path, reason: 'is a directory, not a file' });
+      skipped.push({ path: displayPath, reason: 'is a directory, not a file' });
       continue;
     }
     if (body.type !== undefined && body.type !== 'file') {
-      skipped.push({ path, reason: `is a ${body.type}, not a regular file` });
+      skipped.push({ path: displayPath, reason: `is a ${body.type}, not a regular file` });
       continue;
     }
     if (typeof body.content !== 'string' || body.encoding !== 'base64') {
       // The contents API omits inline content past 1 MB regardless of
       // maxBytes; there's no cheaper way to learn that than asking.
-      skipped.push({ path, reason: 'too large for GitHub to return inline content (over 1 MB)' });
+      skipped.push({ path: displayPath, reason: 'too large for GitHub to return inline content (over 1 MB)' });
       continue;
     }
 
     const bytes = decodeBase64(body.content);
     if (looksBinary(bytes)) {
-      skipped.push({ path, reason: 'binary file, not returned as text' });
+      skipped.push({ path: displayPath, reason: 'binary file, not returned as text' });
       continue;
     }
 
-    const size = body.size ?? bytes.length;
-    if (size > maxBytes) {
-      skipped.push({ path, reason: `file is ${size} bytes, larger than the ${maxBytes} byte budget` });
-      continue;
+    const fullText = new TextDecoder().decode(bytes);
+    const allLines = fullText.split('\n');
+    const totalLines = allLines.length;
+
+    let contentToReturn = fullText;
+    let isTruncated = false;
+
+    if (spec.startLine !== undefined) {
+      // Explicit line window requested (e.g. :1-200 or :50)
+      const start = Math.max(1, spec.startLine);
+      const end = spec.endLine !== undefined ? Math.min(totalLines, Math.max(start, spec.endLine)) : totalLines;
+      contentToReturn = allLines.slice(start - 1, end).join('\n');
+      isTruncated = start > 1 || end < totalLines;
+    } else if (bytes.length > maxBytes) {
+      // File exceeds byte budget: paginate the first window rather than failing completely
+      const windowLines = Math.min(400, totalLines);
+      contentToReturn = allLines.slice(0, windowLines).join('\n');
+      isTruncated = true;
+      skipped.push({
+        path: displayPath,
+        reason: `file is ${bytes.length} bytes (${totalLines} lines). Showing lines 1-${windowLines}. Pass '${cleanPath}:${windowLines + 1}-${Math.min(totalLines, windowLines * 2)}' for next window.`
+      });
     }
-    if (spent + size > maxBytes) {
-      skipped.push({ path, reason: `the ${maxBytes} byte budget was already spent by earlier files` });
+
+    const contentBytes = new TextEncoder().encode(contentToReturn).length;
+    if (spent + contentBytes > maxBytes && files.length > 0) {
+      skipped.push({ path: displayPath, reason: `the ${maxBytes} byte budget was already spent by earlier files` });
       continue;
     }
 
-    spent += size;
+    spent += contentBytes;
     files.push({
-      path,
-      content: new TextDecoder().decode(bytes),
-      bytes: size,
-      // Forge never returns a partial file: a file either fits the remaining
-      // budget whole or is skipped outright. This stays false today because
-      // that's the only outcome this function produces — a real partial read
-      // would be a genuinely new capability, not a value to fake here.
-      truncated: false
+      path: displayPath,
+      content: contentToReturn,
+      bytes: contentBytes,
+      truncated: isTruncated
     });
   }
 

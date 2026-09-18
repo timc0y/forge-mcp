@@ -47,6 +47,10 @@ export interface Env {
    */
   FORGE_UNLIMITED_LOGINS?: string;
 
+  /** TypeSafe Jev API key for token-safe repo triage and excerpt search. */
+  TYPESAFE_API_KEY?: string;
+  TYPESAFE_BASE_URL?: string;
+
   /** Analytics. Unset means no analytics at all, not degraded analytics. */
   POSTHOG_API_KEY?: string;
   POSTHOG_HOST?: string;
