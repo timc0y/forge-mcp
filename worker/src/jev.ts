@@ -79,25 +79,80 @@ export async function typesafeSystemOne(
   if (!apiKey || apiKey.trim() === '') return null;
 
   const endpoint = baseUrl?.trim() ? baseUrl.trim() : DEFAULT_JEV_URL;
+  const isCloudflare =
+    endpoint.includes("cloudflare.com") ||
+    endpoint.includes("/ai/run") ||
+    apiKey.trim().startsWith("cfut_");
+
+  // Cloudflare Workers AI typesafe/jev requires criteria to be a Record<string, string>, not an Array
+  let normalizedQuestions = payload.questions;
+  if (isCloudflare) {
+    const qMap: Record<string, JevQuestion> = {};
+    for (const [key, q] of Object.entries(payload.questions)) {
+      if (q.type === "choice" && Array.isArray(q.criteria)) {
+        const recordCriteria: Record<string, string> = {};
+        for (const item of q.criteria) {
+          recordCriteria[item] = item;
+        }
+        qMap[key] = { ...q, criteria: recordCriteria };
+      } else {
+        qMap[key] = q;
+      }
+    }
+    normalizedQuestions = qMap;
+  }
+
+  const body = isCloudflare
+    ? JSON.stringify({
+        model: "typesafe/jev",
+        input: {
+          state: payload.state,
+          questions: normalizedQuestions
+        }
+      })
+    : JSON.stringify({
+        state: payload.state,
+        questions: normalizedQuestions
+      });
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(endpoint, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey.trim()}`
       },
-      body: JSON.stringify(payload),
+      body,
       signal: controller.signal
     });
 
     if (!response.ok) return null;
 
-    const data = (await response.json()) as JevResponse;
-    if (!data || typeof data !== 'object' || !data.answers) return null;
-    return data;
+    const data = (await response.json()) as any;
+    if (!data || typeof data !== "object") return null;
+
+    // Cloudflare returns { result: { result: { answers } } } or { result: { answers } }
+    // Native TypeSafe returns { answers }
+    const rawAnswers = data.result?.result?.answers ?? data.result?.answers ?? data.answers;
+    if (!rawAnswers || typeof rawAnswers !== "object") return null;
+
+    // Normalize probabilities into distribution for choice answers
+    const answers: Record<string, JevAnswer> = {};
+    for (const [k, v] of Object.entries(rawAnswers as Record<string, any>)) {
+      if (v && v.type === "choice") {
+        answers[k] = {
+          ...v,
+          distribution: v.distribution ?? v.probabilities ?? {}
+        };
+      } else {
+        answers[k] = v;
+      }
+    }
+
+    return { answers };
   } catch {
     return null;
   } finally {

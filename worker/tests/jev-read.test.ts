@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { parsePathRange, readFiles } from '../src/read';
-import { semanticFileExcerpt, semanticPathTriage, typesafeSystemOne } from '../src/jev';
+import { semanticFileExcerpt, semanticPathTriage, typesafeSystemOne, type JevChoiceAnswer } from '../src/jev';
 import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 
@@ -518,5 +518,79 @@ describe("summarizeChangeImpactWithJev", () => {
     );
 
     expect(summary).toContain("Caution: potentially breaking change");
+  });
+});
+
+describe("typesafeSystemOne Cloudflare Workers AI protocol", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("handles Cloudflare Workers AI envelope, record criteria normalization, and probabilities parsing", async () => {
+    let capturedBody: any = null;
+    let capturedHeaders: any = null;
+
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      capturedHeaders = init?.headers;
+      capturedBody = JSON.parse(init?.body as string);
+      return {
+        ok: true,
+        json: async () => ({
+          result: {
+            state: "Completed",
+            result: {
+              model: "jev-1.13.0",
+              answers: {
+                target: {
+                  type: "choice",
+                  choice: "worker/src/read.ts",
+                  probabilities: {
+                    "worker/src/read.ts": 0.98,
+                    "worker/src/write.ts": 0.02
+                  },
+                  confidence: 0.98
+                }
+              }
+            }
+          },
+          success: true
+        })
+      };
+    }) as unknown as typeof fetch;
+
+    const res = await typesafeSystemOne(
+      "cfut_test_token_12345",
+      "https://api.cloudflare.com/client/v4/accounts/test_account/ai/run",
+      {
+        state: { query: "read files" },
+        questions: {
+          target: {
+            type: "choice",
+            instructions: "Which file?",
+            criteria: ["worker/src/read.ts", "worker/src/write.ts"]
+          }
+        }
+      }
+    );
+
+    expect(capturedBody).not.toBeNull();
+    expect(capturedBody.model).toBe("typesafe/jev");
+    expect(capturedBody.input).toBeDefined();
+    // Verify array criteria was normalized to Record for Cloudflare
+    expect(capturedBody.input.questions.target.criteria).toEqual({
+      "worker/src/read.ts": "worker/src/read.ts",
+      "worker/src/write.ts": "worker/src/write.ts"
+    });
+
+    expect(res).not.toBeNull();
+    const ans = res?.answers.target as JevChoiceAnswer;
+    expect(ans.choice).toBe("worker/src/read.ts");
+    // Verify probabilities was normalized into distribution
+    expect(ans.distribution).toEqual({
+      "worker/src/read.ts": 0.98,
+      "worker/src/write.ts": 0.02
+    });
   });
 });
