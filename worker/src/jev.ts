@@ -371,3 +371,100 @@ export async function checkCommitSafety(
 
   return { safe: true };
 }
+
+/**
+ * Ranks changed files in a pull request / change based on query relevance using Jev.
+ */
+export async function rankChangeFilesWithJev(
+  env: Env,
+  files: Array<{ path: string; patch?: string }>,
+  query: string
+): Promise<string[] | null> {
+  if (!env.TYPESAFE_API_KEY || files.length === 0 || !query.trim()) return null;
+
+  const fileEntries = files.slice(0, 30).map((f) => ({
+    path: f.path,
+    patchSnippet: (f.patch ?? "").slice(0, 500)
+  }));
+
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      userQuery: query,
+      changedFiles: fileEntries
+    },
+    questions: {
+      relevantFiles: {
+        type: "choice",
+        instructions: `Which changed file in 'changedFiles' is most relevant to the query: "${query}"?`,
+        criteria: fileEntries.map((f) => f.path)
+      }
+    }
+  });
+
+  if (!resp) return null;
+
+  const answer = resp.answers.relevantFiles as JevChoiceAnswer | undefined;
+  if (!answer?.distribution) {
+    return answer?.choice ? [answer.choice] : null;
+  }
+
+  const sorted = Object.entries(answer.distribution)
+    .filter(([_, score]) => score > 0.05)
+    .sort((a, b) => b[1] - a[1])
+    .map(([path]) => path);
+
+  return sorted.length > 0 ? sorted : null;
+}
+
+/**
+ * Analyzes an accessibility outline from forge_see to detect errors and provide a crisp summary.
+ */
+export async function analyzePageOutlineWithJev(
+  env: Env,
+  url: string,
+  title: string,
+  outline: string[]
+): Promise<{ summary: string; isErrorPage: boolean } | null> {
+  if (!env.TYPESAFE_API_KEY || outline.length === 0) return null;
+
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      url,
+      title,
+      pageOutline: outline.slice(0, 40)
+    },
+    questions: {
+      isError: {
+        type: "noul",
+        instructions: "Does this page outline represent an HTTP error, 404 Not Found, 500 Internal Server Error, or crash page?"
+      },
+      pageCategory: {
+        type: "choice",
+        instructions: "What kind of web page is this?",
+        criteria: [
+          "marketing_landing",
+          "documentation",
+          "web_app_dashboard",
+          "auth_login_form",
+          "ecommerce_store",
+          "error_maintenance"
+        ]
+      }
+    }
+  });
+
+  if (!resp) return null;
+
+  const isError = (resp.answers.isError as JevNoulAnswer | undefined)?.noul ?? 0;
+  const category = (resp.answers.pageCategory as JevChoiceAnswer | undefined)?.choice ?? "web page";
+
+  const categoryLabel = category.replace(/_/g, " ");
+  const summary = isError > 0.8
+    ? "Warning: Rendered outline appears to be an error or maintenance page."
+    : `Detected as ${categoryLabel}.`;
+
+  return {
+    summary,
+    isErrorPage: isError > 0.8
+  };
+}

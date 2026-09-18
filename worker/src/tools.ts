@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage } from './jev';
+import { analyzePageOutlineWithJev, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage } from './jev';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
@@ -445,7 +445,8 @@ async function readChangeLevel(
   ctx: ToolContext,
   repo: RepoRef,
   wanted: string,
-  paths: string[] | undefined
+  paths: string[] | undefined,
+  query?: string
 ): Promise<ToolOutcome> {
   const base = await defaultBranch(ctx.gh, repo);
   const change = await findChange(ctx.gh, repo, wanted);
@@ -461,10 +462,24 @@ async function readChangeLevel(
 
   // Files the caller asked about come first, so a cap can never be what
   // removes the one patch they were looking for.
-  const ordered = [
+  let ordered = [
     ...comparison.files.filter((file) => asked.has(file.path)),
     ...comparison.files.filter((file) => !asked.has(file.path))
   ];
+
+  let semanticallyRanked = false;
+  if (query?.trim() && ordered.length > 1) {
+    const trimmed = query.trim();
+    const rankedPaths = await rankChangeFilesWithJev(ctx.env, ordered, trimmed);
+    if (rankedPaths && rankedPaths.length > 0) {
+      semanticallyRanked = true;
+      const pathSet = new Set(rankedPaths);
+      ordered = [
+        ...ordered.filter((f) => pathSet.has(f.path)).sort((a, b) => rankedPaths.indexOf(a.path) - rankedPaths.indexOf(b.path)),
+        ...ordered.filter((f) => !pathSet.has(f.path))
+      ];
+    }
+  }
   const shown = ordered.slice(0, MAX_DIFF_FILES);
   if (ordered.length > shown.length) {
     limits.push(`Showing ${shown.length} of ${ordered.length} changed files.`);
@@ -477,8 +492,9 @@ async function readChangeLevel(
   const changes = await openChanges(ctx.gh, repo);
   const names = changeNames(changes);
 
-  return {
-    summary: `"${change.name}" is ${comparison.status} against ${base}: ${size.files} file${size.files === 1 ? '' : 's'}, +${size.additions}/-${size.deletions}.${changesSentence(names)}`,
+    const queryNote = semanticallyRanked ? ` (ranked for "${query?.trim()}")` : "";
+    return {
+      summary: `"${change.name}" is ${comparison.status} against ${base}: ${size.files} file${size.files === 1 ? "" : "s"}, +${size.additions}/-${size.deletions}${queryNote}.${changesSentence(names)}`,
     structured: withLimits(
       {
         diff: {
@@ -694,7 +710,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         }
 
         const repo = await resolveRepoTarget(ctx, input.repo);
-        if (input.change !== undefined) return readChangeLevel(ctx, repo, input.change, input.paths);
+        if (input.change !== undefined) return readChangeLevel(ctx, repo, input.change, input.paths, input.query);
         if (input.paths !== undefined && input.paths.length > 0) return readFilesLevel(ctx, repo, input.paths, input.query);
         return readTreeLevel(ctx, repo, input.query);
       })
@@ -975,6 +991,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           limits.push('These images could not be saved to a link, so they exist only in this reply.');
         }
 
+        let jevInsightNote = "";
+        if (shot.outline.length > 0) {
+          const insight = await analyzePageOutlineWithJev(ctx.env, input.url, shot.title, shot.outline);
+          if (insight) {
+            jevInsightNote = ` ${insight.summary}`;
+            if (insight.isErrorPage) {
+              limits.push("Jev detected that this page outline matches an HTTP error or service outage page.");
+            }
+          }
+        }
+
         const shown = kept.map((image) => image.viewport);
         const content: Content[] = [];
         if (shot.outline.length > 0) {
@@ -995,7 +1022,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         }
 
         return {
-          summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${quota.unlimited ? '' : ` ${quota.used} of ${quota.limit} captures used today.`}`,
+          summary: `Captured ${shot.title ? `"${shot.title}"` : shot.url} at ${shown.join(' and ')}.${jevInsightNote}${quota.unlimited ? '' : ` ${quota.used} of ${quota.limit} captures used today.`}`,
           structured: withLimits(
             {
               page: { url: shot.url, title: shot.title, shown },

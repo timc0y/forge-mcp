@@ -348,3 +348,104 @@ describe("resolveRepoWithJev", () => {
     expect(match?.confidence).toBe(0.94);
   });
 });
+
+import { analyzePageOutlineWithJev, rankChangeFilesWithJev } from "../src/jev";
+
+describe("rankChangeFilesWithJev", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("ranks changed files in PR based on query", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          relevantFiles: {
+            type: "choice",
+            choice: "src/auth/token.ts",
+            confidence: 0.9,
+            distribution: {
+              "src/auth/token.ts": 0.82,
+              "src/user.ts": 0.12,
+              "README.md": 0.02
+            }
+          }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const files = [
+      { path: "README.md", patch: "@@ -1 +1 @@\n-# Docs\n+# Documentation" },
+      { path: "src/user.ts", patch: "@@ -5 +5 @@\n-const id = 1;\n+const id = 2;" },
+      { path: "src/auth/token.ts", patch: "@@ -10 +10 @@\n+export function rotateToken() {}" }
+    ];
+
+    const ranked = await rankChangeFilesWithJev(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      files,
+      "refresh token logic"
+    );
+
+    expect(ranked).not.toBeNull();
+    expect(ranked).toEqual(["src/auth/token.ts", "src/user.ts"]);
+  });
+});
+
+describe("analyzePageOutlineWithJev", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("detects error pages in forge_see", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          isError: { type: "noul", noul: 0.95 },
+          pageCategory: { type: "choice", choice: "error_maintenance" }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const outline = ["heading: 404 Not Found", "text: The page you requested could not be found."];
+    const insight = await analyzePageOutlineWithJev(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "https://example.com/broken",
+      "404 Not Found",
+      outline
+    );
+
+    expect(insight).not.toBeNull();
+    expect(insight?.isErrorPage).toBe(true);
+    expect(insight?.summary).toContain("error or maintenance");
+  });
+
+  it("summarizes valid web pages in forge_see", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          isError: { type: "noul", noul: 0.05 },
+          pageCategory: { type: "choice", choice: "marketing_landing" }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const outline = ["banner", "navigation", "heading: Supercharge your workflow", "button: Get Started"];
+    const insight = await analyzePageOutlineWithJev(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "https://example.com",
+      "Example App",
+      outline
+    );
+
+    expect(insight).not.toBeNull();
+    expect(insight?.isErrorPage).toBe(false);
+    expect(insight?.summary).toBe("Detected as marketing landing.");
+  });
+});
