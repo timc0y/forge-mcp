@@ -613,3 +613,130 @@ export async function summarizeChangeImpactWithJev(
 
   return `${type.charAt(0).toUpperCase() + type.slice(1)}: ${fileSummary}${warning}.`;
 }
+
+export interface SearchIntentResult {
+  intent: "docs" | "code" | "repos";
+  platformId: string | null;
+  language: string | null;
+  coreQuery: string;
+  isQuestionOrHowTo: boolean;
+}
+
+/**
+ * Uses Jev System One to analyze natural query intent, identifying target platforms,
+ * languages, and stripping conversational fluff in ~80ms.
+ */
+export async function analyzeSearchIntentWithJev(
+  env: Env | undefined,
+  query: string,
+  supportedPlatformIds: string[]
+): Promise<SearchIntentResult | null> {
+  if (!env?.TYPESAFE_API_KEY || !query.trim()) return null;
+
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      query: query.trim(),
+      platforms: supportedPlatformIds
+    },
+    questions: {
+      intent: {
+        type: "choice",
+        instructions:
+          "What is the user trying to find? \"docs\" for platform documentation, guides, or API specs; \"code\" for specific code snippets, implementations, or function examples; \"repos\" for libraries, starter templates, or full repositories.",
+        criteria: ["docs", "code", "repos"]
+      },
+      platform: {
+        type: "choice",
+        instructions:
+          "Which supported technology platform or framework is this query about, if any? Return \"none\" if no specific platform applies.",
+        criteria: ["none", ...supportedPlatformIds]
+      },
+      language: {
+        type: "choice",
+        instructions:
+          "What programming language is targeted by this query, if any? Return \"none\" if generic or unstated.",
+        criteria: ["none", "typescript", "javascript", "python", "rust", "go", "html", "css", "sql"]
+      },
+      isQuestionOrHowTo: {
+        type: "noul",
+        instructions:
+          "Is the user asking \"how to\", \"how do I\", or looking for documentation/configuration rather than searching for an exact code symbol?"
+      }
+    }
+  });
+
+  if (!resp) return null;
+
+  const intentAnswer = resp.answers.intent as JevChoiceAnswer | undefined;
+  const platformAnswer = resp.answers.platform as JevChoiceAnswer | undefined;
+  const languageAnswer = resp.answers.language as JevChoiceAnswer | undefined;
+  const isQuestionAnswer = resp.answers.isQuestionOrHowTo as JevNoulAnswer | undefined;
+
+  const rawPlatform = platformAnswer?.choice;
+  const platformId =
+    rawPlatform && rawPlatform !== "none" && supportedPlatformIds.includes(rawPlatform)
+      ? rawPlatform
+      : null;
+
+  const rawLang = languageAnswer?.choice;
+  const language = rawLang && rawLang !== "none" ? rawLang : null;
+
+  const isQuestionOrHowTo = (isQuestionAnswer?.noul ?? 0) > 0.6;
+  const intent =
+    (intentAnswer?.choice as "docs" | "code" | "repos") ??
+    (isQuestionOrHowTo && platformId ? "docs" : "code");
+
+  const cleaned = query
+    .replace(
+      /^(how\s+(do\s+i|to)|can\s+you\s+(find|show\s+me)|show\s+me|find\s+me|tell\s+me\s+about|what\s+is)\s+/i,
+      ""
+    )
+    .trim();
+
+  return {
+    intent,
+    platformId,
+    language,
+    coreQuery: cleaned || query.trim(),
+    isQuestionOrHowTo
+  };
+}
+
+/**
+ * Analyzes changed files and diff to generate a concise, conventional commit message with Jev.
+ */
+export async function suggestCommitMessageWithJev(
+  env: Env | undefined,
+  files: Array<{ path: string; content?: string | null }>
+): Promise<string | null> {
+  if (!env?.TYPESAFE_API_KEY || files.length === 0) return null;
+
+  const summaries = files.slice(0, 8).map((f) => ({
+    path: f.path,
+    preview: (f.content ?? "").slice(0, 400)
+  }));
+
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: { files: summaries },
+    questions: {
+      actionType: {
+        type: "choice",
+        instructions: "What is the primary conventional commit type for these file changes?",
+        criteria: ["feat", "fix", "refactor", "docs", "chore", "test", "style"]
+      },
+      scope: {
+        type: "choice",
+        instructions: "What is the primary architectural component or directory affected?",
+        criteria: ["auth", "api", "ui", "db", "config", "core", "search", "worker", "deps"]
+      }
+    }
+  });
+
+  if (!resp) return null;
+
+  const action = (resp.answers.actionType as JevChoiceAnswer | undefined)?.choice ?? "chore";
+  const scope = (resp.answers.scope as JevChoiceAnswer | undefined)?.choice ?? "core";
+  const mainPath = files[0]?.path.split("/").pop() ?? "files";
+
+  return `${action}(${scope}): update ${mainPath}`;
+}

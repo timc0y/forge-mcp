@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage } from './jev';
+import { judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage, suggestCommitMessageWithJev, summarizeChangeImpactWithJev } from './jev';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
@@ -393,12 +393,13 @@ async function searchGlobalOrDocs(
     };
   }
 
-  const { query: advancedQuery, detectedPlatform } = await buildAdvancedSearchQuery(ctx.env, query, mode);
-  const activePlatform = platform ?? detectedPlatform;
+  const { query: advancedQuery, detectedPlatform, intentMode } = await buildAdvancedSearchQuery(ctx.env, query, mode);
+  const activePlatform = isTargetGlobal ? null : (platform ?? detectedPlatform);
+  const effectiveMode = activePlatform ? 'docs' : (intentMode ?? mode);
 
   const limits: string[] = [];
 
-  if (mode === 'repos') {
+  if (effectiveMode === 'repos') {
     const { total, items } = await searchGitHubRepos(gh, advancedQuery, 10);
     const ranked = await rankSearchResultsWithJev(ctx.env, query, items);
 
@@ -558,18 +559,40 @@ async function readTreeLevel(
     limits.push('GitHub truncated this listing, so some files are missing from it.');
   }
 
+  let fileExcerpt: { path: string; text: string } | null = null;
+  if (isSemanticSearch && paths.length > 0 && paths[0] && ctx.env.TYPESAFE_API_KEY) {
+    try {
+      const topPath = paths[0];
+      const readResult = await readFiles(gh, repo, base, [topPath], MAX_FILE_BYTES);
+      const topFile = readResult.files[0];
+      if (topFile && !topFile.truncated) {
+        const excerpt = await semanticFileExcerpt(ctx.env, topFile.path, topFile.content, query!.trim());
+        if (excerpt && excerpt.confidence >= 0.4) {
+          fileExcerpt = {
+            path: `${topFile.path} (lines ${excerpt.startLine}-${excerpt.endLine})`,
+            text: excerpt.content
+          };
+        }
+      }
+    } catch {
+      // Degrade gracefully to listing only
+    }
+  }
+
   const names = changeNames(changes);
   const queryNote = isSemanticSearch
     ? ` matching "${query?.trim()}" (semantically ranked by Jev across ${allFilePaths.length} files)`
     : query?.trim()
       ? ` matching "${query.trim()}"`
       : '';
+  const excerptSentence = fileExcerpt ? `. Relevant excerpt from ${fileExcerpt.path} included below` : '';
 
   return {
-    summary: `${formatRepo(repo)} at ${base}: ${shown.length} file${shown.length === 1 ? '' : 's'}${queryNote}.${changesSentence(names)}`,
+    summary: `${formatRepo(repo)} at ${base}: ${shown.length} file${shown.length === 1 ? '' : 's'}${queryNote}${excerptSentence}.${changesSentence(names)}`,
     structured: withLimits(
       {
         tree: shown,
+        ...(fileExcerpt ? { files: [fileExcerpt] } : {}),
         changes: names,
         next:
           names.length > 0
@@ -839,12 +862,28 @@ async function requestAct(
     comparison.aheadBy === 0
       ? `Nothing unmerged would be lost: every commit is already on ${base}.`
       : `${commits} would stop being reachable.`;
+
+  let impactNote = '';
+  if (act === 'merge' && ctx.env.TYPESAFE_API_KEY) {
+    try {
+      const impact = await summarizeChangeImpactWithJev(ctx.env, change.name, comparison);
+      if (impact) {
+        impactNote = ` [${impact}]`;
+      }
+    } catch {
+      // Degrade cleanly
+    }
+  }
+
   const evidence =
     act === 'merge'
-      ? `Merging "${change.name}" into ${base} brings ${commits}: ${files}.`
+      ? `Merging "${change.name}" into ${base} brings ${commits}: ${files}.${impactNote}`
       : `Discarding "${change.name}" drops ${files}. ${loss}`;
 
   const limits: string[] = [];
+  if (impactNote.includes("breaking change")) {
+    limits.push("Jev warning: this change appears to introduce potentially breaking API changes or schema modifications.");
+  }
   if (comparison.truncated) {
     limits.push('GitHub truncated this comparison, so the file counts above are a floor, not a total.');
   }
@@ -1017,6 +1056,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             `The work is committed, but its review pull request could not be opened: ${toForgeError(error).message} ` +
               'The branch exists on GitHub either way.'
           );
+        }
+
+        if (message.length < 15 || /^(update|fix|edits|test|patch)$/i.test(message)) {
+          try {
+            const suggestion = await suggestCommitMessageWithJev(ctx.env, input.files);
+            if (suggestion) {
+              limits.push(`Tip: consider conventional commit "${suggestion}" for clearer history.`);
+            }
+          } catch {
+            // Non-fatal
+          }
         }
 
         let changes: Change[] = [];

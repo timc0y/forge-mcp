@@ -334,3 +334,40 @@ describe('End-to-End forge_read search integration', () => {
     expect(res.structuredContent.searchResults[0].repo).toBe('awesome/cloudflare-worker');
   });
 });
+
+describe("Jev-enhanced buildAdvancedSearchQuery", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("extracts platform, language, and core intent using Jev", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        answers: {
+          intent: { type: "choice", choice: "docs" },
+          platform: { type: "choice", choice: "cloudflare" },
+          language: { type: "choice", choice: "typescript" },
+          isQuestionOrHowTo: { type: "noul", noul: 0.95 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const mockEnv = {
+      TYPESAFE_API_KEY: "test-key"
+    } as unknown as Env;
+
+    const res = await buildAdvancedSearchQuery(
+      mockEnv,
+      "how do I configure workers kv bindings in typescript?",
+      "code"
+    );
+
+    expect(res.detectedPlatform?.id).toBe("cloudflare");
+    expect(res.intentMode).toBe("docs");
+    expect(res.query).toContain("repo:cloudflare/cloudflare-docs");
+    expect(res.query).toContain("path:content/");
+  });
+});

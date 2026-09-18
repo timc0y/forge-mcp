@@ -9,7 +9,7 @@
 import type { GitHubRequest, RepoRef } from './contracts';
 import { formatRepo } from './contracts';
 import type { Env } from './env';
-import { typesafeSystemOne, type JevChoiceAnswer, type JevNoulAnswer } from './jev';
+import { typesafeSystemOne, analyzeSearchIntentWithJev, type JevChoiceAnswer, type JevNoulAnswer } from './jev';
 
 export interface DocPlatform {
   id: string;
@@ -210,48 +210,83 @@ export async function buildAdvancedSearchQuery(
   env: Env | undefined,
   rawQuery: string,
   mode: 'code' | 'repos' | 'docs' = 'code'
-): Promise<{ query: string; detectedPlatform?: DocPlatform | null }> {
+): Promise<{ query: string; detectedPlatform?: DocPlatform | null; intentMode?: 'code' | 'repos' | 'docs' }> {
   const trimmed = rawQuery.trim();
   if (!trimmed) {
     return { query: mode === 'repos' ? 'stars:>50 fork:false' : 'path:src/ NOT path:test' };
   }
 
-  // Check if query starts with platform or explicit target
-  let detectedPlatform: DocPlatform | null = null;
-  for (const platform of SUPPORTED_PLATFORMS) {
-    const pattern = new RegExp(`\\b(${platform.id}|${platform.aliases.join('|')})\\b`, 'i');
-    if (pattern.test(trimmed)) {
-      detectedPlatform = platform;
-      break;
-    }
-  }
-
   // If query already contains explicit GitHub qualifiers (e.g. path:, repo:, stars:), preserve directly
   const hasQualifiers = /\b(repo|org|path|filename|language|stars|fork|symbol):/i.test(trimmed);
   if (hasQualifiers) {
-    return { query: trimmed, detectedPlatform };
+    return { query: trimmed };
   }
 
-  // Fast language detection heuristics
-  let languageQualifier = '';
-  if (/\b(typescript|ts)\b/i.test(trimmed)) languageQualifier = 'language:typescript';
-  else if (/\b(javascript|js)\b/i.test(trimmed)) languageQualifier = 'language:javascript';
-  else if (/\b(python|py)\b/i.test(trimmed)) languageQualifier = 'language:python';
-  else if (/\b(rust|rs)\b/i.test(trimmed)) languageQualifier = 'language:rust';
-  else if (/\b(golang|go)\b/i.test(trimmed)) languageQualifier = 'language:go';
+  // 1. Try Jev System One semantic query analysis for deep intent understanding
+  let jevPlatform: DocPlatform | null = null;
+  let jevLanguage: string | null = null;
+  let queryText = trimmed;
+  let activeMode = mode;
+
+  if (env?.TYPESAFE_API_KEY) {
+    try {
+      const intentAnalysis = await analyzeSearchIntentWithJev(
+        env,
+        trimmed,
+        SUPPORTED_PLATFORMS.map((p) => p.id)
+      );
+      if (intentAnalysis) {
+        if (intentAnalysis.platformId) {
+          jevPlatform = SUPPORTED_PLATFORMS.find((p) => p.id === intentAnalysis.platformId) ?? null;
+        }
+        if (intentAnalysis.language) {
+          jevLanguage = intentAnalysis.language;
+        }
+        if (intentAnalysis.coreQuery) {
+          queryText = intentAnalysis.coreQuery;
+        }
+        if (mode === 'code' && intentAnalysis.intent === 'docs' && jevPlatform) {
+          activeMode = 'docs';
+        }
+      }
+    } catch {
+      // Degrade gracefully to heuristics
+    }
+  }
+
+  // 2. Fallback heuristic detection for platform and language if Jev abstained
+  let detectedPlatform: DocPlatform | null = jevPlatform;
+  if (!detectedPlatform) {
+    for (const platform of SUPPORTED_PLATFORMS) {
+      const pattern = new RegExp(`\\b(${platform.id}|${platform.aliases.join('|')})\\b`, 'i');
+      if (pattern.test(trimmed)) {
+        detectedPlatform = platform;
+        break;
+      }
+    }
+  }
+
+  let languageQualifier = jevLanguage ? `language:${jevLanguage}` : '';
+  if (!languageQualifier) {
+    if (/\b(typescript|ts)\b/i.test(trimmed)) languageQualifier = 'language:typescript';
+    else if (/\b(javascript|js)\b/i.test(trimmed)) languageQualifier = 'language:javascript';
+    else if (/\b(python|py)\b/i.test(trimmed)) languageQualifier = 'language:python';
+    else if (/\b(rust|rs)\b/i.test(trimmed)) languageQualifier = 'language:rust';
+    else if (/\b(golang|go)\b/i.test(trimmed)) languageQualifier = 'language:go';
+  }
 
   // If mode is repos
-  if (mode === 'repos') {
-    const parts = [trimmed];
+  if (activeMode === 'repos') {
+    const parts = [queryText];
     if (languageQualifier) parts.push(languageQualifier);
     parts.push('fork:false');
     parts.push('archived:false');
-    return { query: parts.join(' '), detectedPlatform };
+    return { query: parts.join(' '), detectedPlatform, intentMode: activeMode };
   }
 
   // If mode is docs and a platform is detected
-  if (mode === 'docs' && detectedPlatform) {
-    const cleanTokens = trimmed
+  if (activeMode === 'docs' && detectedPlatform) {
+    const cleanTokens = queryText
       .replace(new RegExp(`\\b(${detectedPlatform.id}|${detectedPlatform.aliases.join('|')})\\b`, 'gi'), '')
       .replace(/\b(docs|documentation|guide|reference)\b/gi, '')
       .trim();
@@ -263,17 +298,17 @@ export async function buildAdvancedSearchQuery(
     if (cleanTokens) {
       parts.push(cleanTokens);
     }
-    return { query: parts.join(' '), detectedPlatform };
+    return { query: parts.join(' '), detectedPlatform, intentMode: activeMode };
   }
 
   // Advanced code search with noise suppression
-  const parts = [trimmed];
+  const parts = [queryText];
   if (languageQualifier) parts.push(languageQualifier);
   // Suppress test files, vendor dirs, and compiled code
   parts.push('NOT path:test/ NOT path:tests/ NOT path:vendor/ NOT path:node_modules/ NOT path:dist/');
 
-  return { query: parts.join(' '), detectedPlatform };
-}
+  return { query: parts.join(' '), detectedPlatform, intentMode: activeMode };
+};
 
 /**
  * Searches public repositories on GitHub.
