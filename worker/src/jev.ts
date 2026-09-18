@@ -191,11 +191,18 @@ export async function semanticPathTriage(
             type: 'choice',
             instructions: `Which file in 'candidatePaths' most directly implements, configures, or documents: "${query}"?`,
             criteria: batch
+          },
+          exists: {
+            type: 'noul',
+            instructions: `Does any path in candidatePaths actually implement or document: "${query}"? Answer no if the list is only weakly related.`
           }
         }
       });
 
       if (!resp) return [];
+
+      const exists = (resp.answers.exists as JevNoulAnswer | undefined)?.noul ?? 1;
+      if (exists < 0.2) return [];
 
       const matchAnswer = resp.answers.bestMatch as JevChoiceAnswer | undefined;
       if (!matchAnswer || !matchAnswer.distribution) return [];
@@ -472,39 +479,61 @@ export async function rankChangeFilesWithJev(
   return sorted.length > 0 ? sorted : null;
 }
 
+export interface SeePointer {
+  isErrorPage: boolean;
+  /** Observed outline line Jev pointed at, or null when it abstains. */
+  suspect: string | null;
+  exists: number;
+  next: 'read' | 'stop';
+}
+
+const EXISTS_ACT = 0.35;
+const ERROR_ACT = 0.8;
+
 /**
- * Analyzes an accessibility outline from forge_see to detect errors and provide a crisp summary.
+ * One fan-out over a capture outline: error?, does a usable landmark exist,
+ * which line is the pointer, whether ChatGPT should read the repo or stop.
+ * Jev never sees the screenshot.
  */
-export async function analyzePageOutlineWithJev(
+export async function judgeSeePacket(
   env: Env,
   url: string,
   title: string,
   outline: string[]
-): Promise<{ summary: string; isErrorPage: boolean } | null> {
+): Promise<SeePointer | null> {
   if (!env.TYPESAFE_API_KEY || outline.length === 0) return null;
+
+  const lines = outline.slice(0, 40);
+  const ids = lines.map((_, index) => `L${index + 1}`);
 
   const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
     state: {
       url,
       title,
-      pageOutline: outline.slice(0, 40)
+      lines: lines.map((text, index) => ({ id: ids[index], text }))
     },
     questions: {
       isError: {
-        type: "noul",
-        instructions: "Does this page outline represent an HTTP error, 404 Not Found, 500 Internal Server Error, or crash page?"
+        type: 'noul',
+        instructions:
+          'Does this outline represent an HTTP error, 404, 500, crash, login wall, or cookie/challenge page with no useful app UI?'
       },
-      pageCategory: {
-        type: "choice",
-        instructions: "What kind of web page is this?",
-        criteria: [
-          "marketing_landing",
-          "documentation",
-          "web_app_dashboard",
-          "auth_login_form",
-          "ecommerce_store",
-          "error_maintenance"
-        ]
+      exists: {
+        type: 'noul',
+        instructions:
+          'Does any line name a real control or landmark a person could use (nav, button, heading of the product), not only chrome or an error message?'
+      },
+      suspect: {
+        type: 'choice',
+        instructions:
+          'Which line is the single most useful pointer for a developer fixing this page? Prefer a broken, unlabeled, or primary interactive control. If the page is an error, pick the error heading.',
+        criteria: ids
+      },
+      next: {
+        type: 'choice',
+        instructions:
+          'If a coding agent should open the repository next, choose read. If the capture is the wrong page or has nothing to fix, choose stop.',
+        criteria: ['read', 'stop']
       }
     }
   });
@@ -512,17 +541,38 @@ export async function analyzePageOutlineWithJev(
   if (!resp) return null;
 
   const isError = (resp.answers.isError as JevNoulAnswer | undefined)?.noul ?? 0;
-  const category = (resp.answers.pageCategory as JevChoiceAnswer | undefined)?.choice ?? "web page";
-
-  const categoryLabel = category.replace(/_/g, " ");
-  const summary = isError > 0.8
-    ? "Warning: Rendered outline appears to be an error or maintenance page."
-    : `Detected as ${categoryLabel}.`;
+  const exists = (resp.answers.exists as JevNoulAnswer | undefined)?.noul ?? 0;
+  const suspectId = (resp.answers.suspect as JevChoiceAnswer | undefined)?.choice;
+  const nextRaw = (resp.answers.next as JevChoiceAnswer | undefined)?.choice;
+  const suspectIndex = suspectId ? ids.indexOf(suspectId) : -1;
+  const suspect = suspectIndex >= 0 ? lines[suspectIndex] ?? null : null;
+  const isErrorPage = isError >= ERROR_ACT;
+  const next: SeePointer['next'] =
+    isErrorPage || exists < EXISTS_ACT || nextRaw === 'stop' ? 'stop' : 'read';
 
   return {
-    summary,
-    isErrorPage: isError > 0.8
+    isErrorPage,
+    suspect: exists < EXISTS_ACT && !isErrorPage ? null : suspect,
+    exists,
+    next
   };
+}
+
+/** @deprecated Use judgeSeePacket. Kept for existing tests. */
+export async function analyzePageOutlineWithJev(
+  env: Env,
+  url: string,
+  title: string,
+  outline: string[]
+): Promise<{ summary: string; isErrorPage: boolean } | null> {
+  const pointer = await judgeSeePacket(env, url, title, outline);
+  if (!pointer) return null;
+  const summary = pointer.isErrorPage
+    ? 'Warning: Rendered outline appears to be an error or maintenance page.'
+    : pointer.suspect
+      ? `Pointer: ${pointer.suspect}`
+      : 'No landmark in this outline is a safe pointer.';
+  return { summary, isErrorPage: pointer.isErrorPage };
 }
 
 /**

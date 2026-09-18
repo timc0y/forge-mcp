@@ -349,7 +349,7 @@ describe("resolveRepoWithJev", () => {
   });
 });
 
-import { analyzePageOutlineWithJev, rankChangeFilesWithJev } from "../src/jev";
+import { analyzePageOutlineWithJev, judgeSeePacket, rankChangeFilesWithJev } from "../src/jev";
 
 describe("rankChangeFilesWithJev", () => {
   const originalFetch = globalThis.fetch;
@@ -394,6 +394,97 @@ describe("rankChangeFilesWithJev", () => {
   });
 });
 
+describe("judgeSeePacket", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("points at an outline line and asks the agent to read", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          isError: { type: "noul", noul: 0.04 },
+          exists: { type: "noul", noul: 0.92 },
+          suspect: { type: "choice", choice: "L4" },
+          next: { type: "choice", choice: "read" }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const outline = [
+      "banner",
+      "navigation",
+      "heading: Supercharge your workflow",
+      "button: Menu"
+    ];
+    const pointer = await judgeSeePacket(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "https://example.com",
+      "Example App",
+      outline
+    );
+
+    expect(pointer).toEqual({
+      isErrorPage: false,
+      suspect: "button: Menu",
+      exists: 0.92,
+      next: "read"
+    });
+  });
+
+  it("abstains when the outline has no usable landmark", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          isError: { type: "noul", noul: 0.1 },
+          exists: { type: "noul", noul: 0.08 },
+          suspect: { type: "choice", choice: "L1" },
+          next: { type: "choice", choice: "read" }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const pointer = await judgeSeePacket(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "https://example.com",
+      "Empty",
+      ["text: loading"]
+    );
+
+    expect(pointer?.suspect).toBeNull();
+    expect(pointer?.next).toBe("stop");
+  });
+
+  it("stops on error pages", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          isError: { type: "noul", noul: 0.95 },
+          exists: { type: "noul", noul: 0.2 },
+          suspect: { type: "choice", choice: "L1" },
+          next: { type: "choice", choice: "read" }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const pointer = await judgeSeePacket(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "https://example.com/broken",
+      "404 Not Found",
+      ["heading: 404 Not Found"]
+    );
+
+    expect(pointer?.isErrorPage).toBe(true);
+    expect(pointer?.next).toBe("stop");
+    expect(pointer?.suspect).toBe("heading: 404 Not Found");
+  });
+});
+
 describe("analyzePageOutlineWithJev", () => {
   const originalFetch = globalThis.fetch;
 
@@ -407,7 +498,9 @@ describe("analyzePageOutlineWithJev", () => {
       json: async () => ({
         answers: {
           isError: { type: "noul", noul: 0.95 },
-          pageCategory: { type: "choice", choice: "error_maintenance" }
+          exists: { type: "noul", noul: 0.1 },
+          suspect: { type: "choice", choice: "L1" },
+          next: { type: "choice", choice: "stop" }
         }
       })
     }) as unknown as typeof fetch;
@@ -423,30 +516,6 @@ describe("analyzePageOutlineWithJev", () => {
     expect(insight).not.toBeNull();
     expect(insight?.isErrorPage).toBe(true);
     expect(insight?.summary).toContain("error or maintenance");
-  });
-
-  it("summarizes valid web pages in forge_see", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        answers: {
-          isError: { type: "noul", noul: 0.05 },
-          pageCategory: { type: "choice", choice: "marketing_landing" }
-        }
-      })
-    }) as unknown as typeof fetch;
-
-    const outline = ["banner", "navigation", "heading: Supercharge your workflow", "button: Get Started"];
-    const insight = await analyzePageOutlineWithJev(
-      { TYPESAFE_API_KEY: "key" } as unknown as Env,
-      "https://example.com",
-      "Example App",
-      outline
-    );
-
-    expect(insight).not.toBeNull();
-    expect(insight?.isErrorPage).toBe(false);
-    expect(insight?.summary).toBe("Detected as marketing landing.");
   });
 });
 
