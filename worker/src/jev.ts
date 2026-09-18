@@ -12,6 +12,7 @@
  *    with thousands of irrelevant tokens.
  */
 import type { Env } from './env';
+import type { Comparison } from './contracts';
 
 export interface JevChoiceQuestion {
   type: 'choice';
@@ -467,4 +468,49 @@ export async function analyzePageOutlineWithJev(
     summary,
     isErrorPage: isError > 0.8
   };
+}
+
+/**
+ * Uses Jev to generate a concise, human-readable impact summary of a proposed merge/change.
+ */
+export async function summarizeChangeImpactWithJev(
+  env: Env,
+  changeName: string,
+  comparison: Comparison
+): Promise<string | null> {
+  if (!env.TYPESAFE_API_KEY || comparison.files.length === 0) return null;
+
+  const fileSnippets = comparison.files.slice(0, 15).map((f) => ({
+    path: f.path,
+    patch: (f.patch ?? "").slice(0, 300)
+  }));
+
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      changeName,
+      status: comparison.status,
+      files: fileSnippets
+    },
+    questions: {
+      changeType: {
+        type: "choice",
+        instructions: "What is the primary technical category of this change?",
+        criteria: ["feature", "bugfix", "refactor", "documentation", "configuration", "security"]
+      },
+      hasBreakingChange: {
+        type: "noul",
+        instructions: "Does this change appear to introduce breaking API changes, dropped schema columns, or removed public exports?"
+      }
+    }
+  });
+
+  if (!resp) return null;
+
+  const type = (resp.answers.changeType as JevChoiceAnswer | undefined)?.choice ?? "update";
+  const breaking = (resp.answers.hasBreakingChange as JevNoulAnswer | undefined)?.noul ?? 0;
+
+  const warning = breaking > 0.85 ? " (⚠️ Caution: potentially breaking change)" : "";
+  const fileSummary = `${comparison.files.length} file${comparison.files.length === 1 ? "" : "s"} modified`;
+
+  return `${type.charAt(0).toUpperCase() + type.slice(1)}: ${fileSummary}${warning}.`;
 }

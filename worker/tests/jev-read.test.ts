@@ -449,3 +449,74 @@ describe("analyzePageOutlineWithJev", () => {
     expect(insight?.summary).toBe("Detected as marketing landing.");
   });
 });
+
+import { summarizeChangeImpactWithJev } from "../src/jev";
+
+describe("summarizeChangeImpactWithJev", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("summarizes impact of change for human approval review", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          changeType: { type: "choice", choice: "feature" },
+          hasBreakingChange: { type: "noul", noul: 0.1 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const comparison = {
+      status: "ahead" as const,
+      aheadBy: 2,
+      behindBy: 0,
+      truncated: false,
+      files: [
+        { status: "modified" as const, path: "src/auth.ts", additions: 40, deletions: 5, patch: "export function auth() {}" },
+        { status: "modified" as const, path: "src/token.ts", additions: 20, deletions: 2, patch: "export function token() {}" }
+      ]
+    };
+
+    const summary = await summarizeChangeImpactWithJev(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "forge",
+      comparison
+    );
+
+    expect(summary).toBe("Feature: 2 files modified.");
+  });
+
+  it("adds cautionary warning when breaking change is detected", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          changeType: { type: "refactor", choice: "refactor" },
+          hasBreakingChange: { type: "noul", noul: 0.95 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const comparison = {
+      status: "ahead" as const,
+      aheadBy: 1,
+      behindBy: 0,
+      truncated: false,
+      files: [
+        { status: "modified" as const, path: "src/api.ts", additions: 10, deletions: 50, patch: "-export function legacyEndpoint() {}" }
+      ]
+    };
+
+    const summary = await summarizeChangeImpactWithJev(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "forge",
+      comparison
+    );
+
+    expect(summary).toContain("Caution: potentially breaking change");
+  });
+});

@@ -17,7 +17,7 @@ export const LEAD = [
 ].join(' ');
 
 const DETAIL = [
-  'forge_read is the only way to look: no repo lists repositories, a repo shows its files and open changes, adding a change shows what it did, and adding paths returns file contents or that change\'s patches.',
+  'forge_read is the only way to look: no repo lists repositories, a repo shows its files and open changes, adding a change shows what it did, and adding query filters or ranks semantically, and paths accepts line ranges (e.g. file.ts:1-200) or returns patches for changes.',
   'forge_edit creates the repository if it does not exist. It commits directly unless change explains why the work needs review. Prefer replace fragments over whole files.',
   'Forge does not run, build, test, or deploy anything. If a result names limitations, say them.'
 ].join(' ');
