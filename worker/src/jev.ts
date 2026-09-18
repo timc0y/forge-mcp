@@ -139,20 +139,23 @@ export async function typesafeSystemOne(
     const rawAnswers = data.result?.result?.answers ?? data.result?.answers ?? data.answers;
     if (!rawAnswers || typeof rawAnswers !== "object") return null;
 
-    // Normalize probabilities into distribution for choice answers
     const answers: Record<string, JevAnswer> = {};
     for (const [k, v] of Object.entries(rawAnswers as Record<string, any>)) {
-      if (v && v.type === "choice") {
+      if (!v || typeof v !== "object") continue;
+      if (v.type === "choice" || v.choice !== undefined) {
         answers[k] = {
-          ...v,
+          type: "choice",
+          choice: String(v.choice ?? ""),
+          confidence: typeof v.confidence === "number" ? v.confidence : 0,
           distribution: v.distribution ?? v.probabilities ?? {}
         };
       } else {
-        answers[k] = v;
+        const noul = typeof v.noul === "number" ? v.noul : typeof v.probability === "number" ? v.probability : 0;
+        answers[k] = { type: "noul", noul };
       }
     }
 
-    return { answers };
+    return Object.keys(answers).length > 0 ? { answers } : null;
   } catch {
     return null;
   } finally {
@@ -201,7 +204,7 @@ export async function semanticPathTriage(
 
       if (!resp) return [];
 
-      const exists = (resp.answers.exists as JevNoulAnswer | undefined)?.noul ?? 1;
+      const exists = noulOf(resp.answers.exists, 1);
       if (exists < 0.2) return [];
 
       const matchAnswer = resp.answers.bestMatch as JevChoiceAnswer | undefined;
@@ -490,9 +493,28 @@ export interface SeePointer {
 const EXISTS_ACT = 0.35;
 const ERROR_ACT = 0.8;
 
+function noulOf(answer: JevAnswer | undefined, fallback: number): number {
+  if (!answer || answer.type !== "noul") return fallback;
+  return answer.noul;
+}
+
+/** Choice may return L4, l4, or the line text itself. */
+export function lineFromChoice(choice: string | undefined, ids: string[], lines: string[]): string | null {
+  if (!choice) return null;
+  const idIndex = ids.indexOf(choice);
+  if (idIndex >= 0) return lines[idIndex] ?? null;
+  const textIndex = lines.indexOf(choice);
+  if (textIndex >= 0) return lines[textIndex] ?? null;
+  const numbered = /^L(\d+)$/i.exec(choice.trim());
+  if (numbered) {
+    const index = Number(numbered[1]) - 1;
+    return lines[index] ?? null;
+  }
+  return null;
+}
+
 /**
- * One fan-out over a capture outline: error?, does a usable landmark exist,
- * which line is the pointer, whether ChatGPT should read the repo or stop.
+ * One fan-out over a capture outline. `next` is derived in code from exists/error.
  * Jev never sees the screenshot.
  */
 export async function judgeSeePacket(
@@ -526,29 +548,20 @@ export async function judgeSeePacket(
       suspect: {
         type: 'choice',
         instructions:
-          'Which line is the single most useful pointer for a developer fixing this page? Prefer a broken, unlabeled, or primary interactive control. If the page is an error, pick the error heading.',
-        criteria: ids
-      },
-      next: {
-        type: 'choice',
-        instructions:
-          'If a coding agent should open the repository next, choose read. If the capture is the wrong page or has nothing to fix, choose stop.',
-        criteria: ['read', 'stop']
+          'Which line id is the single most useful pointer for a developer fixing this page? Prefer a broken, unlabeled, or primary interactive control. If the page is an error, pick the error heading.',
+        criteria: Object.fromEntries(ids.map((id, index) => [id, lines[index] ?? id]))
       }
     }
   });
 
   if (!resp) return null;
 
-  const isError = (resp.answers.isError as JevNoulAnswer | undefined)?.noul ?? 0;
-  const exists = (resp.answers.exists as JevNoulAnswer | undefined)?.noul ?? 0;
-  const suspectId = (resp.answers.suspect as JevChoiceAnswer | undefined)?.choice;
-  const nextRaw = (resp.answers.next as JevChoiceAnswer | undefined)?.choice;
-  const suspectIndex = suspectId ? ids.indexOf(suspectId) : -1;
-  const suspect = suspectIndex >= 0 ? lines[suspectIndex] ?? null : null;
+  const isError = noulOf(resp.answers.isError, 0);
+  const exists = noulOf(resp.answers.exists, 0);
+  const suspectChoice = (resp.answers.suspect as JevChoiceAnswer | undefined)?.choice;
+  const suspect = lineFromChoice(suspectChoice, ids, lines);
   const isErrorPage = isError >= ERROR_ACT;
-  const next: SeePointer['next'] =
-    isErrorPage || exists < EXISTS_ACT || nextRaw === 'stop' ? 'stop' : 'read';
+  const next: SeePointer['next'] = isErrorPage || exists < EXISTS_ACT ? 'stop' : 'read';
 
   return {
     isErrorPage,
@@ -556,23 +569,6 @@ export async function judgeSeePacket(
     exists,
     next
   };
-}
-
-/** @deprecated Use judgeSeePacket. Kept for existing tests. */
-export async function analyzePageOutlineWithJev(
-  env: Env,
-  url: string,
-  title: string,
-  outline: string[]
-): Promise<{ summary: string; isErrorPage: boolean } | null> {
-  const pointer = await judgeSeePacket(env, url, title, outline);
-  if (!pointer) return null;
-  const summary = pointer.isErrorPage
-    ? 'Warning: Rendered outline appears to be an error or maintenance page.'
-    : pointer.suspect
-      ? `Pointer: ${pointer.suspect}`
-      : 'No landmark in this outline is a safe pointer.';
-  return { summary, isErrorPage: pointer.isErrorPage };
 }
 
 /**

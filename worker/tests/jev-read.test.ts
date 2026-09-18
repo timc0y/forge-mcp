@@ -349,7 +349,7 @@ describe("resolveRepoWithJev", () => {
   });
 });
 
-import { analyzePageOutlineWithJev, judgeSeePacket, rankChangeFilesWithJev } from "../src/jev";
+import { judgeSeePacket, lineFromChoice, rankChangeFilesWithJev } from "../src/jev";
 
 describe("rankChangeFilesWithJev", () => {
   const originalFetch = globalThis.fetch;
@@ -408,8 +408,7 @@ describe("judgeSeePacket", () => {
         answers: {
           isError: { type: "noul", noul: 0.04 },
           exists: { type: "noul", noul: 0.92 },
-          suspect: { type: "choice", choice: "L4" },
-          next: { type: "choice", choice: "read" }
+          suspect: { type: "choice", choice: "L4" }
         }
       })
     }) as unknown as typeof fetch;
@@ -442,8 +441,7 @@ describe("judgeSeePacket", () => {
         answers: {
           isError: { type: "noul", noul: 0.1 },
           exists: { type: "noul", noul: 0.08 },
-          suspect: { type: "choice", choice: "L1" },
-          next: { type: "choice", choice: "read" }
+          suspect: { type: "choice", choice: "L1" }
         }
       })
     }) as unknown as typeof fetch;
@@ -466,8 +464,7 @@ describe("judgeSeePacket", () => {
         answers: {
           isError: { type: "noul", noul: 0.95 },
           exists: { type: "noul", noul: 0.2 },
-          suspect: { type: "choice", choice: "L1" },
-          next: { type: "choice", choice: "read" }
+          suspect: { type: "choice", choice: "L1" }
         }
       })
     }) as unknown as typeof fetch;
@@ -485,37 +482,46 @@ describe("judgeSeePacket", () => {
   });
 });
 
-describe("analyzePageOutlineWithJev", () => {
+describe("lineFromChoice", () => {
+  const ids = ["L1", "L2"];
+  const lines = ["banner", "button: Menu"];
+
+  it("resolves L-ids, case, and line text", () => {
+    expect(lineFromChoice("L2", ids, lines)).toBe("button: Menu");
+    expect(lineFromChoice("l1", ids, lines)).toBe("banner");
+    expect(lineFromChoice("button: Menu", ids, lines)).toBe("button: Menu");
+    expect(lineFromChoice("nope", ids, lines)).toBeNull();
+  });
+});
+
+describe("typesafeSystemOne noul field names", () => {
   const originalFetch = globalThis.fetch;
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
 
-  it("detects error pages in forge_see", async () => {
+  it("reads TypeSafe probability as noul", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         answers: {
-          isError: { type: "noul", noul: 0.95 },
-          exists: { type: "noul", noul: 0.1 },
-          suspect: { type: "choice", choice: "L1" },
-          next: { type: "choice", choice: "stop" }
+          isError: { type: "noul", probability: 0.02 },
+          exists: { type: "noul", probability: 0.91 },
+          suspect: { type: "choice", choice: "button: Menu" }
         }
       })
     }) as unknown as typeof fetch;
 
-    const outline = ["heading: 404 Not Found", "text: The page you requested could not be found."];
-    const insight = await analyzePageOutlineWithJev(
+    const pointer = await judgeSeePacket(
       { TYPESAFE_API_KEY: "key" } as unknown as Env,
-      "https://example.com/broken",
-      "404 Not Found",
-      outline
+      "https://example.com",
+      "App",
+      ["banner", "button: Menu"]
     );
-
-    expect(insight).not.toBeNull();
-    expect(insight?.isErrorPage).toBe(true);
-    expect(insight?.summary).toContain("error or maintenance");
+    expect(pointer?.exists).toBe(0.91);
+    expect(pointer?.suspect).toBe("button: Menu");
+    expect(pointer?.next).toBe("read");
   });
 });
 
