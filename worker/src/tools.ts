@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { analyzePageOutlineWithJev, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage } from './jev';
+import { judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage } from './jev';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
@@ -933,6 +933,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         page: z.object({ url: z.string(), title: z.string(), shown: z.array(z.string()) }).optional(),
         gallery: z.string().optional().describe('A link to these images that works in any client, and later.'),
         quota: z.string().optional(),
+        pointer: z
+          .object({
+            suspect: z.string().nullable(),
+            exists: z.number(),
+            next: z.enum(['read', 'stop']),
+            isErrorPage: z.boolean()
+          })
+          .optional()
+          .describe(
+            'Jev pointer on the accessibility outline (not the screenshot). Use suspect as forge_read query. next=stop means do not guess a code fix from this capture.'
+          ),
         // Not the shared receipt fields: a capture has no repository, so it has
         // no open changes and no next tool worth naming. Declaring either would
         // be schema the handler never fills, re-sent on every turn.
@@ -1010,13 +1021,19 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           limits.push('These images could not be saved to a link, so they exist only in this reply.');
         }
 
-        let jevInsightNote = "";
+        let pointer: Awaited<ReturnType<typeof judgeSeePacket>> = null;
+        let jevInsightNote = '';
         if (shot.outline.length > 0) {
-          const insight = await analyzePageOutlineWithJev(ctx.env, input.url, shot.title, shot.outline);
-          if (insight) {
-            jevInsightNote = ` ${insight.summary}`;
-            if (insight.isErrorPage) {
-              limits.push("Jev detected that this page outline matches an HTTP error or service outage page.");
+          pointer = await judgeSeePacket(ctx.env, input.url, shot.title, shot.outline);
+          if (pointer) {
+            if (pointer.suspect) jevInsightNote = ` Pointer: ${pointer.suspect}.`;
+            if (pointer.isErrorPage) {
+              limits.push('Jev: this outline looks like an error, login, or challenge page — do not invent a product bug.');
+            }
+            if (pointer.next === 'stop') {
+              limits.push('Jev next=stop: do not forge_read or forge_edit from this capture; ask for another public URL.');
+            } else if (pointer.suspect) {
+              limits.push(`Use forge_read with query ${JSON.stringify(pointer.suspect)} to open the file that owns this landmark.`);
             }
           }
         }
@@ -1046,7 +1063,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             {
               page: { url: shot.url, title: shot.title, shown },
               ...(gallery === null ? {} : { gallery }),
-              ...(quota.unlimited ? {} : { quota: `${quota.used} of ${quota.limit} used today` })
+              ...(quota.unlimited ? {} : { quota: `${quota.used} of ${quota.limit} used today` }),
+              ...(pointer
+                ? {
+                    pointer: {
+                      suspect: pointer.suspect,
+                      exists: pointer.exists,
+                      next: pointer.next,
+                      isErrorPage: pointer.isErrorPage
+                    }
+                  }
+                : {})
             },
             limits
           ),

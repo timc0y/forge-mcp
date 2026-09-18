@@ -84,22 +84,17 @@ export async function typesafeSystemOne(
     endpoint.includes("/ai/run") ||
     apiKey.trim().startsWith("cfut_");
 
-  // Cloudflare Workers AI typesafe/jev requires criteria to be a Record<string, string>, not an Array
-  let normalizedQuestions = payload.questions;
-  if (isCloudflare) {
-    const qMap: Record<string, JevQuestion> = {};
-    for (const [key, q] of Object.entries(payload.questions)) {
-      if (q.type === "choice" && Array.isArray(q.criteria)) {
-        const recordCriteria: Record<string, string> = {};
-        for (const item of q.criteria) {
-          recordCriteria[item] = item;
-        }
-        qMap[key] = { ...q, criteria: recordCriteria };
-      } else {
-        qMap[key] = q;
-      }
+  // Choice criteria must be a map. Arrays 422 on the public API.
+  const questions: Record<string, JevQuestion> = {};
+  for (const [key, question] of Object.entries(payload.questions)) {
+    if (question.type === "choice" && Array.isArray(question.criteria)) {
+      questions[key] = {
+        ...question,
+        criteria: Object.fromEntries(question.criteria.map((item) => [String(item), String(item)]))
+      };
+    } else {
+      questions[key] = question;
     }
-    normalizedQuestions = qMap;
   }
 
   const body = isCloudflare
@@ -107,12 +102,13 @@ export async function typesafeSystemOne(
         model: "typesafe/jev",
         input: {
           state: payload.state,
-          questions: normalizedQuestions
+          questions
         }
       })
     : JSON.stringify({
+        model: "jev-latest",
         state: payload.state,
-        questions: normalizedQuestions
+        questions
       });
 
   const controller = new AbortController();
@@ -139,20 +135,23 @@ export async function typesafeSystemOne(
     const rawAnswers = data.result?.result?.answers ?? data.result?.answers ?? data.answers;
     if (!rawAnswers || typeof rawAnswers !== "object") return null;
 
-    // Normalize probabilities into distribution for choice answers
     const answers: Record<string, JevAnswer> = {};
     for (const [k, v] of Object.entries(rawAnswers as Record<string, any>)) {
-      if (v && v.type === "choice") {
+      if (!v || typeof v !== "object") continue;
+      if (v.type === "choice" || v.choice !== undefined) {
         answers[k] = {
-          ...v,
+          type: "choice",
+          choice: String(v.choice ?? ""),
+          confidence: typeof v.confidence === "number" ? v.confidence : 0,
           distribution: v.distribution ?? v.probabilities ?? {}
         };
       } else {
-        answers[k] = v;
+        const noul = typeof v.noul === "number" ? v.noul : typeof v.probability === "number" ? v.probability : 0;
+        answers[k] = { type: "noul", noul };
       }
     }
 
-    return { answers };
+    return Object.keys(answers).length > 0 ? { answers } : null;
   } catch {
     return null;
   } finally {
@@ -191,19 +190,28 @@ export async function semanticPathTriage(
             type: 'choice',
             instructions: `Which file in 'candidatePaths' most directly implements, configures, or documents: "${query}"?`,
             criteria: batch
+          },
+          exists: {
+            type: 'noul',
+            instructions: `Does any path in candidatePaths actually implement or document: "${query}"? Answer no if the list is only weakly related.`
           }
         }
       });
 
       if (!resp) return [];
 
-      const matchAnswer = resp.answers.bestMatch as JevChoiceAnswer | undefined;
-      if (!matchAnswer || !matchAnswer.distribution) return [];
+      const exists = noulOf(resp.answers.exists, 1);
+      if (exists < 0.2) return [];
 
-      return Object.entries(matchAnswer.distribution)
+      const matchAnswer = resp.answers.bestMatch as JevChoiceAnswer | undefined;
+      if (!matchAnswer) return [];
+
+      const ranked = Object.entries(matchAnswer.distribution)
         .filter(([path, prob]) => batch.includes(path) && prob > 0.03)
         .sort((a, b) => b[1] - a[1])
         .map(([path]) => path);
+      if (ranked.length > 0) return ranked;
+      return batch.includes(matchAnswer.choice) ? [matchAnswer.choice] : [];
     })
   );
 
@@ -472,56 +480,92 @@ export async function rankChangeFilesWithJev(
   return sorted.length > 0 ? sorted : null;
 }
 
+export interface SeePointer {
+  isErrorPage: boolean;
+  /** Observed outline line Jev pointed at, or null when it abstains. */
+  suspect: string | null;
+  exists: number;
+  next: 'read' | 'stop';
+}
+
+const EXISTS_ACT = 0.35;
+const ERROR_ACT = 0.8;
+
+function noulOf(answer: JevAnswer | undefined, fallback: number): number {
+  if (!answer || answer.type !== "noul") return fallback;
+  return answer.noul;
+}
+
+/** Choice may return L4, l4, or the line text itself. */
+export function lineFromChoice(choice: string | undefined, ids: string[], lines: string[]): string | null {
+  if (!choice) return null;
+  const idIndex = ids.indexOf(choice);
+  if (idIndex >= 0) return lines[idIndex] ?? null;
+  const textIndex = lines.indexOf(choice);
+  if (textIndex >= 0) return lines[textIndex] ?? null;
+  const numbered = /^L(\d+)$/i.exec(choice.trim());
+  if (numbered) {
+    const index = Number(numbered[1]) - 1;
+    return lines[index] ?? null;
+  }
+  return null;
+}
+
 /**
- * Analyzes an accessibility outline from forge_see to detect errors and provide a crisp summary.
+ * One fan-out over a capture outline. `next` is derived in code from exists/error.
+ * Jev never sees the screenshot.
  */
-export async function analyzePageOutlineWithJev(
+export async function judgeSeePacket(
   env: Env,
   url: string,
   title: string,
   outline: string[]
-): Promise<{ summary: string; isErrorPage: boolean } | null> {
+): Promise<SeePointer | null> {
   if (!env.TYPESAFE_API_KEY || outline.length === 0) return null;
+
+  const lines = outline.slice(0, 40);
+  const ids = lines.map((_, index) => `L${index + 1}`);
 
   const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
     state: {
       url,
       title,
-      pageOutline: outline.slice(0, 40)
+      lines: lines.map((text, index) => ({ id: ids[index], text }))
     },
     questions: {
       isError: {
-        type: "noul",
-        instructions: "Does this page outline represent an HTTP error, 404 Not Found, 500 Internal Server Error, or crash page?"
+        type: 'noul',
+        instructions:
+          'Does this outline represent an HTTP error, 404, 500, crash, login wall, or cookie/challenge page with no useful app UI?'
       },
-      pageCategory: {
-        type: "choice",
-        instructions: "What kind of web page is this?",
-        criteria: [
-          "marketing_landing",
-          "documentation",
-          "web_app_dashboard",
-          "auth_login_form",
-          "ecommerce_store",
-          "error_maintenance"
-        ]
+      exists: {
+        type: 'noul',
+        instructions:
+          'Does any line name a real control or landmark a person could use (nav, button, heading of the product), not only chrome or an error message?'
+      },
+      suspect: {
+        type: 'choice',
+        instructions:
+          'Which line id is the single most useful pointer for a developer fixing this page? Prefer a broken, unlabeled, or primary interactive control. If the page is an error, pick the error heading.',
+        criteria: Object.fromEntries(ids.map((id, index) => [id, lines[index] ?? id]))
       }
     }
   });
 
   if (!resp) return null;
 
-  const isError = (resp.answers.isError as JevNoulAnswer | undefined)?.noul ?? 0;
-  const category = (resp.answers.pageCategory as JevChoiceAnswer | undefined)?.choice ?? "web page";
-
-  const categoryLabel = category.replace(/_/g, " ");
-  const summary = isError > 0.8
-    ? "Warning: Rendered outline appears to be an error or maintenance page."
-    : `Detected as ${categoryLabel}.`;
+  const isError = noulOf(resp.answers.isError, 0);
+  const exists = noulOf(resp.answers.exists, 0);
+  const suspectChoice = (resp.answers.suspect as JevChoiceAnswer | undefined)?.choice;
+  const suspect = lineFromChoice(suspectChoice, ids, lines);
+  const isErrorPage = isError >= ERROR_ACT;
+  const next: SeePointer['next'] = isErrorPage || exists < EXISTS_ACT ? 'stop' : 'read';
 
   return {
-    summary,
-    isErrorPage: isError > 0.8
+    isErrorPage,
+    suspect: exists < EXISTS_ACT && !isErrorPage ? null : suspect,
+    exists,
+    next
   };
 }
 

@@ -123,6 +123,13 @@ describe('TypeSafe Jev System One client', () => {
       }
     });
 
+    const posted = JSON.parse(String((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]?.body));
+    expect(posted.model).toBe('jev-latest');
+    expect(posted.questions.choiceQ.criteria).toEqual({
+      'src/auth.ts': 'src/auth.ts',
+      'src/index.ts': 'src/index.ts'
+    });
+
     expect(result).not.toBeNull();
     expect(result?.answers.choiceQ?.type).toBe('choice');
     if (result?.answers.choiceQ?.type === 'choice') {
@@ -349,7 +356,7 @@ describe("resolveRepoWithJev", () => {
   });
 });
 
-import { analyzePageOutlineWithJev, rankChangeFilesWithJev } from "../src/jev";
+import { judgeSeePacket, lineFromChoice, rankChangeFilesWithJev } from "../src/jev";
 
 describe("rankChangeFilesWithJev", () => {
   const originalFetch = globalThis.fetch;
@@ -394,59 +401,134 @@ describe("rankChangeFilesWithJev", () => {
   });
 });
 
-describe("analyzePageOutlineWithJev", () => {
+describe("judgeSeePacket", () => {
   const originalFetch = globalThis.fetch;
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
 
-  it("detects error pages in forge_see", async () => {
+  it("points at an outline line and asks the agent to read", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         answers: {
-          isError: { type: "noul", noul: 0.95 },
-          pageCategory: { type: "choice", choice: "error_maintenance" }
+          isError: { type: "noul", noul: 0.04 },
+          exists: { type: "noul", noul: 0.92 },
+          suspect: { type: "choice", choice: "L4" }
         }
       })
     }) as unknown as typeof fetch;
 
-    const outline = ["heading: 404 Not Found", "text: The page you requested could not be found."];
-    const insight = await analyzePageOutlineWithJev(
-      { TYPESAFE_API_KEY: "key" } as unknown as Env,
-      "https://example.com/broken",
-      "404 Not Found",
-      outline
-    );
-
-    expect(insight).not.toBeNull();
-    expect(insight?.isErrorPage).toBe(true);
-    expect(insight?.summary).toContain("error or maintenance");
-  });
-
-  it("summarizes valid web pages in forge_see", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        answers: {
-          isError: { type: "noul", noul: 0.05 },
-          pageCategory: { type: "choice", choice: "marketing_landing" }
-        }
-      })
-    }) as unknown as typeof fetch;
-
-    const outline = ["banner", "navigation", "heading: Supercharge your workflow", "button: Get Started"];
-    const insight = await analyzePageOutlineWithJev(
+    const outline = [
+      "banner",
+      "navigation",
+      "heading: Supercharge your workflow",
+      "button: Menu"
+    ];
+    const pointer = await judgeSeePacket(
       { TYPESAFE_API_KEY: "key" } as unknown as Env,
       "https://example.com",
       "Example App",
       outline
     );
 
-    expect(insight).not.toBeNull();
-    expect(insight?.isErrorPage).toBe(false);
-    expect(insight?.summary).toBe("Detected as marketing landing.");
+    expect(pointer).toEqual({
+      isErrorPage: false,
+      suspect: "button: Menu",
+      exists: 0.92,
+      next: "read"
+    });
+  });
+
+  it("abstains when the outline has no usable landmark", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          isError: { type: "noul", noul: 0.1 },
+          exists: { type: "noul", noul: 0.08 },
+          suspect: { type: "choice", choice: "L1" }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const pointer = await judgeSeePacket(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "https://example.com",
+      "Empty",
+      ["text: loading"]
+    );
+
+    expect(pointer?.suspect).toBeNull();
+    expect(pointer?.next).toBe("stop");
+  });
+
+  it("stops on error pages", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          isError: { type: "noul", noul: 0.95 },
+          exists: { type: "noul", noul: 0.2 },
+          suspect: { type: "choice", choice: "L1" }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const pointer = await judgeSeePacket(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "https://example.com/broken",
+      "404 Not Found",
+      ["heading: 404 Not Found"]
+    );
+
+    expect(pointer?.isErrorPage).toBe(true);
+    expect(pointer?.next).toBe("stop");
+    expect(pointer?.suspect).toBe("heading: 404 Not Found");
+  });
+});
+
+describe("lineFromChoice", () => {
+  const ids = ["L1", "L2"];
+  const lines = ["banner", "button: Menu"];
+
+  it("resolves L-ids, case, and line text", () => {
+    expect(lineFromChoice("L2", ids, lines)).toBe("button: Menu");
+    expect(lineFromChoice("l1", ids, lines)).toBe("banner");
+    expect(lineFromChoice("button: Menu", ids, lines)).toBe("button: Menu");
+    expect(lineFromChoice("nope", ids, lines)).toBeNull();
+  });
+});
+
+describe("typesafeSystemOne noul field names", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("reads TypeSafe probability as noul", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          isError: { type: "noul", probability: 0.02 },
+          exists: { type: "noul", probability: 0.91 },
+          suspect: { type: "choice", choice: "button: Menu" }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const pointer = await judgeSeePacket(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "https://example.com",
+      "App",
+      ["banner", "button: Menu"]
+    );
+    expect(pointer?.exists).toBe(0.91);
+    expect(pointer?.suspect).toBe("button: Menu");
+    expect(pointer?.next).toBe("read");
   });
 });
 
