@@ -164,30 +164,48 @@ async function run(
  * conversation says "my notes repo", not "timcoy/notes", and refusing the bare
  * form would put ceremony back exactly where this product removed it.
  */
-function resolveRepo(ctx: ToolContext, value: string): RepoRef {
-  const trimmed = value.trim();
-  return parseRepo(trimmed.includes('/') ? trimmed : `${ctx.identity.githubLogin}/${trimmed}`);
-}
-
 async function resolveRepoTarget(ctx: ToolContext, value: string): Promise<RepoRef> {
   const trimmed = value.trim();
+
+  // If already a valid canonical owner/name format, return directly
   if (trimmed.includes("/")) {
-    return parseRepo(trimmed);
+    try {
+      return parseRepo(trimmed);
+    } catch {
+      // If owner/name has spaces or typos, allow fuzzy resolution against reachable repos
+    }
   }
 
-  const userRepo = parseRepo(`${ctx.identity.githubLogin}/${trimmed}`);
-
+  // Check reachable repos for exact, normalized, or Jev semantic match
   try {
     const repos = await listRepos(ctx.gh);
+
+    // 1. Exact match against owner/name or repo name (case-insensitive)
     const exactNameMatches = repos.filter((r) => {
       const parts = r.repo.split("/");
-      return parts[1]?.toLowerCase() === trimmed.toLowerCase();
+      return (
+        parts[1]?.toLowerCase() === trimmed.toLowerCase() ||
+        r.repo.toLowerCase() === trimmed.toLowerCase()
+      );
     });
-
-    if (exactNameMatches.length === 1) {
-      return parseRepo(exactNameMatches[0]!.repo);
+    if (exactNameMatches.length === 1 && exactNameMatches[0]) {
+      return parseRepo(exactNameMatches[0].repo);
     }
 
+    // 2. Normalized alphanumeric match (e.g. "easy roads" -> "easyroads" matches "EasyRoads")
+    const cleanQuery = trimmed.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (cleanQuery.length > 0) {
+      const normalizedMatches = repos.filter((r) => {
+        const repoName = (r.repo.split("/")[1] ?? r.repo).toLowerCase().replace(/[^a-z0-9]/g, "");
+        const fullRepo = r.repo.toLowerCase().replace(/[^a-z0-9]/g, "");
+        return repoName === cleanQuery || fullRepo === cleanQuery;
+      });
+      if (normalizedMatches.length === 1 && normalizedMatches[0]) {
+        return parseRepo(normalizedMatches[0].repo);
+      }
+    }
+
+    // 3. Jev semantic / fuzzy repository resolution
     if (ctx.env.TYPESAFE_API_KEY && repos.length > 0) {
       const match = await resolveRepoWithJev(ctx.env, trimmed, repos);
       if (match && match.confidence >= 0.8) {
@@ -195,10 +213,11 @@ async function resolveRepoTarget(ctx: ToolContext, value: string): Promise<RepoR
       }
     }
   } catch {
-    // Fall back to direct userRepo if listing fails
+    // If listing fails, fall through to default parse
   }
 
-  return userRepo;
+  // 4. Default: parse as user's own repo (or throw standard validation error if invalid)
+  return parseRepo(trimmed.includes("/") ? trimmed : `${ctx.identity.githubLogin}/${trimmed}`);
 }
 
 function changeNames(changes: Change[]): string[] {

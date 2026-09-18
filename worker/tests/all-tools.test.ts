@@ -317,7 +317,20 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     }) as unknown as typeof fetch;
 
     try {
-      const { server } = createMockToolContext({}, {
+      const { server } = createMockToolContext({
+        "GET /repos/testuser/another-repo": {
+          status: 200,
+          json: { default_branch: "main" }
+        },
+        "GET /repos/testuser/another-repo/git/trees/main": {
+          status: 200,
+          json: { truncated: false, tree: [{ path: "README.md", type: "blob" }] }
+        },
+        "GET /repos/testuser/another-repo/pulls": {
+          status: 200,
+          json: []
+        }
+      }, {
         ARTIFACTS: {
           async put() {},
           async get() { return null; },
@@ -372,7 +385,20 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     }) as unknown as typeof fetch;
 
     try {
-      const { server } = createMockToolContext({}, {
+      const { server } = createMockToolContext({
+        "GET /repos/testuser/another-repo": {
+          status: 200,
+          json: { default_branch: "main" }
+        },
+        "GET /repos/testuser/another-repo/git/trees/main": {
+          status: 200,
+          json: { truncated: false, tree: [{ path: "README.md", type: "blob" }] }
+        },
+        "GET /repos/testuser/another-repo/pulls": {
+          status: 200,
+          json: []
+        }
+      }, {
         TYPESAFE_API_KEY: "cfut_mock_token_123",
         TYPESAFE_BASE_URL: "https://api.cloudflare.com/client/v4/accounts/test/ai/run"
       });
@@ -418,7 +444,20 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     }) as unknown as typeof fetch;
 
     try {
-      const { server } = createMockToolContext({}, {
+      const { server } = createMockToolContext({
+        "GET /repos/testuser/another-repo": {
+          status: 200,
+          json: { default_branch: "main" }
+        },
+        "GET /repos/testuser/another-repo/git/trees/main": {
+          status: 200,
+          json: { truncated: false, tree: [{ path: "README.md", type: "blob" }] }
+        },
+        "GET /repos/testuser/another-repo/pulls": {
+          status: 200,
+          json: []
+        }
+      }, {
         TYPESAFE_API_KEY: "cfut_mock_token_123",
         TYPESAFE_BASE_URL: "https://api.cloudflare.com/client/v4/accounts/test/ai/run"
       });
@@ -432,6 +471,82 @@ describe("End-to-End Test for all 5 Forge tools", () => {
 
       expect(res.isError).toBeFalsy();
       expect(res.structuredContent.limits[0]).toContain("Targeted excerpt for 'welcome message'");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+
+  it("resolves repo with spaces via normalized alphanumeric matching (e.g. easy roads -> EasyRoads)", async () => {
+    const { server } = createMockToolContext();
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    // Input has space: "test repo" should resolve to "testuser/test-repo"
+    const treeRes = await readTool.handler({ repo: "test repo" });
+    expect(treeRes.isError).toBeFalsy();
+    expect(treeRes.content[0].text).toContain("testuser/test-repo at main");
+
+    // Input with owner and space: "testuser/test repo" should also resolve
+    const treeRes2 = await readTool.handler({ repo: "testuser/test repo" });
+    expect(treeRes2.isError).toBeFalsy();
+    expect(treeRes2.content[0].text).toContain("testuser/test-repo at main");
+  });
+
+  it("resolves repo via Jev semantic matching when natural phrasing is used", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/ai/run")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              result: {
+                answers: {
+                  matchedRepo: {
+                    type: "choice",
+                    choice: "testuser/another-repo",
+                    confidence: 0.92
+                  },
+                  confidence: {
+                    type: "noul",
+                    noul: 0.92
+                  }
+                }
+              }
+            }
+          })
+        };
+      }
+      return { ok: false, status: 404 };
+    }) as unknown as typeof fetch;
+
+    try {
+      const { server } = createMockToolContext({
+        "GET /repos/testuser/another-repo": {
+          status: 200,
+          json: { default_branch: "main" }
+        },
+        "GET /repos/testuser/another-repo/git/trees/main": {
+          status: 200,
+          json: { truncated: false, tree: [{ path: "README.md", type: "blob" }] }
+        },
+        "GET /repos/testuser/another-repo/pulls": {
+          status: 200,
+          json: []
+        }
+      }, {
+        TYPESAFE_API_KEY: "cfut_mock_token_123",
+        TYPESAFE_BASE_URL: "https://api.cloudflare.com/client/v4/accounts/test/ai/run"
+      });
+      const readTool = (server as any)._registeredTools["forge_read"];
+
+      const res = await readTool.handler({
+        repo: "the private secondary repo"
+      });
+
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain("testuser/another-repo");
     } finally {
       globalThis.fetch = originalFetch;
     }
