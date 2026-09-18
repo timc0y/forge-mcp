@@ -356,7 +356,7 @@ describe("resolveRepoWithJev", () => {
   });
 });
 
-import { judgeSeePacket, lineFromChoice, rankChangeFilesWithJev } from "../src/jev";
+import { judgeSeePacket, lineFromChoice, rankChangeFilesWithJev, lintCommitWithJev } from "../src/jev";
 
 describe("rankChangeFilesWithJev", () => {
   const originalFetch = globalThis.fetch;
@@ -733,5 +733,82 @@ describe("suggestCommitMessageWithJev", () => {
   it("returns null when Jev API key is missing", async () => {
     const res = await suggestCommitMessageWithJev(undefined, [{ path: "test.ts" }]);
     expect(res).toBeNull();
+  });
+});
+
+describe("judgeSeePacket extended properties", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("extracts pageType and flags unlabeled controls", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          isError: { type: "noul", noul: 0.05 },
+          exists: { type: "noul", noul: 0.95 },
+          suspect: { type: "choice", choice: "L1" },
+          pageType: { type: "choice", choice: "dashboard" },
+          hasUnlabeledControls: { type: "noul", noul: 0.88 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const pointer = await judgeSeePacket(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "https://example.com/dash",
+      "Dashboard",
+      ["heading: Analytics Overview", "button: "]
+    );
+
+    expect(pointer).not.toBeNull();
+    expect(pointer?.pageType).toBe("dashboard");
+    expect(pointer?.hasUnlabeledControls).toBe(true);
+    expect(pointer?.suspect).toBe("heading: Analytics Overview");
+  });
+});
+
+describe("lintCommitWithJev", () => {
+  it("detects dangling local relative imports", async () => {
+    const files = [
+      {
+        path: "src/index.ts",
+        content: "import { helper } from './helper';\nexport const x = 1;"
+      }
+    ];
+    const knownRepoPaths = ["src/index.ts", "package.json", "tsconfig.json"];
+
+    const warnings = await lintCommitWithJev(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      files,
+      knownRepoPaths
+    );
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("imports \"./helper\"");
+  });
+
+  it("does not warn when the imported file is present in the repo or commit", async () => {
+    const files = [
+      {
+        path: "src/index.ts",
+        content: "import { helper } from './helper';\nexport const x = 1;"
+      },
+      {
+        path: "src/helper.ts",
+        content: "export const helper = () => {};"
+      }
+    ];
+    const knownRepoPaths = ["src/index.ts"];
+
+    const warnings = await lintCommitWithJev(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      files,
+      knownRepoPaths
+    );
+
+    expect(warnings).toEqual([]);
   });
 });

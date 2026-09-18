@@ -349,6 +349,22 @@ export async function searchGitHubRepos(
 /**
  * Searches public code across GitHub with text snippet matching.
  */
+
+function selectBestCodeFragment(matches: Array<{ fragment?: string }> | undefined): string {
+  if (!matches || matches.length === 0) return "";
+  const scored = matches
+    .map((m) => {
+      const text = m.fragment?.trim() ?? "";
+      let score = text.length;
+      if (/^\s*(import|require|from)\b/m.test(text)) score -= 120;
+      if (/\b(function|class|interface|type|const\s+[a-zA-Z0-9_]+\s*=|def\s+|async\s+)\b/.test(text)) score += 200;
+      if (/\b(export\s+default|export\s+(async\s+)?function|export\s+const)\b/.test(text)) score += 300;
+      return { text, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.text ?? "";
+}
+
 export async function searchGitHubCode(
   request: GitHubRequest,
   query: string,
@@ -382,7 +398,7 @@ export async function searchGitHubCode(
     const repo = String(item.repository?.full_name ?? '');
     const path = String(item.path ?? '');
     const title = `${repo}:${path}`;
-    const fragment = item.text_matches?.[0]?.fragment?.trim() ?? '';
+    const fragment = selectBestCodeFragment(item.text_matches);
     const snippet = fragment.length > 0 ? fragment.slice(0, 300) : item.repository?.description ?? '';
     const url = item.html_url ?? `https://github.com/${repo}/blob/main/${path}`;
 

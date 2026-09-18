@@ -371,3 +371,30 @@ describe("Jev-enhanced buildAdvancedSearchQuery", () => {
     expect(res.query).toContain("path:content/");
   });
 });
+
+describe("searchGitHubCode fragment prioritization", () => {
+  it("prefers function definitions and exports over bare imports", async () => {
+    const fakeRequest = async () => ({
+      status: 200,
+      json: {
+        total_count: 1,
+        items: [
+          {
+            name: "router.ts",
+            path: "src/router.ts",
+            html_url: "https://github.com/honojs/hono/blob/main/src/router.ts",
+            repository: { full_name: "honojs/hono", description: "Fast router" },
+            text_matches: [
+              { fragment: "import { Context } from './context';" },
+              { fragment: "export class Router { add(method: string, path: string) {} }" }
+            ]
+          }
+        ]
+      }
+    });
+
+    const result = await searchGitHubCode(fakeRequest as any, "Router add method");
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.snippet).toContain("export class Router");
+  });
+});

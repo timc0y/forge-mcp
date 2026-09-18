@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage, suggestCommitMessageWithJev, summarizeChangeImpactWithJev } from './jev';
+import { judgeSeePacket, lintCommitWithJev, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage, suggestCommitMessageWithJev, summarizeChangeImpactWithJev } from './jev';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
@@ -559,19 +559,20 @@ async function readTreeLevel(
     limits.push('GitHub truncated this listing, so some files are missing from it.');
   }
 
-  let fileExcerpt: { path: string; text: string } | null = null;
-  if (isSemanticSearch && paths.length > 0 && paths[0] && ctx.env.TYPESAFE_API_KEY) {
+  const fileExcerpts: Array<{ path: string; text: string }> = [];
+  if (isSemanticSearch && paths.length > 0 && ctx.env.TYPESAFE_API_KEY) {
     try {
-      const topPath = paths[0];
-      const readResult = await readFiles(gh, repo, base, [topPath], MAX_FILE_BYTES);
-      const topFile = readResult.files[0];
-      if (topFile && !topFile.truncated) {
-        const excerpt = await semanticFileExcerpt(ctx.env, topFile.path, topFile.content, query!.trim());
-        if (excerpt && excerpt.confidence >= 0.4) {
-          fileExcerpt = {
-            path: `${topFile.path} (lines ${excerpt.startLine}-${excerpt.endLine})`,
-            text: excerpt.content
-          };
+      const topCandidates = paths.slice(0, 2);
+      const readResult = await readFiles(gh, repo, base, topCandidates, MAX_FILE_BYTES);
+      for (const candidateFile of readResult.files) {
+        if (!candidateFile.truncated) {
+          const excerpt = await semanticFileExcerpt(ctx.env, candidateFile.path, candidateFile.content, query!.trim());
+          if (excerpt && excerpt.confidence >= 0.4) {
+            fileExcerpts.push({
+              path: `${candidateFile.path} (lines ${excerpt.startLine}-${excerpt.endLine})`,
+              text: excerpt.content
+            });
+          }
         }
       }
     } catch {
@@ -585,14 +586,19 @@ async function readTreeLevel(
     : query?.trim()
       ? ` matching "${query.trim()}"`
       : '';
-  const excerptSentence = fileExcerpt ? `. Relevant excerpt from ${fileExcerpt.path} included below` : '';
+  const excerptSentence =
+    fileExcerpts.length === 1
+      ? `. Relevant excerpt from ${fileExcerpts[0]?.path} included below`
+      : fileExcerpts.length > 1
+        ? `. Relevant excerpts from ${fileExcerpts.map((e) => e.path.split(' ')[0]).join(' and ')} included below`
+        : '';
 
   return {
     summary: `${formatRepo(repo)} at ${base}: ${shown.length} file${shown.length === 1 ? '' : 's'}${queryNote}${excerptSentence}.${changesSentence(names)}`,
     structured: withLimits(
       {
         tree: shown,
-        ...(fileExcerpt ? { files: [fileExcerpt] } : {}),
+        ...(fileExcerpts.length > 0 ? { files: fileExcerpts } : {}),
         changes: names,
         next:
           names.length > 0
@@ -864,7 +870,7 @@ async function requestAct(
       : `${commits} would stop being reachable.`;
 
   let impactNote = '';
-  if (act === 'merge' && ctx.env.TYPESAFE_API_KEY) {
+  if (ctx.env.TYPESAFE_API_KEY && (act === 'merge' || comparison.aheadBy > 0)) {
     try {
       const impact = await summarizeChangeImpactWithJev(ctx.env, change.name, comparison);
       if (impact) {
@@ -878,7 +884,7 @@ async function requestAct(
   const evidence =
     act === 'merge'
       ? `Merging "${change.name}" into ${base} brings ${commits}: ${files}.${impactNote}`
-      : `Discarding "${change.name}" drops ${files}. ${loss}`;
+      : `Discarding "${change.name}" drops ${files}. ${loss}${impactNote ? ' ' + impactNote : ''}`;
 
   const limits: string[] = [];
   if (impactNote.includes("breaking change")) {
@@ -1069,6 +1075,15 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           }
         }
 
+        if (ctx.env.TYPESAFE_API_KEY) {
+          try {
+            const lintWarnings = await lintCommitWithJev(ctx.env, input.files);
+            limits.push(...lintWarnings);
+          } catch {
+            // Non-fatal
+          }
+        }
+
         let changes: Change[] = [];
         try {
           changes = await openChanges(ctx.gh, repo);
@@ -1174,7 +1189,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             suspect: z.string().nullable(),
             exists: z.number(),
             next: z.enum(['read', 'stop']),
-            isErrorPage: z.boolean()
+            isErrorPage: z.boolean(),
+            pageType: z.string().optional(),
+            hasUnlabeledControls: z.boolean().optional()
           })
           .optional()
           .describe(
@@ -1262,7 +1279,13 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         if (shot.outline.length > 0) {
           pointer = await judgeSeePacket(ctx.env, input.url, shot.title, shot.outline);
           if (pointer) {
-            if (pointer.suspect) jevInsightNote = ` Pointer: ${pointer.suspect}.`;
+            if (pointer.pageType && pointer.pageType !== 'error') {
+              jevInsightNote += ` [Type: ${pointer.pageType}]`;
+            }
+            if (pointer.suspect) jevInsightNote += ` Pointer: ${pointer.suspect}.`;
+            if (pointer.hasUnlabeledControls) {
+              limits.push('Jev notice: detected potentially unlabeled or missing-name interactive controls in page outline.');
+            }
             if (pointer.isErrorPage) {
               limits.push('Jev: this outline looks like an error, login, or challenge page — do not invent a product bug.');
             }
@@ -1306,7 +1329,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
                       suspect: pointer.suspect,
                       exists: pointer.exists,
                       next: pointer.next,
-                      isErrorPage: pointer.isErrorPage
+                      isErrorPage: pointer.isErrorPage,
+                      ...(pointer.pageType ? { pageType: pointer.pageType } : {}),
+                      ...(pointer.hasUnlabeledControls ? { hasUnlabeledControls: pointer.hasUnlabeledControls } : {})
                     }
                   }
                 : {})

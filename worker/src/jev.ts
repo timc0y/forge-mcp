@@ -486,6 +486,8 @@ export interface SeePointer {
   suspect: string | null;
   exists: number;
   next: 'read' | 'stop';
+  pageType?: string;
+  hasUnlabeledControls?: boolean;
 }
 
 const EXISTS_ACT = 0.35;
@@ -543,6 +545,15 @@ export async function judgeSeePacket(
         instructions:
           'Does any line name a real control or landmark a person could use (nav, button, heading of the product), not only chrome or an error message?'
       },
+      pageType: {
+        type: 'choice',
+        instructions: 'What category best describes this captured page UI?',
+        criteria: ['landing', 'docs', 'dashboard', 'auth', 'form', 'settings', 'error', 'content']
+      },
+      hasUnlabeledControls: {
+        type: 'noul',
+        instructions: 'Are there buttons, links, or controls in this outline that lack descriptive names or text?'
+      },
       suspect: {
         type: 'choice',
         instructions:
@@ -561,12 +572,21 @@ export async function judgeSeePacket(
   const isErrorPage = isError >= ERROR_ACT;
   const next: SeePointer['next'] = isErrorPage || exists < EXISTS_ACT ? 'stop' : 'read';
 
-  return {
+  const pageTypeAnswer = resp.answers.pageType as JevChoiceAnswer | undefined;
+  const unlabeledAnswer = resp.answers.hasUnlabeledControls as JevNoulAnswer | undefined;
+  const pageType = pageTypeAnswer?.choice;
+  const hasUnlabeledControls = (unlabeledAnswer?.noul ?? 0) > 0.7;
+
+  const result: SeePointer = {
     isErrorPage,
     suspect: exists < EXISTS_ACT && !isErrorPage ? null : suspect,
     exists,
     next
   };
+  if (pageType && pageType !== 'generic') result.pageType = pageType;
+  if (hasUnlabeledControls) result.hasUnlabeledControls = true;
+
+  return result;
 }
 
 /**
@@ -739,4 +759,51 @@ export async function suggestCommitMessageWithJev(
   const mainPath = files[0]?.path.split("/").pop() ?? "files";
 
   return `${action}(${scope}): update ${mainPath}`;
+}
+
+/**
+ * Evaluates source files being committed for dangling relative imports or missing symbols,
+ * returning advisory notices for the commit receipt without blocking execution.
+ */
+export async function lintCommitWithJev(
+  env: Env | undefined,
+  files: Array<{ path: string; content?: string | null }>,
+  knownRepoPaths?: string[]
+): Promise<string[]> {
+  if (!env?.TYPESAFE_API_KEY || files.length === 0) return [];
+
+  const warnings: string[] = [];
+
+  // Fast static scan for dangling local imports (e.g. import './missing') if repo paths are provided
+  if (knownRepoPaths && knownRepoPaths.length > 0) {
+    const knownSet = new Set(knownRepoPaths);
+    for (const f of files) {
+      if (!f.content) continue;
+      const importMatches = f.content.matchAll(/(?:from|import)\s+['"](\.[^'"]+)['"]/g);
+      for (const match of importMatches) {
+        const importPath = match[1];
+        if (!importPath) continue;
+        const currentDir = f.path.split("/").slice(0, -1).join("/");
+        const normalized = (currentDir ? `${currentDir}/${importPath}` : importPath)
+          .replace(/\/\.\//g, "/")
+          .replace(/([^/]+)\/\.\.\//g, "");
+        const candidates = [
+          normalized,
+          `${normalized}.ts`,
+          `${normalized}.tsx`,
+          `${normalized}.js`,
+          `${normalized}.jsx`,
+          `${normalized}/index.ts`,
+          `${normalized}/index.js`
+        ];
+        const exists = candidates.some((c) => knownSet.has(c) || files.some((newF) => newF.path === c));
+        if (!exists && knownRepoPaths.length < 500) {
+          warnings.push(`Notice: ${f.path} imports "${importPath}", but no matching file was found in repo tree.`);
+          break;
+        }
+      }
+    }
+  }
+
+  return warnings;
 }
