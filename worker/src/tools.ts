@@ -36,6 +36,14 @@ import { judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFil
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
+import {
+  SUPPORTED_PLATFORMS,
+  buildAdvancedSearchQuery,
+  rankSearchResultsWithJev,
+  resolveDocPlatform,
+  searchGitHubCode,
+  searchGitHubRepos
+} from './search';
 import { capture } from './capture';
 import { storeGallery } from './gallery';
 import { releaseCaptureQuota, reserveCaptureQuota } from './quota';
@@ -176,6 +184,12 @@ async function resolveRepoTarget(ctx: ToolContext, value: string): Promise<RepoR
     }
   }
 
+  // Check if it matches a known documentation platform alias (e.g. "cloudflare", "nextjs", "react", "mdn")
+  const platform = resolveDocPlatform(trimmed);
+  if (platform) {
+    return platform.repo;
+  }
+
   // Check reachable repos for exact, normalized, or Jev semantic match
   try {
     const repos = await listRepos(ctx.gh);
@@ -277,6 +291,23 @@ function totals(comparison: Comparison): { files: number; additions: number; del
   );
 }
 
+function ghForRepo(ctx: ToolContext, repo: RepoRef): GitHubRequest {
+  return async (path, init) => {
+    const res = await ctx.gh(path, init);
+    if ((res.status === 404 || res.status === 403) && ctx.ghUser) {
+      try {
+        const userRes = await ctx.ghUser(path, init);
+        if (userRes.status === 200 || res.status !== 404) {
+          return userRes;
+        }
+      } catch {
+        // Fall back to original res
+      }
+    }
+    return res;
+  };
+}
+
 /** "modified +12/-3" — status and size in one field rather than three. */
 function describeChangedFile(file: ChangedFile): string {
   return `${file.status} +${file.additions}/-${file.deletions}`;
@@ -298,10 +329,151 @@ const readOutput = {
       files: z.array(z.object({ path: z.string(), change: z.string(), patch: z.string().optional() }))
     })
     .optional(),
+  searchResults: z
+    .array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        repo: z.string(),
+        path: z.string().optional(),
+        snippet: z.string().optional(),
+        url: z.string().optional(),
+        stars: z.number().optional(),
+        score: z.number().optional(),
+        confidence: z.number().optional()
+      })
+    )
+    .optional(),
+  platforms: z
+    .array(
+      z.object({
+        name: z.string(),
+        repo: z.string(),
+        description: z.string()
+      })
+    )
+    .optional(),
   ...receiptFields
 };
 
+async function searchGlobalOrDocs(
+  ctx: ToolContext,
+  targetRepo: string | undefined,
+  query: string
+): Promise<ToolOutcome> {
+  const gh = ctx.ghUser ?? ctx.gh;
+  const isTargetDocs = targetRepo === 'docs';
+  const isTargetGlobal = targetRepo === 'global' || targetRepo === 'search' || targetRepo === 'public';
+
+  const platform =
+    targetRepo && !isTargetDocs && !isTargetGlobal
+      ? resolveDocPlatform(targetRepo)
+      : isTargetGlobal
+        ? null
+        : resolveDocPlatform(query);
+
+  const isDocsMode = (isTargetDocs || Boolean(platform)) && !isTargetGlobal;
+  const mode = isDocsMode
+    ? 'docs'
+    : /\b(repo|repos|repository|repositories|libraries)\b/i.test(query)
+      ? 'repos'
+      : 'code';
+
+  if (isDocsMode && !platform && (!query || query.trim() === '')) {
+    return {
+      summary: `Forge Documentation Search supports: ${SUPPORTED_PLATFORMS.map((p) => p.name).join(', ')}.`,
+      structured: {
+        platforms: SUPPORTED_PLATFORMS.map((p) => ({
+          name: p.name,
+          repo: formatRepo(p.repo),
+          description: p.description
+        })),
+        next: 'Specify repo: "<platform>" (e.g. repo: "cloudflare") and a query to search documentation.'
+      }
+    };
+  }
+
+  const { query: advancedQuery, detectedPlatform } = await buildAdvancedSearchQuery(ctx.env, query, mode);
+  const activePlatform = platform ?? detectedPlatform;
+
+  const limits: string[] = [];
+
+  if (mode === 'repos') {
+    const { total, items } = await searchGitHubRepos(gh, advancedQuery, 10);
+    const ranked = await rankSearchResultsWithJev(ctx.env, query, items);
+
+    if (ranked.length === 0) {
+      return {
+        summary: `No public GitHub repositories matched "${query}".`,
+        structured: {
+          searchResults: [],
+          next: 'Try broader search terms, or specify repo: "docs" with a platform name like "cloudflare" or "nextjs".'
+        }
+      };
+    }
+
+    return {
+      summary: `Found ${total} public GitHub repositor${total === 1 ? 'y' : 'ies'} for "${query}" (advanced query: \`${advancedQuery}\`).`,
+      structured: withLimits(
+        {
+          repos: ranked.map((r) => ({
+            repo: r.repo,
+            about: [r.snippet, r.stars ? `⭐ ${r.stars}` : '', r.url].filter(Boolean).join(' · ')
+          })),
+          searchResults: ranked,
+          next: 'Pass repo: "<owner>/<name>" to inspect tree or files of any of these repositories.'
+        },
+        limits
+      )
+    };
+  }
+
+  // Code / Documentation search
+  const { total, items } = await searchGitHubCode(gh, advancedQuery, 10);
+  const ranked = await rankSearchResultsWithJev(ctx.env, query, items);
+
+  const scopeLabel = activePlatform
+    ? `${activePlatform.name} documentation (${formatRepo(activePlatform.repo)})`
+    : 'public GitHub code';
+
+  if (ranked.length === 0) {
+    return {
+      summary: `No code matches found across ${scopeLabel} for "${query}" (query: \`${advancedQuery}\`).`,
+      structured: {
+        searchResults: [],
+        next: 'Try broader keywords or omit language/path qualifiers.'
+      }
+    };
+  }
+
+  return {
+    summary: `Found ${total} code matches across ${scopeLabel} for "${query}".`,
+    structured: withLimits(
+      {
+        files: ranked.map((item) => ({
+          path: item.path ? `${item.repo}:${item.path}` : item.title,
+          text: item.snippet ?? ''
+        })),
+        searchResults: ranked,
+        next: activePlatform
+          ? `Read full doc file with repo: "${formatRepo(activePlatform.repo)}" and paths: ["${ranked[0]?.path ?? '...'}"]`
+          : 'Read any matching file with repo: "<owner>/<name>" and paths: ["..."]'
+      },
+      limits
+    )
+  };
+}
+
 async function readRepositories(ctx: ToolContext, query: string | undefined): Promise<ToolOutcome> {
+  const trimmedQuery = query?.trim();
+
+  // If query starts with search/docs prefix
+  if (trimmedQuery && /^(global|search|code|docs|platform):/i.test(trimmedQuery)) {
+    const cleanQuery = trimmedQuery.replace(/^(global|search|code|docs|platform):\s*/i, '');
+    const isDocs = /^docs:/i.test(trimmedQuery);
+    return searchGlobalOrDocs(ctx, isDocs ? 'docs' : 'global', cleanQuery);
+  }
+
   const found = await listRepos(ctx.gh, query);
   // Newest push first: recency is the only ordering a human recognises in a
   // list of their own repositories.
@@ -314,12 +486,13 @@ async function readRepositories(ctx: ToolContext, query: string | undefined): Pr
   }
 
   if (shown.length === 0) {
+    if (trimmedQuery) {
+      return searchGlobalOrDocs(ctx, 'global', trimmedQuery);
+    }
     return {
-      summary: query
-        ? `No repository Forge can reach matches "${query}".`
-        : 'Forge cannot reach any repository for this account yet.',
+      summary: 'Forge cannot reach any repository for this account yet.',
       structured: withLimits(
-        { repos: [], next: 'forge_edit creates a repository by writing the first file into it.' },
+        { repos: [], next: 'forge_edit creates a repository by writing the first file into it, or pass repo: "global" to search GitHub.' },
         limits
       )
     };
@@ -337,7 +510,7 @@ async function readRepositories(ctx: ToolContext, query: string | undefined): Pr
             .filter((part): part is string => Boolean(part))
             .join(' · ')
         })),
-        next: 'Name one to see its files and open changes.'
+        next: 'Name one to see its files and open changes, or pass repo: "global" to search all of GitHub.'
       },
       limits
     )
@@ -349,9 +522,10 @@ async function readTreeLevel(
   repo: RepoRef,
   query: string | undefined
 ): Promise<ToolOutcome> {
-  const base = await defaultBranch(ctx.gh, repo);
+  const gh = ghForRepo(ctx, repo);
+  const base = await defaultBranch(gh, repo);
   const [tree, changes] = await Promise.all([
-    readTree(ctx.gh, repo, base),
+    readTree(gh, repo, base),
     openChanges(ctx.gh, repo)
   ]);
 
@@ -413,9 +587,10 @@ async function readFilesLevel(
   paths: string[],
   query?: string
 ): Promise<ToolOutcome> {
-  const base = await defaultBranch(ctx.gh, repo);
+  const gh = ghForRepo(ctx, repo);
+  const base = await defaultBranch(gh, repo);
   const [read, changes] = await Promise.all([
-    readFiles(ctx.gh, repo, base, paths, MAX_FILE_BYTES),
+    readFiles(gh, repo, base, paths, MAX_FILE_BYTES),
     openChanges(ctx.gh, repo)
   ]);
 
@@ -467,9 +642,10 @@ async function readChangeLevel(
   paths: string[] | undefined,
   query?: string
 ): Promise<ToolOutcome> {
-  const base = await defaultBranch(ctx.gh, repo);
+  const gh = ghForRepo(ctx, repo);
+  const base = await defaultBranch(gh, repo);
   const change = await findChange(ctx.gh, repo, wanted);
-  const comparison = await compare(ctx.gh, repo, base, change.branch, paths);
+  const comparison = await compare(gh, repo, base, change.branch, paths);
 
   const limits: string[] = [];
   const asked = new Set(paths ?? []);
@@ -718,6 +894,16 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     },
     async (input) =>
       run('forge_read', ctx.track, async () => {
+        const repoStr = input.repo?.trim();
+        const isGlobalSearch = repoStr === 'global' || repoStr === 'search' || repoStr === 'public';
+        const isDocsSearch =
+          repoStr === 'docs' ||
+          (repoStr !== undefined && resolveDocPlatform(repoStr) !== null && input.paths === undefined && input.change === undefined);
+
+        if (isGlobalSearch || (isDocsSearch && input.paths === undefined && input.change === undefined)) {
+          return searchGlobalOrDocs(ctx, repoStr, input.query ?? '');
+        }
+
         if (input.repo === undefined) {
           if (input.change !== undefined || input.paths !== undefined) {
             throw new ForgeError({
