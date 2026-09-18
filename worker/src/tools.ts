@@ -1031,7 +1031,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
               limits.push('Jev: this outline looks like an error, login, or challenge page — do not invent a product bug.');
             }
             if (pointer.next === 'stop') {
-              limits.push('Jev next=stop: do not forge_read or forge_edit from this capture; ask for another public URL or use Sitecheck for a full audit.');
+              limits.push('Jev next=stop: do not forge_read or forge_edit from this capture; ask for another public URL.');
             } else if (pointer.suspect) {
               limits.push(`Use forge_read with query ${JSON.stringify(pointer.suspect)} to open the file that owns this landmark.`);
             }

@@ -123,6 +123,13 @@ describe('TypeSafe Jev System One client', () => {
       }
     });
 
+    const posted = JSON.parse(String((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]?.body));
+    expect(posted.model).toBe('jev-latest');
+    expect(posted.questions.choiceQ.criteria).toEqual({
+      'src/auth.ts': 'src/auth.ts',
+      'src/index.ts': 'src/index.ts'
+    });
+
     expect(result).not.toBeNull();
     expect(result?.answers.choiceQ?.type).toBe('choice');
     if (result?.answers.choiceQ?.type === 'choice') {

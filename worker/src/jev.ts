@@ -84,22 +84,17 @@ export async function typesafeSystemOne(
     endpoint.includes("/ai/run") ||
     apiKey.trim().startsWith("cfut_");
 
-  // Cloudflare Workers AI typesafe/jev requires criteria to be a Record<string, string>, not an Array
-  let normalizedQuestions = payload.questions;
-  if (isCloudflare) {
-    const qMap: Record<string, JevQuestion> = {};
-    for (const [key, q] of Object.entries(payload.questions)) {
-      if (q.type === "choice" && Array.isArray(q.criteria)) {
-        const recordCriteria: Record<string, string> = {};
-        for (const item of q.criteria) {
-          recordCriteria[item] = item;
-        }
-        qMap[key] = { ...q, criteria: recordCriteria };
-      } else {
-        qMap[key] = q;
-      }
+  // Choice criteria must be a map. Arrays 422 on the public API.
+  const questions: Record<string, JevQuestion> = {};
+  for (const [key, question] of Object.entries(payload.questions)) {
+    if (question.type === "choice" && Array.isArray(question.criteria)) {
+      questions[key] = {
+        ...question,
+        criteria: Object.fromEntries(question.criteria.map((item) => [String(item), String(item)]))
+      };
+    } else {
+      questions[key] = question;
     }
-    normalizedQuestions = qMap;
   }
 
   const body = isCloudflare
@@ -107,12 +102,13 @@ export async function typesafeSystemOne(
         model: "typesafe/jev",
         input: {
           state: payload.state,
-          questions: normalizedQuestions
+          questions
         }
       })
     : JSON.stringify({
+        model: "jev-latest",
         state: payload.state,
-        questions: normalizedQuestions
+        questions
       });
 
   const controller = new AbortController();
@@ -208,12 +204,14 @@ export async function semanticPathTriage(
       if (exists < 0.2) return [];
 
       const matchAnswer = resp.answers.bestMatch as JevChoiceAnswer | undefined;
-      if (!matchAnswer || !matchAnswer.distribution) return [];
+      if (!matchAnswer) return [];
 
-      return Object.entries(matchAnswer.distribution)
+      const ranked = Object.entries(matchAnswer.distribution)
         .filter(([path, prob]) => batch.includes(path) && prob > 0.03)
         .sort((a, b) => b[1] - a[1])
         .map(([path]) => path);
+      if (ranked.length > 0) return ranked;
+      return batch.includes(matchAnswer.choice) ? [matchAnswer.choice] : [];
     })
   );
 
