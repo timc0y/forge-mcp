@@ -245,3 +245,129 @@ export async function semanticFileExcerpt(
     confidence
   };
 }
+
+/**
+ * Uses Jev to choose the best matching repository from an account's repos
+ * when given an informal, colloquial, or partial name.
+ */
+export async function resolveRepoWithJev(
+  env: Env,
+  query: string,
+  availableRepos: Array<{ repo: string; description: string | null }>
+): Promise<{ repo: string; confidence: number } | null> {
+  if (!env.TYPESAFE_API_KEY || availableRepos.length === 0 || !query.trim()) return null;
+
+  const repoNames = availableRepos.map((r) => r.repo);
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      userRepoQuery: query,
+      repositories: availableRepos.slice(0, 50).map((r) => ({
+        name: r.repo,
+        description: r.description ?? ""
+      }))
+    },
+    questions: {
+      matchedRepo: {
+        type: "choice",
+        instructions: `Which repository in 'repositories' does the user mean by: "${query}"?`,
+        criteria: repoNames.slice(0, 50)
+      },
+      confidence: {
+        type: "noul",
+        instructions: `How confident are you that this repository is the intended target for "${query}"?`
+      }
+    }
+  });
+
+  if (!resp) return null;
+
+  const matchAnswer = resp.answers.matchedRepo as JevChoiceAnswer | undefined;
+  const confAnswer = resp.answers.confidence as JevNoulAnswer | undefined;
+
+  if (!matchAnswer?.choice) return null;
+
+  return {
+    repo: matchAnswer.choice,
+    confidence: confAnswer?.noul ?? matchAnswer.confidence ?? 0.5
+  };
+}
+
+/**
+ * Fast regex patterns for high-severity credential leaks.
+ */
+const HIGH_SEVERITY_SECRET_PATTERNS = [
+  /-----BEGIN [A-Z]+ PRIVATE KEY-----/,
+  /\bghp_[A-Za-z0-9_]{36,}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{82}\b/,
+  /\bsk_live_[0-9a-zA-Z]{24,}\b/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*\b/
+];
+
+/**
+ * Pre-commit security and integrity gate powered by pattern heuristics and Jev System One.
+ */
+export async function checkCommitSafety(
+  env: Env | undefined,
+  files: Array<{ path: string; content?: string | null }>
+): Promise<{ safe: boolean; reason?: string }> {
+  // 1. Fast static check (<1ms)
+  for (const file of files) {
+    if (!file.content) continue;
+    for (const pattern of HIGH_SEVERITY_SECRET_PATTERNS) {
+      if (pattern.test(file.content)) {
+        return {
+          safe: false,
+          reason: `Commit rejected: ${file.path} contains what appears to be an unredacted secret token or private key.`
+        };
+      }
+    }
+  }
+
+  // 2. If Jev is configured, check for subtle credential exposures and destructive truncations
+  if (!env?.TYPESAFE_API_KEY) return { safe: true };
+
+  const nonNullFiles = files.filter((f): f is { path: string; content: string } => typeof f.content === "string");
+  if (nonNullFiles.length === 0) return { safe: true };
+
+  const fileSummaries = nonNullFiles.slice(0, 5).map((f) => ({
+    path: f.path,
+    preview: f.content.slice(0, 2000),
+    length: f.content.length
+  }));
+
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: { files: fileSummaries },
+    questions: {
+      hasSecretLeak: {
+        type: "noul",
+        instructions: "Do any of these code changes contain raw production API secrets, database passwords, or private tokens?"
+      },
+      isAccidentalTruncation: {
+        type: "noul",
+        instructions: "Does any file appear to be a broken, accidentally truncated snippet or an error trace committed in place of source code?"
+      }
+    }
+  });
+
+  if (!resp) return { safe: true };
+
+  const secretLeak = resp.answers.hasSecretLeak as JevNoulAnswer | undefined;
+  const truncated = resp.answers.isAccidentalTruncation as JevNoulAnswer | undefined;
+
+  if (secretLeak && secretLeak.noul > 0.88) {
+    return {
+      safe: false,
+      reason: "Commit rejected: Jev detected likely unredacted credentials or production API keys in the commit payload."
+    };
+  }
+
+  if (truncated && truncated.noul > 0.92) {
+    return {
+      safe: false,
+      reason: "Commit rejected: Jev detected that the commit payload appears to be truncated or contains an error message instead of valid code."
+    };
+  }
+
+  return { safe: true };
+}

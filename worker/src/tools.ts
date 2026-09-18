@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { semanticFileExcerpt, semanticPathTriage } from './jev';
+import { resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage } from './jev';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
@@ -167,6 +167,38 @@ async function run(
 function resolveRepo(ctx: ToolContext, value: string): RepoRef {
   const trimmed = value.trim();
   return parseRepo(trimmed.includes('/') ? trimmed : `${ctx.identity.githubLogin}/${trimmed}`);
+}
+
+async function resolveRepoTarget(ctx: ToolContext, value: string): Promise<RepoRef> {
+  const trimmed = value.trim();
+  if (trimmed.includes("/")) {
+    return parseRepo(trimmed);
+  }
+
+  const userRepo = parseRepo(`${ctx.identity.githubLogin}/${trimmed}`);
+
+  try {
+    const repos = await listRepos(ctx.gh);
+    const exactNameMatches = repos.filter((r) => {
+      const parts = r.repo.split("/");
+      return parts[1]?.toLowerCase() === trimmed.toLowerCase();
+    });
+
+    if (exactNameMatches.length === 1) {
+      return parseRepo(exactNameMatches[0]!.repo);
+    }
+
+    if (ctx.env.TYPESAFE_API_KEY && repos.length > 0) {
+      const match = await resolveRepoWithJev(ctx.env, trimmed, repos);
+      if (match && match.confidence >= 0.8) {
+        return parseRepo(match.repo);
+      }
+    }
+  } catch {
+    // Fall back to direct userRepo if listing fails
+  }
+
+  return userRepo;
 }
 
 function changeNames(changes: Change[]): string[] {
@@ -563,7 +595,7 @@ async function requestAct(
   repoInput: string,
   wanted: string
 ): Promise<ToolOutcome> {
-  const repo = resolveRepo(ctx, repoInput);
+  const repo = await resolveRepoTarget(ctx, repoInput);
   const base = await defaultBranch(ctx.gh, repo);
   const change = await findChange(ctx.gh, repo, wanted);
   const comparison = await compare(ctx.gh, repo, base, change.branch);
@@ -661,7 +693,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           return readRepositories(ctx, input.query);
         }
 
-        const repo = resolveRepo(ctx, input.repo);
+        const repo = await resolveRepoTarget(ctx, input.repo);
         if (input.change !== undefined) return readChangeLevel(ctx, repo, input.change, input.paths);
         if (input.paths !== undefined && input.paths.length > 0) return readFilesLevel(ctx, repo, input.paths, input.query);
         return readTreeLevel(ctx, repo, input.query);
@@ -708,7 +740,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     },
     async (input) =>
       run('forge_edit', ctx.track, async () => {
-        const repo = resolveRepo(ctx, input.repo);
+        const repo = await resolveRepoTarget(ctx, input.repo);
         const message = input.message.trim();
         const { base, created } = await resolveWriteTarget(ctx, repo, message, input.private ?? true);
         const change = input.change;
@@ -740,7 +772,8 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           branch,
           base,
           message,
-          input.files
+          input.files,
+          ctx.env
         );
         if (commit.outcome === 'committed') {
           ctx.track('change_committed', { files: commit.paths.length, created_repo: created });

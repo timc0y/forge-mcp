@@ -213,3 +213,138 @@ describe('Jev semantic triage and excerpt slicing', () => {
     expect(excerpt?.content).toContain('export function rotateRefreshToken');
   });
 });
+
+import { findResilientMatch } from "../src/write";
+import { checkCommitSafety, resolveRepoWithJev } from "../src/jev";
+
+describe("findResilientMatch", () => {
+  const source = `function calculateTotal(items) {
+  let sum = 0;
+  for (const item of items) {
+    sum += item.price;
+  }
+  return sum;
+}`;
+
+  it("finds verbatim match", () => {
+    const target = "  let sum = 0;\n  for (const item of items) {\n    sum += item.price;\n  }";
+    const match = findResilientMatch(source, target);
+    expect(match).not.toBeNull();
+    expect(match?.original).toBe(target);
+  });
+
+  it("finds match across CRLF line endings", () => {
+    const target = "  let sum = 0;\r\n  for (const item of items) {\r\n    sum += item.price;\r\n  }";
+    const match = findResilientMatch(source, target);
+    expect(match).not.toBeNull();
+  });
+
+  it("finds match when indentation drifted", () => {
+    // 4 spaces indentation instead of 2 spaces
+    const target = "    let sum = 0;\n    for (const item of items) {\n        sum += item.price;\n    }";
+    const match = findResilientMatch(source, target);
+    expect(match).not.toBeNull();
+    expect(match?.original).toContain("let sum = 0;");
+  });
+
+  it("returns null when target occurs multiple times (refusing to guess)", () => {
+    const repeatedSource = "const a = 1;\nconst b = 2;\nconst a = 1;";
+    const target = "const a = 1;";
+    const match = findResilientMatch(repeatedSource, target);
+    expect(match).toBeNull();
+  });
+});
+
+describe("checkCommitSafety", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("blocks commits with hardcoded private keys instantly", async () => {
+    const files = [
+      { path: "cert.pem", content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA..." }
+    ];
+    const result = await checkCommitSafety(undefined, files);
+    expect(result.safe).toBe(false);
+    expect(result.reason).toContain("secret token or private key");
+  });
+
+  it("blocks commits with GitHub PAT tokens", async () => {
+    const files = [
+      { path: "config.json", content: "{\"token\": \"ghp_123456789012345678901234567890123456\"}" }
+    ];
+    const result = await checkCommitSafety(undefined, files);
+    expect(result.safe).toBe(false);
+    expect(result.reason).toContain("secret token or private key");
+  });
+
+  it("passes safe code commits", async () => {
+    const files = [
+      { path: "src/utils.ts", content: "export function add(a: number, b: number) { return a + b; }" }
+    ];
+    const result = await checkCommitSafety(undefined, files);
+    expect(result.safe).toBe(true);
+  });
+
+  it("uses Jev to detect subtle leaks and truncations", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          hasSecretLeak: { type: "noul", noul: 0.95 },
+          isAccidentalTruncation: { type: "noul", noul: 0.1 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const files = [{ path: "env.ts", content: "export const DB_SECRET = \"unredacted_prod_key\";" }];
+    const result = await checkCommitSafety({ TYPESAFE_API_KEY: "key" } as unknown as Env, files);
+    expect(result.safe).toBe(false);
+    expect(result.reason).toContain("Jev detected likely unredacted credentials");
+  });
+});
+
+describe("resolveRepoWithJev", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("disambiguates colloquial repo name to exact repo", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          matchedRepo: {
+            type: "choice",
+            choice: "spurwing/sitecheck-audit",
+            confidence: 0.94
+          },
+          confidence: {
+            type: "noul",
+            noul: 0.94
+          }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const repos = [
+      { repo: "timcoy/forge-mcp", description: "Minimal GitHub MCP for ChatGPT" },
+      { repo: "spurwing/sitecheck-audit", description: "Headless audit worker and Playwright runner" },
+      { repo: "spurwing/sitecheck-web", description: "Marketing frontend for Sitecheck" }
+    ];
+
+    const match = await resolveRepoWithJev(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "the audit worker",
+      repos
+    );
+
+    expect(match).not.toBeNull();
+    expect(match?.repo).toBe("spurwing/sitecheck-audit");
+    expect(match?.confidence).toBe(0.94);
+  });
+});
