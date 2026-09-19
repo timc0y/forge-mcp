@@ -138,6 +138,30 @@ describe('TypeSafe Jev System One client', () => {
     }
   });
 
+  it('parses score answers as scores rather than noul probabilities', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          relevance: { type: 'score', score: 7.5, confidence: 0.91 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const result = await typesafeSystemOne('jev_test_key', undefined, {
+      state: { query: 'repository relevance' },
+      questions: {
+        relevance: {
+          type: 'score',
+          instructions: 'Score relevance',
+          criteria: [0, 10]
+        }
+      }
+    });
+
+    expect(result?.answers.relevance).toEqual({ type: 'score', score: 7.5, confidence: 0.91 });
+  });
+
   it('handles network failure without throwing', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network drop')) as unknown as typeof fetch;
 
@@ -356,7 +380,8 @@ describe("resolveRepoWithJev", () => {
   });
 });
 
-import { judgeSeePacket, lineFromChoice, rankChangeFilesWithJev, lintCommitWithJev } from "../src/jev";
+import { judgeSeePacket, lineFromChoice, rankChangeFilesWithJev } from "../src/jev";
+import { lintCommittedFiles } from "../src/repository-intelligence";
 
 describe("rankChangeFilesWithJev", () => {
   const originalFetch = globalThis.fetch;
@@ -770,43 +795,24 @@ describe("judgeSeePacket extended properties", () => {
   });
 });
 
-describe("lintCommitWithJev", () => {
+describe("lintCommittedFiles", () => {
   it("detects dangling local relative imports", async () => {
-    const files = [
-      {
-        path: "src/index.ts",
-        content: "import { helper } from './helper';\nexport const x = 1;"
-      }
-    ];
-    const knownRepoPaths = ["src/index.ts", "package.json", "tsconfig.json"];
-
-    const warnings = await lintCommitWithJev(
-      { TYPESAFE_API_KEY: "key" } as unknown as Env,
-      files,
-      knownRepoPaths
+    const warnings = await lintCommittedFiles(
+      [{ path: "src/index.ts", content: "import { helper } from './helper';\nexport const x = 1;" }],
+      ["src/index.ts", "package.json", "tsconfig.json"]
     );
 
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("imports \"./helper\"");
   });
 
-  it("does not warn when the imported file is present in the repo or commit", async () => {
-    const files = [
-      {
-        path: "src/index.ts",
-        content: "import { helper } from './helper';\nexport const x = 1;"
-      },
-      {
-        path: "src/helper.ts",
-        content: "export const helper = () => {};"
-      }
-    ];
-    const knownRepoPaths = ["src/index.ts"];
-
-    const warnings = await lintCommitWithJev(
-      { TYPESAFE_API_KEY: "key" } as unknown as Env,
-      files,
-      knownRepoPaths
+  it("does not warn when the imported file is present in the committed tree", async () => {
+    const warnings = await lintCommittedFiles(
+      [
+        { path: "src/index.ts", content: "import { helper } from './helper';\nexport const x = 1;" },
+        { path: "src/helper.ts", content: "export const helper = () => {};" }
+      ],
+      ["src/index.ts", "src/helper.ts"]
     );
 
     expect(warnings).toEqual([]);

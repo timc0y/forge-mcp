@@ -145,6 +145,12 @@ export async function typesafeSystemOne(
           confidence: typeof v.confidence === "number" ? v.confidence : 0,
           distribution: v.distribution ?? v.probabilities ?? {}
         };
+      } else if (v.type === "score" || v.score !== undefined) {
+        answers[k] = {
+          type: "score",
+          score: typeof v.score === "number" ? v.score : 0,
+          confidence: typeof v.confidence === "number" ? v.confidence : 0
+        };
       } else {
         const noul = typeof v.noul === "number" ? v.noul : typeof v.probability === "number" ? v.probability : 0;
         answers[k] = { type: "noul", noul };
