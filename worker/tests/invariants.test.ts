@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CHANGE_BRANCH, changeName, openChanges } from '../src/change';
+import { CHANGE_BRANCH, changeName, ensureDraftPullRequest, openChanges } from '../src/change';
 import { assertNotNearExisting } from '../src/repo';
 import { compare, listRepos, readFiles, readTree } from '../src/read';
 import { commitFiles } from '../src/write';
@@ -109,6 +109,21 @@ describe('GitHub navigation payload integrity', () => {
     await expect(openChanges(request, { owner: 'o', name: 'r' })).rejects.toMatchObject({
       code: 'FORGE_UPSTREAM_UNAVAILABLE'
     });
+  });
+});
+
+describe('pull-request lookup integrity', () => {
+  it('does not attempt PR creation when the existing-PR lookup is unavailable', async () => {
+    const calls: string[] = [];
+    const request: GitHubRequest = async (path, init) => {
+      calls.push(`${init?.method ?? 'GET'} ${path.split('?')[0]}`);
+      return { status: 500, json: null, text: '', headers: new Headers() };
+    };
+
+    await expect(
+      ensureDraftPullRequest(request, { owner: 'o', name: 'r' }, 'forge', 'review me', 'main')
+    ).rejects.toMatchObject({ code: 'FORGE_UPSTREAM_UNAVAILABLE' });
+    expect(calls.some((call) => call.startsWith('POST '))).toBe(false);
   });
 });
 
