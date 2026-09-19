@@ -21,7 +21,7 @@ body() { curl -s --max-time 25 "$@"; }
 
 echo "── liveness"
 chk "health answers"                 '"status":"ok"'   "$(body $B/health)"
-chk "health exposes server version"  '"version":"1.1.0"' "$(body $B/health)"
+chk "health exposes server version"  '"version":"1.1.1"' "$(body $B/health)"
 chk "unknown route 404s"             "404"            "$(code $B/nope)"
 chk "mount root serves the page"     "Forge"          "$(body $B)"
 # GitHub always appends a query when returning from an install, and an exact

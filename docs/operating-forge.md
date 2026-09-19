@@ -110,6 +110,12 @@ Do not diagnose cached catalog text as current Worker behavior. If two Forge
 connections exist, remove or refresh the stale one before comparing tool
 results.
 
+Release 1.1 temporarily accepts the previous cached `forge_edit.intent` shape.
+Legacy `intent` is deliberately mapped to review/proposed work, never to a
+direct default-branch commit, and the result asks the caller to refresh. Remove
+this bridge only after active clients have refreshed to the current `change`
+schema.
+
 ## Running it
 
 ```sh

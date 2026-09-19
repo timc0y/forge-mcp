@@ -419,6 +419,52 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.commit.sha).toBe("newcommitsha99999");
   });
 
+  it("preserves cached legacy intent as review work instead of direct-committing", async () => {
+    const { server } = createMockToolContext();
+    const editTool = (server as any)._registeredTools["forge_edit"];
+
+    const res = await editTool.handler({
+      repo: "test-repo",
+      intent: "Legacy cached client edit",
+      files: [{ path: "src/helper.ts", content: "export const legacyBridge = true;" }]
+    });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("on the Forge change");
+    expect(res.structuredContent.change).toBe("forge");
+    expect(res.structuredContent.limits.join(" ")).toContain("deprecated intent input");
+    expect(res.structuredContent.limits.join(" ")).toContain("Refresh the Forge connection");
+  });
+
+  it("refuses conflicting current and cached review intents", async () => {
+    const { server } = createMockToolContext();
+    const editTool = (server as any)._registeredTools["forge_edit"];
+
+    const res = await editTool.handler({
+      repo: "test-repo",
+      change: "Current review intent",
+      intent: "Different cached intent",
+      message: "test: ambiguous metadata",
+      files: [{ path: "src/helper.ts", content: "export const ambiguous = true;" }]
+    });
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("both change and deprecated intent");
+  });
+
+  it("refuses a direct edit with neither a message nor a legacy review intent", async () => {
+    const { server } = createMockToolContext();
+    const editTool = (server as any)._registeredTools["forge_edit"];
+
+    const res = await editTool.handler({
+      repo: "test-repo",
+      files: [{ path: "src/helper.ts", content: "export const missingMessage = true;" }]
+    });
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("Give this edit a commit message");
+  });
+
   it("reviews dependency graph changes after a dependency commit is durable", async () => {
     const { server } = createMockToolContext({
       "GET /repos/testuser/test-repo/contents/package.json": {

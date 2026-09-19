@@ -1717,8 +1717,14 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           .min(1)
           .optional()
           .describe('Why this work needs review before becoming repository truth. Omit for ordinary durable edits.'),
+        intent: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe('Deprecated compatibility input for cached clients. It always means proposed/review work; use change instead.'),
         files: z.array(fileInput).min(1).max(10),
-        message: z.string().describe('Commit message saying what changed.'),
+        message: z.string().trim().min(1).optional().describe('Commit message saying what changed. Required for new direct edits; cached clients may fall back to intent.'),
         private: z.boolean().optional().describe('Only read when the repository is created. Defaults to true.')
       },
       outputSchema: {
@@ -1744,9 +1750,27 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     async (input) =>
       run('forge_edit', ctx.track, async () => {
         const repo = await resolveRepoTarget(ctx, input.repo);
-        const message = input.message.trim();
+        const requestedChange = input.change?.trim();
+        const legacyIntent = input.intent?.trim();
+        if (requestedChange && legacyIntent && requestedChange !== legacyIntent) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'This edit supplied both change and deprecated intent with different values. Refresh the Forge connection and send only change.',
+            details: { fields: ['change', 'intent'] }
+          });
+        }
+
+        const usedLegacyCatalog = !requestedChange && Boolean(legacyIntent);
+        const change = requestedChange ?? legacyIntent;
+        const message = input.message?.trim() || change;
+        if (!message) {
+          throw new ForgeError({
+            code: 'FORGE_VALIDATION_FAILED',
+            message: 'Give this edit a commit message. If your client still shows intent instead of change, refresh the Forge connection first.'
+          });
+        }
+
         const { base, created } = await resolveWriteTarget(ctx, repo, message, input.private ?? true);
-        const change = input.change;
         const proposed = change !== undefined;
         const branch = proposed ? CHANGE_BRANCH : base;
 
@@ -1789,6 +1813,11 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         // terminal failure is the worst result this product can produce, so the
         // pull request and the change list degrade to limitations instead.
         const limits: string[] = [];
+        if (usedLegacyCatalog) {
+          limits.push(
+            'This edit used the deprecated intent input from cached MCP metadata. Forge preserved the old safe behavior by keeping the work on the review branch. Refresh the Forge connection and start a new conversation before further edits.'
+          );
+        }
 
         let number: number | null = null;
         try {
@@ -1802,7 +1831,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
         if (commit.outcome === 'committed') {
           try {
-            const committedGh = ghForRepo(ctx);
+            const committedGh = ctx.gh;
             const committedTree = await readTree(committedGh, repo, commit.sha);
             if (committedTree.truncated) {
               limits.push('Post-commit advisory was skipped because GitHub truncated the committed tree.');
