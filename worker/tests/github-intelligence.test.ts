@@ -180,6 +180,28 @@ describe('pull review state', () => {
     expect(state.changesRequested).toBe(0);
   });
 
+  it('marks malformed pull and review records as partial evidence', async () => {
+    const request: GitHubRequest = async (path) => {
+      if (path.endsWith('/pulls/7')) {
+        return { status: 200, json: ['bad-pull-shape'], text: '', headers: new Headers() };
+      }
+      return {
+        status: 200,
+        json: [
+          null,
+          { state: 'APPROVED', user: { login: 'alice' } }
+        ],
+        text: '',
+        headers: new Headers()
+      };
+    };
+
+    const state = await readPullReviewState(request, repo, 7);
+    expect(state.approvals).toBe(1);
+    expect(state.unavailable).toContain('unreadable pull-request state');
+    expect(state.unavailable).toContain('1 unreadable record');
+  });
+
   it('clears a reviewer decision when GitHub reports it dismissed', async () => {
     const state = await readPullReviewState(
       requestFor([
