@@ -597,7 +597,38 @@ describe("typesafeSystemOne noul field names", () => {
   });
 });
 
-import { assessChangeWithJev, changeAssessmentNotices, classifyQualityGatesWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+
+describe("classifyExactMatchContextsWithJev", () => {
+  it("separates declaration, reference and prose occurrences in one Jev fan-out", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          match_M1: { type: 'choice', choice: 'declaration/definition', confidence: 0.96 },
+          match_M2: { type: 'choice', choice: 'code reference/call', confidence: 0.9 },
+          match_M3: { type: 'choice', choice: 'documentation/prose', confidence: 0.93 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const result = await classifyExactMatchContextsWithJev(
+      { TYPESAFE_API_KEY: 'key' } as unknown as Env,
+      'token',
+      [
+        { id: 'M1', path: 'src/a.ts', line: 1, snippet: 'L1: export const token = 1;' },
+        { id: 'M2', path: 'src/b.ts', line: 4, snippet: 'L4: rotate(token);' },
+        { id: 'M3', path: 'README.md', line: 8, snippet: 'L8: The token is rotated.' }
+      ]
+    );
+
+    expect(result.map((match) => match.kind)).toEqual([
+      'declaration/definition',
+      'code reference/call',
+      'documentation/prose'
+    ]);
+  });
+});
 
 describe("classifyQualityGatesWithJev", () => {
   it("maps oddly named committed configuration to gate categories without claiming execution", async () => {

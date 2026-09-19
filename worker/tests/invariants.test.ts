@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { extractDeclaredQualityScripts, historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, lintCommittedFiles, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
+import { exactOccurrenceContexts, extractDeclaredQualityScripts, historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, lintCommittedFiles, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -219,6 +219,18 @@ describe('repository intelligence query parsing', () => {
     ]);
     expect(stats.lines.some((line) => line.startsWith('SHAPE max depth'))).toBe(true);
     expect(stats.lines.some((line) => line.startsWith('SHAPE widest'))).toBe(true);
+  });
+});
+
+describe('exact occurrence context extraction', () => {
+  it('returns bounded line-local contexts without pretending they are symbols', () => {
+    const result = exactOccurrenceContexts(
+      [{ path: 'src/a.ts', content: 'const token = 1;\nuse(token);\n// token docs' }],
+      'token',
+      2
+    );
+    expect(result.contexts.map((context) => context.line)).toEqual([1, 2]);
+    expect(result.truncated).toBe(true);
   });
 });
 

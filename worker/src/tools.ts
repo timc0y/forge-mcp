@@ -32,10 +32,11 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { assessChangeWithJev, changeAssessmentNotices, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev, summarizeChangeAssessment } from './jev';
+import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev, summarizeChangeAssessment } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
+  exactOccurrenceContexts,
   extractDeclaredQualityScripts,
   fileTotals,
   historyScope,
@@ -750,14 +751,37 @@ async function readTreeLevel(
     ];
 
     const counts = new Map<string, number>();
+    const contextLines = new Map<string, string[]>();
     if (uniquePaths.length > 0) {
       try {
         const measured = await readFiles(gh, repo, base, uniquePaths.slice(0, 10), MAX_FILE_BYTES);
-        for (const file of measured.files) {
-          if (!file.truncated) counts.set(file.path, file.content.split(findNeedle).length - 1);
+        const complete = measured.files.filter((file) => !file.truncated);
+        for (const file of complete) counts.set(file.path, file.content.split(findNeedle).length - 1);
+
+        const occurrences = exactOccurrenceContexts(
+          complete.map((file) => ({ path: file.path, content: file.content })),
+          findNeedle,
+          20
+        );
+        const classifications = await classifyExactMatchContextsWithJev(ctx.env, findNeedle, occurrences.contexts);
+        const byId = new Map(classifications.map((classification) => [classification.id, classification]));
+        for (const context of occurrences.contexts) {
+          const classification = byId.get(context.id);
+          const confidence = classification?.confidence ?? 0;
+          const kind = classification?.kind ?? 'unknown';
+          const line = `L${context.line} ${kind}${confidence > 0 ? ` ${Math.round(confidence * 100)}%` : ''}`;
+          const existing = contextLines.get(context.path) ?? [];
+          existing.push(line);
+          contextLines.set(context.path, existing);
+        }
+        if (occurrences.contexts.length > 0 && classifications.length > 0) {
+          limits.push('Jev match roles classify bounded local text contexts; they are not compiler-backed symbol references.');
+        }
+        if (occurrences.truncated) {
+          limits.push('Semantic match-role classification is capped at the first 20 exact occurrences across measured files.');
         }
         if (uniquePaths.length > 10 || measured.skipped.length > 0) {
-          limits.push('Exact occurrence counts are measured only for complete matching files that fit the read budget; search paths remain the discovery result.');
+          limits.push('Exact occurrence counts and match roles are measured only for complete matching files that fit the read budget; search paths remain the discovery result.');
         }
       } catch {
         // Search evidence is still useful when exact counting cannot be measured.
@@ -773,13 +797,13 @@ async function readTreeLevel(
             const count = item.path ? counts.get(item.path) : undefined;
             return {
               path: item.path ?? item.title,
-              text: `${count === undefined ? '' : `${count} exact occurrence${count === 1 ? '' : 's'} · `}${item.snippet ?? ''}`
+              text: `${count === undefined ? '' : `${count} exact occurrence${count === 1 ? '' : 's'} · `}${contextLines.get(item.path ?? '')?.join(', ') ? `${contextLines.get(item.path ?? '')!.join(', ')} · ` : ''}${item.snippet ?? ''}`
             };
           }),
           changes: names,
           next:
             uniquePaths.length > 0
-              ? 'Use these paths with forge_edit fragment replacements and all:true when every exact occurrence in that file should change. A write is capped at 10 files.'
+              ? 'Review the occurrence roles, then use forge_edit fragment replacements and all:true only when every exact textual occurrence in that file should change. A write is capped at 10 files.'
               : 'Try a shorter exact term, or use "code:<concept>" for semantic committed-code search.'
         },
         limits

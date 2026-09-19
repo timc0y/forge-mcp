@@ -104,6 +104,45 @@ export function qualityCandidatePaths(entries: RepositoryTreeEntry[], limit = 16
     .map((entry) => entry.path);
 }
 
+export interface ExactOccurrenceContext {
+  id: string;
+  path: string;
+  line: number;
+  snippet: string;
+}
+
+export function exactOccurrenceContexts(
+  files: Array<{ path: string; content: string }>,
+  needle: string,
+  limit = 20
+): { contexts: ExactOccurrenceContext[]; truncated: boolean } {
+  if (!needle) return { contexts: [], truncated: false };
+  const contexts: ExactOccurrenceContext[] = [];
+  let total = 0;
+  for (const file of files) {
+    let from = 0;
+    while (from <= file.content.length - needle.length) {
+      const index = file.content.indexOf(needle, from);
+      if (index === -1) break;
+      total += 1;
+      if (contexts.length < limit) {
+        const before = file.content.slice(0, index);
+        const line = before.split('\n').length;
+        const lines = file.content.split('\n');
+        const start = Math.max(0, line - 2);
+        const end = Math.min(lines.length, line + 1);
+        const snippet = lines
+          .slice(start, end)
+          .map((text, offset) => `L${start + offset + 1}: ${text.slice(0, 260)}`)
+          .join('\n');
+        contexts.push({ id: `M${contexts.length + 1}`, path: file.path, line, snippet });
+      }
+      from = index + Math.max(1, needle.length);
+    }
+  }
+  return { contexts, truncated: total > contexts.length };
+}
+
 export interface DeclaredScript {
   path: string;
   name: string;

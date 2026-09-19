@@ -84,6 +84,12 @@ reference edge. Sourcegraph SCIP demonstrates the other side of the line: true
 find-references/go-to-definition semantics need language indexers and an index.
 Forge should not recreate that infrastructure implicitly.
 
+### Semantic triage for exact codemod matches
+
+Facebook's original codemod separates counting/discovery from mutation and treats an automatic accept-all mode as something to use cautiously. Forge keeps that shape but can make the discovery evidence richer without adding an AST runtime. For complete matching files within the read budget, `find:<text>` now extracts up to 20 exact local occurrence contexts with line numbers. One Jev fan-out independently classifies each bounded occurrence as declaration/definition, code reference/call, import/export, configuration/serialized contract, test/fixture/example, documentation/prose, generated/vendor, or unknown.
+
+Those labels are explicitly **not** compiler-backed references. They are semantic triage over exact textual matches, intended to distinguish an identifier rename from prose or serialized-contract occurrences before the user/model chooses bounded `forge_edit` replacements. The mutation primitive remains unchanged and `all:true` still means every exact textual match in that one file.
+
 ### Scoped exact and semantic committed-code search
 
 `query: "find:<text>"` searches GitHub code inside the named repository and

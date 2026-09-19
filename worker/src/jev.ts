@@ -885,6 +885,66 @@ export async function summarizeChangeImpactWithJev(
   return assessment ? summarizeChangeAssessment(assessment, comparison.files.length) : null;
 }
 
+export type ExactMatchKind =
+  | 'declaration/definition'
+  | 'code reference/call'
+  | 'import/export'
+  | 'configuration/serialized contract'
+  | 'test/fixture/example'
+  | 'documentation/prose'
+  | 'generated/vendor'
+  | 'unknown';
+
+export interface ExactMatchClassification {
+  id: string;
+  kind: ExactMatchKind;
+  confidence: number;
+}
+
+export async function classifyExactMatchContextsWithJev(
+  env: Env,
+  needle: string,
+  contexts: Array<{ id: string; path: string; line: number; snippet: string }>
+): Promise<ExactMatchClassification[]> {
+  if (!env.TYPESAFE_API_KEY || contexts.length === 0) return [];
+  const bounded = contexts.slice(0, 20);
+  const kinds: ExactMatchKind[] = [
+    'declaration/definition',
+    'code reference/call',
+    'import/export',
+    'configuration/serialized contract',
+    'test/fixture/example',
+    'documentation/prose',
+    'generated/vendor',
+    'unknown'
+  ];
+  const questions: Record<string, JevQuestion> = {};
+  for (const context of bounded) {
+    questions[`match_${context.id}`] = {
+      type: 'choice',
+      instructions: `Classify the role of the exact text ${JSON.stringify(needle)} in match ${context.id}. Use only that match's path and local snippet from state.`,
+      criteria: kinds
+    };
+  }
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      needle,
+      matches: bounded
+    },
+    questions
+  });
+  if (!resp) return [];
+
+  return bounded.map((context): ExactMatchClassification => {
+    const answer = resp.answers[`match_${context.id}`] as JevChoiceAnswer | undefined;
+    const kind = answer?.choice && kinds.includes(answer.choice as ExactMatchKind)
+      ? answer.choice as ExactMatchKind
+      : 'unknown';
+    const confidence = answer?.confidence || Math.max(0, ...Object.values(answer?.distribution ?? {}));
+    return { id: context.id, kind: confidence >= 0.4 ? kind : 'unknown', confidence };
+  });
+}
+
 export type QualityGateKind = 'tests' | 'types' | 'lint/format' | 'security' | 'build' | 'deploy' | 'dependencies';
 
 export interface QualityGateGuess {
