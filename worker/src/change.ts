@@ -71,11 +71,27 @@ export async function openChanges(request: GitHubRequest, repo: RepoRef): Promis
     });
   }
 
+  if (!Array.isArray(response.json)) {
+    throw new ForgeError({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE',
+      message: `GitHub returned an unreadable open-change list for ${formatRepo(repo)}.`,
+      retryable: true
+    });
+  }
+  const parsed = parsePullRequests(response.json);
+  if (parsed.length !== response.json.length) {
+    throw new ForgeError({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE',
+      message: `GitHub returned malformed pull-request data while listing open changes for ${formatRepo(repo)}.`,
+      retryable: true
+    });
+  }
+
   // One page, deliberately: this runs on every tool result and paginating it
   // would put an unbounded number of requests on the hot path. Past 100 open
   // changes the list is incomplete, and `openChangesTruncated` is how a caller
   // learns that rather than quietly seeing fewer names than exist.
-  return parsePullRequests(response.json)
+  return parsed
     .filter((pr) => pr.head.ref === CHANGE_BRANCH || pr.head.ref.startsWith(LEGACY_BRANCH_PREFIX))
     .map((pr) => ({
       // The fixed branch is an implementation detail. The PR title preserves

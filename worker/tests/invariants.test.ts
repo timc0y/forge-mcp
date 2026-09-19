@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CHANGE_BRANCH, changeName } from '../src/change';
+import { CHANGE_BRANCH, changeName, openChanges } from '../src/change';
 import { assertNotNearExisting } from '../src/repo';
-import { readFiles } from '../src/read';
+import { listRepos, readFiles, readTree } from '../src/read';
 import { commitFiles } from '../src/write';
 import { isForgeError } from '../src/errors';
 import type { GitHubRequest } from '../src/contracts';
@@ -61,6 +61,42 @@ describe('creating a repository by writing to it', () => {
 
   it('treats an exact name as the same repository, not a new one', () => {
     expect(() => assertNotNearExisting('notes', existing)).toThrow();
+  });
+});
+
+describe('GitHub navigation payload integrity', () => {
+  it('refuses an unreadable repository-list payload instead of reporting zero repositories', async () => {
+    const request: GitHubRequest = async () => ({
+      status: 200,
+      json: { repositories: 'not-an-array' },
+      text: '',
+      headers: new Headers()
+    });
+    await expect(listRepos(request)).rejects.toMatchObject({ code: 'FORGE_UPSTREAM_UNAVAILABLE' });
+  });
+
+  it('refuses an unreadable tree payload instead of reporting an empty repository', async () => {
+    const request: GitHubRequest = async () => ({
+      status: 200,
+      json: { tree: 'not-an-array', truncated: false },
+      text: '',
+      headers: new Headers()
+    });
+    await expect(readTree(request, { owner: 'o', name: 'r' }, 'main')).rejects.toMatchObject({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE'
+    });
+  });
+
+  it('refuses malformed pull-request data instead of reporting no open changes', async () => {
+    const request: GitHubRequest = async () => ({
+      status: 200,
+      json: [{ number: 1, head: null }],
+      text: '',
+      headers: new Headers()
+    });
+    await expect(openChanges(request, { owner: 'o', name: 'r' })).rejects.toMatchObject({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE'
+    });
   });
 });
 

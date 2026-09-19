@@ -79,8 +79,31 @@ export async function listRepos(
     if (response.status !== 200) {
       throw upstreamUnavailable(response.status, 'listing repositories for this installation');
     }
-    const body = response.json as { repositories?: GitHubInstallationRepo[] };
-    const repositories = body.repositories ?? [];
+    if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
+      throw upstreamUnavailable(response.status, 'reading the repository list payload');
+    }
+    const body = response.json as { repositories?: unknown };
+    if (!Array.isArray(body.repositories)) {
+      throw upstreamUnavailable(response.status, 'reading the repository list payload');
+    }
+    const repositories = body.repositories.filter((value): value is GitHubInstallationRepo => {
+      if (typeof value !== 'object' || value === null) return false;
+      const row = value as Record<string, unknown>;
+      const owner = typeof row.owner === 'object' && row.owner !== null
+        ? row.owner as Record<string, unknown>
+        : null;
+      return (
+        typeof row.name === 'string' &&
+        typeof owner?.login === 'string' &&
+        typeof row.default_branch === 'string' &&
+        typeof row.private === 'boolean' &&
+        typeof row.pushed_at === 'string' &&
+        (typeof row.description === 'string' || row.description === null)
+      );
+    });
+    if (repositories.length !== body.repositories.length) {
+      throw upstreamUnavailable(response.status, 'reading the repository list payload');
+    }
     all.push(...repositories);
     if (repositories.length < 100) break;
   }
@@ -127,8 +150,25 @@ export async function readTree(
     throw upstreamUnavailable(response.status, `reading the tree at ${ref} on ${formatRepo(repo)}`);
   }
 
-  const body = response.json as { tree?: GitHubTreeEntry[]; truncated?: boolean };
-  const raw = body.tree ?? [];
+  if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
+    throw upstreamUnavailable(response.status, `reading the tree payload at ${ref} on ${formatRepo(repo)}`);
+  }
+  const body = response.json as { tree?: unknown; truncated?: boolean };
+  if (!Array.isArray(body.tree)) {
+    throw upstreamUnavailable(response.status, `reading the tree payload at ${ref} on ${formatRepo(repo)}`);
+  }
+  const raw = body.tree.filter((value): value is GitHubTreeEntry => {
+    if (typeof value !== 'object' || value === null) return false;
+    const row = value as Record<string, unknown>;
+    return (
+      typeof row.path === 'string' &&
+      (row.type === 'blob' || row.type === 'tree' || row.type === 'commit') &&
+      (row.size === undefined || typeof row.size === 'number')
+    );
+  });
+  if (raw.length !== body.tree.length) {
+    throw upstreamUnavailable(response.status, `reading the tree payload at ${ref} on ${formatRepo(repo)}`);
+  }
 
   // Narrow to a subtree by prefix. GitHub's recursive listing includes the
   // enclosing directory as its own 'tree' entry; that entry names the
