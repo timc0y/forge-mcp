@@ -91,6 +91,112 @@ export function isQualityQuery(query: string): boolean {
   return /^(?:quality|quality gates?|gates?|ci|checks configured|repo checks|validation)$/i.test(query.trim());
 }
 
+export function isHygieneQuery(query: string): boolean {
+  return /^(?:hygiene|code hygiene|repo hygiene|legacy(?: code)?|dead(?: code)?|fallback(?: code)?|obsolete(?: code)?|deprecated(?: code)?|broken(?: code)?|find legacy|find dead code|find fallbacks?|cleanup candidates?)$/i.test(query.trim());
+}
+
+const HYGIENE_SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?|py|rb|php|go|rs|java|kt|kts|swift|cs|fs|fsx|scala|vue|svelte|c|cc|cpp|cxx|h|hh|hpp)$/i;
+const HYGIENE_IGNORED_PATH = /(^|\/)(?:node_modules|vendor|dist|build|coverage|\.next|\.nuxt|target|Pods|DerivedData|generated|__generated__)(\/|$)/i;
+
+export function isHygieneSourcePath(path: string): boolean {
+  return HYGIENE_SOURCE_EXTENSION.test(path) && !HYGIENE_IGNORED_PATH.test(path) && !isDocumentationLikePath(path);
+}
+
+export interface HygienePathCandidate {
+  path: string;
+  signals: string[];
+  score: number;
+}
+
+/**
+ * Cheap path-only hygiene signals. These are candidate generators, never proof
+ * that a file is unused or safe to delete.
+ */
+export function hygienePathCandidates(
+  entries: RepositoryTreeEntry[],
+  limit = 24
+): HygienePathCandidate[] {
+  const candidates: HygienePathCandidate[] = [];
+  for (const entry of entries) {
+    if (entry.type !== 'file' || !isHygieneSourcePath(entry.path)) continue;
+    const lower = entry.path.toLowerCase();
+    const signals: string[] = [];
+    let score = 0;
+    const add = (signal: string, weight: number) => {
+      if (!signals.includes(signal)) signals.push(signal);
+      score += weight;
+    };
+    if (/(^|[\/_.-])legacy([\/_.-]|$)/.test(lower)) add('legacy path/name', 7);
+    if (/(^|[\/_.-])deprecated([\/_.-]|$)/.test(lower)) add('deprecated path/name', 7);
+    if (/(^|[\/_.-])fallback([\/_.-]|$)/.test(lower)) add('fallback path/name', 6);
+    if (/(^|[\/_.-])compat(?:ibility)?([\/_.-]|$)/.test(lower)) add('compatibility path/name', 5);
+    if (/(^|[\/_.-])(?:obsolete|unused|dead)([\/_.-]|$)/.test(lower)) add('obsolete/unused path/name', 6);
+    if (/(^|[\/_.-])(?:old|previous|backup|bak|tmp|temp)([\/_.-]|$)/.test(lower)) add('old/temporary path/name', 4);
+    if (/(^|[\/_.-])v(?:0|1)([\/_.-]|$)/.test(lower)) add('early-version path/name', 2);
+    if (score > 0) candidates.push({ path: entry.path, signals, score });
+  }
+  return candidates
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))
+    .slice(0, limit);
+}
+
+const HYGIENE_CONTENT_MARKER = /\b(?:legacy|deprecated|fallback|compat(?:ibility)?|obsolete|temporary|workaround|backward(?:s)?[- ]compat(?:ible|ibility)?|dead code|unused)\b|\bremove\s+(?:after|when|once)\b|\bTODO\b.{0,80}\bremove\b/i;
+
+/**
+ * Keep marker-bearing neighborhoods plus representative file context. This is
+ * more informative to Jev than blindly taking the first N characters.
+ */
+export function hygieneContentPreview(content: string, maxChars = 3200): string {
+  const lines = content.split('\n');
+  if (content.length <= maxChars) return content;
+  const selected = new Set<number>();
+  for (let index = 0; index < Math.min(8, lines.length); index += 1) selected.add(index);
+  for (let index = Math.max(0, lines.length - 4); index < lines.length; index += 1) selected.add(index);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!HYGIENE_CONTENT_MARKER.test(lines[index] ?? '')) continue;
+    for (let around = Math.max(0, index - 2); around <= Math.min(lines.length - 1, index + 2); around += 1) {
+      selected.add(around);
+    }
+    if (selected.size >= 36) break;
+  }
+  const rendered = [...selected]
+    .sort((left, right) => left - right)
+    .map((index) => `L${index + 1}: ${lines[index] ?? ''}`)
+    .join('\n');
+  return rendered.slice(0, maxChars);
+}
+
+const HYGIENE_GENERIC_IDENTIFIERS = new Set([
+  'main', 'index', 'handler', 'config', 'options', 'result', 'request', 'response',
+  'error', 'data', 'value', 'state', 'client', 'server', 'app', 'default'
+]);
+
+/**
+ * One search anchor for bounded reference evidence. It deliberately prefers a
+ * named public/exported symbol and falls back to a distinctive file stem.
+ */
+export function hygieneReferenceTerm(path: string, content: string): string | null {
+  const terms = new Set<string>();
+  const patterns = [
+    /\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\s+([A-Za-z_$][\w$]*)/g,
+    /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][\w]*)/gm,
+    /^\s*(?:func|type)\s+([A-Za-z_][\w]*)/gm
+  ];
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      const term = match[1];
+      if (term && term.length >= 4 && !HYGIENE_GENERIC_IDENTIFIERS.has(term.toLowerCase())) terms.add(term);
+      if (terms.size >= 12) break;
+    }
+  }
+  const ranked = [...terms].sort((left, right) => right.length - left.length || left.localeCompare(right));
+  if (ranked[0]) return ranked[0];
+
+  const name = (path.split('/').pop() ?? path).replace(/\.[^.]+$/, '');
+  const normalized = name.replace(/[^A-Za-z0-9_$]/g, '');
+  return normalized.length >= 5 && !HYGIENE_GENERIC_IDENTIFIERS.has(normalized.toLowerCase()) ? normalized : null;
+}
+
 export function isTestLikePath(path: string): boolean {
   const lower = path.toLowerCase();
   const name = lower.split('/').pop() ?? lower;

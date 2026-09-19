@@ -1159,8 +1159,97 @@ export async function classifyQualityGatesWithJev(
   return results;
 }
 
+export type HygieneKind =
+  | 'legacy/superseded'
+  | 'fallback/recovery'
+  | 'compatibility-intentional'
+  | 'likely-dead/unreachable'
+  | 'possibly-broken/incomplete'
+  | 'active/current'
+  | 'unclear';
+
+export interface HygieneClassification {
+  path: string;
+  kind: HygieneKind;
+  confidence: number;
+  investigate: number;
+  deletionChangesBehavior: number;
+}
+
+/**
+ * Semantic triage over already-bounded committed candidates. The labels are
+ * investigation signals: Jev never proves reachability, deadness or deletion
+ * safety. Separate Noul questions preserve counter-evidence instead of folding
+ * everything into an opaque risk score.
+ */
+export async function classifyHygieneCandidatesWithJev(
+  env: Env,
+  files: Array<{ path: string; preview: string; signals: string[] }>
+): Promise<HygieneClassification[]> {
+  if (!env.TYPESAFE_API_KEY || files.length === 0) return [];
+  const bounded = files.slice(0, 12);
+  const kinds: HygieneKind[] = [
+    'legacy/superseded',
+    'fallback/recovery',
+    'compatibility-intentional',
+    'likely-dead/unreachable',
+    'possibly-broken/incomplete',
+    'active/current',
+    'unclear'
+  ];
+  const questions: Record<string, JevQuestion> = {};
+  bounded.forEach((file, index) => {
+    questions[`hygieneKind_${index}`] = {
+      type: 'choice',
+      instructions: `Classify candidate ${index} from its path, discovery signals and committed-code preview. "likely-dead/unreachable" means semantically suspicious only, not proven by a compiler. Prefer compatibility-intentional or active/current when the old-looking code appears deliberately live.`,
+      criteria: kinds
+    };
+    questions[`hygieneInvestigate_${index}`] = {
+      type: 'noul',
+      instructions: `Is candidate ${index} meaningfully worth investigating for repository cleanup because it appears superseded, stale, redundant, fallback-heavy, unreachable-looking, or incomplete? Answer low for normal current code.`
+    };
+    questions[`hygieneBehavior_${index}`] = {
+      type: 'noul',
+      instructions: `Could deleting candidate ${index} plausibly change current runtime, build, API, migration, compatibility, or recovery behavior? Answer high when it appears intentionally reachable or protective.`
+    };
+  });
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      candidates: bounded.map((file, index) => ({
+        id: index,
+        path: file.path,
+        signals: file.signals,
+        preview: file.preview.slice(0, 3200)
+      }))
+    },
+    questions
+  });
+  if (!resp) return [];
+
+  return bounded.map((file, index): HygieneClassification => {
+    const answer = resp.answers[`hygieneKind_${index}`] as JevChoiceAnswer | undefined;
+    const kind = answer?.choice && kinds.includes(answer.choice as HygieneKind)
+      ? answer.choice as HygieneKind
+      : 'unclear';
+    const confidence = answer?.confidence || Math.max(0, ...Object.values(answer?.distribution ?? {}));
+    return {
+      path: file.path,
+      kind,
+      confidence,
+      investigate: noulOf(resp.answers[`hygieneInvestigate_${index}`], 0.5),
+      deletionChangesBehavior: noulOf(resp.answers[`hygieneBehavior_${index}`], 0.5)
+    };
+  }).sort(
+    (left, right) =>
+      right.investigate - left.investigate ||
+      right.confidence - left.confidence ||
+      left.path.localeCompare(right.path)
+  );
+}
+
 export type ForgeReadEvidenceMode =
   | 'quality'
+  | 'hygiene'
   | 'policy'
   | 'languages'
   | 'churn'
@@ -1189,12 +1278,12 @@ export async function routeForgeReadEvidenceWithJev(
   if (!env.TYPESAFE_API_KEY || !query.trim()) return null;
   const trimmed = query.trim();
   const hints = scope === 'repository'
-    ? /\b(test|tests|lint|format|typecheck|quality|ci|checks?|protect(?:ion)?|rules?|policy|languages?|stack|sizes?|large|big|structure|shape|history|recent|churn|hot|frequently changed)\b/i
+    ? /\b(test|tests|lint|format|typecheck|quality|ci|checks?|legacy|dead|unused|obsolete|deprecated|fallback|compat(?:ibility)?|broken|cleanup|hygiene|protect(?:ion)?|rules?|policy|languages?|stack|sizes?|large|big|structure|shape|history|recent|churn|hot|frequently changed)\b/i
     : /\b(review|merge|safe|safety|break|impact|references?|uses?|dependencies?|deps?|vulnerab|rules?|policy|checks?|sizes?|large|scope)\b/i;
   if (!hints.test(trimmed)) return null;
 
   const modes: ForgeReadEvidenceMode[] = scope === 'repository'
-    ? ['quality', 'policy', 'languages', 'churn', 'stats', 'map', 'history']
+    ? ['quality', 'hygiene', 'policy', 'languages', 'churn', 'stats', 'map', 'history']
     : ['review', 'impact', 'dependencies', 'policy', 'stats'];
   const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
     state: { query: trimmed, scope },
@@ -1202,7 +1291,7 @@ export async function routeForgeReadEvidenceWithJev(
       evidenceMode: {
         type: 'choice',
         instructions: scope === 'repository'
-          ? 'Which specialized evidence source best answers this repository question? quality=configured test/lint/type/build/security gates; policy=GitHub merge/branch rules; languages=language/stack distribution; churn=frequently changed files; stats=size/large files; map=repository structure; history=recent commits. Choose the closest only if the question primarily asks for that evidence.'
+          ? 'Which specialized evidence source best answers this repository question? quality=configured test/lint/type/build/security gates; hygiene=legacy/fallback/dead-looking/broken-looking/obsolete cleanup candidates; policy=GitHub merge/branch rules; languages=language/stack distribution; churn=frequently changed files; stats=size/large files; map=repository structure; history=recent commits. Choose the closest only if the question primarily asks for that evidence.'
           : 'Which specialized evidence source best answers this change question? review=overall merge/review evidence; impact=what else may be affected or break; dependencies=dependency additions/removals/vulnerabilities; policy=GitHub merge rules; stats=change size/hotspots. Choose the closest only if the question primarily asks for that evidence.',
         criteria: modes
       },
