@@ -148,55 +148,65 @@ export async function readRecentHistory(
       unavailable: `GitHub commit history returned HTTP ${response.status}.`
     };
   }
-  const commits = Array.isArray(response.json)
-    ? response.json.flatMap((value): CommitHistoryEntry[] => {
-        if (typeof value !== 'object' || value === null) return [];
-        const row = value as Record<string, unknown>;
-        if (typeof row.sha !== 'string') return [];
-        const commit = typeof row.commit === 'object' && row.commit !== null
-          ? row.commit as Record<string, unknown>
-          : {};
-        const authorData = typeof commit.author === 'object' && commit.author !== null
-          ? commit.author as Record<string, unknown>
-          : {};
-        const committerData = typeof commit.committer === 'object' && commit.committer !== null
-          ? commit.committer as Record<string, unknown>
-          : {};
-        const verification = typeof commit.verification === 'object' && commit.verification !== null
-          ? commit.verification as Record<string, unknown>
-          : null;
-        const authorAccount = typeof row.author === 'object' && row.author !== null
-          ? row.author as Record<string, unknown>
-          : null;
-        const committerAccount = typeof row.committer === 'object' && row.committer !== null
-          ? row.committer as Record<string, unknown>
-          : null;
-        return [{
-          sha: row.sha,
-          message: typeof commit.message === 'string' ? commit.message.split('\n')[0]!.slice(0, 240) : '',
-          date: typeof authorData.date === 'string'
-            ? authorData.date
-            : typeof committerData.date === 'string'
-              ? committerData.date
-              : null,
-          author: typeof authorAccount?.login === 'string'
-            ? authorAccount.login
-            : typeof authorData.name === 'string'
-              ? authorData.name
-              : null,
-          committer: typeof committerAccount?.login === 'string'
-            ? committerAccount.login
-            : typeof committerData.name === 'string'
-              ? committerData.name
-              : null,
-          verified: typeof verification?.verified === 'boolean' ? verification.verified : null,
-          url: typeof row.html_url === 'string' ? row.html_url : null
-        }];
-      })
-    : [];
+  if (!Array.isArray(response.json)) {
+    return {
+      commits: [],
+      truncated: false,
+      unavailable: 'GitHub returned unreadable commit history.'
+    };
+  }
+
+  const commits = response.json.flatMap((value): CommitHistoryEntry[] => {
+    if (typeof value !== 'object' || value === null) return [];
+    const row = value as Record<string, unknown>;
+    if (typeof row.sha !== 'string') return [];
+    const commit = typeof row.commit === 'object' && row.commit !== null
+      ? row.commit as Record<string, unknown>
+      : {};
+    const authorData = typeof commit.author === 'object' && commit.author !== null
+      ? commit.author as Record<string, unknown>
+      : {};
+    const committerData = typeof commit.committer === 'object' && commit.committer !== null
+      ? commit.committer as Record<string, unknown>
+      : {};
+    const verification = typeof commit.verification === 'object' && commit.verification !== null
+      ? commit.verification as Record<string, unknown>
+      : null;
+    const authorAccount = typeof row.author === 'object' && row.author !== null
+      ? row.author as Record<string, unknown>
+      : null;
+    const committerAccount = typeof row.committer === 'object' && row.committer !== null
+      ? row.committer as Record<string, unknown>
+      : null;
+    return [{
+      sha: row.sha,
+      message: typeof commit.message === 'string' ? commit.message.split('\n')[0]!.slice(0, 240) : '',
+      date: typeof authorData.date === 'string'
+        ? authorData.date
+        : typeof committerData.date === 'string'
+          ? committerData.date
+          : null,
+      author: typeof authorAccount?.login === 'string'
+        ? authorAccount.login
+        : typeof authorData.name === 'string'
+          ? authorData.name
+          : null,
+      committer: typeof committerAccount?.login === 'string'
+        ? committerAccount.login
+        : typeof committerData.name === 'string'
+          ? committerData.name
+          : null,
+      verified: typeof verification?.verified === 'boolean' ? verification.verified : null,
+      url: typeof row.html_url === 'string' ? row.html_url : null
+    }];
+  });
+  const unreadable = response.json.length - commits.length;
   return {
     commits,
-    truncated: /rel="next"/.test(response.headers.get('Link') ?? '')
+    truncated: /rel="next"/.test(response.headers.get('Link') ?? ''),
+    ...(unreadable > 0
+      ? { unavailable: `GitHub commit history contained ${unreadable} unreadable entr${unreadable === 1 ? 'y' : 'ies'}; the visible history is partial.` }
+      : {})
   };
 }
 
@@ -209,9 +219,14 @@ export async function readCommitParents(
   if (response.status !== 200) {
     return { parents: [], unavailable: `GitHub commit-parent lookup returned HTTP ${response.status}.` };
   }
-  if (typeof response.json !== 'object' || response.json === null) return { parents: [] };
-  const body = response.json as { parents?: Array<{ sha?: unknown }> };
-  const parents = (body.parents ?? [])
+  if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
+    return { parents: [], unavailable: 'GitHub returned unreadable commit-parent data.' };
+  }
+  const body = response.json as { parents?: unknown };
+  if (!Array.isArray(body.parents)) {
+    return { parents: [], unavailable: 'GitHub commit-parent data did not include a readable parent list.' };
+  }
+  const parents = body.parents
     .map((parent) => parent.sha)
     .filter((parent): parent is string => typeof parent === 'string' && parent.length > 0);
   return { parents };
@@ -370,24 +385,29 @@ export async function readBranchPolicy(
   if (response.status !== 200) {
     return { rules: [], truncated: false, unavailable: `GitHub branch-rules lookup returned HTTP ${response.status}.` };
   }
-  const rules = Array.isArray(response.json)
-    ? response.json.flatMap((value): BranchRule[] => {
-        if (typeof value !== 'object' || value === null) return [];
-        const row = value as Record<string, unknown>;
-        if (typeof row.type !== 'string') return [];
-        return [{
-          type: row.type,
-          ...(typeof row.ruleset_source_type === 'string' ? { sourceType: row.ruleset_source_type } : {}),
-          ...(typeof row.ruleset_source === 'string' ? { source: row.ruleset_source } : {}),
-          ...(typeof row.parameters === 'object' && row.parameters !== null
-            ? { parameters: row.parameters as Record<string, unknown> }
-            : {})
-        }];
-      })
-    : [];
+  if (!Array.isArray(response.json)) {
+    return { rules: [], truncated: false, unavailable: 'GitHub returned unreadable branch-rules data.' };
+  }
+  const rules = response.json.flatMap((value): BranchRule[] => {
+    if (typeof value !== 'object' || value === null) return [];
+    const row = value as Record<string, unknown>;
+    if (typeof row.type !== 'string') return [];
+    return [{
+      type: row.type,
+      ...(typeof row.ruleset_source_type === 'string' ? { sourceType: row.ruleset_source_type } : {}),
+      ...(typeof row.ruleset_source === 'string' ? { source: row.ruleset_source } : {}),
+      ...(typeof row.parameters === 'object' && row.parameters !== null
+        ? { parameters: row.parameters as Record<string, unknown> }
+        : {})
+    }];
+  });
+  const unreadable = response.json.length - rules.length;
   return {
     rules,
-    truncated: /rel="next"/.test(response.headers.get('Link') ?? '') || rules.length >= 100
+    truncated: /rel="next"/.test(response.headers.get('Link') ?? '') || response.json.length >= 100,
+    ...(unreadable > 0
+      ? { unavailable: `GitHub branch-rules data contained ${unreadable} unreadable rule entr${unreadable === 1 ? 'y' : 'ies'}; policy evidence is partial.` }
+      : {})
   };
 }
 
@@ -542,10 +562,14 @@ export async function readCodeownersErrors(
   if (response.status !== 200) {
     return { errors: [], unavailable: `GitHub CODEOWNERS validation returned HTTP ${response.status}.` };
   }
-  const body = typeof response.json === 'object' && response.json !== null
-    ? response.json as Record<string, unknown>
-    : {};
-  const rawErrors = Array.isArray(body.errors) ? body.errors : [];
+  if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
+    return { errors: [], unavailable: 'GitHub returned unreadable CODEOWNERS validation data.' };
+  }
+  const body = response.json as Record<string, unknown>;
+  if (!Array.isArray(body.errors)) {
+    return { errors: [], unavailable: 'GitHub CODEOWNERS validation data did not include a readable error list.' };
+  }
+  const rawErrors = body.errors;
   const errors = rawErrors.flatMap((value): CodeownersError[] => {
     if (typeof value !== 'object' || value === null) return [];
     const error = value as Record<string, unknown>;
