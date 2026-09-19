@@ -115,6 +115,8 @@ const MAX_REPOS = 50;
 const MAX_TREE_ENTRIES = 300;
 const MAX_DIFF_FILES = 200;
 const MAX_FILE_BYTES = 64 * 1024;
+/** Internal-only budget: enough to lint a large changed source file without returning it to chat. */
+const POST_COMMIT_FILE_BYTES = 256 * 1024;
 
 const DEFAULT_VIEWPORTS: Viewport[] = ['phone', 'desktop'];
 
@@ -1968,7 +1970,13 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
               const knownSet = new Set(knownPaths);
               const liveChangedPaths = commit.paths.filter((path) => knownSet.has(path));
               if (liveChangedPaths.length > 0) {
-                const committedFiles = await readFiles(committedGh, repo, commit.sha, liveChangedPaths, MAX_FILE_BYTES);
+                const committedFiles = await readFiles(
+                  committedGh,
+                  repo,
+                  commit.sha,
+                  liveChangedPaths,
+                  POST_COMMIT_FILE_BYTES
+                );
                 for (const skipped of committedFiles.skipped) {
                   limits.push(`Post-commit advisory skipped ${skipped.path}: ${skipped.reason}.`);
                 }
