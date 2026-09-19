@@ -118,6 +118,14 @@ This gives a safe workflow for "find every X and replace it with Y":
 Forge intentionally does not add a top-level "replace the entire repository"
 mutation. Discovery and mutation remain separate, observable acts.
 
+### Release conventions and contract-file evidence
+
+Changesets and semantic-release reinforce a useful split between *consumer impact* and the mechanical act of publishing. Forge can detect a repository convention and ask whether it is relevant without becoming the release engine. When a Jev change assessment strongly indicates user-visible/breaking/documentation-relevant impact, the review packet checks whether `.changeset/config.json` exists. If the repository uses Changesets but the proposed diff includes no `.changeset/*.md`, Forge emits an advisory release-metadata notice rather than inventing a required version bump.
+
+Similarly, contract-like changed paths such as OpenAPI/Swagger/AsyncAPI schemas, `.proto`, GraphQL schema files and API Extractor `*.api.md` reports are called out deterministically. Forge does **not** attempt GraphQL Inspector/API Extractor-style compatibility analysis; those require real schema/compiler semantics and belong in repository quality gates.
+
+The packet now runs its GitHub policy/review/dependency reads and the bounded Jev assessment concurrently, then performs the optional Changesets convention lookup only when the semantic assessment says release metadata is plausibly relevant.
+
 ### Read-only change review packets
 
 The same evidence used to prepare a merge approval is now available through `forge_read` with a change and `query: "review"`. This route is read-only: it combines GitHub branch rules, required approval/check names, latest review states, one-shot mergeability, dependency-diff findings and one bounded patch-rich Jev assessment before Forge creates any approval record. The packet builder lives in `change-review.ts` so merge preparation can reuse exactly the same evidence rather than developing a second definition of what matters.

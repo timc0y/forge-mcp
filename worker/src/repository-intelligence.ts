@@ -181,6 +181,26 @@ export function extractDeclaredQualityScripts(
 }
 
 /** Paths whose committed diff can change the dependency graph. */
+export function contractLikePaths(files: ChangedFile[], limit = 10): string[] {
+  return files
+    .map((file) => file.path)
+    .filter((path) => {
+      const lower = path.toLowerCase();
+      const name = lower.split('/').pop() ?? lower;
+      return (
+        /\.proto$/.test(name) ||
+        /\.graphqls$/.test(name) ||
+        /^(?:schema|openapi|swagger|asyncapi)(?:\.[^.]+)?\.(?:graphql|ya?ml|json)$/.test(name) ||
+        /\.api\.md$/.test(name)
+      );
+    })
+    .slice(0, limit);
+}
+
+export function hasChangesetFile(files: ChangedFile[]): boolean {
+  return files.some((file) => /^\.changeset\/[^/]+\.md$/i.test(file.path));
+}
+
 export function isCodeownersPath(path: string): boolean {
   const normalized = path.replace(/^\.\//, '').toLowerCase();
   return normalized === 'codeowners' || normalized === '.github/codeowners' || normalized === 'docs/codeowners';

@@ -10,6 +10,7 @@ import type { Env } from './env';
 import {
   readBranchPolicy,
   readDependencyReview,
+  repositoryPathExists,
   readPullReviewState,
   requiredApprovalCount,
   requiredCheckNames,
@@ -28,7 +29,7 @@ import {
   type ChangeAssessment
 } from './jev';
 import { compare } from './read';
-import { isDependencyManifestPath } from './repository-intelligence';
+import { contractLikePaths, hasChangesetFile, isDependencyManifestPath } from './repository-intelligence';
 
 export interface ChangeReviewPacket {
   policy: BranchPolicy;
@@ -45,6 +46,8 @@ export interface ChangeReviewPacket {
   assessment: ChangeAssessment | null;
   impactSummary?: string;
   assessmentFiles: number;
+  usesChangesets: boolean | null;
+  contractPaths: string[];
 }
 
 export async function buildChangeReviewPacket(
@@ -56,7 +59,20 @@ export async function buildChangeReviewPacket(
   comparison: Comparison
 ): Promise<ChangeReviewPacket> {
   const dependencyFilesChanged = comparison.files.some((file) => isDependencyManifestPath(file.path));
-  const [policy, dependencies, reviewState] = await Promise.all([
+  const assessmentFiles = Math.min(20, comparison.files.length);
+  const assessmentPromise: Promise<ChangeAssessment | null> = env.TYPESAFE_API_KEY && assessmentFiles > 0
+    ? (async () => {
+        try {
+          const patchPaths = comparison.files.slice(0, assessmentFiles).map((file) => file.path);
+          const enriched = await compare(gh, repo, base, change.branch, patchPaths);
+          return await assessChangeWithJev(env, change.name, enriched);
+        } catch {
+          return null;
+        }
+      })()
+    : Promise.resolve(null);
+
+  const [policy, dependencies, reviewState, assessment] = await Promise.all([
     readBranchPolicy(gh, repo, base).catch(() => ({
       rules: [], truncated: false, unavailable: 'Branch policy could not be read.'
     })),
@@ -67,22 +83,19 @@ export async function buildChangeReviewPacket(
       : Promise.resolve({ changes: [], truncated: false }),
     change.number !== null
       ? readPullReviewState(gh, repo, change.number).catch(() => null)
-      : Promise.resolve(null)
+      : Promise.resolve(null),
+    assessmentPromise
   ]);
 
-  let assessment: ChangeAssessment | null = null;
-  let impactSummary: string | undefined;
-  const assessmentFiles = Math.min(20, comparison.files.length);
-  if (env.TYPESAFE_API_KEY && assessmentFiles > 0) {
-    try {
-      const patchPaths = comparison.files.slice(0, assessmentFiles).map((file) => file.path);
-      const enriched = await compare(gh, repo, base, change.branch, patchPaths);
-      assessment = await assessChangeWithJev(env, change.name, enriched);
-      if (assessment) impactSummary = summarizeChangeAssessment(assessment, comparison.files.length);
-    } catch {
-      // Deterministic GitHub evidence still makes the packet useful.
-    }
-  }
+  const impactSummary = assessment
+    ? summarizeChangeAssessment(assessment, comparison.files.length)
+    : undefined;
+  const releaseMetadataLooksRelevant = Boolean(
+    assessment && (assessment.userVisible >= 0.8 || assessment.breakingChange >= 0.8 || assessment.docsRelevant >= 0.92)
+  );
+  const usesChangesets = releaseMetadataLooksRelevant
+    ? await repositoryPathExists(gh, repo, base, '.changeset/config.json').catch(() => null)
+    : null;
 
   return {
     policy,
@@ -97,7 +110,9 @@ export async function buildChangeReviewPacket(
     ),
     assessment,
     ...(impactSummary ? { impactSummary } : {}),
-    assessmentFiles
+    assessmentFiles,
+    usesChangesets,
+    contractPaths: contractLikePaths(comparison.files)
   };
 }
 
@@ -142,6 +157,17 @@ export function changeReviewNotices(
     notices.push('GitHub has not finished computing pull-request mergeability; Forge does not poll, so this remains unknown.');
   }
   if (packet.reviewState?.truncated) notices.push('Pull-request review state is based on the first 100 review records only.');
+  if (
+    packet.usesChangesets === true &&
+    packet.assessment &&
+    (packet.assessment.userVisible >= 0.8 || packet.assessment.breakingChange >= 0.8 || packet.assessment.docsRelevant >= 0.92) &&
+    !hasChangesetFile(comparison.files)
+  ) {
+    notices.push('Release metadata notice: this repository uses Changesets and the diff looks release/user-facing, but no .changeset/*.md file is changed. This is advisory; repository policy may intentionally exempt the change.');
+  }
+  if (packet.contractPaths.length > 0) {
+    notices.push(`Contract-file notice: ${packet.contractPaths.join(', ')} changed. Forge does not replace parser/compiler compatibility checks for these contracts.`);
+  }
   if (packet.dependencies.unavailable) notices.push(packet.dependencies.unavailable);
   if (packet.dependencies.snapshotWarning) notices.push(`GitHub dependency snapshot warning: ${packet.dependencies.snapshotWarning}`);
   if (packet.dependencies.truncated) notices.push('Dependency review was capped at 300 dependency changes.');
@@ -157,6 +183,8 @@ export function changeReviewNotices(
 export function changeReviewLines(packet: ChangeReviewPacket): string[] {
   const lines: string[] = [];
   if (packet.impactSummary) lines.push(`JEV ${packet.impactSummary}`);
+  if (packet.usesChangesets === true) lines.push('RELEASE changesets convention detected');
+  if (packet.contractPaths.length > 0) lines.push(`CONTRACT ${packet.contractPaths.join(', ')}`);
   if (packet.requiredChecks.length > 0) lines.push(`POLICY checks · ${packet.requiredChecks.join(', ')}`);
   if (packet.requiredApprovals > 0) lines.push(`POLICY approvals · ${packet.requiredApprovals} required`);
   if (packet.needsCodeOwnerReview) lines.push('POLICY code-owner review required');

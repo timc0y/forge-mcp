@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { exactOccurrenceContexts, extractDeclaredQualityScripts, historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
+import { contractLikePaths, exactOccurrenceContexts, extractDeclaredQualityScripts, hasChangesetFile, historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -220,6 +220,18 @@ describe('repository intelligence query parsing', () => {
     ]);
     expect(stats.lines.some((line) => line.startsWith('SHAPE max depth'))).toBe(true);
     expect(stats.lines.some((line) => line.startsWith('SHAPE widest'))).toBe(true);
+  });
+});
+
+describe('release and contract convention detection', () => {
+  it('recognizes changeset metadata and explicit contract-like files', () => {
+    const files = [
+      { path: '.changeset/brave-ravens.md', status: 'added' as const, additions: 5, deletions: 0 },
+      { path: 'api/openapi.yaml', status: 'modified' as const, additions: 2, deletions: 1 },
+      { path: 'src/schema.ts', status: 'modified' as const, additions: 2, deletions: 1 }
+    ];
+    expect(hasChangesetFile(files)).toBe(true);
+    expect(contractLikePaths(files)).toEqual(['api/openapi.yaml']);
   });
 });
 

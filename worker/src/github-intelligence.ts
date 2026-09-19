@@ -6,6 +6,21 @@
  */
 import type { GitHubRequest, RepoRef } from './contracts';
 
+export async function repositoryPathExists(
+  request: GitHubRequest,
+  repo: RepoRef,
+  ref: string,
+  path: string
+): Promise<boolean | null> {
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+  const response = await request(
+    `/repos/${repo.owner}/${repo.name}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`
+  );
+  if (response.status === 200) return true;
+  if (response.status === 404) return false;
+  return null;
+}
+
 export interface RepositoryLanguage {
   name: string;
   bytes: number;
