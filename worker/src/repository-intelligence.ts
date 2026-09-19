@@ -197,17 +197,6 @@ export function hygieneReferenceTerm(path: string, content: string): string | nu
   return normalized.length >= 5 && !HYGIENE_GENERIC_IDENTIFIERS.has(normalized.toLowerCase()) ? normalized : null;
 }
 
-export function isTestLikePath(path: string): boolean {
-  const lower = path.toLowerCase();
-  const name = lower.split('/').pop() ?? lower;
-  return (
-    /(^|\/)(test|tests|__tests__|spec|specs)(\/|$)/.test(lower) ||
-    /\.(?:test|spec)\.[^.]+$/.test(name) ||
-    /(^|\/)test_[^/]+\.py$/.test(lower) ||
-    /(^|\/)[^/]+_test\.(?:go|py|rb)$/.test(lower)
-  );
-}
-
 export function isDocumentationLikePath(path: string): boolean {
   const lower = path.toLowerCase();
   return (
@@ -215,18 +204,6 @@ export function isDocumentationLikePath(path: string): boolean {
     /(^|\/)(readme|changelog|contributing)(\.|$)/.test(lower) ||
     /\.(?:md|mdx|rst|adoc)$/.test(lower)
   );
-}
-
-export function testCandidatePaths(entries: RepositoryTreeEntry[]): string[] {
-  return entries
-    .filter((entry) => entry.type === 'file' && isTestLikePath(entry.path))
-    .map((entry) => entry.path);
-}
-
-export function documentationCandidatePaths(entries: RepositoryTreeEntry[]): string[] {
-  return entries
-    .filter((entry) => entry.type === 'file' && isDocumentationLikePath(entry.path))
-    .map((entry) => entry.path);
 }
 
 export function qualityCandidatePaths(entries: RepositoryTreeEntry[], limit = 16): string[] {
@@ -320,27 +297,6 @@ export function extractDeclaredQualityScripts(
     }
   }
   return scripts;
-}
-
-/** Paths whose committed diff can change the dependency graph. */
-export function contractLikePaths(files: ChangedFile[], limit = 10): string[] {
-  return files
-    .map((file) => file.path)
-    .filter((path) => {
-      const lower = path.toLowerCase();
-      const name = lower.split('/').pop() ?? lower;
-      return (
-        /\.proto$/.test(name) ||
-        /\.graphqls$/.test(name) ||
-        /^(?:schema|openapi|swagger|asyncapi)(?:\.[^.]+)?\.(?:graphql|ya?ml|json)$/.test(name) ||
-        /\.api\.md$/.test(name)
-      );
-    })
-    .slice(0, limit);
-}
-
-export function hasChangesetFile(files: ChangedFile[]): boolean {
-  return files.some((file) => /^\.changeset\/[^/]+\.md$/i.test(file.path));
 }
 
 export function isCodeownersPath(path: string): boolean {
