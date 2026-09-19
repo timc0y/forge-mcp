@@ -333,8 +333,24 @@ function isStatsQuery(query: string): boolean {
   );
 }
 
+function statsScope(query: string): string | null {
+  const match = /^stats?(?:\s+|:\s*)(.+)$/i.exec(query.trim());
+  const scope = match?.[1]?.trim().replace(/^\/+|\/+$/g, '');
+  return scope ? scope : null;
+}
+
+function isMapQuery(query: string): boolean {
+  return /^(?:map|repo map|repository map|repo structure|repository structure)$/i.test(query.trim());
+}
+
 function exactFindNeedle(query: string): string | null {
   const match = /^(?:find(?: all)?|text):\s*(.+)$/i.exec(query.trim());
+  const needle = match?.[1]?.trim();
+  return needle ? needle : null;
+}
+
+function semanticCodeNeedle(query: string): string | null {
+  const match = /^code:\s*(.+)$/i.exec(query.trim());
   const needle = match?.[1]?.trim();
   return needle ? needle : null;
 }
@@ -383,6 +399,51 @@ function repositoryStats(entries: Array<{ path: string; type: 'file' | 'dir'; si
   }
 
   return { files: files.length, bytes, lines };
+}
+
+function repositoryMap(entries: Array<{ path: string; type: 'file' | 'dir'; size: number }>): string[] {
+  const files = entries.filter((entry) => entry.type === 'file');
+  const buckets = new Map<string, { files: number; bytes: number }>();
+  const bump = (bucket: string, size: number) => {
+    const current = buckets.get(bucket) ?? { files: 0, bytes: 0 };
+    current.files += 1;
+    current.bytes += size;
+    buckets.set(bucket, current);
+  };
+
+  const category = (path: string): string => {
+    const lower = path.toLowerCase();
+    const name = lower.split('/').pop() ?? lower;
+    if (/(^|\/)(test|tests|__tests__|spec|specs)(\/|$)/.test(lower) || /\.(test|spec)\.[^.]+$/.test(name)) return 'tests';
+    if (lower.startsWith('.github/workflows/')) return 'automation';
+    if (/(^|\/)(migrations?|schema)(\/|$)/.test(lower) || /(^|\/)(schema|migration)[^/]*\.(sql|ts|js|py)$/.test(lower)) return 'data/schema';
+    if (/(^|\/)(assets?|public|static|images?|icons?)(\/|$)/.test(lower)) return 'assets';
+    if (lower.startsWith('docs/') || /(^|\/)(readme|changelog|contributing|license)(\.|$)/.test(lower) || /\.(md|mdx|rst)$/.test(lower)) return 'docs';
+    if (
+      !lower.includes('/') &&
+      (name.startsWith('.') || /^(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|tsconfig.*\.json|pyproject\.toml|cargo\.toml|go\.mod|makefile|dockerfile|wrangler\.jsonc)$/.test(name))
+    ) return 'config';
+    if (/(^|\/)(src|app|lib|packages?|crates?)(\/|$)/.test(lower)) return 'source';
+    return 'other';
+  };
+
+  for (const file of files) bump(category(file.path), file.size);
+
+  const lines = [...buckets.entries()]
+    .sort((left, right) => right[1].bytes - left[1].bytes || right[1].files - left[1].files)
+    .map(([bucket, stats]) => `AREA ${bucket} · ${stats.files} files · ${humanBytes(stats.bytes)}`);
+
+  const entryName = /^(?:index|main|app|server|worker|cli)\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|swift)$/i;
+  const likelyEntries = files
+    .filter((file) => {
+      const name = file.path.split('/').pop() ?? file.path;
+      return entryName.test(name) || /^(?:package\.json|pyproject\.toml|cargo\.toml|go\.mod|wrangler\.jsonc)$/i.test(file.path);
+    })
+    .sort((left, right) => left.path.split('/').length - right.path.split('/').length || left.path.localeCompare(right.path))
+    .slice(0, 10);
+  for (const file of likelyEntries) lines.push(`ENTRY? ${file.path}`);
+
+  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -609,18 +670,43 @@ async function readTreeLevel(
   const trimmedQuery = query?.trim();
 
   if (trimmedQuery && isStatsQuery(trimmedQuery)) {
-    const stats = repositoryStats(tree.entries);
+    const scope = statsScope(trimmedQuery);
+    const scopedEntries = scope
+      ? tree.entries.filter((entry) => entry.path === scope || entry.path.startsWith(`${scope}/`))
+      : tree.entries;
+    const stats = repositoryStats(scopedEntries);
     const limits = [
+      ...(scope && stats.files === 0 ? [`No tracked files were found under ${scope}.`] : []),
       ...(tree.truncated ? ['GitHub truncated this listing, so these statistics are incomplete.'] : []),
       ...changesLimits(changes)
     ];
+    const where = scope ? ` under ${scope}` : '';
     return {
-      summary: `${formatRepo(repo)} at ${base}: ${stats.files} files, ${humanBytes(stats.bytes)} of tracked file content.${changesSentence(names)}`,
+      summary: `${formatRepo(repo)} at ${base}${where}: ${stats.files} files, ${humanBytes(stats.bytes)} of tracked file content.${changesSentence(names)}`,
       structured: withLimits(
         {
           tree: stats.lines,
           changes: names,
-          next: 'Ask for a path to read it, or use query "find:<text>" to find committed code containing exact text.'
+          next: 'Ask for another folder with "stats <path>", use "map" for repository shape, or "find:<text>" for exact committed-code search.'
+        },
+        limits
+      )
+    };
+  }
+
+  if (trimmedQuery && isMapQuery(trimmedQuery)) {
+    const lines = repositoryMap(tree.entries);
+    const limits = [
+      ...(tree.truncated ? ['GitHub truncated this listing, so this repository map is incomplete.'] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)} at ${base}: repository shape from ${allFilePaths.length} tracked files.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: lines,
+          changes: names,
+          next: 'Ask about a mapped area semantically, or use "code:<concept>" to search committed code rather than filenames.'
         },
         limits
       )
@@ -638,17 +724,65 @@ async function readTreeLevel(
       ...(found.total > shown.length ? [`Showing ${shown.length} of ${found.total} code results.`] : []),
       ...changesLimits(changes)
     ];
+
+    const counts = new Map<string, number>();
+    if (uniquePaths.length > 0) {
+      try {
+        const measured = await readFiles(gh, repo, base, uniquePaths.slice(0, 10), MAX_FILE_BYTES);
+        for (const file of measured.files) {
+          if (!file.truncated) counts.set(file.path, file.content.split(findNeedle).length - 1);
+        }
+        if (uniquePaths.length > 10 || measured.skipped.length > 0) {
+          limits.push('Exact occurrence counts are measured only for complete matching files that fit the read budget; search paths remain the discovery result.');
+        }
+      } catch {
+        // Search evidence is still useful when exact counting cannot be measured.
+      }
+    }
+
     return {
       summary: `Found ${found.total} committed code result${found.total === 1 ? '' : 's'} for "${findNeedle}" in ${formatRepo(repo)}; showing ${shown.length}.${changesSentence(names)}`,
       structured: withLimits(
         {
           tree: uniquePaths,
-          files: shown.map((item) => ({ path: item.path ?? item.title, text: item.snippet ?? '' })),
+          files: shown.map((item) => {
+            const count = item.path ? counts.get(item.path) : undefined;
+            return {
+              path: item.path ?? item.title,
+              text: `${count === undefined ? '' : `${count} exact occurrence${count === 1 ? '' : 's'} · `}${item.snippet ?? ''}`
+            };
+          }),
           changes: names,
           next:
             uniquePaths.length > 0
-              ? 'Use these paths with forge_edit fragment replacements. A write is capped at 10 files, so wider replacements become several durable commits.'
-              : 'Try a shorter exact term, or use a normal semantic query instead.'
+              ? 'Use these paths with forge_edit fragment replacements and all:true when every exact occurrence in that file should change. A write is capped at 10 files.'
+              : 'Try a shorter exact term, or use "code:<concept>" for semantic committed-code search.'
+        },
+        limits
+      )
+    };
+  }
+
+  const codeNeedle = trimmedQuery ? semanticCodeNeedle(trimmedQuery) : null;
+  if (codeNeedle) {
+    const built = await buildAdvancedSearchQuery(ctx.env, codeNeedle, 'code');
+    const withoutRepo = built.query.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
+    const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 15);
+    const ranked = await rankSearchResultsWithJev(ctx.env, codeNeedle, found.items);
+    const shown = ranked.slice(0, 15);
+    const uniquePaths = [...new Set(shown.map((item) => item.path).filter((path): path is string => Boolean(path)))];
+    const limits = [
+      ...(found.total > shown.length ? [`Showing ${shown.length} of ${found.total} committed-code results.`] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `Found ${found.total} committed-code result${found.total === 1 ? '' : 's'} for "${codeNeedle}" in ${formatRepo(repo)}; semantically ranked.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: uniquePaths,
+          files: shown.map((item) => ({ path: item.path ?? item.title, text: item.snippet ?? '' })),
+          changes: names,
+          next: uniquePaths.length > 0 ? 'Read the strongest matching paths for full context.' : 'Try fewer concept words or use a filename-oriented semantic query.'
         },
         limits
       )
@@ -1047,7 +1181,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         repo: z.string().optional().describe('owner/name. Omit to list your repositories.'),
         change: z.string().optional().describe('An open change, named by the words that created it.'),
         paths: z.array(z.string()).max(20).optional(),
-        query: z.string().optional().describe('Narrows semantically. Use "stats" for size summaries or "find:<text>" for exact committed-code search.')
+        query: z.string().optional().describe('Narrows semantically. "stats [path]" sizes, "map" maps shape, "find:<text>" exact-searches, "code:<concept>" searches committed code.')
       },
       outputSchema: readOutput,
       // Nothing here writes, and it reaches nothing but GitHub.

@@ -179,6 +179,21 @@ describe('post-commit advisory lint', () => {
 
     expect(warnings).toEqual([]);
   });
+
+  it('spots committed merge-conflict markers in source files', async () => {
+    const warnings = await lintCommittedFiles(
+      [{ path: 'src/index.ts', content: '<<<<<<< ours\nconst x = 1;\n=======\nconst x = 2;\n>>>>>>> theirs' }],
+      ['src/index.ts']
+    );
+
+    expect(warnings).toContain('Post-commit notice: src/index.ts contains merge-conflict markers.');
+  });
+
+  it('spots invalid committed JSON', async () => {
+    const warnings = await lintCommittedFiles([{ path: 'package.json', content: '{"name":}' }], ['package.json']);
+
+    expect(warnings).toContain('Post-commit notice: package.json is not valid JSON.');
+  });
 });
 
 describe('server instructions', () => {

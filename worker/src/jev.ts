@@ -784,9 +784,24 @@ export async function lintCommittedFiles(
     return parts.join('/');
   };
 
+  const sourceLike = /\.(?:[cm]?[jt]sx?|py|go|rs|swift|java|kt|kts|cs|php|rb|css|scss|html|sql)$/i;
+
   for (const file of files) {
     if (!file.content) continue;
-    const importMatches = file.content.matchAll(/(?:from|import)\s+['"](\.[^'"]+)['"]/g);
+
+    if (sourceLike.test(file.path) && /^(?:<<<<<<< |=======\s*$|>>>>>>> )/m.test(file.content)) {
+      warnings.push(`Post-commit notice: ${file.path} contains merge-conflict markers.`);
+    }
+
+    if (/\.json$/i.test(file.path)) {
+      try {
+        JSON.parse(file.content);
+      } catch {
+        warnings.push(`Post-commit notice: ${file.path} is not valid JSON.`);
+      }
+    }
+
+    const importMatches = file.content.matchAll(/(?:from\s+|import\s*(?:\(\s*)?)['"](\.[^'"]+)['"]/g);
     for (const match of importMatches) {
       const importPath = match[1];
       if (!importPath) continue;

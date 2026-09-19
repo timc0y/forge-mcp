@@ -66,11 +66,28 @@ full lint/test/security suites belong in repository CI.
 This is computed from the GitHub tree already used by Forge. No new API
 permission, service, dependency, index, or tool is introduced.
 
-### Scoped exact committed-code search
+### Scoped statistics and repository map
+
+`query: "stats"` summarizes the whole tracked tree, while `query: "stats <path>"`
+uses the same GitHub tree metadata for one committed folder. `query: "map"`
+classifies tracked files into source, tests, docs, automation, data/schema,
+assets, config, and other, then points out likely entry files. This is a path
+map, not a claimed call graph.
+
+That distinction follows the useful boundary seen in ast-grep's outline model:
+a compact structural outline is valuable without pretending it proves every
+reference edge. Sourcegraph SCIP demonstrates the other side of the line: true
+find-references/go-to-definition semantics need language indexers and an index.
+Forge should not recreate that infrastructure implicitly.
+
+### Scoped exact and semantic committed-code search
 
 `query: "find:<text>"` searches GitHub code inside the named repository and
-returns matching paths plus snippets. Normal queries continue to use Forge's
-semantic path/file ranking.
+returns matching paths plus snippets. For matching files small enough to read
+completely, Forge also counts exact occurrences. `query: "code:<concept>"`
+uses Forge's GitHub query synthesis and Jev ranking against committed-code
+results, which is useful when filenames do not describe the implementation.
+Normal queries continue to use the cheaper semantic path/file ranking.
 
 This gives a safe workflow for "find every X and replace it with Y":
 
@@ -87,7 +104,9 @@ mutation. Discovery and mutation remain separate, observable acts.
 
 Forge already contained a dangling-relative-import check, but it was gated on
 Jev and called without repository paths, so it could not do useful work. It now
-runs only **after** GitHub has accepted a real commit:
+runs only **after** GitHub has accepted a real commit. The deterministic advisory
+currently checks relative imports, source merge-conflict markers, and JSON
+syntax:
 
 1. read the committed tree at the returned SHA;
 2. read the final committed versions of changed text files;
@@ -137,9 +156,11 @@ The correct shape, if the permission cost is accepted, is:
 Current semantic repository search ranks paths and selectively reads relevant
 file excerpts. Improvements that stay inside the boundary include:
 
-- merge scoped GitHub code-search candidates with semantic path ranking;
-- recognize likely entry points, tests, schemas, migrations, routes, and config
-  from paths and small committed excerpts;
+- decide whether normal natural-language queries should automatically blend
+  code-search candidates with semantic path ranking, or whether the explicit
+  `code:` mode is the better latency/cost boundary;
+- enrich likely routes, schemas, migrations and entry points from small committed
+  excerpts without claiming a full call graph;
 - summarize a change by subsystem concentration and churn, using its diff;
 - answer "where does X enter/leave this system?" from search candidates without
   creating a persistent code index.

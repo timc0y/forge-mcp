@@ -429,6 +429,28 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.tree.some((line: string) => line.includes("FOLDER src/ · 2 files"))).toBe(true);
   });
 
+  it("scopes repository statistics to a folder", async () => {
+    const { server } = createMockToolContext();
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "stats src" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("under src: 2 files");
+    expect(res.structuredContent.tree[0]).toContain("TOTAL · 2 files · 6.0 KiB");
+  });
+
+  it("maps repository areas and likely entry points from committed paths", async () => {
+    const { server } = createMockToolContext();
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "map" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.tree.some((line: string) => line.includes("AREA source · 2 files"))).toBe(true);
+    expect(res.structuredContent.tree).toContain("ENTRY? src/index.ts");
+  });
+
   it("finds exact committed code inside one repository", async () => {
     const { server } = createMockToolContext({
       "GET /search/code": {
@@ -455,6 +477,33 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.content[0].text).toContain("Found 1 committed code result");
     expect(res.structuredContent.tree).toEqual(["src/index.ts"]);
     expect(res.structuredContent.files[0].text).toContain("version");
+  });
+
+  it("searches committed code semantically inside one repository", async () => {
+    const { server } = createMockToolContext({
+      "GET /search/code": {
+        status: 200,
+        json: {
+          total_count: 1,
+          items: [
+            {
+              name: "index.ts",
+              path: "src/index.ts",
+              html_url: "https://github.com/testuser/test-repo/blob/main/src/index.ts",
+              repository: { full_name: "testuser/test-repo", description: "A test repository" },
+              text_matches: [{ fragment: "export async function refreshAccessToken() {}" }]
+            }
+          ]
+        }
+      }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "code:refresh access token" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("committed-code result");
+    expect(res.structuredContent.tree).toEqual(["src/index.ts"]);
   });
 
   it("executes targeted file excerpt through Jev in forge_read", async () => {
