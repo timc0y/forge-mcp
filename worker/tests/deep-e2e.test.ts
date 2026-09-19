@@ -299,7 +299,7 @@ describe("In-Depth Forge End-to-End Suite", () => {
     });
     expect(mergeRes.isError).toBeFalsy();
     expect(mergeRes.structuredContent.approval.url).toContain("https://timcoy.uk/forge/approvals/");
-    expect(mergeRes.content[0].text).toContain("Merging \"forge\" into main brings 1 commit: 1 file");
+    expect(mergeRes.content[0].text).toContain("Merging \"Initial draft change\" into main brings 1 commit: 1 file");
   });
 
   it("2. Search platform coverage: all 16 platforms resolve and build clean queries", async () => {

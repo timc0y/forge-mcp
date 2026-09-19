@@ -63,6 +63,18 @@ export function isPolicyQuery(query: string): boolean {
   return /^(?:policy|rules|ruleset|rulesets|branch protection|required checks)$/i.test(query.trim());
 }
 
+/** Paths whose committed diff can change the dependency graph. */
+export function isDependencyManifestPath(path: string): boolean {
+  const name = path.toLowerCase().split('/').pop() ?? path.toLowerCase();
+  return (
+    /^(?:package(?:-lock)?\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.ya?ml|bun\.lockb?|deno\.lock)$/.test(name) ||
+    /^(?:cargo\.toml|cargo\.lock|go\.mod|go\.sum|gemfile|gemfile\.lock|composer\.json|composer\.lock|pyproject\.toml|poetry\.lock|pipfile|pipfile\.lock|uv\.lock|pubspec\.ya?ml|pubspec\.lock|pom\.xml|gradle\.lockfile|packages\.lock\.json)$/.test(name) ||
+    /^requirements(?:[-_.].+)?\.txt$/.test(name) ||
+    /\.(?:csproj|fsproj|vbproj)$/.test(name) ||
+    /^(?:build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/.test(name)
+  );
+}
+
 export function repositoryStats(entries: RepositoryTreeEntry[]): {
   files: number;
   bytes: number;

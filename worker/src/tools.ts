@@ -38,6 +38,7 @@ import {
   exactFindNeedle,
   fileTotals,
   humanBytes,
+  isDependencyManifestPath,
   isDependencyQuery,
   isMapQuery,
   isPolicyQuery,
@@ -1136,10 +1137,15 @@ async function requestAct(
   const comparison = await compare(ctx.gh, repo, base, change.branch);
   const head = await headSha(ctx.gh, repo, change.branch);
   const size = totals(comparison);
-  const [policy, dependencies] = await Promise.all([
-    readBranchPolicy(ctx.gh, repo, base).catch(() => ({ rules: [], truncated: false })),
-    readDependencyReview(ctx.gh, repo, base, change.branch).catch(() => ({ changes: [], truncated: false }))
-  ]);
+  const dependencyFilesChanged = comparison.files.some((file) => isDependencyManifestPath(file.path));
+  const [policy, dependencies] = act === 'merge'
+    ? await Promise.all([
+        readBranchPolicy(ctx.gh, repo, base).catch(() => ({ rules: [], truncated: false })),
+        dependencyFilesChanged
+          ? readDependencyReview(ctx.gh, repo, base, change.branch).catch(() => ({ changes: [], truncated: false }))
+          : Promise.resolve({ changes: [], truncated: false })
+      ])
+    : [{ rules: [], truncated: false }, { changes: [], truncated: false }];
   const requiredChecks = requiredCheckNames(policy);
   const dependencyVulnerabilities = dependencies.changes.flatMap((dependency) => dependency.vulnerabilities);
 

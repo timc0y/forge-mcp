@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { lintCommittedFiles } from '../src/repository-intelligence';
+import { isDependencyManifestPath, lintCommittedFiles } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -156,6 +156,15 @@ describe('guidance integrity', () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('dependency manifest detection', () => {
+  it('recognizes common dependency manifests without treating ordinary source as one', () => {
+    expect(isDependencyManifestPath('package.json')).toBe(true);
+    expect(isDependencyManifestPath('apps/web/pnpm-lock.yaml')).toBe(true);
+    expect(isDependencyManifestPath('backend/requirements-prod.txt')).toBe(true);
+    expect(isDependencyManifestPath('src/package.ts')).toBe(false);
   });
 });
 
