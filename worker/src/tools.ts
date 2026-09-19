@@ -917,6 +917,20 @@ async function readTreeLevel(
   if (findNeedle) {
     const safeNeedle = findNeedle.replaceAll('"', ' ');
     const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} "${safeNeedle}"`, 25);
+    if (found.unavailable) {
+      return {
+        summary: `${found.unavailable} Exact search for "${findNeedle}" in ${formatRepo(repo)} was not completed.`,
+        structured: withLimits(
+          {
+            tree: [],
+            files: [],
+            changes: names,
+            next: 'Try the exact search again later, or read a known path directly.'
+          },
+          [found.unavailable, ...changesLimits(changes)]
+        )
+      };
+    }
     const ranked = await rankSearchResultsWithJev(ctx.env, findNeedle, found.items);
     const shown = ranked.slice(0, 25);
     const uniquePaths = [...new Set(shown.map((item) => item.path).filter((path): path is string => Boolean(path)))];
@@ -991,6 +1005,20 @@ async function readTreeLevel(
     const built = buildSearchQuery(codeNeedle, 'code');
     const withoutRepo = built.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
     const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 15);
+    if (found.unavailable) {
+      return {
+        summary: `${found.unavailable} Semantic code search for "${codeNeedle}" in ${formatRepo(repo)} was not completed.`,
+        structured: withLimits(
+          {
+            tree: [],
+            files: [],
+            changes: names,
+            next: 'Try again later, or ask a filename/path-oriented question that can use the committed tree.'
+          },
+          [found.unavailable, ...changesLimits(changes)]
+        )
+      };
+    }
     const ranked = await rankSearchResultsWithJev(ctx.env, codeNeedle, found.items);
     const shown = ranked.slice(0, 15);
     const uniquePaths = [...new Set(shown.map((item) => item.path).filter((path): path is string => Boolean(path)))];
