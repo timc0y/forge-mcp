@@ -95,6 +95,83 @@ export function isHygieneQuery(query: string): boolean {
   return /^(?:hygiene|code hygiene|repo hygiene|legacy(?: code)?|dead(?: code)?|fallback(?: code)?|obsolete(?: code)?|deprecated(?: code)?|broken(?: code)?|unused(?: code)?|find (?:legacy|dead|fallback|obsolete|deprecated|broken|unused)(?: code)?|find fallbacks?|cleanup candidates?)$/i.test(query.trim());
 }
 
+export function isMigrationQuery(query: string): boolean {
+  return /^(?:migrations?|migration history|migration safety|migration check|migration checks|migration ordering|migration order|schema migrations?)$/i.test(query.trim());
+}
+
+export interface MigrationHistoryEvidence {
+  files: number;
+  issues: number;
+  lines: string[];
+}
+
+/**
+ * Deterministic structure checks for the common D1-style numbered SQL migration
+ * layout. Duplicate/missing prefixes are evidence to inspect, not proof a
+ * deployment is unsafe: repositories may deliberately carry a historical
+ * exception and encode that policy in a committed verifier.
+ */
+export function migrationHistoryEvidence(entries: RepositoryTreeEntry[]): MigrationHistoryEvidence {
+  const files = entries
+    .filter((entry) => entry.type === 'file')
+    .map((entry) => entry.path);
+  const migrations = files.flatMap((path) => {
+    const match = /^(.*(?:^|\/)migrations)\/(\d{4})[_-][^/]+\.sql$/i.exec(path);
+    if (!match?.[1] || !match[2]) return [];
+    return [{ path, directory: match[1], prefix: match[2], number: Number(match[2]) }];
+  });
+  const checkers = files
+    .filter((path) => /(?:migration.*(?:check|verify)|(?:check|verify).*migration)/i.test(path))
+    .slice(0, 8);
+  const byDirectory = new Map<string, typeof migrations>();
+  for (const migration of migrations) {
+    const group = byDirectory.get(migration.directory) ?? [];
+    group.push(migration);
+    byDirectory.set(migration.directory, group);
+  }
+
+  const lines: string[] = [];
+  let issues = 0;
+  for (const [directory, group] of [...byDirectory.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const sorted = [...group].sort((left, right) => left.number - right.number || left.path.localeCompare(right.path));
+    const prefixes = new Map<string, string[]>();
+    for (const migration of sorted) {
+      const paths = prefixes.get(migration.prefix) ?? [];
+      paths.push(migration.path);
+      prefixes.set(migration.prefix, paths);
+    }
+
+    const min = sorted[0]?.prefix ?? 'unknown';
+    const max = sorted.at(-1)?.prefix ?? 'unknown';
+    lines.push(`MIGRATIONS ${directory}/ · ${sorted.length} files · prefixes ${min}–${max}`);
+
+    for (const [prefix, paths] of prefixes) {
+      if (paths.length < 2) continue;
+      issues += 1;
+      lines.push(`DUPLICATE? ${directory}/ · prefix ${prefix} · ${paths.join(', ')}`);
+    }
+
+    const numbers = new Set(sorted.map((migration) => migration.number));
+    const highest = Math.max(0, ...numbers);
+    if (numbers.has(1) && highest <= 9999) {
+      const missing: string[] = [];
+      for (let number = 1; number <= highest; number += 1) {
+        if (!numbers.has(number)) missing.push(String(number).padStart(4, '0'));
+        if (missing.length >= 20) break;
+      }
+      if (missing.length > 0) {
+        issues += missing.length;
+        lines.push(`MISSING? ${directory}/ · ${missing.join(', ')}${missing.length >= 20 ? ' …' : ''}`);
+      }
+    }
+  }
+
+  for (const checker of checkers) lines.push(`CHECKER ${checker}`);
+  if (migrations.length === 0) lines.push('No numbered SQL migration files were found under a migrations/ directory.');
+
+  return { files: migrations.length, issues, lines };
+}
+
 const HYGIENE_SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?|astro|liquid|vue|svelte|html?|css|scss|less|sql|graphql|gql|ya?ml|toml|jsonc?|py|rb|php|go|rs|java|kt|kts|swift|cs|fs|fsx|scala|c|cc|cpp|cxx|h|hh|hpp)$/i;
 const HYGIENE_IGNORED_PATH = /(^|\/)(?:node_modules|vendor|dist|build|coverage|\.next|\.nuxt|target|Pods|DerivedData|generated|__generated__)(\/|$)/i;
 

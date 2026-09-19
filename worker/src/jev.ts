@@ -1133,6 +1133,7 @@ export async function classifyHygieneCandidatesWithJev(
 export type ForgeReadEvidenceMode =
   | 'quality'
   | 'hygiene'
+  | 'migrations'
   | 'policy'
   | 'languages'
   | 'churn'
@@ -1161,12 +1162,12 @@ export async function routeForgeReadEvidenceWithJev(
   if (!env.TYPESAFE_API_KEY || !query.trim()) return null;
   const trimmed = query.trim();
   const hints = scope === 'repository'
-    ? /\b(test|tests|lint|format|typecheck|quality|ci|checks?|legacy|dead|unused|obsolete|deprecated|fallback|compat(?:ibility)?|broken|cleanup|hygiene|protect(?:ion)?|rules?|policy|languages?|stack|sizes?|large|big|structure|shape|history|recent|churn|hot|frequently changed)\b/i
+    ? /\b(test|tests|lint|format|typecheck|quality|ci|checks?|legacy|dead|unused|obsolete|deprecated|fallback|compat(?:ibility)?|broken|cleanup|hygiene|migrations?|schema|protect(?:ion)?|rules?|policy|languages?|stack|sizes?|large|big|structure|shape|history|recent|churn|hot|frequently changed)\b/i
     : /\b(review|merge|safe|safety|break|impact|references?|uses?|dependencies?|deps?|vulnerab|rules?|policy|checks?|sizes?|large|scope)\b/i;
   if (!hints.test(trimmed)) return null;
 
   const modes: ForgeReadEvidenceMode[] = scope === 'repository'
-    ? ['quality', 'hygiene', 'policy', 'languages', 'churn', 'stats', 'map', 'history']
+    ? ['quality', 'hygiene', 'migrations', 'policy', 'languages', 'churn', 'stats', 'map', 'history']
     : ['review', 'impact', 'dependencies', 'policy', 'stats'];
   const resp = await evaluateJev(env, {
     state: { query: trimmed, scope },
@@ -1174,7 +1175,7 @@ export async function routeForgeReadEvidenceWithJev(
       evidenceMode: {
         type: 'choice',
         instructions: scope === 'repository'
-          ? 'Which specialized evidence source best answers this repository question? quality=configured test/lint/type/build/security gates; hygiene=legacy/fallback/dead-looking/broken-looking/obsolete cleanup candidates; policy=GitHub merge/branch rules; languages=language/stack distribution; churn=frequently changed files; stats=size/large files; map=repository structure; history=recent commits. Choose the closest only if the question primarily asks for that evidence.'
+          ? 'Which specialized evidence source best answers this repository question? quality=configured test/lint/type/build/security gates; hygiene=legacy/fallback/dead-looking/broken-looking/obsolete cleanup candidates; migrations=numbered migration history, duplicate/missing prefixes and verifier presence; policy=GitHub merge/branch rules; languages=language/stack distribution; churn=frequently changed files; stats=size/large files; map=repository structure; history=recent commits. Choose the closest only if the question primarily asks for that evidence.'
           : 'Which specialized evidence source best answers this change question? review=overall merge/review evidence; impact=what else may be affected or break; dependencies=dependency additions/removals/vulnerabilities; policy=GitHub merge rules; stats=change size/hotspots. Choose the closest only if the question primarily asks for that evidence.',
         criteria: modes
       },

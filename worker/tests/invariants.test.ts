@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { exactOccurrenceContexts, extractDeclaredQualityScripts, historyScope, isChurnQuery, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, representativePatchHunks, repositoryStats, splitPatchHunks } from '../src/repository-intelligence';
+import { exactOccurrenceContexts, extractDeclaredQualityScripts, historyScope, isChurnQuery, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isMigrationQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, migrationHistoryEvidence, patchIdentifierCandidates, qualityCandidatePaths, representativePatchHunks, repositoryStats, splitPatchHunks } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -197,6 +197,24 @@ describe('repository intelligence query parsing', () => {
     expect(isLanguagesQuery('languages')).toBe(true);
     expect(isChurnQuery('hot files')).toBe(true);
     expect(isReviewQuery('review packet')).toBe(true);
+    expect(isMigrationQuery('migration safety')).toBe(true);
+  });
+
+  it('reports duplicate and missing numbered SQL migration prefixes without calling them deployment failures', () => {
+    const evidence = migrationHistoryEvidence([
+      { path: 'apps/site/migrations/0001_init.sql', type: 'file', size: 1 },
+      { path: 'apps/site/migrations/0002_users.sql', type: 'file', size: 1 },
+      { path: 'apps/site/migrations/0002_legacy.sql', type: 'file', size: 1 },
+      { path: 'apps/site/migrations/0004_orders.sql', type: 'file', size: 1 },
+      { path: 'scripts/verification/verify-d1-migration-history.mjs', type: 'file', size: 1 }
+    ]);
+    expect(evidence.files).toBe(4);
+    expect(evidence.issues).toBe(2);
+    expect(evidence.lines).toContain(
+      'DUPLICATE? apps/site/migrations/ · prefix 0002 · apps/site/migrations/0002_legacy.sql, apps/site/migrations/0002_users.sql'
+    );
+    expect(evidence.lines).toContain('MISSING? apps/site/migrations/ · 0003');
+    expect(evidence.lines).toContain('CHECKER scripts/verification/verify-d1-migration-history.mjs');
   });
 
   it('finds likely committed quality configuration and exact package scripts', () => {

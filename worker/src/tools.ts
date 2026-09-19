@@ -53,11 +53,13 @@ import {
   isHygieneSourcePath,
   isLanguagesQuery,
   isMapQuery,
+  isMigrationQuery,
   isPolicyQuery,
   isQualityQuery,
   isReviewQuery,
   isStatsQuery,
   lintCommittedFiles,
+  migrationHistoryEvidence,
   patchIdentifierCandidates,
   qualityCandidatePaths,
   queryContentPreview,
@@ -465,6 +467,7 @@ async function readTreeLevel(
       isStatsQuery(trimmedQuery) ||
       isQualityQuery(trimmedQuery) ||
       isHygieneQuery(trimmedQuery) ||
+      isMigrationQuery(trimmedQuery) ||
       isMapQuery(trimmedQuery) ||
       exactFindNeedle(trimmedQuery) ||
       semanticCodeNeedle(trimmedQuery)
@@ -616,6 +619,32 @@ async function readTreeLevel(
     .filter((entry) => entry.type === 'file')
     .map((entry) => entry.path);
   const names = changeNames(changes);
+
+  if (trimmedQuery && (isMigrationQuery(trimmedQuery) || routed?.mode === 'migrations')) {
+    const migration = migrationHistoryEvidence(tree.entries);
+    const limits = [
+      ...(routeNote ? [routeNote] : []),
+      ...(tree.truncated ? ['GitHub truncated the repository tree, so migration evidence may be incomplete.'] : []),
+      ...(migration.issues > 0
+        ? ['DUPLICATE? and MISSING? are structural evidence only. Read the repository\'s committed migration checker before deciding whether a historical exception is intentional.']
+        : []),
+      'Forge does not execute migrations or query deployed database state; this view inspects committed filenames and verifier presence only.',
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)} at ${base}: ${migration.files} numbered SQL migration file${migration.files === 1 ? '' : 's'}; ${migration.issues} structural issue${migration.issues === 1 ? '' : 's'} flagged.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: migration.lines,
+          changes: names,
+          next: migration.issues > 0
+            ? 'Read the migration checker and the flagged migration files to determine whether each exception is intentional.'
+            : 'Use "quality" to inspect the committed scripts/CI that validate migrations.'
+        },
+        limits
+      )
+    };
+  }
 
   if (trimmedQuery && (isHygieneQuery(trimmedQuery) || routed?.mode === 'hygiene')) {
     const sourcePaths = allFilePaths.filter(isHygieneSourcePath);

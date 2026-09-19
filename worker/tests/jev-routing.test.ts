@@ -40,6 +40,26 @@ describe('Forge read evidence routing', () => {
     expect(route).toEqual({ mode: 'policy', confidence: 0.91 });
   });
 
+  it('routes a natural migration-safety question to migration evidence', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          evidenceMode: {
+            type: 'choice',
+            choice: 'migrations',
+            confidence: 0.94,
+            distribution: { migrations: 0.94, quality: 0.04 }
+          },
+          shouldRoute: { type: 'noul', noul: 0.97 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const route = await routeForgeReadEvidenceWithJev(env, 'is the migration history safe and correctly ordered?', 'repository');
+    expect(route).toEqual({ mode: 'migrations', confidence: 0.94 });
+  });
+
   it('abstains when specialized evidence is not clearly the right answer', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
