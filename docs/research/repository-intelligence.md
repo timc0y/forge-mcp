@@ -260,7 +260,7 @@ Repository cleanup is a strong Jev use case only when discovery, semantics, and 
 Candidate discovery deliberately blends three sources:
 
 - path/name signals such as `legacy`, `fallback`, `compat`, `deprecated`, `old`, or `unused`;
-- bounded GitHub code searches for strong content markers such as `legacy`, `deprecated`, `fallback`, and `compatibility`;
+- bounded GitHub code searches for strong content markers such as `legacy`, `deprecated`, `fallback`, `compatibility`, `unused`, and `not implemented`;
 - Jev semantic path triage only when deterministic/search discovery is still sparse, avoiding a costly high-cardinality semantic pass when enough evidence already exists.
 
 The strongest complete candidate files are compacted around marker-bearing neighborhoods and sent through one Jev fan-out. Each candidate gets an independent Choice classification (`legacy/superseded`, `fallback/recovery`, `compatibility-intentional`, `likely-dead/unreachable`, `possibly-broken/incomplete`, `active/current`, or `unclear`) plus separate Noul predicates for whether it merits cleanup investigation and whether deletion could plausibly change live runtime, build, API, migration, compatibility, or recovery behaviour.

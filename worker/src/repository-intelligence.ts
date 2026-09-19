@@ -92,7 +92,7 @@ export function isQualityQuery(query: string): boolean {
 }
 
 export function isHygieneQuery(query: string): boolean {
-  return /^(?:hygiene|code hygiene|repo hygiene|legacy(?: code)?|dead(?: code)?|fallback(?: code)?|obsolete(?: code)?|deprecated(?: code)?|broken(?: code)?|find legacy|find dead code|find fallbacks?|cleanup candidates?)$/i.test(query.trim());
+  return /^(?:hygiene|code hygiene|repo hygiene|legacy(?: code)?|dead(?: code)?|fallback(?: code)?|obsolete(?: code)?|deprecated(?: code)?|broken(?: code)?|unused(?: code)?|find (?:legacy|dead|fallback|obsolete|deprecated|broken|unused)(?: code)?|find fallbacks?|cleanup candidates?)$/i.test(query.trim());
 }
 
 const HYGIENE_SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?|py|rb|php|go|rs|java|kt|kts|swift|cs|fs|fsx|scala|vue|svelte|c|cc|cpp|cxx|h|hh|hpp)$/i;

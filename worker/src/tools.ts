@@ -729,7 +729,7 @@ async function readTreeLevel(
   if (trimmedQuery && (isHygieneQuery(trimmedQuery) || routed?.mode === 'hygiene')) {
     const sourcePaths = allFilePaths.filter(isHygieneSourcePath);
     const pathCandidates = hygienePathCandidates(tree.entries, 24);
-    const markerTerms = ['legacy', 'deprecated', 'fallback', 'compatibility'];
+    const markerTerms = ['legacy', 'deprecated', 'fallback', 'compatibility', 'unused', '"not implemented"'];
     const markerSearches = await Promise.all(
       markerTerms.map(async (marker) => ({
         marker,
@@ -858,8 +858,11 @@ async function readTreeLevel(
       'Reference evidence is bounded GitHub text search, not a compiler-backed call/reference graph.',
       ...changesLimits(changes)
     ];
+    const resultSummary = classifications.length > 0
+      ? `Jev surfaced ${suspicious.length} legacy/fallback/dead-looking/broken-looking candidate${suspicious.length === 1 ? '' : 's'}`
+      : `showing ${prepared.length} deterministic candidate${prepared.length === 1 ? '' : 's'} because Jev returned no classification`;
     return {
-      summary: `${formatRepo(repo)} at ${base}: inspected ${prepared.length} hygiene candidate file${prepared.length === 1 ? '' : 's'}; Jev surfaced ${suspicious.length} legacy/fallback/dead-looking/broken-looking candidate${suspicious.length === 1 ? '' : 's'}.${changesSentence(names)}`,
+      summary: `${formatRepo(repo)} at ${base}: inspected ${prepared.length} hygiene candidate file${prepared.length === 1 ? '' : 's'}; ${resultSummary}.${changesSentence(names)}`,
       structured: withLimits(
         {
           tree: lines,

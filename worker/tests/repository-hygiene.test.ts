@@ -12,6 +12,8 @@ describe('repository hygiene candidate discovery', () => {
     expect(isHygieneQuery('hygiene')).toBe(true);
     expect(isHygieneQuery('dead code')).toBe(true);
     expect(isHygieneQuery('fallback code')).toBe(true);
+    expect(isHygieneQuery('find legacy code')).toBe(true);
+    expect(isHygieneQuery('unused code')).toBe(true);
     expect(isHygieneQuery('where is auth implemented?')).toBe(false);
   });
 
