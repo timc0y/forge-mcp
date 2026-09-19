@@ -83,6 +83,10 @@ export function isLanguagesQuery(query: string): boolean {
   return /^(?:languages?|language stats?|tech stack|stack)$/i.test(query.trim());
 }
 
+export function isChurnQuery(query: string): boolean {
+  return /^(?:churn|hot files?|hotspots?|recent churn|frequently changed)$/i.test(query.trim());
+}
+
 export function isQualityQuery(query: string): boolean {
   return /^(?:quality|quality gates?|gates?|ci|checks configured|repo checks|validation)$/i.test(query.trim());
 }

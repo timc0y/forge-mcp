@@ -15,6 +15,7 @@ import {
   requiredApprovalCount,
   requiredCheckNames,
   requiresCodeOwnerReview,
+  requiresLastPushApproval,
   requiresReviewThreadResolution,
   type BranchPolicy,
   type DependencyChange,
@@ -37,6 +38,7 @@ export interface ChangeReviewPacket {
   requiredApprovals: number;
   needsCodeOwnerReview: boolean;
   needsThreadResolution: boolean;
+  needsLastPushApproval: boolean;
   reviewState: PullReviewState | null;
   dependencies: DependencyReview;
   dependencyVulnerabilities: Array<{
@@ -103,6 +105,7 @@ export async function buildChangeReviewPacket(
     requiredApprovals: requiredApprovalCount(policy),
     needsCodeOwnerReview: requiresCodeOwnerReview(policy),
     needsThreadResolution: requiresReviewThreadResolution(policy),
+    needsLastPushApproval: requiresLastPushApproval(policy),
     reviewState,
     dependencies,
     dependencyVulnerabilities: dependencies.changes.flatMap((dependency) =>
@@ -145,6 +148,7 @@ export function changeReviewNotices(
   }
   if (packet.needsCodeOwnerReview) notices.push('GitHub requires code-owner review for matching changed files.');
   if (packet.needsThreadResolution) notices.push('GitHub requires review threads to be resolved before merge.');
+  if (packet.needsLastPushApproval) notices.push('GitHub requires approval of the most recent reviewable push by someone other than its author.');
   if (packet.reviewState?.unavailable) notices.push(packet.reviewState.unavailable);
   if (packet.reviewState?.changesRequested && packet.reviewState.changesRequested > 0) {
     notices.push(
@@ -189,6 +193,7 @@ export function changeReviewLines(packet: ChangeReviewPacket): string[] {
   if (packet.requiredApprovals > 0) lines.push(`POLICY approvals · ${packet.requiredApprovals} required`);
   if (packet.needsCodeOwnerReview) lines.push('POLICY code-owner review required');
   if (packet.needsThreadResolution) lines.push('POLICY review-thread resolution required');
+  if (packet.needsLastPushApproval) lines.push('POLICY latest push requires independent approval');
   if (packet.reviewState) {
     const mergeable = packet.reviewState.mergeable === null ? 'unknown' : packet.reviewState.mergeable ? 'yes' : 'no';
     lines.push(

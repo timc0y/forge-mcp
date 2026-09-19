@@ -54,6 +54,77 @@ export interface CommitHistoryEntry {
   url: string | null;
 }
 
+export interface ChurnEntry {
+  path: string;
+  touches: number;
+  additions: number;
+  deletions: number;
+}
+
+export async function readRecentChurn(
+  request: GitHubRequest,
+  repo: RepoRef,
+  branch: string,
+  commitLimit = 8
+): Promise<{ entries: ChurnEntry[]; commitsSampled: number; truncated: boolean; unavailable?: string }> {
+  const history = await readRecentHistory(request, repo, branch, undefined, commitLimit);
+  if (history.unavailable) {
+    return { entries: [], commitsSampled: 0, truncated: false, unavailable: history.unavailable };
+  }
+  const details = await Promise.all(
+    history.commits.map(async (commit) => {
+      const response = await request(`/repos/${repo.owner}/${repo.name}/commits/${encodeURIComponent(commit.sha)}?per_page=100`);
+      if (response.status !== 200) {
+        return { files: [] as Array<{ filename: string; additions: number; deletions: number }>, truncated: false };
+      }
+      const body = typeof response.json === 'object' && response.json !== null
+        ? response.json as Record<string, unknown>
+        : {};
+      const files = Array.isArray(body.files)
+        ? body.files.flatMap((value): Array<{ filename: string; additions: number; deletions: number }> => {
+            if (typeof value !== 'object' || value === null) return [];
+            const file = value as Record<string, unknown>;
+            if (typeof file.filename !== 'string') return [];
+            return [{
+              filename: file.filename,
+              additions: typeof file.additions === 'number' ? file.additions : 0,
+              deletions: typeof file.deletions === 'number' ? file.deletions : 0
+            }];
+          })
+        : [];
+      return {
+        files,
+        truncated: /rel="next"/.test(response.headers.get('Link') ?? '') || files.length >= 300
+      };
+    })
+  );
+  const aggregate = new Map<string, ChurnEntry>();
+  for (const detail of details) {
+    for (const file of detail.files) {
+      const current = aggregate.get(file.filename) ?? {
+        path: file.filename,
+        touches: 0,
+        additions: 0,
+        deletions: 0
+      };
+      current.touches += 1;
+      current.additions += file.additions;
+      current.deletions += file.deletions;
+      aggregate.set(file.filename, current);
+    }
+  }
+  return {
+    entries: [...aggregate.values()].sort(
+      (left, right) =>
+        right.touches - left.touches ||
+        right.additions + right.deletions - (left.additions + left.deletions) ||
+        left.path.localeCompare(right.path)
+    ),
+    commitsSampled: history.commits.length,
+    truncated: history.truncated || details.some((detail) => detail.truncated)
+  };
+}
+
 export async function readRecentHistory(
   request: GitHubRequest,
   repo: RepoRef,
@@ -349,6 +420,12 @@ export function requiresCodeOwnerReview(policy: BranchPolicy): boolean {
 export function requiresReviewThreadResolution(policy: BranchPolicy): boolean {
   return policy.rules.some(
     (rule) => rule.type === 'pull_request' && rule.parameters?.required_review_thread_resolution === true
+  );
+}
+
+export function requiresLastPushApproval(policy: BranchPolicy): boolean {
+  return policy.rules.some(
+    (rule) => rule.type === 'pull_request' && rule.parameters?.require_last_push_approval === true
   );
 }
 

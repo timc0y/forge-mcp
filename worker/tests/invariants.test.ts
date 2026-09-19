@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { contractLikePaths, exactOccurrenceContexts, extractDeclaredQualityScripts, hasChangesetFile, historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
+import { contractLikePaths, exactOccurrenceContexts, extractDeclaredQualityScripts, hasChangesetFile, historyScope, isChurnQuery, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -195,6 +195,7 @@ describe('repository intelligence query parsing', () => {
     expect(historyScope('history worker/src/write.ts')).toBe('worker/src/write.ts');
     expect(historyScope('authentication')).toBeUndefined();
     expect(isLanguagesQuery('languages')).toBe(true);
+    expect(isChurnQuery('hot files')).toBe(true);
     expect(isReviewQuery('review packet')).toBe(true);
   });
 
