@@ -158,14 +158,18 @@ export function migrationHistoryEvidence(entries: RepositoryTreeEntry[]): Migrat
     const numbers = new Set(sorted.map((migration) => migration.number));
     const highest = Math.max(0, ...numbers);
     if (numbers.has(1) && highest <= 9999) {
-      const missing: string[] = [];
+      const shownMissing: string[] = [];
+      let missingCount = 0;
       for (let number = 1; number <= highest; number += 1) {
-        if (!numbers.has(number)) missing.push(String(number).padStart(4, '0'));
-        if (missing.length >= 20) break;
+        if (numbers.has(number)) continue;
+        missingCount += 1;
+        if (shownMissing.length < 20) shownMissing.push(String(number).padStart(4, '0'));
       }
-      if (missing.length > 0) {
-        issues += missing.length;
-        lines.push(`MISSING? ${directory}/ · ${missing.join(', ')}${missing.length >= 20 ? ' …' : ''}`);
+      if (missingCount > 0) {
+        issues += missingCount;
+        lines.push(
+          `MISSING? ${directory}/ · ${shownMissing.join(', ')}${missingCount > shownMissing.length ? ` … (${missingCount} missing total)` : ''}`
+        );
       }
     }
   }
