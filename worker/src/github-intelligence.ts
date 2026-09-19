@@ -60,23 +60,37 @@ export async function readRecentChurn(
     history.commits.map(async (commit) => {
       const response = await request(`/repos/${repo.owner}/${repo.name}/commits/${encodeURIComponent(commit.sha)}?per_page=100`);
       if (response.status !== 200) {
-        return { files: [] as Array<{ filename: string; additions: number; deletions: number }>, truncated: false };
+        return {
+          files: [] as Array<{ filename: string; additions: number; deletions: number }>,
+          truncated: false,
+          unavailable: `GitHub commit detail for ${commit.sha.slice(0, 7)} returned HTTP ${response.status}.`
+        };
       }
-      const body = typeof response.json === 'object' && response.json !== null
-        ? response.json as Record<string, unknown>
-        : {};
-      const files = Array.isArray(body.files)
-        ? body.files.flatMap((value): Array<{ filename: string; additions: number; deletions: number }> => {
-            if (typeof value !== 'object' || value === null) return [];
-            const file = value as Record<string, unknown>;
-            if (typeof file.filename !== 'string') return [];
-            return [{
-              filename: file.filename,
-              additions: typeof file.additions === 'number' ? file.additions : 0,
-              deletions: typeof file.deletions === 'number' ? file.deletions : 0
-            }];
-          })
-        : [];
+      if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
+        return {
+          files: [] as Array<{ filename: string; additions: number; deletions: number }>,
+          truncated: false,
+          unavailable: `GitHub returned unreadable commit detail for ${commit.sha.slice(0, 7)}.`
+        };
+      }
+      const body = response.json as Record<string, unknown>;
+      if (!Array.isArray(body.files)) {
+        return {
+          files: [] as Array<{ filename: string; additions: number; deletions: number }>,
+          truncated: false,
+          unavailable: `GitHub commit detail for ${commit.sha.slice(0, 7)} did not include a readable file list.`
+        };
+      }
+      const files = body.files.flatMap((value): Array<{ filename: string; additions: number; deletions: number }> => {
+        if (typeof value !== 'object' || value === null) return [];
+        const file = value as Record<string, unknown>;
+        if (typeof file.filename !== 'string') return [];
+        return [{
+          filename: file.filename,
+          additions: typeof file.additions === 'number' ? file.additions : 0,
+          deletions: typeof file.deletions === 'number' ? file.deletions : 0
+        }];
+      });
       return {
         files,
         truncated: /rel="next"/.test(response.headers.get('Link') ?? '') || files.length >= 300
@@ -106,7 +120,14 @@ export async function readRecentChurn(
         left.path.localeCompare(right.path)
     ),
     commitsSampled: history.commits.length,
-    truncated: history.truncated || details.some((detail) => detail.truncated)
+    truncated: history.truncated || details.some((detail) => detail.truncated),
+    ...(details.some((detail) => detail.unavailable)
+      ? {
+          unavailable:
+            `Recent churn is partial: ${details.filter((detail) => detail.unavailable).length} of ${details.length} commit-detail lookups were unavailable. ` +
+            details.filter((detail) => detail.unavailable).map((detail) => detail.unavailable).join(' ')
+        }
+      : {})
   };
 }
 
