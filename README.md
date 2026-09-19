@@ -62,7 +62,8 @@ records what is documented and what still needs testing.
 ```sh
 pnpm check                # types and invariants
 pnpm dev
-worker/scripts/smoke.sh   # deployed HTTP/OAuth smoke
+pnpm deploy               # checks again before publishing
+worker/scripts/smoke.sh   # post-deploy HTTP/OAuth/version smoke
 ```
 
 ## History

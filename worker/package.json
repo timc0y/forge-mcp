@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --config wrangler.jsonc --env development",
-    "deploy": "wrangler deploy --config wrangler.jsonc --env=\"\"",
+    "deploy": "pnpm typecheck && pnpm test && wrangler deploy --config wrangler.jsonc --env=\"\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

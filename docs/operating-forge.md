@@ -121,8 +121,8 @@ schema.
 ```sh
 pnpm check                  # types and invariants
 pnpm --dir worker dev
-pnpm --dir worker deploy
-worker/scripts/smoke.sh     # deployed HTTP/OAuth smoke
+pnpm deploy                 # re-runs worker types/tests, then Wrangler deploys
+worker/scripts/smoke.sh     # post-deploy HTTP/OAuth/version smoke
 ```
 
 The smoke test needs no GitHub credentials. It covers the mount path, the auth
