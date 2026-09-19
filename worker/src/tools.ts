@@ -2030,6 +2030,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             }
           } catch {
             // The commit is already durable. Advisory analysis may disappear, never turn success into failure.
+            limits.push('Post-commit advisory checks could not be completed; the GitHub commit itself is still durable.');
           }
         }
 
@@ -2049,11 +2050,21 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           // only a human on github.com could remove. Take it back.
           if (proposed && number === null) {
             const ref = branch.split('/').map(encodeURIComponent).join('/');
-            const removed = await ctx.gh(`/repos/${repo.owner}/${repo.name}/git/refs/heads/${ref}`, {
-              method: 'DELETE'
-            });
-            if (removed.status >= 200 && removed.status < 300) {
-              limits.push('No Forge change was opened, because there was nothing to put in it.');
+            try {
+              const removed = await ctx.gh(`/repos/${repo.owner}/${repo.name}/git/refs/heads/${ref}`, {
+                method: 'DELETE'
+              });
+              if (removed.status >= 200 && removed.status < 300) {
+                limits.push('No Forge change was opened, because there was nothing to put in it.');
+              } else {
+                limits.push(
+                  `No content changed, but Forge could not remove the unused review branch (GitHub HTTP ${removed.status}). The branch contains no new commit.`
+                );
+              }
+            } catch {
+              limits.push(
+                'No content changed, but Forge could not confirm removal of the unused review branch. The branch contains no new commit.'
+              );
             }
           }
         }
