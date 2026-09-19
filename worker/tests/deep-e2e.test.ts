@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTools, type ToolContext } from "../src/tools";
 import type { GitHubRequest, Identity } from "../src/contracts";
 import type { Env } from "../src/env";
-import { checkCommitSafety, lintCommitWithJev, analyzeSearchIntentWithJev } from "../src/jev";
+import { checkCommitSafety, lintCommittedFiles, analyzeSearchIntentWithJev } from "../src/jev";
 import { buildAdvancedSearchQuery, SUPPORTED_PLATFORMS } from "../src/search";
 
 function ok(json: any, status = 200) {
@@ -324,8 +324,7 @@ describe("In-Depth Forge End-to-End Suite", () => {
     expect(secretCheck.reason).toContain("secret token");
 
     // 3b. Dangling relative import linting
-    const lintWarnings = await lintCommitWithJev(
-      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+    const lintWarnings = await lintCommittedFiles(
       [{ path: "src/main.ts", content: "import { auth } from './auth/index';" }],
       ["src/main.ts", "package.json"]
     );

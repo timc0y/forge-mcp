@@ -506,6 +506,89 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.tree).toEqual(["src/index.ts"]);
   });
 
+  it("reports change hotspots without semantic guessing", async () => {
+    const { server } = createMockToolContext();
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", change: "forge", query: "stats" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("hotspots src/ 1 file +5/-1");
+    expect(res.structuredContent.diff.files[0].path).toBe("src/index.ts");
+  });
+
+  it("enriches semantic change ranking with bounded diff patches", async () => {
+    const originalFetch = globalThis.fetch;
+    let sawPatchSnippet = false;
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes("/ai/run")) {
+        const body = typeof init?.body === "string" ? init.body : "";
+        if (body.includes("patchSnippet") && body.includes("refreshAccessToken")) sawPatchSnippet = true;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              result: {
+                answers: {
+                  relevantFiles: {
+                    type: "choice",
+                    choice: "src/auth.ts",
+                    probabilities: { "src/auth.ts": 0.95, "src/ui.ts": 0.05 }
+                  }
+                }
+              }
+            }
+          })
+        };
+      }
+      return { ok: false, status: 404 };
+    }) as unknown as typeof fetch;
+
+    try {
+      const { server, calls } = createMockToolContext({
+        "GET /repos/testuser/test-repo/compare/main...forge": {
+          status: 200,
+          json: {
+            status: "ahead",
+            ahead_by: 1,
+            behind_by: 0,
+            files: [
+              {
+                filename: "src/ui.ts",
+                status: "modified",
+                additions: 2,
+                deletions: 1,
+                patch: "@@ -1 +1 @@\\n-export const label = 'old';\\n+export const label = 'new';"
+              },
+              {
+                filename: "src/auth.ts",
+                status: "modified",
+                additions: 4,
+                deletions: 2,
+                patch: "@@ -1 +1 @@\\n-export const token = old;\\n+export async function refreshAccessToken() {}"
+              }
+            ]
+          }
+        }
+      }, {
+        TYPESAFE_API_KEY: "cfut_mock_token_123",
+        TYPESAFE_BASE_URL: "https://api.cloudflare.com/client/v4/accounts/test/ai/run"
+      });
+      const readTool = (server as any)._registeredTools["forge_read"];
+
+      const res = await readTool.handler({ repo: "test-repo", change: "forge", query: "token refresh" });
+
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain('diff-ranked for "token refresh"');
+      expect(res.structuredContent.diff.files[0].path).toBe("src/auth.ts");
+      expect(calls.filter((call) => call.includes("/compare/")).length).toBe(2);
+      expect(sawPatchSnippet).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("executes targeted file excerpt through Jev in forge_read", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
