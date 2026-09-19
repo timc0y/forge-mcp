@@ -54,13 +54,13 @@ export class ForgeMcpSession extends McpAgent<Env, never, { identity: Identity }
       env: this.env,
       identity,
       track,
-      // Minted once per session against the user's own installation, so every
-      // repository call spends their GitHub rate limit and not Forge's.
+      // Bound to the user's installation. githubRequest reuses a fresh token,
+      // refreshes before expiry and retries one 401, so long-lived MCP sessions
+      // do not inherit a one-hour credential lifetime.
       gh: await githubRequest(this.env, identity.installationId),
-      // Resolved on use, not on connect. Creating a repository is the only act
-      // that needs to run as the human, and most sessions never do it — so the
-      // stored credential is decrypted, and refreshed if stale, only when
-      // something actually reaches for it.
+      // Resolved on use, not on connect. Only new-repository creation and
+      // explicit public GitHub search need to run as the human, so the stored
+      // credential is decrypted/refreshed only when one of those paths is used.
       ghUser: async (path, init) => {
         const asUser = await userRequestFor(this.env, identity.userId);
         return asUser(path, init);

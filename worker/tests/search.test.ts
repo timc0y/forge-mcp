@@ -63,6 +63,34 @@ describe('GitHub Search API calls', () => {
     expect(res.items[0]?.snippet).toContain('Fast, lightweight');
   });
 
+  it('does not turn an unavailable repository search into zero matches', async () => {
+    const fakeReq: GitHubRequest = async () => ({
+      status: 403,
+      headers: new Headers(),
+      text: '',
+      json: { message: 'rate limit' }
+    });
+
+    const res = await searchGitHubRepos(fakeReq, 'anything', 5);
+    expect(res.total).toBe(0);
+    expect(res.items).toEqual([]);
+    expect(res.unavailable).toContain('No absence conclusion was made');
+  });
+
+  it('does not turn an unavailable code search into zero matches', async () => {
+    const fakeReq: GitHubRequest = async () => ({
+      status: 429,
+      headers: new Headers(),
+      text: '',
+      json: { message: 'rate limit' }
+    });
+
+    const res = await searchGitHubCode(fakeReq, 'anything', 5);
+    expect(res.total).toBe(0);
+    expect(res.items).toEqual([]);
+    expect(res.unavailable).toContain('rate limited');
+  });
+
   it('searches code and extracts text_matches fragments', async () => {
     const fakeReq: GitHubRequest = async (path, init) => {
       expect(path).toContain('/search/code');
