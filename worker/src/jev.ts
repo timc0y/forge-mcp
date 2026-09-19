@@ -244,7 +244,7 @@ function rankedChoices(
     .map(([id, probability]) => ({ id, probability }));
   if (ranked.length > 0) return ranked;
   return allowedSet.has(choice.choice)
-    ? [{ id: choice.choice, probability: choice.confidence || 1 }]
+    ? [{ id: choice.choice, probability: choice.confidence > 0 ? choice.confidence : 0.5 }]
     : [];
 }
 
