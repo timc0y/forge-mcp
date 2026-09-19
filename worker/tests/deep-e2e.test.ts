@@ -3,7 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTools, type ToolContext } from "../src/tools";
 import type { GitHubRequest, Identity } from "../src/contracts";
 import type { Env } from "../src/env";
-import { checkCommitSafety, lintCommittedFiles, analyzeSearchIntentWithJev } from "../src/jev";
+import { checkCommitSafety, analyzeSearchIntentWithJev } from "../src/jev";
+import { lintCommittedFiles } from "../src/repository-intelligence";
 import { buildAdvancedSearchQuery, SUPPORTED_PLATFORMS } from "../src/search";
 
 function ok(json: any, status = 200) {

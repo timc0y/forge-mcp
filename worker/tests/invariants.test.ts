@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { lintCommittedFiles } from '../src/jev';
+import { lintCommittedFiles } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a

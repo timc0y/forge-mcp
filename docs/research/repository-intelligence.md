@@ -52,6 +52,10 @@ security rules, but its agent hooks execute scanners locally. Forge should not
 copy that mechanism. Small checks derivable from the committed tree are fine;
 full lint/test/security suites belong in repository CI.
 
+## Implementation boundary
+
+The deterministic pieces now live in `worker/src/repository-intelligence.ts` rather than growing `tools.ts` or the Jev client. `tools.ts` orchestrates GitHub calls and tool envelopes; `jev.ts` contains Jev-backed decisions; repository intelligence owns pure tree/diff/text analysis. The split is deliberate dogfooding of the file-size signal this work introduced.
+
 ## Implemented in this change
 
 ### `forge_read` repository statistics
