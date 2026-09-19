@@ -185,6 +185,12 @@ The correct shape, if the permission cost is accepted, is:
   head;
 - no background watcher, queue, polling loop, or "wait until green" workflow.
 
+## Review and ownership evidence with existing permissions
+
+Forge's current Pull Requests permission can read review records, and Contents read can read a pull request's one-shot `mergeable` state. Merge preparation now combines those with branch rules: required approval count, code-owner-review requirement, review-thread-resolution requirement, current latest approval/change-request counts, and GitHub's current mergeability result when it has one. GitHub explicitly allows `mergeable` to be null while it computes in the background; Forge reports that as unknown and does not poll.
+
+GitHub also exposes CODEOWNERS syntax errors through a Contents-read endpoint. When a Forge commit changes one of GitHub's recognized CODEOWNERS locations, the post-commit advisory asks GitHub to validate the committed version and attaches any syntax errors/suggestions to the durable receipt. This is stronger than maintaining a second CODEOWNERS parser inside Forge.
+
 ## More GitHub-state ideas that still fit the boundary
 
 - `history [path]`: GitHub's list-commits endpoint accepts a path filter and requires only Contents read. A bounded history view could answer who/when/why a file last moved without a clone.

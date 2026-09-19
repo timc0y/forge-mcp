@@ -38,6 +38,7 @@ import {
   exactFindNeedle,
   fileTotals,
   humanBytes,
+  isCodeownersPath,
   isDependencyManifestPath,
   isDependencyQuery,
   isMapQuery,
@@ -50,7 +51,16 @@ import {
   statsScope
 } from './repository-intelligence';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
-import { readBranchPolicy, readDependencyReview, requiredCheckNames } from './github-intelligence';
+import {
+  readBranchPolicy,
+  readCodeownersErrors,
+  readDependencyReview,
+  readPullReviewState,
+  requiredApprovalCount,
+  requiredCheckNames,
+  requiresCodeOwnerReview,
+  requiresReviewThreadResolution
+} from './github-intelligence';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
 import {
@@ -1152,6 +1162,12 @@ async function requestAct(
       ])
     : [{ rules: [], truncated: false }, { changes: [], truncated: false }];
   const requiredChecks = requiredCheckNames(policy);
+  const requiredApprovals = requiredApprovalCount(policy);
+  const needsCodeOwnerReview = requiresCodeOwnerReview(policy);
+  const needsThreadResolution = requiresReviewThreadResolution(policy);
+  const reviewState = act === 'merge' && change.number !== null
+    ? await readPullReviewState(ctx.gh, repo, change.number).catch(() => null)
+    : null;
   const dependencyVulnerabilities = dependencies.changes.flatMap((dependency) => dependency.vulnerabilities);
 
   let assessment = null;
@@ -1212,6 +1228,31 @@ async function requestAct(
   }
   if (act === 'merge' && requiredChecks.length > 0) {
     limits.push(`GitHub requires these checks on ${base}: ${requiredChecks.join(', ')}. Forge can see the rule names but not their current pass/fail state with its present permissions.`);
+  }
+  if (act === 'merge' && requiredApprovals > 0) {
+    const current = reviewState?.approvals;
+    limits.push(
+      current === undefined
+        ? `GitHub requires ${requiredApprovals} approving review${requiredApprovals === 1 ? '' : 's'} before merge.`
+        : `GitHub requires ${requiredApprovals} approving review${requiredApprovals === 1 ? '' : 's'}; the latest review states currently show ${current} approval${current === 1 ? '' : 's'}.`
+    );
+  }
+  if (act === 'merge' && needsCodeOwnerReview) {
+    limits.push('GitHub requires code-owner review for matching changed files.');
+  }
+  if (act === 'merge' && needsThreadResolution) {
+    limits.push('GitHub requires review threads to be resolved before merge.');
+  }
+  if (act === 'merge' && reviewState?.changesRequested && reviewState.changesRequested > 0) {
+    limits.push(`The latest GitHub review states include ${reviewState.changesRequested} change-requested review${reviewState.changesRequested === 1 ? '' : 's'}.`);
+  }
+  if (act === 'merge' && reviewState?.mergeable === false) {
+    limits.push('GitHub currently reports this pull request as not automatically mergeable.');
+  } else if (act === 'merge' && reviewState?.mergeable === null && !reviewState?.unavailable) {
+    limits.push('GitHub has not finished computing pull-request mergeability; Forge does not poll, so this remains unknown in this receipt.');
+  }
+  if (act === 'merge' && reviewState?.truncated) {
+    limits.push('Pull-request review state is based on the first 100 review records only.');
   }
   if (act === 'merge' && dependencyVulnerabilities.length > 0) {
     const highest = dependencyVulnerabilities
@@ -1423,6 +1464,18 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
                   knownPaths
                 );
                 limits.push(...lintWarnings);
+
+                if (commit.paths.some(isCodeownersPath)) {
+                  const ownership = await readCodeownersErrors(committedGh, repo, commit.sha);
+                  if (ownership.unavailable) limits.push(ownership.unavailable);
+                  for (const error of ownership.errors.slice(0, 10)) {
+                    const where = error.line ? ` line ${error.line}${error.column ? `:${error.column}` : ''}` : '';
+                    limits.push(`Post-commit CODEOWNERS notice${where}: ${error.message}${error.suggestion ? ` ${error.suggestion}` : ''}`);
+                  }
+                  if (ownership.errors.length > 10) {
+                    limits.push(`GitHub reported ${ownership.errors.length} CODEOWNERS errors; showing the first 10.`);
+                  }
+                }
               }
             }
           } catch {

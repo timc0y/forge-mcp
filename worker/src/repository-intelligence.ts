@@ -64,6 +64,11 @@ export function isPolicyQuery(query: string): boolean {
 }
 
 /** Paths whose committed diff can change the dependency graph. */
+export function isCodeownersPath(path: string): boolean {
+  const normalized = path.replace(/^\.\//, '').toLowerCase();
+  return normalized === 'codeowners' || normalized === '.github/codeowners' || normalized === 'docs/codeowners';
+}
+
 export function isDependencyManifestPath(path: string): boolean {
   const name = path.toLowerCase().split('/').pop() ?? path.toLowerCase();
   return (

@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { isDependencyManifestPath, lintCommittedFiles } from '../src/repository-intelligence';
+import { isCodeownersPath, isDependencyManifestPath, lintCommittedFiles } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -186,6 +186,15 @@ describe('guidance integrity', () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('special committed-file detection', () => {
+  it('recognizes GitHub CODEOWNERS locations', () => {
+    expect(isCodeownersPath('CODEOWNERS')).toBe(true);
+    expect(isCodeownersPath('.github/CODEOWNERS')).toBe(true);
+    expect(isCodeownersPath('docs/CODEOWNERS')).toBe(true);
+    expect(isCodeownersPath('src/CODEOWNERS')).toBe(false);
   });
 });
 

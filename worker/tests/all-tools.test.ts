@@ -585,7 +585,14 @@ describe("End-to-End Test for all 5 Forge tools", () => {
               strict_required_status_checks_policy: true
             }
           },
-          { type: "pull_request" }
+          {
+            type: "pull_request",
+            parameters: {
+              required_approving_review_count: 1,
+              require_code_owner_review: true,
+              required_review_thread_resolution: true
+            }
+          }
         ]
       }
     });

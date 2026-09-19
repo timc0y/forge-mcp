@@ -195,3 +195,141 @@ export function requiredCheckNames(policy: BranchPolicy): string[] {
   }
   return [...new Set(names)];
 }
+
+export function requiredApprovalCount(policy: BranchPolicy): number {
+  let required = 0;
+  for (const rule of policy.rules) {
+    if (rule.type !== 'pull_request') continue;
+    const count = rule.parameters?.required_approving_review_count;
+    if (typeof count === 'number' && Number.isFinite(count)) required = Math.max(required, Math.max(0, count));
+  }
+  return required;
+}
+
+export function requiresCodeOwnerReview(policy: BranchPolicy): boolean {
+  return policy.rules.some(
+    (rule) => rule.type === 'pull_request' && rule.parameters?.require_code_owner_review === true
+  );
+}
+
+export function requiresReviewThreadResolution(policy: BranchPolicy): boolean {
+  return policy.rules.some(
+    (rule) => rule.type === 'pull_request' && rule.parameters?.required_review_thread_resolution === true
+  );
+}
+
+export interface PullReviewState {
+  mergeable: boolean | null;
+  draft: boolean | null;
+  approvals: number;
+  changesRequested: number;
+  comments: number;
+  truncated: boolean;
+  unavailable?: string;
+}
+
+export async function readPullReviewState(
+  request: GitHubRequest,
+  repo: RepoRef,
+  pullNumber: number
+): Promise<PullReviewState> {
+  const [pullResponse, reviewResponse] = await Promise.all([
+    request(`/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}`),
+    request(`/repos/${repo.owner}/${repo.name}/pulls/${pullNumber}/reviews?per_page=100`)
+  ]);
+
+  if (pullResponse.status !== 200) {
+    return {
+      mergeable: null,
+      draft: null,
+      approvals: 0,
+      changesRequested: 0,
+      comments: 0,
+      truncated: false,
+      unavailable: `GitHub pull-request state returned HTTP ${pullResponse.status}.`
+    };
+  }
+
+  const pull = typeof pullResponse.json === 'object' && pullResponse.json !== null
+    ? pullResponse.json as Record<string, unknown>
+    : {};
+  const mergeable = typeof pull.mergeable === 'boolean' ? pull.mergeable : null;
+  const draft = typeof pull.draft === 'boolean' ? pull.draft : null;
+
+  if (reviewResponse.status !== 200 || !Array.isArray(reviewResponse.json)) {
+    return {
+      mergeable,
+      draft,
+      approvals: 0,
+      changesRequested: 0,
+      comments: 0,
+      truncated: false,
+      unavailable: `GitHub pull-request reviews returned HTTP ${reviewResponse.status}.`
+    };
+  }
+
+  // GitHub returns reviews chronologically. Keep the latest state per reviewer
+  // so repeated approvals/comments by one person do not inflate the count.
+  const latest = new Map<string, string>();
+  let anonymousIndex = 0;
+  for (const value of reviewResponse.json) {
+    if (typeof value !== 'object' || value === null) continue;
+    const review = value as Record<string, unknown>;
+    const state = typeof review.state === 'string' ? review.state.toUpperCase() : '';
+    const user = typeof review.user === 'object' && review.user !== null
+      ? review.user as Record<string, unknown>
+      : null;
+    const key = typeof user?.login === 'string' ? user.login : `anonymous-${anonymousIndex++}`;
+    if (state) latest.set(key, state);
+  }
+
+  const states = [...latest.values()];
+  return {
+    mergeable,
+    draft,
+    approvals: states.filter((state) => state === 'APPROVED').length,
+    changesRequested: states.filter((state) => state === 'CHANGES_REQUESTED').length,
+    comments: states.filter((state) => state === 'COMMENTED').length,
+    truncated: /rel="next"/.test(reviewResponse.headers.get('Link') ?? '') || reviewResponse.json.length >= 100
+  };
+}
+
+export interface CodeownersError {
+  line?: number;
+  column?: number;
+  kind?: string;
+  message: string;
+  suggestion?: string;
+}
+
+export async function readCodeownersErrors(
+  request: GitHubRequest,
+  repo: RepoRef,
+  ref: string
+): Promise<{ errors: CodeownersError[]; unavailable?: string }> {
+  const response = await request(
+    `/repos/${repo.owner}/${repo.name}/codeowners/errors?ref=${encodeURIComponent(ref)}`
+  );
+  if (response.status === 404) return { errors: [] };
+  if (response.status !== 200) {
+    return { errors: [], unavailable: `GitHub CODEOWNERS validation returned HTTP ${response.status}.` };
+  }
+  const body = typeof response.json === 'object' && response.json !== null
+    ? response.json as Record<string, unknown>
+    : {};
+  const rawErrors = Array.isArray(body.errors) ? body.errors : [];
+  const errors = rawErrors.flatMap((value): CodeownersError[] => {
+    if (typeof value !== 'object' || value === null) return [];
+    const error = value as Record<string, unknown>;
+    const message = typeof error.message === 'string' ? error.message : typeof error.kind === 'string' ? error.kind : null;
+    if (!message) return [];
+    return [{
+      ...(typeof error.line === 'number' ? { line: error.line } : {}),
+      ...(typeof error.column === 'number' ? { column: error.column } : {}),
+      ...(typeof error.kind === 'string' ? { kind: error.kind } : {}),
+      message,
+      ...(typeof error.suggestion === 'string' ? { suggestion: error.suggestion } : {})
+    }];
+  });
+  return { errors };
+}
