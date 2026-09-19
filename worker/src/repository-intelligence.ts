@@ -103,6 +103,8 @@ export interface MigrationHistoryEvidence {
   files: number;
   issues: number;
   lines: string[];
+  duplicates: Array<{ directory: string; prefix: string; paths: string[] }>;
+  checkerPaths: string[];
 }
 
 /**
@@ -131,6 +133,7 @@ export function migrationHistoryEvidence(entries: RepositoryTreeEntry[]): Migrat
   }
 
   const lines: string[] = [];
+  const duplicates: MigrationHistoryEvidence['duplicates'] = [];
   let issues = 0;
   for (const [directory, group] of [...byDirectory.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const sorted = [...group].sort((left, right) => left.number - right.number || left.path.localeCompare(right.path));
@@ -148,6 +151,7 @@ export function migrationHistoryEvidence(entries: RepositoryTreeEntry[]): Migrat
     for (const [prefix, paths] of prefixes) {
       if (paths.length < 2) continue;
       issues += 1;
+      duplicates.push({ directory, prefix, paths: [...paths] });
       lines.push(`DUPLICATE? ${directory}/ · prefix ${prefix} · ${paths.join(', ')}`);
     }
 
@@ -169,7 +173,7 @@ export function migrationHistoryEvidence(entries: RepositoryTreeEntry[]): Migrat
   for (const checker of checkers) lines.push(`CHECKER ${checker}`);
   if (migrations.length === 0) lines.push('No numbered SQL migration files were found under a migrations/ directory.');
 
-  return { files: migrations.length, issues, lines };
+  return { files: migrations.length, issues, lines, duplicates, checkerPaths: checkers };
 }
 
 const HYGIENE_SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?|astro|liquid|vue|svelte|html?|css|scss|less|sql|graphql|gql|ya?ml|toml|jsonc?|py|rb|php|go|rs|java|kt|kts|swift|cs|fs|fsx|scala|c|cc|cpp|cxx|h|hh|hpp)$/i;
