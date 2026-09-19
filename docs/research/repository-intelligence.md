@@ -223,6 +223,12 @@ A repository's committed automation/configuration is evidence about what quality
 
 The distinction is load-bearing: `SCRIPT` lines are exact committed configuration; `LIKELY GATE` lines are Jev interpretations of configuration naming/content and explicitly do **not** mean the check executed or passed. `policy` remains the authoritative view of which status-check names GitHub actually requires at merge time.
 
+## Bounded churn without a history index
+
+`query: "churn"` samples the eight newest commits from GitHub, reads their changed-file summaries in parallel, and aggregates touch count plus line churn by path. The output is explicitly a bounded recent window, not a timeless maintainability score. If GitHub signals older commits or a commit with more changed files than the sampled detail exposes, Forge marks the sample incomplete. This gets much of the practical “what are our hot files?” value of history-analysis tools without storing an index or cloning the repository.
+
+Branch policy parsing also distinguishes `require_last_push_approval` from ordinary approval count: when configured, the shared review packet states that the latest reviewable push needs independent approval.
+
 ## Bounded history, language distribution and current-tree shape
 
 GitHub's commit-list endpoint accepts both a branch and optional path filter under the existing Contents permission, so Forge now supports recent repository or path history without cloning Git. The result is deliberately bounded to the twelve newest matching commits and includes the short SHA, date, author, signature-verification state when GitHub provides it, and first commit-message line. It is a history window, not a permanent churn index.

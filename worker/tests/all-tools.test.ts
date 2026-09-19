@@ -484,6 +484,31 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.tree[0]).toContain("abcdef1 · 2026-09-19 · alice · verified · fix: tighten token rotation");
   });
 
+  it("aggregates bounded recent churn from committed GitHub history", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/commits": {
+        status: 200,
+        json: [
+          { sha: 'aaa111', commit: { message: 'one', author: { date: '2026-09-19T00:00:00Z' } } },
+          { sha: 'bbb222', commit: { message: 'two', author: { date: '2026-09-18T00:00:00Z' } } }
+        ]
+      },
+      "GET /repos/testuser/test-repo/commits/aaa111": {
+        status: 200,
+        json: { files: [{ filename: 'src/hot.ts', additions: 5, deletions: 1 }, { filename: 'src/once.ts', additions: 1, deletions: 0 }] }
+      },
+      "GET /repos/testuser/test-repo/commits/bbb222": {
+        status: 200,
+        json: { files: [{ filename: 'src/hot.ts', additions: 3, deletions: 2 }] }
+      }
+    });
+    const readTool = (server as any)._registeredTools['forge_read'];
+    const res = await readTool.handler({ repo: 'test-repo', query: 'churn' });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.tree[0]).toBe('HOT src/hot.ts · 2/2 commits · +8/-3');
+  });
+
   it("reads GitHub language byte distribution", async () => {
     const { server } = createMockToolContext({
       "GET /repos/testuser/test-repo/languages": {

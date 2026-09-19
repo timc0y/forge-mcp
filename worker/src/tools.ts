@@ -41,6 +41,7 @@ import {
   fileTotals,
   historyScope,
   humanBytes,
+  isChurnQuery,
   isCodeownersPath,
   isDependencyManifestPath,
   isDependencyQuery,
@@ -66,6 +67,7 @@ import {
   readCodeownersErrors,
   readCommitParents,
   readDependencyReview,
+  readRecentChurn,
   readRecentHistory,
   readRepositoryLanguages,
   requiredCheckNames
@@ -583,6 +585,34 @@ async function readTreeLevel(
           next: requestedHistory
             ? 'Read the current file or ask a semantic question about its implementation.'
             : 'Use "history <path>" to narrow history to one file or folder.'
+        },
+        limits
+      )
+    };
+  }
+
+  if (trimmedQuery && isChurnQuery(trimmedQuery)) {
+    const [churn, changes] = await Promise.all([
+      readRecentChurn(gh, repo, base, 8),
+      openChanges(ctx.gh, repo)
+    ]);
+    const names = changeNames(changes);
+    const limits = [
+      ...(churn.unavailable ? [churn.unavailable] : []),
+      ...(churn.truncated ? [`Churn is a bounded sample of ${churn.commitsSampled} recent commits; at least one history/file list extends beyond the sampled evidence.`] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)} ${base}: hottest tracked paths across ${churn.commitsSampled} recent commit${churn.commitsSampled === 1 ? '' : 's'}.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: churn.entries.slice(0, 20).map((entry) =>
+            `HOT ${entry.path} · ${entry.touches}/${churn.commitsSampled} commits · +${entry.additions}/-${entry.deletions}`
+          ),
+          changes: names,
+          next: churn.entries[0]
+            ? `Use "history ${churn.entries[0].path}" to inspect the hottest path's recent commits.`
+            : 'Use "history" to inspect recent commits.'
         },
         limits
       )
