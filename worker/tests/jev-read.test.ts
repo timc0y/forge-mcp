@@ -569,7 +569,7 @@ describe("typesafeSystemOne noul field names", () => {
   });
 });
 
-import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, summarizeChangeImpactWithJev } from "../src/jev";
+import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev } from "../src/jev";
 
 describe("rankPatchHunksWithJev", () => {
   it("selects the relevant hunk within a changed file", async () => {
@@ -731,92 +731,6 @@ describe("assessChangeWithJev", () => {
       "Jev notice: src/unrelated.ts looks like a scope outlier relative to the rest of this change."
     );
     expect(changeAssessmentNotices(assessment!, comparison).some((notice) => notice.includes("tests appear materially relevant"))).toBe(true);
-  });
-});
-
-describe("summarizeChangeImpactWithJev", () => {
-  const originalFetch = globalThis.fetch;
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("summarizes impact of change for human approval review", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        answers: {
-          primaryArea: { type: "choice", choice: "general code", confidence: 0.9 },
-          matchesIntent: { type: "noul", noul: 0.9 },
-          breakingChange: { type: "noul", noul: 0.1 },
-          securitySensitive: { type: "noul", noul: 0.1 },
-          persistentDataChange: { type: "noul", noul: 0.1 },
-          userVisible: { type: "noul", noul: 0.1 },
-          testsRelevant: { type: "noul", noul: 0.5 },
-          docsRelevant: { type: "noul", noul: 0.1 },
-          multipleConcerns: { type: "noul", noul: 0.1 },
-          hasOutlier: { type: "noul", noul: 0.1 },
-          outlierFile: { type: "choice", choice: "src/auth.ts" }
-        }
-      })
-    }) as unknown as typeof fetch;
-
-    const comparison = {
-      status: "ahead" as const,
-      aheadBy: 2,
-      behindBy: 0,
-      truncated: false,
-      files: [
-        { status: "modified" as const, path: "src/auth.ts", additions: 40, deletions: 5, patch: "export function auth() {}" },
-        { status: "modified" as const, path: "src/token.ts", additions: 20, deletions: 2, patch: "export function token() {}" }
-      ]
-    };
-
-    const summary = await summarizeChangeImpactWithJev(
-      { TYPESAFE_API_KEY: "key" } as unknown as Env,
-      "forge",
-      comparison
-    );
-
-    expect(summary).toBe("General code: 2 files.");
-  });
-
-  it("adds cautionary warning when breaking change is detected", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        answers: {
-          primaryArea: { type: "choice", choice: "api/integration", confidence: 0.9 },
-          matchesIntent: { type: "noul", noul: 0.9 },
-          breakingChange: { type: "noul", noul: 0.95 },
-          securitySensitive: { type: "noul", noul: 0.1 },
-          persistentDataChange: { type: "noul", noul: 0.1 },
-          userVisible: { type: "noul", noul: 0.9 },
-          testsRelevant: { type: "noul", noul: 0.8 },
-          docsRelevant: { type: "noul", noul: 0.8 },
-          multipleConcerns: { type: "noul", noul: 0.1 },
-          hasOutlier: { type: "noul", noul: 0.1 }
-        }
-      })
-    }) as unknown as typeof fetch;
-
-    const comparison = {
-      status: "ahead" as const,
-      aheadBy: 1,
-      behindBy: 0,
-      truncated: false,
-      files: [
-        { status: "modified" as const, path: "src/api.ts", additions: 10, deletions: 50, patch: "-export function legacyEndpoint() {}" }
-      ]
-    };
-
-    const summary = await summarizeChangeImpactWithJev(
-      { TYPESAFE_API_KEY: "key" } as unknown as Env,
-      "forge",
-      comparison
-    );
-
-    expect(summary).toContain("potentially breaking");
   });
 });
 

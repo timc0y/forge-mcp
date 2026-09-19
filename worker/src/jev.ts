@@ -917,20 +917,6 @@ export function changeAssessmentNotices(assessment: ChangeAssessment, comparison
   return notices;
 }
 
-/**
- * Compatibility helper for callers that only need one concise impact sentence.
- */
-export async function summarizeChangeImpactWithJev(
-  env: Env,
-  changeName: string,
-  comparison: Comparison
-): Promise<string | null> {
-  if (!env.TYPESAFE_API_KEY || comparison.files.length === 0) return null;
-
-  const assessment = await assessChangeWithJev(env, changeName, comparison);
-  return assessment ? summarizeChangeAssessment(assessment, comparison.files.length) : null;
-}
-
 export interface ImpactIdentifierCandidate {
   identifier: string;
   occurrences: number;

@@ -33,7 +33,6 @@ import type {
 import { formatRepo } from './contracts';
 import type { Env } from './env';
 import { ForgeError } from './errors';
-import { summarizeChangeImpactWithJev } from './jev';
 import { analyticsFor } from './analytics';
 import { escapeHtml, page } from './ui';
 
@@ -126,13 +125,11 @@ export async function requestApproval(
   const id = crypto.randomUUID();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + APPROVAL_TTL_MS);
-  const impactSummary =
-    req.impactSummary ?? (await summarizeChangeImpactWithJev(env, req.change.name, req.comparison));
   const evidence: Evidence = {
     change: req.change,
     comparison: req.comparison,
     baseBranch: req.baseBranch,
-    ...(impactSummary ? { impactSummary } : {})
+    ...(req.impactSummary ? { impactSummary: req.impactSummary } : {})
   };
 
   await env.METADATA.prepare(
