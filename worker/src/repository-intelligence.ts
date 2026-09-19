@@ -696,10 +696,20 @@ export async function lintCommittedFiles(
       }
     }
 
-    const importMatches = file.content.matchAll(/(?:from\s+|(?:import|require)\s*(?:\(\s*)?)['"](\.[^'"]+)['"]/g);
-    for (const match of importMatches) {
-      const importPath = match[1];
-      if (!importPath) continue;
+    const relativeImports = new Set<string>();
+    const importPatterns = [
+      /^\s*import\s+(?:[^'"\n]+\s+from\s+)?['"](\.[^'"]+)['"]/gm,
+      /^\s*export\s+[^'"\n]+\s+from\s+['"](\.[^'"]+)['"]/gm,
+      /^\s*(?:const|let|var)\s+[^=\n]+?=\s*require\(\s*['"](\.[^'"]+)['"]\s*\)/gm,
+      /^\s*require\(\s*['"](\.[^'"]+)['"]\s*\)/gm
+    ];
+    for (const pattern of importPatterns) {
+      for (const match of file.content.matchAll(pattern)) {
+        if (match[1]) relativeImports.add(match[1]);
+      }
+    }
+
+    for (const importPath of relativeImports) {
       const normalized = normalizeRelative(file.path, importPath);
       const candidates = [
         normalized,

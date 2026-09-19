@@ -344,6 +344,18 @@ describe('post-commit advisory lint', () => {
 
     expect(warnings[0]).toContain('imports "./missing-helper"');
   });
+
+  it('does not treat import examples inside strings as real module dependencies', async () => {
+    const warnings = await lintCommittedFiles(
+      [{
+        path: 'src/search.test.ts',
+        content: `const fixture = "import { Context } from './context';";\nexport const result = fixture;`
+      }],
+      ['src/search.test.ts']
+    );
+
+    expect(warnings).toEqual([]);
+  });
 });
 
 describe('server instructions', () => {
