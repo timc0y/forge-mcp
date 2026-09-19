@@ -719,8 +719,162 @@ export async function judgeSeePacket(
   return result;
 }
 
+export interface ChangeAssessment {
+  primaryArea: string;
+  areaConfidence: number;
+  intentMatch: number;
+  breakingChange: number;
+  securitySensitive: number;
+  persistentDataChange: number;
+  userVisible: number;
+  testsRelevant: number;
+  docsRelevant: number;
+  multipleConcerns: number;
+  outlierProbability: number;
+  outlierPath: string | null;
+}
+
 /**
- * Uses Jev to generate a concise, human-readable impact summary of a proposed merge/change.
+ * One Jev fan-out over a bounded diff. Each question is independent and narrow;
+ * surrounding code decides which high-confidence signals deserve attention.
+ * There is deliberately no aggregate "risk score".
+ */
+export async function assessChangeWithJev(
+  env: Env,
+  changeIntent: string,
+  comparison: Comparison
+): Promise<ChangeAssessment | null> {
+  if (!env.TYPESAFE_API_KEY || comparison.files.length === 0) return null;
+  const files = comparison.files.slice(0, 20).map((file) => ({
+    path: file.path,
+    status: file.status,
+    additions: file.additions,
+    deletions: file.deletions,
+    patch: (file.patch ?? '').slice(0, 700)
+  }));
+  const filePaths = files.map((file) => file.path);
+  const questions: Record<string, JevQuestion> = {
+    primaryArea: {
+      type: 'choice',
+      instructions: 'What is the primary technical area changed by these files?',
+      criteria: [
+        'authentication/security',
+        'api/integration',
+        'ui/ux',
+        'data/schema',
+        'configuration/infrastructure',
+        'dependencies',
+        'testing',
+        'documentation',
+        'general code'
+      ]
+    },
+    matchesIntent: {
+      type: 'noul',
+      instructions: `Do the changed files and patches substantially match the stated change intent: "${changeIntent}"? Answer no only for a meaningful scope mismatch.`
+    },
+    breakingChange: {
+      type: 'noul',
+      instructions: 'Does the diff appear to remove or incompatibly change a public API, persisted schema, protocol, configuration contract, or exported behavior?'
+    },
+    securitySensitive: {
+      type: 'noul',
+      instructions: 'Does the diff materially touch authentication, authorization, credentials, permissions, cryptography, request trust boundaries, or other security-sensitive behavior?'
+    },
+    persistentDataChange: {
+      type: 'noul',
+      instructions: 'Does the diff materially change persisted data shape, database schema, migrations, storage format, or data lifecycle behavior?'
+    },
+    userVisible: {
+      type: 'noul',
+      instructions: 'Is this change likely visible to an end user through UI, copy, API behavior, or externally observable product behavior?'
+    },
+    testsRelevant: {
+      type: 'noul',
+      instructions: 'Would automated tests plausibly be important evidence for this particular change, beyond trivial formatting or documentation-only edits?'
+    },
+    docsRelevant: {
+      type: 'noul',
+      instructions: 'Would user/developer documentation plausibly need updating because this change alters public behavior, configuration, setup, or an interface?'
+    },
+    multipleConcerns: {
+      type: 'noul',
+      instructions: 'Does this diff combine two or more substantially independent technical concerns that could reasonably be reviewed separately?'
+    },
+    hasOutlier: {
+      type: 'noul',
+      instructions: 'Is any changed file semantically out of scope relative to the stated intent and the rest of this diff?'
+    }
+  };
+  if (filePaths.length > 1) {
+    questions.outlierFile = {
+      type: 'choice',
+      instructions: 'Which changed file is the strongest scope outlier, if one exists?',
+      criteria: filePaths
+    };
+  }
+
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      changeIntent,
+      comparisonStatus: comparison.status,
+      aheadBy: comparison.aheadBy,
+      behindBy: comparison.behindBy,
+      files
+    },
+    questions
+  });
+  if (!resp) return null;
+
+  const area = resp.answers.primaryArea as JevChoiceAnswer | undefined;
+  const outlier = resp.answers.outlierFile as JevChoiceAnswer | undefined;
+  const outlierProbability = noulOf(resp.answers.hasOutlier, 0);
+  return {
+    primaryArea: area?.choice || 'general code',
+    areaConfidence: area?.confidence ?? Math.max(0, ...Object.values(area?.distribution ?? {})),
+    intentMatch: noulOf(resp.answers.matchesIntent, 0.5),
+    breakingChange: noulOf(resp.answers.breakingChange, 0),
+    securitySensitive: noulOf(resp.answers.securitySensitive, 0),
+    persistentDataChange: noulOf(resp.answers.persistentDataChange, 0),
+    userVisible: noulOf(resp.answers.userVisible, 0),
+    testsRelevant: noulOf(resp.answers.testsRelevant, 0),
+    docsRelevant: noulOf(resp.answers.docsRelevant, 0),
+    multipleConcerns: noulOf(resp.answers.multipleConcerns, 0),
+    outlierProbability,
+    outlierPath: outlierProbability >= 0.7 && outlier?.choice && filePaths.includes(outlier.choice) ? outlier.choice : null
+  };
+}
+
+export function summarizeChangeAssessment(assessment: ChangeAssessment, fileCount: number): string {
+  const flags: string[] = [];
+  if (assessment.securitySensitive >= 0.8) flags.push('security-sensitive');
+  if (assessment.persistentDataChange >= 0.8) flags.push('persistent-data change');
+  if (assessment.userVisible >= 0.8) flags.push('user-visible');
+  if (assessment.breakingChange >= 0.85) flags.push('potentially breaking');
+  if (assessment.multipleConcerns >= 0.85) flags.push('multiple concerns');
+  const lead = assessment.primaryArea.charAt(0).toUpperCase() + assessment.primaryArea.slice(1);
+  return `${lead}: ${fileCount} file${fileCount === 1 ? '' : 's'}${flags.length ? `; ${flags.join(', ')}` : ''}.`;
+}
+
+export function changeAssessmentNotices(assessment: ChangeAssessment, comparison: Comparison): string[] {
+  const notices: string[] = [];
+  const paths = comparison.files.map((file) => file.path.toLowerCase());
+  const hasTests = paths.some((path) => /(^|\/)(test|tests|__tests__|spec|specs)(\/|$)/.test(path) || /\.(test|spec)\.[^.]+$/.test(path));
+  const hasDocs = paths.some((path) => path.startsWith('docs/') || /(^|\/)(readme|changelog)(\.|$)/.test(path) || /\.(md|mdx|rst)$/.test(path));
+
+  if (assessment.intentMatch <= 0.2) notices.push('Jev notice: the diff appears weakly aligned with the change intent; inspect scope before merging.');
+  if (assessment.securitySensitive >= 0.85) notices.push('Jev notice: this diff appears security-sensitive; give authentication, authorization, credential and trust-boundary changes extra review.');
+  if (assessment.persistentDataChange >= 0.85) notices.push('Jev notice: this diff appears to change persistent data shape or lifecycle; migration/backward-compatibility evidence may matter.');
+  if (assessment.breakingChange >= 0.85) notices.push('Jev notice: this diff appears potentially breaking for an API, schema, protocol, export, or configuration contract.');
+  if (assessment.multipleConcerns >= 0.85) notices.push('Jev notice: this diff appears to combine multiple independent concerns; consider whether the review scope is broader than intended.');
+  if (assessment.outlierProbability >= 0.8 && assessment.outlierPath) notices.push(`Jev notice: ${assessment.outlierPath} looks like a scope outlier relative to the rest of this change.`);
+  if (assessment.testsRelevant >= 0.9 && !hasTests) notices.push('Jev notice: tests appear materially relevant, but no obvious test file is changed. This is advisory, not evidence that coverage is missing.');
+  if (assessment.docsRelevant >= 0.92 && !hasDocs) notices.push('Jev notice: documentation appears relevant, but no obvious documentation file is changed. This is advisory, not evidence that documentation is missing.');
+  return notices;
+}
+
+/**
+ * Compatibility helper for callers that only need one concise impact sentence.
  */
 export async function summarizeChangeImpactWithJev(
   env: Env,
@@ -729,39 +883,8 @@ export async function summarizeChangeImpactWithJev(
 ): Promise<string | null> {
   if (!env.TYPESAFE_API_KEY || comparison.files.length === 0) return null;
 
-  const fileSnippets = comparison.files.slice(0, 15).map((f) => ({
-    path: f.path,
-    patch: (f.patch ?? "").slice(0, 300)
-  }));
-
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
-    state: {
-      changeName,
-      status: comparison.status,
-      files: fileSnippets
-    },
-    questions: {
-      changeType: {
-        type: "choice",
-        instructions: "What is the primary technical category of this change?",
-        criteria: ["feature", "bugfix", "refactor", "documentation", "configuration", "security"]
-      },
-      hasBreakingChange: {
-        type: "noul",
-        instructions: "Does this change appear to introduce breaking API changes, dropped schema columns, or removed public exports?"
-      }
-    }
-  });
-
-  if (!resp) return null;
-
-  const type = (resp.answers.changeType as JevChoiceAnswer | undefined)?.choice ?? "update";
-  const breaking = (resp.answers.hasBreakingChange as JevNoulAnswer | undefined)?.noul ?? 0;
-
-  const warning = breaking > 0.85 ? " (⚠️ Caution: potentially breaking change)" : "";
-  const fileSummary = `${comparison.files.length} file${comparison.files.length === 1 ? "" : "s"} modified`;
-
-  return `${type.charAt(0).toUpperCase() + type.slice(1)}: ${fileSummary}${warning}.`;
+  const assessment = await assessChangeWithJev(env, changeName, comparison);
+  return assessment ? summarizeChangeAssessment(assessment, comparison.files.length) : null;
 }
 
 export interface SearchIntentResult {

@@ -597,7 +597,53 @@ describe("typesafeSystemOne noul field names", () => {
   });
 });
 
-import { summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+import { assessChangeWithJev, changeAssessmentNotices, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+
+describe("assessChangeWithJev", () => {
+  it("returns independent change signals and a scoped outlier", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          primaryArea: { type: "choice", choice: "authentication/security", confidence: 0.93 },
+          matchesIntent: { type: "noul", noul: 0.94 },
+          breakingChange: { type: "noul", noul: 0.1 },
+          securitySensitive: { type: "noul", noul: 0.96 },
+          persistentDataChange: { type: "noul", noul: 0.05 },
+          userVisible: { type: "noul", noul: 0.4 },
+          testsRelevant: { type: "noul", noul: 0.95 },
+          docsRelevant: { type: "noul", noul: 0.2 },
+          multipleConcerns: { type: "noul", noul: 0.1 },
+          hasOutlier: { type: "noul", noul: 0.9 },
+          outlierFile: { type: "choice", choice: "src/unrelated.ts" }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const comparison = {
+      status: "ahead" as const,
+      aheadBy: 1,
+      behindBy: 0,
+      truncated: false,
+      files: [
+        { status: "modified" as const, path: "src/auth.ts", additions: 20, deletions: 3, patch: "+rotateCredential()" },
+        { status: "modified" as const, path: "src/unrelated.ts", additions: 2, deletions: 1, patch: "+unrelated()" }
+      ]
+    };
+    const assessment = await assessChangeWithJev(
+      { TYPESAFE_API_KEY: "key" } as unknown as Env,
+      "rotate credentials safely",
+      comparison
+    );
+
+    expect(assessment?.primaryArea).toBe("authentication/security");
+    expect(assessment?.outlierPath).toBe("src/unrelated.ts");
+    expect(changeAssessmentNotices(assessment!, comparison)).toContain(
+      "Jev notice: src/unrelated.ts looks like a scope outlier relative to the rest of this change."
+    );
+    expect(changeAssessmentNotices(assessment!, comparison).some((notice) => notice.includes("tests appear materially relevant"))).toBe(true);
+  });
+});
 
 describe("summarizeChangeImpactWithJev", () => {
   const originalFetch = globalThis.fetch;
@@ -611,8 +657,17 @@ describe("summarizeChangeImpactWithJev", () => {
       ok: true,
       json: async () => ({
         answers: {
-          changeType: { type: "choice", choice: "feature" },
-          hasBreakingChange: { type: "noul", noul: 0.1 }
+          primaryArea: { type: "choice", choice: "general code", confidence: 0.9 },
+          matchesIntent: { type: "noul", noul: 0.9 },
+          breakingChange: { type: "noul", noul: 0.1 },
+          securitySensitive: { type: "noul", noul: 0.1 },
+          persistentDataChange: { type: "noul", noul: 0.1 },
+          userVisible: { type: "noul", noul: 0.1 },
+          testsRelevant: { type: "noul", noul: 0.5 },
+          docsRelevant: { type: "noul", noul: 0.1 },
+          multipleConcerns: { type: "noul", noul: 0.1 },
+          hasOutlier: { type: "noul", noul: 0.1 },
+          outlierFile: { type: "choice", choice: "src/auth.ts" }
         }
       })
     }) as unknown as typeof fetch;
@@ -634,7 +689,7 @@ describe("summarizeChangeImpactWithJev", () => {
       comparison
     );
 
-    expect(summary).toBe("Feature: 2 files modified.");
+    expect(summary).toBe("General code: 2 files.");
   });
 
   it("adds cautionary warning when breaking change is detected", async () => {
@@ -642,8 +697,16 @@ describe("summarizeChangeImpactWithJev", () => {
       ok: true,
       json: async () => ({
         answers: {
-          changeType: { type: "refactor", choice: "refactor" },
-          hasBreakingChange: { type: "noul", noul: 0.95 }
+          primaryArea: { type: "choice", choice: "api/integration", confidence: 0.9 },
+          matchesIntent: { type: "noul", noul: 0.9 },
+          breakingChange: { type: "noul", noul: 0.95 },
+          securitySensitive: { type: "noul", noul: 0.1 },
+          persistentDataChange: { type: "noul", noul: 0.1 },
+          userVisible: { type: "noul", noul: 0.9 },
+          testsRelevant: { type: "noul", noul: 0.8 },
+          docsRelevant: { type: "noul", noul: 0.8 },
+          multipleConcerns: { type: "noul", noul: 0.1 },
+          hasOutlier: { type: "noul", noul: 0.1 }
         }
       })
     }) as unknown as typeof fetch;
@@ -664,7 +727,7 @@ describe("summarizeChangeImpactWithJev", () => {
       comparison
     );
 
-    expect(summary).toContain("Caution: potentially breaking change");
+    expect(summary).toContain("potentially breaking");
   });
 });
 

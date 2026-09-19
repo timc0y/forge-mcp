@@ -189,6 +189,14 @@ The correct shape, if the permission cost is accepted, is:
 - quality-gate inventory: inspect committed workflow/config files and package scripts to identify which test/typecheck/lint/security gates a repo declares. That is configuration evidence, distinct from running those gates.
 - targeted recent churn: fetch a small bounded set of recent commits and their changed-file lists to identify frequently touched files. Avoid a permanent history index and disclose the sampled window.
 
+## Jev change assessment: independent signals, not a score
+
+TypeSafe's workflow evals repeatedly decompose a policy into independent Noul/Choice/Score questions and combine the probabilities in code. Forge now applies that pattern to merge evidence. A bounded patch-rich state is asked, in one Jev call, about primary technical area, intent alignment, breaking-contract likelihood, security sensitivity, persistent-data changes, user visibility, test relevance, documentation relevance, multiple independent concerns, and a possible scope-outlier file.
+
+Forge deliberately does **not** collapse these into an AI risk score. OpenSSF Scorecard's own documentation makes the relevant point: aggregate scores can obscure which concrete behaviours produced them. Forge instead exposes only high-confidence individual notices, and every notice remains advisory. Examples include a likely schema/data-lifecycle change, a security-sensitive diff, a probable outlier file, or tests looking materially relevant when no obvious test path changed.
+
+Merge preparation fetches bounded GitHub patches first, runs this Jev fan-out once, stores the resulting concise summary in the frozen approval evidence, and reuses it in the tool receipt. This removes the previous duplicate Jev summary call and ensures the decision sees actual diff content instead of paths alone.
+
 ## Jev high-cardinality retrieval and context compaction
 
 Aider's repository map demonstrates the value of query-personalized context, but achieves it with Tree-sitter tags, a reference graph, PageRank and caches. Forge should not recreate that index. TypeSafe's own Wikiracing example provides a better fit: Jev has a 255-choice ceiling, and TypeSafe describes using a two-stage scoring/choice system for higher-cardinality decisions.

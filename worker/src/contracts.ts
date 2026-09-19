@@ -42,7 +42,7 @@ export type GitHubRequest = (
  * A change is Forge's fixed branch and its draft pull request.
  */
 export interface Change {
-  /** The human-readable name. New changes are simply "forge". */
+  /** Human-readable PR intent/title; legacy changes fall back to their branch-derived name. */
   name: string;
   /** `forge` for new changes. Older open changes may retain `forge/*`. */
   branch: string;

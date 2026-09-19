@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev, summarizeChangeImpactWithJev } from './jev';
+import { assessChangeWithJev, changeAssessmentNotices, judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev, summarizeChangeAssessment } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
@@ -1154,6 +1154,19 @@ async function requestAct(
   const requiredChecks = requiredCheckNames(policy);
   const dependencyVulnerabilities = dependencies.changes.flatMap((dependency) => dependency.vulnerabilities);
 
+  let assessment = null;
+  let impactSummary: string | undefined;
+  if (act === 'merge' && ctx.env.TYPESAFE_API_KEY && comparison.files.length > 0) {
+    try {
+      const patchPaths = comparison.files.slice(0, 20).map((file) => file.path);
+      const enriched = await compare(ctx.gh, repo, base, change.branch, patchPaths);
+      assessment = await assessChangeWithJev(ctx.env, change.name, enriched);
+      if (assessment) impactSummary = summarizeChangeAssessment(assessment, comparison.files.length);
+    } catch {
+      // Approval remains useful with deterministic GitHub evidence alone.
+    }
+  }
+
   // `change` goes in as it came out of GitHub, without `stats` copied onto it:
   // the comparison stored beside it already carries those numbers, and a
   // second copy of a measurement is a second thing that can disagree.
@@ -1163,7 +1176,8 @@ async function requestAct(
     change,
     comparison,
     headSha: head,
-    baseBranch: base
+    baseBranch: base,
+    ...(impactSummary ? { impactSummary } : {})
   });
   ctx.track('approval_requested', {
     act,
@@ -1181,17 +1195,7 @@ async function requestAct(
       ? `Nothing unmerged would be lost: every commit is already on ${base}.`
       : `${commits} would stop being reachable.`;
 
-  let impactNote = '';
-  if (ctx.env.TYPESAFE_API_KEY && (act === 'merge' || comparison.aheadBy > 0)) {
-    try {
-      const impact = await summarizeChangeImpactWithJev(ctx.env, change.name, comparison);
-      if (impact) {
-        impactNote = ` [${impact}]`;
-      }
-    } catch {
-      // Degrade cleanly
-    }
-  }
+  const impactNote = impactSummary ? ` [${impactSummary}]` : '';
 
   const evidence =
     act === 'merge'
@@ -1199,9 +1203,7 @@ async function requestAct(
       : `Discarding "${change.name}" drops ${files}. ${loss}${impactNote ? ' ' + impactNote : ''}`;
 
   const limits: string[] = [];
-  if (impactNote.includes("breaking change")) {
-    limits.push("Jev warning: this change appears to introduce potentially breaking API changes or schema modifications.");
-  }
+  if (assessment) limits.push(...changeAssessmentNotices(assessment, comparison));
   if (comparison.truncated) {
     limits.push('GitHub truncated this comparison, so the file counts above are a floor, not a total.');
   }
