@@ -18,6 +18,27 @@ export interface SearchItem {
   confidence?: number;
 }
 
+export interface SearchResultSet {
+  total: number;
+  items: SearchItem[];
+  /** Present when GitHub did not answer successfully; never means zero matches. */
+  unavailable?: string;
+}
+
+function unavailableSearch(kind: 'repository' | 'code', status: number): SearchResultSet {
+  const reason =
+    status === 401 ? 'authentication was rejected' :
+    status === 403 ? 'permission or rate limiting blocked the request' :
+    status === 422 ? 'GitHub rejected the query' :
+    status === 429 ? 'GitHub rate limited the request' :
+    `GitHub returned HTTP ${status}`;
+  return {
+    total: 0,
+    items: [],
+    unavailable: `GitHub ${kind} search is unavailable: ${reason}. No absence conclusion was made.`
+  };
+}
+
 /**
  * Deterministic query shaping. Native GitHub qualifiers always win; Forge only
  * adds obvious language and noise filters.
@@ -57,11 +78,11 @@ export async function searchGitHubRepos(
   request: GitHubRequest,
   query: string,
   limit = 10
-): Promise<{ total: number; items: SearchItem[] }> {
+): Promise<SearchResultSet> {
   const url = `/search/repositories?q=${encodeURIComponent(query)}&per_page=${Math.min(limit, 30)}&sort=stars&order=desc`;
   const response = await request(url);
   if (response.status !== 200) {
-    return { total: 0, items: [] };
+    return unavailableSearch('repository', response.status);
   }
 
   const body = response.json as { total_count?: number; items?: Array<Record<string, unknown>> };
@@ -109,7 +130,7 @@ export async function searchGitHubCode(
   request: GitHubRequest,
   query: string,
   limit = 10
-): Promise<{ total: number; items: SearchItem[] }> {
+): Promise<SearchResultSet> {
   const url = `/search/code?q=${encodeURIComponent(query)}&per_page=${Math.min(limit, 25)}`;
   // Request text-match fragments so GitHub returns exact code context lines
   const response = await request(url, {
@@ -117,7 +138,7 @@ export async function searchGitHubCode(
   });
 
   if (response.status !== 200) {
-    return { total: 0, items: [] };
+    return unavailableSearch('code', response.status);
   }
 
   const body = response.json as {
