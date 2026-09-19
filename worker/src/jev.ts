@@ -608,6 +608,58 @@ export async function rankChangeFilesWithJev(
   return sorted.length > 0 ? sorted : null;
 }
 
+export interface RankedPatchHunk {
+  id: string;
+  path: string;
+  score: number;
+}
+
+export async function rankPatchHunksWithJev(
+  env: Env,
+  hunks: Array<{ id: string; path: string; header: string; text: string }>,
+  query: string
+): Promise<RankedPatchHunk[]> {
+  if (!env.TYPESAFE_API_KEY || hunks.length === 0 || !query.trim()) return [];
+  const bounded = hunks.slice(0, 120);
+  const criteria = Object.fromEntries(
+    bounded.map((hunk) => [hunk.id, `${hunk.path} ${hunk.header}`])
+  );
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      userQuery: query.trim(),
+      hunks: bounded.map((hunk) => ({
+        id: hunk.id,
+        path: hunk.path,
+        header: hunk.header,
+        preview: hunk.text.slice(0, 1600)
+      }))
+    },
+    questions: {
+      relevantHunk: {
+        type: 'choice',
+        instructions: `Which diff hunk most directly answers or changes the user's topic: "${query.trim()}"?`,
+        criteria
+      },
+      hasRelevantHunk: {
+        type: 'noul',
+        instructions: `Does at least one provided diff hunk materially relate to: "${query.trim()}"?`
+      }
+    }
+  });
+  if (!resp || noulOf(resp.answers.hasRelevantHunk, 1) < 0.25) return [];
+  const answer = resp.answers.relevantHunk as JevChoiceAnswer | undefined;
+  if (!answer) return [];
+  const byId = new Map(bounded.map((hunk) => [hunk.id, hunk]));
+  const ranked = Object.entries(answer.distribution)
+    .filter(([id, probability]) => byId.has(id) && probability > 0.02)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 6)
+    .map(([id, probability]) => ({ id, path: byId.get(id)!.path, score: probability }));
+  if (ranked.length > 0) return ranked;
+  const chosen = byId.get(answer.choice);
+  return chosen ? [{ id: chosen.id, path: chosen.path, score: answer.confidence || 1 }] : [];
+}
+
 export interface SeePointer {
   isErrorPage: boolean;
   /** Observed outline line Jev pointed at, or null when it abstains. */

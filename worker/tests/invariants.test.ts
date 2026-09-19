@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { contractLikePaths, documentationCandidatePaths, exactOccurrenceContexts, extractDeclaredQualityScripts, hasChangesetFile, historyScope, isChurnQuery, isCodeownersPath, isDependencyManifestPath, isDocumentationLikePath, isLanguagesQuery, isQualityQuery, isReviewQuery, isTestLikePath, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, repositoryStats, testCandidatePaths } from '../src/repository-intelligence';
+import { contractLikePaths, documentationCandidatePaths, exactOccurrenceContexts, extractDeclaredQualityScripts, hasChangesetFile, historyScope, isChurnQuery, isCodeownersPath, isDependencyManifestPath, isDocumentationLikePath, isLanguagesQuery, isQualityQuery, isReviewQuery, isTestLikePath, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, representativePatchHunks, repositoryStats, splitPatchHunks, testCandidatePaths } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -249,6 +249,20 @@ describe('release and contract convention detection', () => {
     ];
     expect(hasChangesetFile(files)).toBe(true);
     expect(contractLikePaths(files)).toEqual(['api/openapi.yaml']);
+  });
+});
+
+describe('patch hunk extraction', () => {
+  it('splits multi-hunk patches and samples across oversized hunk sets', () => {
+    const hunks = splitPatchHunks([
+      {
+        path: 'src/a.ts', status: 'modified', additions: 2, deletions: 2,
+        patch: '@@ -1 +1 @@\n-oldAuth()\n+newAuth()\n@@ -100 +100 @@\n-oldUi()\n+newUi()'
+      }
+    ]);
+    expect(hunks).toHaveLength(2);
+    expect(hunks[1]?.header).toContain('@@ -100');
+    expect(representativePatchHunks(hunks, 'auth', 1)[0]?.text).toContain('Auth');
   });
 });
 

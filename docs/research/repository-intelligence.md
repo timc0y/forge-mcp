@@ -84,6 +84,12 @@ reference edge. Sourcegraph SCIP demonstrates the other side of the line: true
 find-references/go-to-definition semantics need language indexers and an index.
 Forge should not recreate that infrastructure implicitly.
 
+### Hunk-level semantic diff targeting
+
+File ranking is not enough when one changed file contains several unrelated hunks. For an ordinary semantic question about a proposed change, Forge now enriches the strongest candidate files with GitHub patch text, deterministically splits unified patches into hunks, keeps query-bearing hunks plus an even representative sample when there are too many, and uses Jev to rank the most relevant hunks. The returned patch snippets for that semantic question are those targeted hunks rather than automatically dumping the entire patch.
+
+Explicitly requested paths still return their full GitHub patch. Semantic-hunk results disclose that they are excerpts and tell the caller to request the path for the complete diff. This is another place Jev adds value without becoming a code parser: choosing *where to look* inside evidence GitHub already supplied.
+
 ### Search-based impact candidates without a fake reference graph
 
 API Extractor, GraphQL Inspector, dependency-cruiser, Madge and SCIP all demonstrate that trustworthy API/reference/dependency graphs require real parsers or language tooling. Forge should not pretend text search is equivalent. It can still answer a narrower useful question: “what else might mention a contract or identifier this change removes?”

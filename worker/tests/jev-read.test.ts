@@ -597,7 +597,34 @@ describe("typesafeSystemOne noul field names", () => {
   });
 });
 
-import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, rankImpactIdentifiersWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+
+describe("rankPatchHunksWithJev", () => {
+  it("selects the relevant hunk within a changed file", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          relevantHunk: {
+            type: 'choice', choice: 'H2', confidence: 0.93,
+            distribution: { H2: 0.9, H1: 0.1 }
+          },
+          hasRelevantHunk: { type: 'noul', noul: 0.96 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const ranked = await rankPatchHunksWithJev(
+      { TYPESAFE_API_KEY: 'key' } as unknown as Env,
+      [
+        { id: 'H1', path: 'src/a.ts', header: '@@ -1 +1 @@', text: '-oldUi\n+newUi' },
+        { id: 'H2', path: 'src/a.ts', header: '@@ -50 +50 @@', text: '-oldAuth\n+newAuth' }
+      ],
+      'authentication changes'
+    );
+    expect(ranked[0]).toMatchObject({ id: 'H2', path: 'src/a.ts' });
+  });
+});
 
 describe("rankImpactIdentifiersWithJev", () => {
   it("ranks externally meaningful removed identifiers above local noise", async () => {

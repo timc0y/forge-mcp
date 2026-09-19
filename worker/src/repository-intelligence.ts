@@ -361,6 +361,56 @@ export function repositoryMap(entries: RepositoryTreeEntry[]): string[] {
   return lines;
 }
 
+export interface PatchHunk {
+  id: string;
+  path: string;
+  header: string;
+  text: string;
+}
+
+export function splitPatchHunks(files: ChangedFile[], limit = 200): PatchHunk[] {
+  const hunks: PatchHunk[] = [];
+  for (const file of files) {
+    if (!file.patch) continue;
+    const parts = file.patch.split(/(?=^@@)/m).filter((part) => part.trim().length > 0);
+    for (const part of parts) {
+      if (hunks.length >= limit) return hunks;
+      const lines = part.split('\n');
+      const header = lines[0]?.startsWith('@@') ? lines[0] : '(patch context)';
+      hunks.push({
+        id: `H${hunks.length + 1}`,
+        path: file.path,
+        header,
+        text: part.slice(0, 5000)
+      });
+    }
+  }
+  return hunks;
+}
+
+export function representativePatchHunks(hunks: PatchHunk[], query: string, limit = 120): PatchHunk[] {
+  if (hunks.length <= limit) return hunks;
+  const tokens = query.toLowerCase().match(/[a-z0-9_/-]{2,}/g) ?? [];
+  const scored = hunks
+    .map((hunk) => ({
+      hunk,
+      score: tokens.reduce((sum, token) => sum + (hunk.text.toLowerCase().includes(token) ? 1 : 0), 0)
+    }))
+    .sort((left, right) => right.score - left.score || left.hunk.id.localeCompare(right.hunk.id));
+  const selected = new Map<string, PatchHunk>();
+  for (const entry of scored.slice(0, Math.min(60, limit))) {
+    if (entry.score > 0) selected.set(entry.hunk.id, entry.hunk);
+  }
+  const remainingSlots = limit - selected.size;
+  if (remainingSlots > 0) {
+    for (let index = 0; index < remainingSlots; index += 1) {
+      const at = Math.min(hunks.length - 1, Math.floor((index * hunks.length) / remainingSlots));
+      selected.set(hunks[at]!.id, hunks[at]!);
+    }
+  }
+  return [...selected.values()].slice(0, limit);
+}
+
 export interface PatchIdentifierCandidate {
   identifier: string;
   occurrences: number;

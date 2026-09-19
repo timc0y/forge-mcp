@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, resolveRepoWithJev, routeForgeReadEvidenceWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
+import { classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, resolveRepoWithJev, routeForgeReadEvidenceWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
@@ -55,6 +55,8 @@ import {
   lintCommittedFiles,
   patchIdentifierCandidates,
   qualityCandidatePaths,
+  representativePatchHunks,
+  splitPatchHunks,
   repositoryMap,
   repositoryStats,
   semanticCodeNeedle,
@@ -1088,6 +1090,7 @@ async function readChangeLevel(
 
   let semanticallyRanked = false;
   let statsNote = '';
+  const semanticPatchByPath = new Map<string, string>();
   const trimmedQuery = query?.trim();
   const explicitMode = Boolean(
     trimmedQuery && (
@@ -1291,6 +1294,26 @@ async function readChangeLevel(
         const enriched = withPatches.files.filter((file) => candidateSet.has(file.path));
         const patchRanked = await rankChangeFilesWithJev(ctx.env, enriched, trimmedQuery);
         if (patchRanked && patchRanked.length > 0) semanticOrder = patchRanked;
+
+        const allHunks = splitPatchHunks(enriched, 200);
+        const hunkCandidates = representativePatchHunks(allHunks, trimmedQuery, 120);
+        const rankedHunks = await rankPatchHunksWithJev(ctx.env, hunkCandidates, trimmedQuery);
+        const hunkById = new Map(hunkCandidates.map((hunk) => [hunk.id, hunk]));
+        for (const ranked of rankedHunks) {
+          const hunk = hunkById.get(ranked.id);
+          if (!hunk) continue;
+          const existing = semanticPatchByPath.get(hunk.path);
+          semanticPatchByPath.set(
+            hunk.path,
+            existing ? `${existing}\n${hunk.text}` : hunk.text
+          );
+        }
+        if (allHunks.length > hunkCandidates.length) {
+          limits.push(`Jev hunk targeting considered ${hunkCandidates.length} representative hunks from ${allHunks.length} patch hunks.`);
+        }
+        if (rankedHunks.length > 0) {
+          limits.push('Patch snippets shown for semantic change questions are Jev-selected relevant hunks, not necessarily the full file diff. Ask for a path to see its full patch.');
+        }
       } catch {
         // Path semantics still provide a useful fallback if patch enrichment fails.
       }
@@ -1334,7 +1357,15 @@ async function readChangeLevel(
           files: shown.map((file) => ({
             path: file.path,
             change: describeChangedFile(file),
-            ...(file.patch === undefined ? {} : { patch: file.patch })
+            ...(
+              asked.has(file.path) && file.patch !== undefined
+                ? { patch: file.patch }
+                : semanticPatchByPath.has(file.path)
+                  ? { patch: semanticPatchByPath.get(file.path)! }
+                  : file.patch === undefined
+                    ? {}
+                    : { patch: file.patch }
+            )
           }))
         },
         changes: names,
