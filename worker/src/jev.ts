@@ -885,6 +885,48 @@ export async function summarizeChangeImpactWithJev(
   return assessment ? summarizeChangeAssessment(assessment, comparison.files.length) : null;
 }
 
+export interface ImpactIdentifierCandidate {
+  identifier: string;
+  occurrences: number;
+  paths: string[];
+}
+
+export async function rankImpactIdentifiersWithJev(
+  env: Env,
+  changeIntent: string,
+  candidates: ImpactIdentifierCandidate[]
+): Promise<string[]> {
+  if (!env.TYPESAFE_API_KEY || candidates.length === 0) {
+    return candidates.slice(0, 5).map((candidate) => candidate.identifier);
+  }
+  const bounded = candidates.slice(0, 100);
+  const identifiers = bounded.map((candidate) => candidate.identifier);
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: { changeIntent, candidates: bounded },
+    questions: {
+      mostImpactful: {
+        type: 'choice',
+        instructions: 'Which removed or changed identifier is most likely to represent an externally meaningful code/API/config contract whose other repository occurrences are useful impact evidence?',
+        criteria: identifiers
+      },
+      hasMeaningfulCandidate: {
+        type: 'noul',
+        instructions: 'Does at least one candidate look like a meaningful identifier or contract term worth searching elsewhere in the repository, rather than incidental syntax/local variable noise?'
+      }
+    }
+  });
+  if (!resp || noulOf(resp.answers.hasMeaningfulCandidate, 1) < 0.25) return [];
+  const answer = resp.answers.mostImpactful as JevChoiceAnswer | undefined;
+  if (!answer) return identifiers.slice(0, 5);
+  const ranked = Object.entries(answer.distribution)
+    .filter(([identifier, probability]) => identifiers.includes(identifier) && probability > 0.02)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 5)
+    .map(([identifier]) => identifier);
+  if (ranked.length > 0) return ranked;
+  return identifiers.includes(answer.choice) ? [answer.choice] : identifiers.slice(0, 5);
+}
+
 export type ExactMatchKind =
   | 'declaration/definition'
   | 'code reference/call'

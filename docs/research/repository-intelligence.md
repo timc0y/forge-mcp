@@ -84,6 +84,14 @@ reference edge. Sourcegraph SCIP demonstrates the other side of the line: true
 find-references/go-to-definition semantics need language indexers and an index.
 Forge should not recreate that infrastructure implicitly.
 
+### Search-based impact candidates without a fake reference graph
+
+API Extractor, GraphQL Inspector, dependency-cruiser, Madge and SCIP all demonstrate that trustworthy API/reference/dependency graphs require real parsers or language tooling. Forge should not pretend text search is equivalent. It can still answer a narrower useful question: “what else might mention a contract or identifier this change removes?”
+
+`query: "impact"` on a change now takes patches for at most 20 changed files, deterministically extracts identifier-like terms from removed lines, removes common language noise, and lets one Jev Choice rank which candidates look most externally meaningful relative to the human change intent. Forge searches the top three exact terms on the base branch and shows matching paths outside the proposed change. Every result is labelled `IMPACT?` and explicitly described as text-search evidence, not compiler-backed references or proof that anything breaks.
+
+This gives Forge a useful impact lens while keeping API Extractor/GraphQL Inspector/dependency-cruiser/Madge in the category they belong: real repository CI or developer tooling.
+
 ### Semantic triage for exact codemod matches
 
 Facebook's original codemod separates counting/discovery from mutation and treats an automatic accept-all mode as something to use cautiously. Forge keeps that shape but can make the discovery evidence richer without adding an AST runtime. For complete matching files within the read budget, `find:<text>` now extracts up to 20 exact local occurrence contexts with line numbers. One Jev fan-out independently classifies each bounded occurrence as declaration/definition, code reference/call, import/export, configuration/serialized contract, test/fixture/example, documentation/prose, generated/vendor, or unknown.

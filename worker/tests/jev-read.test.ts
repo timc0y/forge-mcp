@@ -597,7 +597,34 @@ describe("typesafeSystemOne noul field names", () => {
   });
 });
 
-import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, rankImpactIdentifiersWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+
+describe("rankImpactIdentifiersWithJev", () => {
+  it("ranks externally meaningful removed identifiers above local noise", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          mostImpactful: {
+            type: 'choice', choice: 'legacyEndpoint', confidence: 0.9,
+            distribution: { legacyEndpoint: 0.82, localHelper: 0.12 }
+          },
+          hasMeaningfulCandidate: { type: 'noul', noul: 0.95 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const ranked = await rankImpactIdentifiersWithJev(
+      { TYPESAFE_API_KEY: 'key' } as unknown as Env,
+      'replace legacy API',
+      [
+        { identifier: 'localHelper', occurrences: 3, paths: ['src/a.ts'] },
+        { identifier: 'legacyEndpoint', occurrences: 1, paths: ['src/api.ts'] }
+      ]
+    );
+    expect(ranked[0]).toBe('legacyEndpoint');
+  });
+});
 
 describe("classifyExactMatchContextsWithJev", () => {
   it("separates declaration, reference and prose occurrences in one Jev fan-out", async () => {

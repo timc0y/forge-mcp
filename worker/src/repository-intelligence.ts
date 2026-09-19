@@ -63,6 +63,10 @@ export function isReviewQuery(query: string): boolean {
   return /^(?:review|review change|change review|review packet|merge review)$/i.test(query.trim());
 }
 
+export function isImpactQuery(query: string): boolean {
+  return /^(?:impact|impact analysis|what uses this|what could break|references affected)$/i.test(query.trim());
+}
+
 export function isPolicyQuery(query: string): boolean {
   return /^(?:policy|rules|ruleset|rulesets|branch protection|required checks)$/i.test(query.trim());
 }
@@ -299,6 +303,49 @@ export function repositoryMap(entries: RepositoryTreeEntry[]): string[] {
   for (const file of likelyEntries) lines.push(`ENTRY? ${file.path}`);
 
   return lines;
+}
+
+export interface PatchIdentifierCandidate {
+  identifier: string;
+  occurrences: number;
+  paths: string[];
+}
+
+export function patchIdentifierCandidates(
+  files: ChangedFile[],
+  limit = 100
+): PatchIdentifierCandidate[] {
+  const ignored = new Set([
+    'const', 'let', 'var', 'function', 'return', 'export', 'import', 'from', 'async', 'await',
+    'class', 'interface', 'type', 'extends', 'implements', 'public', 'private', 'protected',
+    'readonly', 'static', 'default', 'new', 'this', 'true', 'false', 'null', 'undefined',
+    'string', 'number', 'boolean', 'object', 'unknown', 'void', 'any', 'if', 'else', 'for',
+    'while', 'switch', 'case', 'break', 'continue', 'try', 'catch', 'finally', 'throw',
+    'error', 'data', 'value', 'result', 'props', 'state'
+  ]);
+  const found = new Map<string, { occurrences: number; paths: Set<string> }>();
+  for (const file of files) {
+    if (!file.patch) continue;
+    for (const line of file.patch.split('\n')) {
+      if (!line.startsWith('-') || line.startsWith('---')) continue;
+      for (const match of line.slice(1).matchAll(/\b[A-Za-z_$][A-Za-z0-9_$]{3,}\b/g)) {
+        const identifier = match[0];
+        if (ignored.has(identifier.toLowerCase())) continue;
+        const current = found.get(identifier) ?? { occurrences: 0, paths: new Set<string>() };
+        current.occurrences += 1;
+        current.paths.add(file.path);
+        found.set(identifier, current);
+      }
+    }
+  }
+  return [...found.entries()]
+    .map(([identifier, value]) => ({
+      identifier,
+      occurrences: value.occurrences,
+      paths: [...value.paths]
+    }))
+    .sort((left, right) => right.occurrences - left.occurrences || left.identifier.localeCompare(right.identifier))
+    .slice(0, limit);
 }
 
 export function fileTotals(files: ChangedFile[]): { files: number; additions: number; deletions: number } {

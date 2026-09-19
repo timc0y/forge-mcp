@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { exactOccurrenceContexts, extractDeclaredQualityScripts, historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
+import { exactOccurrenceContexts, extractDeclaredQualityScripts, historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -220,6 +220,20 @@ describe('repository intelligence query parsing', () => {
     ]);
     expect(stats.lines.some((line) => line.startsWith('SHAPE max depth'))).toBe(true);
     expect(stats.lines.some((line) => line.startsWith('SHAPE widest'))).toBe(true);
+  });
+});
+
+describe('patch impact candidate extraction', () => {
+  it('extracts removed identifier candidates while ignoring language noise', () => {
+    const candidates = patchIdentifierCandidates([
+      {
+        path: 'src/api.ts', status: 'modified', additions: 1, deletions: 1,
+        patch: '@@ -1 +1 @@\n-export function legacyEndpoint() { return oldToken; }\n+export function newEndpoint() { return newToken; }'
+      }
+    ]);
+    expect(candidates.map((candidate) => candidate.identifier)).toContain('legacyEndpoint');
+    expect(candidates.map((candidate) => candidate.identifier)).toContain('oldToken');
+    expect(candidates.map((candidate) => candidate.identifier)).not.toContain('function');
   });
 });
 

@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
+import { classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
@@ -44,6 +44,7 @@ import {
   isCodeownersPath,
   isDependencyManifestPath,
   isDependencyQuery,
+  isImpactQuery,
   isLanguagesQuery,
   isMapQuery,
   isPolicyQuery,
@@ -51,6 +52,7 @@ import {
   isReviewQuery,
   isStatsQuery,
   lintCommittedFiles,
+  patchIdentifierCandidates,
   qualityCandidatePaths,
   repositoryMap,
   repositoryStats,
@@ -1057,6 +1059,61 @@ async function readChangeLevel(
           next: 'Ask for specific paths to inspect their patches, or forge_merge when the evidence is sufficient.'
         },
         reviewLimits
+      )
+    };
+  }
+
+  if (trimmedQuery && isImpactQuery(trimmedQuery)) {
+    const patchPaths = comparison.files.slice(0, 20).map((file) => file.path);
+    const enriched = patchPaths.length > 0
+      ? await compare(gh, repo, base, change.branch, patchPaths)
+      : comparison;
+    const candidates = patchIdentifierCandidates(enriched.files, 100);
+    const rankedIdentifiers = await rankImpactIdentifiersWithJev(ctx.env, change.name, candidates);
+    const selected = rankedIdentifiers.slice(0, 3);
+    const changedPaths = new Set(comparison.files.map((file) => file.path));
+    const searched = await Promise.all(
+      selected.map(async (identifier) => {
+        const result = await searchGitHubCode(gh, `repo:${formatRepo(repo)} "${identifier.replaceAll('"', ' ')}"`, 10);
+        const outside = result.items.filter((item) => item.path && !changedPaths.has(item.path));
+        return { identifier, result, outside };
+      })
+    );
+    const changes = await openChanges(ctx.gh, repo);
+    const names = changeNames(changes);
+    const evidenceLines = searched.map(({ identifier, result, outside }) =>
+      `IMPACT? ${identifier} · ${result.total} matching file${result.total === 1 ? '' : 's'} on ${base} · ${outside.length} shown outside this change`
+    );
+    const resultFiles = searched.flatMap(({ identifier, outside }) =>
+      outside.slice(0, 5).map((item) => ({
+        path: `${identifier} → ${item.path ?? item.title}`,
+        text: item.snippet ?? ''
+      }))
+    );
+    const impactLimits = [
+      ...limits,
+      'Impact candidates are exact GitHub text-search evidence selected from removed patch identifiers; they are not compiler-backed references or proof of breakage.',
+      ...(comparison.files.length > 20 ? [`Identifier extraction used patches from the first 20 of ${comparison.files.length} changed files.`] : []),
+      ...(candidates.length >= 100 ? ['Identifier triage was capped at 100 removed patch candidates.'] : [])
+    ];
+    return {
+      summary: `Impact search for "${change.name}": ${selected.length} identifier candidate${selected.length === 1 ? '' : 's'} searched against ${base}.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          diff: {
+            status: comparison.status,
+            ahead: comparison.aheadBy,
+            behind: comparison.behindBy,
+            files: comparison.files.slice(0, MAX_DIFF_FILES).map((file) => ({ path: file.path, change: describeChangedFile(file) }))
+          },
+          tree: evidenceLines,
+          ...(resultFiles.length > 0 ? { files: resultFiles } : {}),
+          changes: names,
+          next: resultFiles.length > 0
+            ? 'Read the candidate paths before treating any text occurrence as a real dependency.'
+            : 'No outside-change text candidates were shown; use specific paths or a semantic diff query for other review angles.'
+        },
+        impactLimits
       )
     };
   }
