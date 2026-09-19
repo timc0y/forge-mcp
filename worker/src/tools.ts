@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, resolveRepoWithJev, routeForgeReadEvidenceWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
+import { classifyExactMatchContextsWithJev, classifyHygieneCandidatesWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, resolveRepoWithJev, routeForgeReadEvidenceWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
@@ -41,11 +41,16 @@ import {
   fileTotals,
   historyScope,
   humanBytes,
+  hygieneContentPreview,
+  hygienePathCandidates,
+  hygieneReferenceTerm,
   isChurnQuery,
   isCodeownersPath,
   isDependencyManifestPath,
   isDependencyQuery,
   isImpactQuery,
+  isHygieneQuery,
+  isHygieneSourcePath,
   isLanguagesQuery,
   isMapQuery,
   isPolicyQuery,
@@ -568,6 +573,7 @@ async function readTreeLevel(
       isPolicyQuery(trimmedQuery) ||
       isStatsQuery(trimmedQuery) ||
       isQualityQuery(trimmedQuery) ||
+      isHygieneQuery(trimmedQuery) ||
       isMapQuery(trimmedQuery) ||
       exactFindNeedle(trimmedQuery) ||
       semanticCodeNeedle(trimmedQuery)
@@ -719,6 +725,154 @@ async function readTreeLevel(
     .filter((entry) => entry.type === 'file')
     .map((entry) => entry.path);
   const names = changeNames(changes);
+
+  if (trimmedQuery && (isHygieneQuery(trimmedQuery) || routed?.mode === 'hygiene')) {
+    const sourcePaths = allFilePaths.filter(isHygieneSourcePath);
+    const pathCandidates = hygienePathCandidates(tree.entries, 24);
+    const markerTerms = ['legacy', 'deprecated', 'fallback', 'obsolete', 'compatibility', '"remove after"'];
+    const markerSearches = await Promise.all(
+      markerTerms.map(async (marker) => ({
+        marker,
+        result: await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${marker}`, 8)
+      }))
+    );
+
+    const markerSignals = new Map<string, string[]>();
+    const markerPaths: string[] = [];
+    for (const search of markerSearches) {
+      for (const item of search.result.items) {
+        if (!item.path || !isHygieneSourcePath(item.path)) continue;
+        markerPaths.push(item.path);
+        const current = markerSignals.get(item.path) ?? [];
+        const signal = `content marker ${search.marker.replaceAll('"', '')}`;
+        if (!current.includes(signal)) current.push(signal);
+        markerSignals.set(item.path, current);
+      }
+    }
+
+    const semantic = await semanticPathTriageDetailed(
+      ctx.env,
+      sourcePaths,
+      'legacy fallback compatibility deprecated obsolete superseded old implementation dead unused unreachable temporary broken incomplete cleanup candidate'
+    );
+    const semanticPaths = semantic?.paths ?? [];
+    const candidatePaths = [...new Set([
+      ...pathCandidates.map((candidate) => candidate.path),
+      ...markerPaths,
+      ...semanticPaths
+    ])].slice(0, 20);
+    const read = candidatePaths.length > 0
+      ? await readFiles(gh, repo, base, candidatePaths, MAX_FILE_BYTES)
+      : { files: [], skipped: [] };
+    const pathSignals = new Map(pathCandidates.map((candidate) => [candidate.path, candidate.signals]));
+    const semanticSet = new Set(semanticPaths);
+    const prepared = read.files
+      .filter((file) => !file.truncated)
+      .slice(0, 12)
+      .map((file) => ({
+        path: file.path,
+        content: file.content,
+        preview: hygieneContentPreview(file.content),
+        signals: [
+          ...(pathSignals.get(file.path) ?? []),
+          ...(markerSignals.get(file.path) ?? []),
+          ...(semanticSet.has(file.path) ? ['Jev semantic path finalist'] : [])
+        ]
+      }));
+
+    const classifications = await classifyHygieneCandidatesWithJev(
+      ctx.env,
+      prepared.map((file) => ({ path: file.path, preview: file.preview, signals: file.signals }))
+    );
+    const preparedByPath = new Map(prepared.map((file) => [file.path, file]));
+    const suspiciousKinds = new Set([
+      'legacy/superseded',
+      'fallback/recovery',
+      'likely-dead/unreachable',
+      'possibly-broken/incomplete'
+    ]);
+    const suspicious = classifications.filter(
+      (candidate) => suspiciousKinds.has(candidate.kind) && candidate.investigate >= 0.55
+    );
+
+    const evidenceTargets = suspicious.slice(0, 5);
+    const evidence = await Promise.all(
+      evidenceTargets.map(async (candidate) => {
+        const file = preparedByPath.get(candidate.path);
+        const term = file ? hygieneReferenceTerm(file.path, file.content) : null;
+        const [references, history] = await Promise.all([
+          term
+            ? searchGitHubCode(gh, `repo:${formatRepo(repo)} "${term.replaceAll('"', ' ')}"`, 10)
+            : Promise.resolve({ total: 0, items: [] }),
+          readRecentHistory(gh, repo, base, candidate.path, 1)
+        ]);
+        const outside = references.items.filter((item) => item.path && item.path !== candidate.path);
+        return {
+          path: candidate.path,
+          term,
+          totalReferences: term ? references.total : null,
+          outsideShown: outside.length,
+          recent: history.commits[0]
+        };
+      })
+    );
+    const evidenceByPath = new Map(evidence.map((item) => [item.path, item]));
+    const labelFor = (kind: string): string => {
+      if (kind === 'legacy/superseded') return 'LEGACY?';
+      if (kind === 'fallback/recovery') return 'FALLBACK?';
+      if (kind === 'likely-dead/unreachable') return 'DEAD?';
+      if (kind === 'possibly-broken/incomplete') return 'BROKEN?';
+      if (kind === 'compatibility-intentional') return 'COMPAT';
+      if (kind === 'active/current') return 'ACTIVE';
+      return 'UNCLEAR';
+    };
+    const lines = classifications.map((candidate) => {
+      const evidenceItem = evidenceByPath.get(candidate.path);
+      const reference = evidenceItem?.term
+        ? ` · ref "${evidenceItem.term}" ${evidenceItem.totalReferences} GitHub result${evidenceItem.totalReferences === 1 ? '' : 's'}, ${evidenceItem.outsideShown} outside shown`
+        : '';
+      const history = evidenceItem?.recent
+        ? ` · last ${evidenceItem.recent.date?.slice(0, 10) ?? 'unknown date'} ${evidenceItem.recent.sha.slice(0, 7)} ${evidenceItem.recent.message || '(no message)'}`
+        : '';
+      return `${labelFor(candidate.kind)} ${candidate.path} · ${Math.round(candidate.confidence * 100)}% class · investigate ${Math.round(candidate.investigate * 100)}% · deletion-behavior ${Math.round(candidate.deletionChangesBehavior * 100)}%${reference}${history}`;
+    });
+    if (lines.length === 0) {
+      lines.push(...prepared.map((file) => `CANDIDATE? ${file.path} · ${file.signals.join(', ') || 'bounded semantic candidate'}`));
+    }
+
+    const markerTotal = markerSearches.reduce((sum, search) => sum + search.result.total, 0);
+    const limits = [
+      ...(routeNote ? [routeNote] : []),
+      ...(tree.truncated ? ['GitHub truncated the repository tree, so hygiene discovery is incomplete.'] : []),
+      ...(semantic?.truncated ? [`Jev hygiene path triage considered ${semantic.considered} representative paths from ${semantic.total} source files.`] : []),
+      ...(candidatePaths.length >= 20 ? ['Hygiene content inspection is capped at 20 candidate paths and Jev classification at 12 complete files.'] : []),
+      ...(markerTotal > markerPaths.length ? ['GitHub marker searches are bounded; additional lexical matches may exist beyond the returned candidate paths.'] : []),
+      ...read.skipped.map((skip) => `${skip.path} ${skip.reason}.`),
+      'LEGACY?, FALLBACK?, DEAD? and BROKEN? are investigation labels from bounded semantic evidence, not proof that code is unreachable, defective, or safe to delete.',
+      'Reference evidence is bounded GitHub text search, not a compiler-backed call/reference graph.',
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)} at ${base}: inspected ${prepared.length} hygiene candidate file${prepared.length === 1 ? '' : 's'}; Jev surfaced ${suspicious.length} legacy/fallback/dead-looking/broken-looking candidate${suspicious.length === 1 ? '' : 's'}.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: lines,
+          files: evidenceTargets.map((candidate) => {
+            const file = preparedByPath.get(candidate.path)!;
+            return {
+              path: candidate.path,
+              text: `${file.signals.join(', ') || 'semantic candidate'}\n\n${file.preview}`
+            };
+          }),
+          changes: names,
+          next: suspicious.length > 0
+            ? 'Read the strongest candidate paths in full. Confirm deadness with compiler/static-analysis/CI evidence before deleting anything; intentional compatibility and fallback paths should be preserved when still required.'
+            : 'No strong Jev hygiene candidate surfaced in this bounded pass. Static dead-code tooling can still find reachability issues Jev cannot prove.'
+        },
+        limits
+      )
+    };
+  }
 
   if (trimmedQuery && (isStatsQuery(trimmedQuery) || routed?.mode === 'stats')) {
     const scope = statsScope(trimmedQuery);
