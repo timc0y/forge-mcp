@@ -98,10 +98,13 @@ Forge hosts nothing.
 
 ## Proof
 
-- `pnpm check`
-- Focused `pnpm test`
-- `pnpm schemas:check`
-- Catalog budget test and guidance-integrity lint must both stay green.
+- `pnpm check` — TypeScript plus the full Vitest suite.
+- The invariant suite must keep exactly five registered tools, reject guidance
+  that names removed tools, keep the lead instructions within 512 characters,
+  and keep the deployment smoke aligned with `SERVER_VERSION`.
+- After deployment, `worker/scripts/smoke.sh` must pass against production.
+- After any MCP metadata change, refresh the ChatGPT connection and start a new
+  conversation before evaluating the published catalog.
 - The real proof: from a phone, an idea becomes a repo with documents in it, a
   change is made and diffed, a public page is captured, and the change is merged
   or discarded — each step useful even if the chat sends nothing further.

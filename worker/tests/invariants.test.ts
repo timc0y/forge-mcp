@@ -354,6 +354,14 @@ describe('server instructions', () => {
     expect(source.match(/ctx\.ghUser/g)?.length ?? 0).toBeLessThanOrEqual(1);
   });
 
+  it('keeps deployment smoke aligned with the MCP release version and retired routes removed', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { SERVER_VERSION } = await import('../src/mcp');
+    const smoke = readFileSync('scripts/smoke.sh', 'utf8');
+    expect(smoke).toContain(`"version":"${SERVER_VERSION}"`);
+    expect(smoke).not.toContain('/see/');
+  });
+
   it('keeps every load-bearing fact inside the 512-character window', async () => {
     // OpenAI weights the first 512 characters of server instructions most
     // heavily. A fact past the cut is a fact the model may never weigh, so the

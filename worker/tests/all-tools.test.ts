@@ -192,6 +192,16 @@ function createMockToolContext(customRoutes: Record<string, any> = {}, envOverri
 }
 
 describe("End-to-End Test for all 5 Forge tools", () => {
+  it("publishes exactly the five-tool surface", () => {
+    const { server } = createMockToolContext();
+    expect(Object.keys((server as any)._registeredTools).sort()).toEqual([
+      "forge_discard",
+      "forge_edit",
+      "forge_merge",
+      "forge_read",
+      "forge_see"
+    ]);
+  });
   it("executes forge_read across repos, tree, files, and changes", async () => {
     const { server } = createMockToolContext();
     const readTool = (server as any)._registeredTools["forge_read"];
