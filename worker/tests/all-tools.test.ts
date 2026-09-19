@@ -223,6 +223,118 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(changeRes.structuredContent.diff.files[0].path).toBe("src/index.ts");
   });
 
+  it("investigates repository hygiene with GitHub evidence and Jev", async () => {
+    const priorFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        questions?: Record<string, unknown>;
+      };
+      const questions = body.questions ?? {};
+      if ("bestMatch" in questions) {
+        return {
+          ok: true,
+          json: async () => ({
+            answers: {
+              bestMatch: {
+                type: "choice",
+                choice: "src/legacy-auth.ts",
+                confidence: 0.96,
+                distribution: { "src/legacy-auth.ts": 0.96 }
+              },
+              exists: { type: "noul", noul: 0.98 }
+            }
+          })
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          answers: {
+            hygieneKind_0: { type: "choice", choice: "legacy/superseded", confidence: 0.94 },
+            hygieneInvestigate_0: { type: "noul", noul: 0.97 },
+            hygieneBehavior_0: { type: "noul", noul: 0.16 }
+          }
+        })
+      };
+    }) as unknown as typeof fetch;
+
+    try {
+      const { server } = createMockToolContext(
+        {
+          "GET /repos/testuser/test-repo/git/trees/main": {
+            status: 200,
+            json: {
+              truncated: false,
+              tree: [
+                { path: "src/legacy-auth.ts", type: "blob", size: 1800 },
+                { path: "src/current.ts", type: "blob", size: 900 }
+              ]
+            }
+          },
+          "GET /search/code": {
+            status: 200,
+            json: {
+              total_count: 1,
+              items: [
+                {
+                  name: "legacy-auth.ts",
+                  path: "src/legacy-auth.ts",
+                  repository: { full_name: "testuser/test-repo" },
+                  text_matches: [
+                    {
+                      fragment:
+                        "export function legacyAuthenticationAdapter() { return currentAuth(); } // legacy"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "GET /repos/testuser/test-repo/contents/src/legacy-auth.ts": {
+            status: 200,
+            json: {
+              type: "file",
+              encoding: "base64",
+              content: btoa(
+                "// Legacy adapter retained during auth migration\nexport function legacyAuthenticationAdapter() { return currentAuth(); }"
+              ),
+              size: 116
+            }
+          },
+          "GET /repos/testuser/test-repo/commits": {
+            status: 200,
+            json: [
+              {
+                sha: "abc123456789",
+                commit: {
+                  message: "replace legacy authentication",
+                  author: { name: "Dev", date: "2026-08-01T10:00:00Z" },
+                  committer: { name: "Dev", date: "2026-08-01T10:00:00Z" }
+                },
+                author: { login: "dev" },
+                html_url: "https://github.com/testuser/test-repo/commit/abc123456789"
+              }
+            ]
+          }
+        },
+        {
+          TYPESAFE_API_KEY: "key",
+          TYPESAFE_BASE_URL: "https://typesafe.test/systemone"
+        }
+      );
+      const readTool = (server as any)._registeredTools["forge_read"];
+      const res = await readTool.handler({ repo: "test-repo", query: "hygiene" });
+
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain("Jev surfaced 1");
+      expect(res.structuredContent.tree[0]).toContain("LEGACY? src/legacy-auth.ts");
+      expect(res.structuredContent.tree[0]).toContain("legacyAuthenticationAdapter");
+      expect(res.structuredContent.limits.join(" ")).toContain("not proof");
+    } finally {
+      globalThis.fetch = priorFetch;
+    }
+  });
+
   it("executes forge_edit direct commit to default branch", async () => {
     const { server } = createMockToolContext();
     const editTool = (server as any)._registeredTools["forge_edit"];
