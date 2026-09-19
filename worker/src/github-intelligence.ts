@@ -491,11 +491,14 @@ export async function readPullReviewState(
     };
   }
 
-  const pull = typeof pullResponse.json === 'object' && pullResponse.json !== null
-    ? pullResponse.json as Record<string, unknown>
-    : {};
+  const pullReadable =
+    typeof pullResponse.json === 'object' &&
+    pullResponse.json !== null &&
+    !Array.isArray(pullResponse.json);
+  const pull = pullReadable ? pullResponse.json as Record<string, unknown> : {};
   const mergeable = typeof pull.mergeable === 'boolean' ? pull.mergeable : null;
   const draft = typeof pull.draft === 'boolean' ? pull.draft : null;
+  const pullWarning = pullReadable ? undefined : 'GitHub returned unreadable pull-request state.';
 
   if (reviewResponse.status !== 200 || !Array.isArray(reviewResponse.json)) {
     return {
@@ -505,7 +508,10 @@ export async function readPullReviewState(
       changesRequested: 0,
       comments: 0,
       truncated: false,
-      unavailable: `GitHub pull-request reviews returned HTTP ${reviewResponse.status}.`
+      unavailable: [
+        pullWarning,
+        `GitHub pull-request reviews returned HTTP ${reviewResponse.status}.`
+      ].filter(Boolean).join(' ')
     };
   }
 
@@ -516,8 +522,12 @@ export async function readPullReviewState(
   const decisive = new Map<string, 'APPROVED' | 'CHANGES_REQUESTED'>();
   let comments = 0;
   let anonymousIndex = 0;
+  let unreadableReviews = 0;
   for (const value of reviewResponse.json) {
-    if (typeof value !== 'object' || value === null) continue;
+    if (typeof value !== 'object' || value === null) {
+      unreadableReviews += 1;
+      continue;
+    }
     const review = value as Record<string, unknown>;
     const state = typeof review.state === 'string' ? review.state.toUpperCase() : '';
     const user = typeof review.user === 'object' && review.user !== null
@@ -542,7 +552,19 @@ export async function readPullReviewState(
     approvals: states.filter((state) => state === 'APPROVED').length,
     changesRequested: states.filter((state) => state === 'CHANGES_REQUESTED').length,
     comments,
-    truncated: /rel="next"/.test(reviewResponse.headers.get('Link') ?? '') || reviewResponse.json.length >= 100
+    truncated: /rel="next"/.test(reviewResponse.headers.get('Link') ?? '') || reviewResponse.json.length >= 100,
+    ...(
+      pullWarning || unreadableReviews > 0
+        ? {
+            unavailable: [
+              pullWarning,
+              unreadableReviews > 0
+                ? `GitHub pull-request reviews contained ${unreadableReviews} unreadable record${unreadableReviews === 1 ? '' : 's'}; review counts are partial.`
+                : undefined
+            ].filter(Boolean).join(' ')
+          }
+        : {}
+    )
   };
 }
 
