@@ -71,6 +71,15 @@ export function buildSearchQuery(rawQuery: string, mode: 'code' | 'repos' = 'cod
   return parts.join(' ');
 }
 
+/** Explicit global search is public-only even when the user credential can see more. */
+export function buildPublicSearchQuery(rawQuery: string, mode: 'code' | 'repos' = 'code'): string {
+  const built = buildSearchQuery(rawQuery, mode)
+    .replace(/\bis:(?:public|private|internal)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return `${built} is:public`;
+}
+
 /**
  * Searches public repositories on GitHub.
  */

@@ -84,7 +84,7 @@ import {
 } from './github-intelligence';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
-import { buildSearchQuery, rankSearchResultsWithJev, searchGitHubCode, searchGitHubRepos } from './search';
+import { buildPublicSearchQuery, buildSearchQuery, rankSearchResultsWithJev, searchGitHubCode, searchGitHubRepos } from './search';
 import { capture } from './capture';
 import { releaseCaptureQuota, reserveCaptureQuota } from './quota';
 import { requestApproval } from './approve';
@@ -358,7 +358,7 @@ async function searchGlobal(ctx: ToolContext, query: string): Promise<ToolOutcom
   }
 
   const mode = /\b(repo|repos|repository|repositories|libraries)\b/i.test(trimmed) ? 'repos' : 'code';
-  const searchQuery = buildSearchQuery(trimmed, mode);
+  const searchQuery = buildPublicSearchQuery(trimmed, mode);
 
   if (mode === 'repos') {
     const found = await searchGitHubRepos(ctx.ghUser, searchQuery, 10);

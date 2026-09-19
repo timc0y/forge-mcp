@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
+  buildPublicSearchQuery,
   buildSearchQuery,
   rankSearchResultsWithJev,
   searchGitHubCode,
@@ -31,6 +32,13 @@ describe('GitHub search query shaping', () => {
   it('preserves native GitHub qualifiers exactly', () => {
     const query = 'repo:cloudflare/workers-sdk path:packages/ stars:>100';
     expect(buildSearchQuery(query, 'code')).toBe(query);
+  });
+
+  it('forces explicit global search to public visibility', () => {
+    expect(buildPublicSearchQuery('mcp server', 'repos')).toContain('is:public');
+    const forced = buildPublicSearchQuery('oauth is:private', 'code');
+    expect(forced).toContain('is:public');
+    expect(forced).not.toContain('is:private');
   });
 });
 
