@@ -729,7 +729,7 @@ async function readTreeLevel(
   if (trimmedQuery && (isHygieneQuery(trimmedQuery) || routed?.mode === 'hygiene')) {
     const sourcePaths = allFilePaths.filter(isHygieneSourcePath);
     const pathCandidates = hygienePathCandidates(tree.entries, 24);
-    const markerTerms = ['legacy', 'deprecated', 'fallback', 'obsolete', 'compatibility', '"remove after"'];
+    const markerTerms = ['legacy', 'deprecated', 'fallback', 'compatibility'];
     const markerSearches = await Promise.all(
       markerTerms.map(async (marker) => ({
         marker,
@@ -750,15 +750,20 @@ async function readTreeLevel(
       }
     }
 
-    const semantic = await semanticPathTriageDetailed(
-      ctx.env,
-      sourcePaths,
-      'legacy fallback compatibility deprecated obsolete superseded old implementation dead unused unreachable temporary broken incomplete cleanup candidate'
-    );
+    const discoveredBeforeSemantic = [...new Set([
+      ...pathCandidates.map((candidate) => candidate.path),
+      ...markerPaths
+    ])];
+    const semantic = discoveredBeforeSemantic.length < 12
+      ? await semanticPathTriageDetailed(
+          ctx.env,
+          sourcePaths,
+          'legacy fallback compatibility deprecated obsolete superseded old implementation dead unused unreachable temporary broken incomplete cleanup candidate'
+        )
+      : null;
     const semanticPaths = semantic?.paths ?? [];
     const candidatePaths = [...new Set([
-      ...pathCandidates.map((candidate) => candidate.path),
-      ...markerPaths,
+      ...discoveredBeforeSemantic,
       ...semanticPaths
     ])].slice(0, 20);
     const read = candidatePaths.length > 0
@@ -795,7 +800,7 @@ async function readTreeLevel(
       (candidate) => suspiciousKinds.has(candidate.kind) && candidate.investigate >= 0.55
     );
 
-    const evidenceTargets = suspicious.slice(0, 5);
+    const evidenceTargets = suspicious.slice(0, 4);
     const evidence = await Promise.all(
       evidenceTargets.map(async (candidate) => {
         const file = preparedByPath.get(candidate.path);
@@ -847,6 +852,7 @@ async function readTreeLevel(
       ...(semantic?.truncated ? [`Jev hygiene path triage considered ${semantic.considered} representative paths from ${semantic.total} source files.`] : []),
       ...(candidatePaths.length >= 20 ? ['Hygiene content inspection is capped at 20 candidate paths and Jev classification at 12 complete files.'] : []),
       ...(markerTotal > markerPaths.length ? ['GitHub marker searches are bounded; additional lexical matches may exist beyond the returned candidate paths.'] : []),
+      ...(classifications.length === 0 && prepared.length > 0 ? ['Jev returned no hygiene classification; CANDIDATE? lines are deterministic discovery evidence only.'] : []),
       ...read.skipped.map((skip) => `${skip.path} ${skip.reason}.`),
       'LEGACY?, FALLBACK?, DEAD? and BROKEN? are investigation labels from bounded semantic evidence, not proof that code is unreachable, defective, or safe to delete.',
       'Reference evidence is bounded GitHub text search, not a compiler-backed call/reference graph.',
