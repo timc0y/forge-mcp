@@ -81,7 +81,15 @@ export async function buildChangeReviewPacket(
         }))
       : Promise.resolve({ changes: [], truncated: false }),
     change.number !== null
-      ? readPullReviewState(gh, repo, change.number).catch(() => null)
+      ? readPullReviewState(gh, repo, change.number).catch(() => ({
+          mergeable: null,
+          draft: null,
+          approvals: 0,
+          changesRequested: 0,
+          comments: 0,
+          truncated: false,
+          unavailable: 'Pull-request review state could not be read.'
+        }))
       : Promise.resolve(null),
     assessmentPromise
   ]);
