@@ -98,15 +98,6 @@ export async function commitFiles(
 ): Promise<CommitReceipt> {
   validate(message, files);
 
-  const safety = await checkCommitSafety(env, files);
-  if (!safety.safe) {
-    throw new ForgeError({
-      code: 'FORGE_VALIDATION_FAILED',
-      message: safety.reason ?? 'Commit rejected: security or integrity check failed.',
-      details: { repo: formatRepo(repo), branch }
-    });
-  }
-
   const api = `/repos/${repo.owner}/${repo.name}`;
   const paths = files.map((file) => file.path);
   const deadline = Date.now() + WRITE_BUDGET_MS;
@@ -132,6 +123,21 @@ export async function commitFiles(
   const resolved = await resolveContents(request, api, original, files);
 
   if (outOfTime()) giveUp('reading the files being edited');
+
+  // Safety is evaluated against the exact candidate content produced from the
+  // current GitHub head, not the tool payload. Fragment replacements carry no
+  // whole-file `content`, so checking before resolve would inspect nothing and
+  // could let a replacement introduce the very secret/truncation patterns this
+  // gate exists to stop.
+  const safety = await checkCommitSafety(env, resolved);
+  if (!safety.safe) {
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: safety.reason ?? 'Commit rejected: security or integrity check failed.',
+      details: { repo: formatRepo(repo), branch }
+    });
+  }
+  if (outOfTime()) giveUp('checking the resolved content');
 
   // Blobs are content-addressed, so they are identical however many times the
   // ref update is rejected: create them once, in parallel, outside the loop.

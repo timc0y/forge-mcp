@@ -119,6 +119,10 @@ actual diff snippets. Large changes first narrow by path semantics, then enrich
 the bounded candidates. Explicitly requested paths remain first so semantic
 ranking cannot hide a file the caller asked to inspect.
 
+### Resolved-content safety for fragment edits
+
+Researching repository-wide replacement flows exposed an existing safety gap in the write path. `checkCommitSafety` used to run against the raw `forge_edit` payload before fragment replacements were resolved. A fragment edit has `replace` instructions but no whole-file `content`, so secret/truncation checks could inspect nothing for that file. The safety gate now runs after Forge resolves replacements against the exact GitHub head but before it creates blobs or a commit. Whole-file and fragment edits therefore pass through the same final-content safety boundary.
+
 ### Post-commit advisory lint
 
 Forge already contained a dangling-relative-import check, but it was gated on

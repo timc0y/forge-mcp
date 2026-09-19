@@ -125,6 +125,36 @@ describe('writing is bounded before it reaches GitHub', () => {
       code: 'FORGE_VALIDATION_FAILED'
     });
   });
+
+  it('runs the safety gate on resolved fragment content before creating blobs', async () => {
+    const calls: string[] = [];
+    const request: GitHubRequest = async (path, init) => {
+      const key = `${init?.method ?? 'GET'} ${path.split('?')[0]}`;
+      calls.push(key);
+      if (key === 'GET /repos/o/r/git/ref/heads/main') {
+        return { status: 200, json: { object: { sha: 'head-1' } }, text: '', headers: new Headers() };
+      }
+      if (key === 'GET /repos/o/r/contents/config.ts') {
+        const body = 'export const token = "SAFE";';
+        return {
+          status: 200,
+          json: { type: 'file', encoding: 'base64', content: btoa(body), size: body.length },
+          text: '',
+          headers: new Headers()
+        };
+      }
+      return { status: 404, json: null, text: '', headers: new Headers() };
+    };
+    const secret = `ghp_${'a'.repeat(36)}`;
+
+    await expect(
+      commitFiles(request, repo, 'main', 'main', 'replace token', [
+        { path: 'config.ts', replace: [{ old: 'SAFE', new: secret }] }
+      ])
+    ).rejects.toMatchObject({ code: 'FORGE_VALIDATION_FAILED' });
+
+    expect(calls.some((call) => call.includes('/git/blobs'))).toBe(false);
+  });
 });
 
 describe('guidance integrity', () => {
