@@ -55,6 +55,14 @@ export function semanticCodeNeedle(query: string): string | null {
   return needle ? needle : null;
 }
 
+export function isDependencyQuery(query: string): boolean {
+  return /^(?:deps?|dependencies|dependency review|dependency changes|vulnerabilities)$/i.test(query.trim());
+}
+
+export function isPolicyQuery(query: string): boolean {
+  return /^(?:policy|rules|ruleset|rulesets|branch protection|required checks)$/i.test(query.trim());
+}
+
 export function repositoryStats(entries: RepositoryTreeEntry[]): {
   files: number;
   bytes: number;

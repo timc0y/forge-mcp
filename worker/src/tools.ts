@@ -38,7 +38,9 @@ import {
   exactFindNeedle,
   fileTotals,
   humanBytes,
+  isDependencyQuery,
   isMapQuery,
+  isPolicyQuery,
   isStatsQuery,
   lintCommittedFiles,
   repositoryMap,
@@ -47,6 +49,7 @@ import {
   statsScope
 } from './repository-intelligence';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
+import { readBranchPolicy, readDependencyReview, requiredCheckNames } from './github-intelligence';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
 import {
@@ -586,6 +589,36 @@ async function readTreeLevel(
     };
   }
 
+  if (trimmedQuery && isPolicyQuery(trimmedQuery)) {
+    const policy = await readBranchPolicy(gh, repo, base);
+    const checks = requiredCheckNames(policy);
+    const lines = policy.rules.map((rule) => {
+      if (rule.type === 'required_status_checks' && checks.length > 0) {
+        return `RULE required_status_checks · ${checks.join(', ')}`;
+      }
+      const source = [rule.sourceType, rule.source].filter(Boolean).join(' · ');
+      return `RULE ${rule.type}${source ? ` · ${source}` : ''}`;
+    });
+    const limits = [
+      ...(policy.unavailable ? [policy.unavailable] : []),
+      ...(policy.truncated ? ['GitHub returned more than 100 active branch rules; this list is incomplete.'] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)} ${base}: ${policy.rules.length} active branch rule${policy.rules.length === 1 ? '' : 's'}${checks.length ? `; required checks: ${checks.join(', ')}` : ''}.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: lines,
+          changes: names,
+          next: checks.length > 0
+            ? 'These are requirements GitHub enforces; Forge cannot see whether each check passed without additional Checks/Statuses permission.'
+            : 'Ask for a change to see what would be merged.'
+        },
+        limits
+      )
+    };
+  }
+
   const findNeedle = trimmedQuery ? exactFindNeedle(trimmedQuery) : null;
   if (findNeedle) {
     const safeNeedle = findNeedle.replaceAll('"', ' ');
@@ -848,6 +881,77 @@ async function readChangeLevel(
   let semanticallyRanked = false;
   let statsNote = '';
   const trimmedQuery = query?.trim();
+
+  if (trimmedQuery && isDependencyQuery(trimmedQuery)) {
+    const review = await readDependencyReview(gh, repo, base, change.branch);
+    const vulnerabilities = review.changes.flatMap((dependency) =>
+      dependency.vulnerabilities.map((vulnerability) => ({ dependency, vulnerability }))
+    );
+    const added = review.changes.filter((dependency) => dependency.change === 'added').length;
+    const removed = review.changes.filter((dependency) => dependency.change === 'removed').length;
+    const shown = review.changes.slice(0, 100);
+    const dependencyLimits = [
+      ...limits,
+      ...(review.unavailable ? [review.unavailable] : []),
+      ...(review.snapshotWarning ? [`GitHub dependency snapshot warning: ${review.snapshotWarning}`] : []),
+      ...(review.truncated ? ['Showing dependency changes from the first 300 results only.'] : [])
+    ];
+    return {
+      summary: `"${change.name}" dependency review: ${added} added, ${removed} removed${vulnerabilities.length ? `; ${vulnerabilities.length} vulnerability finding${vulnerabilities.length === 1 ? '' : 's'}` : ''}.${changesSentence(changeNames(await openChanges(ctx.gh, repo)))}`,
+      structured: withLimits(
+        {
+          diff: {
+            status: comparison.status,
+            ahead: comparison.aheadBy,
+            behind: comparison.behindBy,
+            files: []
+          },
+          files: shown.map((dependency) => ({
+            path: dependency.manifest,
+            text: `${dependency.change.toUpperCase()} ${dependency.ecosystem}:${dependency.name}@${dependency.version}` +
+              `${dependency.scope ? ` · ${dependency.scope}` : ''}` +
+              `${dependency.license ? ` · ${dependency.license}` : ''}` +
+              `${dependency.vulnerabilities.length ? ` · ${dependency.vulnerabilities.map((vulnerability) => `${vulnerability.severity} ${vulnerability.advisoryId}: ${vulnerability.summary}`).join('; ')}` : ''}`
+          })),
+          changes: changeNames(await openChanges(ctx.gh, repo)),
+          next: vulnerabilities.length > 0
+            ? 'Inspect the vulnerable dependency changes before merging.'
+            : 'Use stats or a semantic query to inspect the rest of the change.'
+        },
+        dependencyLimits
+      )
+    };
+  }
+
+  if (trimmedQuery && isPolicyQuery(trimmedQuery)) {
+    const policy = await readBranchPolicy(gh, repo, base);
+    const checks = requiredCheckNames(policy);
+    const policyLimits = [
+      ...limits,
+      ...(policy.unavailable ? [policy.unavailable] : []),
+      ...(policy.truncated ? ['GitHub returned more than 100 active branch rules; this list is incomplete.'] : [])
+    ];
+    return {
+      summary: `"${change.name}" targets ${base}, which has ${policy.rules.length} active branch rule${policy.rules.length === 1 ? '' : 's'}${checks.length ? ` and requires: ${checks.join(', ')}` : ''}.${changesSentence(changeNames(await openChanges(ctx.gh, repo)))}`,
+      structured: withLimits(
+        {
+          diff: {
+            status: comparison.status,
+            ahead: comparison.aheadBy,
+            behind: comparison.behindBy,
+            files: comparison.files.slice(0, MAX_DIFF_FILES).map((file) => ({ path: file.path, change: describeChangedFile(file) }))
+          },
+          tree: policy.rules.map((rule) => `RULE ${rule.type}`),
+          changes: changeNames(await openChanges(ctx.gh, repo)),
+          next: checks.length > 0
+            ? 'GitHub enforces these requirements at merge time; Forge does not currently have permission to read the check results.'
+            : 'When this change is right, forge_merge asks a human to land it.'
+        },
+        policyLimits
+      )
+    };
+  }
+
   if (trimmedQuery && isStatsQuery(trimmedQuery)) {
     const scope = statsScope(trimmedQuery);
     const scoped = scope
@@ -1032,6 +1136,12 @@ async function requestAct(
   const comparison = await compare(ctx.gh, repo, base, change.branch);
   const head = await headSha(ctx.gh, repo, change.branch);
   const size = totals(comparison);
+  const [policy, dependencies] = await Promise.all([
+    readBranchPolicy(ctx.gh, repo, base).catch(() => ({ rules: [], truncated: false })),
+    readDependencyReview(ctx.gh, repo, base, change.branch).catch(() => ({ changes: [], truncated: false }))
+  ]);
+  const requiredChecks = requiredCheckNames(policy);
+  const dependencyVulnerabilities = dependencies.changes.flatMap((dependency) => dependency.vulnerabilities);
 
   // `change` goes in as it came out of GitHub, without `stats` copied onto it:
   // the comparison stored beside it already carries those numbers, and a
@@ -1087,6 +1197,16 @@ async function requestAct(
   if (act === 'merge' && comparison.behindBy > 0) {
     limits.push(`This change is ${comparison.behindBy} commit${comparison.behindBy === 1 ? '' : 's'} behind ${base}; GitHub decides at merge time whether it still applies cleanly.`);
   }
+  if (act === 'merge' && requiredChecks.length > 0) {
+    limits.push(`GitHub requires these checks on ${base}: ${requiredChecks.join(', ')}. Forge can see the rule names but not their current pass/fail state with its present permissions.`);
+  }
+  if (act === 'merge' && dependencyVulnerabilities.length > 0) {
+    const highest = dependencyVulnerabilities
+      .map((finding) => finding.severity)
+      .filter(Boolean)
+      .join(', ');
+    limits.push(`GitHub dependency review reports ${dependencyVulnerabilities.length} vulnerability finding${dependencyVulnerabilities.length === 1 ? '' : 's'} in dependency changes${highest ? ` (${highest})` : ''}. Inspect them before approving.`);
+  }
 
   const changes = await openChanges(ctx.gh, repo);
   return {
@@ -1118,7 +1238,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         repo: z.string().optional().describe('owner/name. Omit to list your repositories.'),
         change: z.string().optional().describe('An open change, named by the words that created it.'),
         paths: z.array(z.string()).max(20).optional(),
-        query: z.string().optional().describe('Narrows semantically. "stats [path]" sizes, "map" maps shape, "find:<text>" exact-searches, "code:<concept>" searches committed code.')
+        query: z.string().optional().describe('Narrows semantically. Also: "stats [path]", "map", "find:<text>", "code:<concept>", "dependencies", or "policy".')
       },
       outputSchema: readOutput,
       // Nothing here writes, and it reaches nothing but GitHub.

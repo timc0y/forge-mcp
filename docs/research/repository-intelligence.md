@@ -151,6 +151,16 @@ in order:
 3. an existing repository-native linter/action when a real class of defects
    remains uncovered.
 
+## GitHub-native dependency and policy intelligence
+
+Two current GitHub APIs fit Forge unusually well because both answer synchronous questions about durable GitHub state using permissions Forge already has.
+
+**Dependency review.** GitHub's `dependency-graph/compare/{base...head}` endpoint needs only Contents read. Forge can now use `query: "dependencies"` on an open change to show added/removed dependencies, scope/license metadata, and vulnerability advisories GitHub associates with the changed dependency graph. A private repository may legitimately return 403 when GitHub Code Security is unavailable, and Forge reports that limitation rather than substituting its own package scan. Merge preparation also adds a warning when GitHub reports vulnerability findings in the dependency changes.
+
+This is deliberately based on the commit-to-commit dependency diff, not GitHub's full SBOM export. GitHub has announced the synchronous SBOM export endpoint will close on 13 November 2026 in favor of an asynchronous generate/fetch flow; adopting that would pull Forge back toward polling/state for a feature it does not need.
+
+**Branch policy.** GitHub's active-rules-for-branch endpoint needs only Metadata read. `query: "policy"` now shows the active rules applying to the default branch and extracts required status-check context names where GitHub supplies them. Merge preparation can therefore say what checks GitHub requires without pretending Forge knows whether those checks are currently green. Reading actual check/status results still needs additional permission and remains a separate decision.
+
 ## Candidate: surface repository CI results
 
 The attractive next step is **read-only visibility into checks on the commit
@@ -170,6 +180,14 @@ The correct shape, if the permission cost is accepted, is:
 - a later `forge_read` can report current check state for the default/change
   head;
 - no background watcher, queue, polling loop, or "wait until green" workflow.
+
+## More GitHub-state ideas that still fit the boundary
+
+- `history [path]`: GitHub's list-commits endpoint accepts a path filter and requires only Contents read. A bounded history view could answer who/when/why a file last moved without a clone.
+- language distribution: GitHub's repository-languages endpoint needs only Metadata read and returns byte counts by language; useful alongside tree stats.
+- tree health borrowed from git-sizer: maximum path depth, longest paths, directories with unusually many direct children, and oversized tracked blobs can all be measured from the current Git tree without claiming full Git object/history size.
+- quality-gate inventory: inspect committed workflow/config files and package scripts to identify which test/typecheck/lint/security gates a repo declares. That is configuration evidence, distinct from running those gates.
+- targeted recent churn: fetch a small bounded set of recent commits and their changed-file lists to identify frequently touched files. Avoid a permanent history index and disclose the sampled window.
 
 ## Candidate: richer semantic repository map
 

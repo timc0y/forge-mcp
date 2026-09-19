@@ -20,6 +20,7 @@ export function changeName(branch: string): string {
 interface PullRequestPayload {
   number: number;
   head: { ref: string };
+  title?: string;
   draft: boolean;
   updatedAt: string;
 }
@@ -30,13 +31,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function toPullRequestPayload(value: unknown): PullRequestPayload | null {
   if (!isRecord(value)) return null;
-  const { number, head, draft, updated_at: updatedAt } = value;
+  const { number, head, title, draft, updated_at: updatedAt } = value;
   if (typeof number !== 'number' || !isRecord(head)) return null;
   const ref = head.ref;
   if (typeof ref !== 'string') return null;
   return {
     number,
     head: { ref },
+    ...(typeof title === 'string' && title.trim() ? { title: title.trim() } : {}),
     draft: draft === true,
     updatedAt: typeof updatedAt === 'string' ? updatedAt : ''
   };
@@ -76,7 +78,9 @@ export async function openChanges(request: GitHubRequest, repo: RepoRef): Promis
   return parsePullRequests(response.json)
     .filter((pr) => pr.head.ref === CHANGE_BRANCH || pr.head.ref.startsWith(LEGACY_BRANCH_PREFIX))
     .map((pr) => ({
-      name: changeName(pr.head.ref),
+      // The fixed branch is an implementation detail. The PR title preserves
+      // the human intent that created the change and survives chat summarisation.
+      name: pr.title ?? changeName(pr.head.ref),
       branch: pr.head.ref,
       number: pr.number,
       draft: pr.draft,

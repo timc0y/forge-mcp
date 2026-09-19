@@ -69,13 +69,14 @@ function createMockToolContext(customRoutes: Record<string, any> = {}, envOverri
     "GET /repos/testuser/test-repo/pulls": {
       status: 200,
       json: [
-        {
-          head: { ref: "forge" },
-          base: { ref: "main" },
-          number: 42,
-          draft: true,
-          updated_at: "2026-09-18T10:00:00Z"
-        }
+          {
+            head: { ref: "forge" },
+            base: { ref: "main" },
+            number: 42,
+            title: "Improve authentication flow",
+            draft: true,
+            updated_at: "2026-09-18T10:00:00Z"
+          }
       ]
     },
     "GET /repos/testuser/test-repo/contents/README.md": {
@@ -207,7 +208,7 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(treeRes.isError).toBeFalsy();
     expect(treeRes.content[0].text).toContain("testuser/test-repo at main: 3 files");
     expect(treeRes.structuredContent.tree).toContain("src/index.ts");
-    expect(treeRes.structuredContent.changes).toEqual(["forge"]);
+    expect(treeRes.structuredContent.changes).toEqual(["Improve authentication flow"]);
 
     // 3. Level 2: Read specific files
     const filesRes = await readTool.handler({ repo: "test-repo", paths: ["README.md"] });
@@ -275,7 +276,7 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     });
 
     expect(res.isError).toBeFalsy();
-    expect(res.content[0].text).toContain("Merging \"forge\" into main brings 1 commit: 1 file");
+    expect(res.content[0].text).toContain("Merging \"Improve authentication flow\" into main brings 1 commit: 1 file");
     expect(res.content[0].text).toContain("https://example.com/forge/approvals/");
     expect(res.structuredContent.approval.url).toContain("https://example.com/forge/approvals/");
   });
@@ -291,7 +292,7 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     });
 
     expect(res.isError).toBeFalsy();
-    expect(res.content[0].text).toContain("Discarding \"forge\" drops 1 file, +5/-1. 1 commit would stop being reachable.");
+    expect(res.content[0].text).toContain("Discarding \"Improve authentication flow\" drops 1 file, +5/-1. 1 commit would stop being reachable.");
     expect(res.content[0].text).toContain("https://example.com/forge/approvals/");
     expect(res.structuredContent.approval.url).toContain("https://example.com/forge/approvals/");
   });
@@ -532,6 +533,69 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.content[0].text).toContain("committed-code fallback after no filename match");
     expect(res.structuredContent.tree).toEqual(["src/utils.ts"]);
     expect(res.structuredContent.files[0].text).toContain("rotateCredential");
+  });
+
+  it("reads dependency changes and vulnerabilities from GitHub's dependency graph", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/dependency-graph/compare/main...forge": {
+        status: 200,
+        json: [
+          {
+            change_type: "added",
+            manifest: "package.json",
+            ecosystem: "npm",
+            name: "example-package",
+            version: "2.0.0",
+            package_url: "pkg:npm/example-package@2.0.0",
+            license: "MIT",
+            scope: "runtime",
+            source_repository_url: "https://github.com/example/package",
+            vulnerabilities: [
+              {
+                severity: "high",
+                advisory_ghsa_id: "GHSA-xxxx-yyyy-zzzz",
+                advisory_summary: "Example vulnerability",
+                advisory_url: "https://github.com/advisories/GHSA-xxxx-yyyy-zzzz"
+              }
+            ]
+          }
+        ]
+      }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", change: "forge", query: "dependencies" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("1 added, 0 removed; 1 vulnerability finding");
+    expect(res.structuredContent.files[0].text).toContain("high GHSA-xxxx-yyyy-zzzz");
+  });
+
+  it("reads active branch policy and required status-check names", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/rules/branches/main": {
+        status: 200,
+        json: [
+          {
+            type: "required_status_checks",
+            ruleset_source_type: "Repository",
+            ruleset_source: "testuser/test-repo",
+            parameters: {
+              required_status_checks: [{ context: "CI / check" }, { context: "Security" }],
+              strict_required_status_checks_policy: true
+            }
+          },
+          { type: "pull_request" }
+        ]
+      }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "policy" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("required checks: CI / check, Security");
+    expect(res.structuredContent.tree[0]).toContain("required_status_checks");
   });
 
   it("reports change hotspots without semantic guessing", async () => {
