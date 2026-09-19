@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { classifyExactMatchContextsWithJev, classifyHygieneCandidatesWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, resolveRepoWithJev, routeForgeReadEvidenceWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
+import { classifyExactMatchContextsWithJev, classifyHygieneCandidatesWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, resolveRepoWithJev, routeForgeReadEvidenceWithJev, semanticFileExcerpt, semanticPathTriageDetailed } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
@@ -82,14 +82,7 @@ import {
 import { commitFiles } from './write';
 import { auditDurableCommitWithJev } from './post-commit-audit';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
-import {
-  SUPPORTED_PLATFORMS,
-  buildAdvancedSearchQuery,
-  rankSearchResultsWithJev,
-  resolveDocPlatform,
-  searchGitHubCode,
-  searchGitHubRepos
-} from './search';
+import { buildSearchQuery, rankSearchResultsWithJev, searchGitHubCode, searchGitHubRepos } from './search';
 import { capture } from './capture';
 import { storeGallery } from './gallery';
 import { releaseCaptureQuota, reserveCaptureQuota } from './quota';
@@ -221,63 +214,45 @@ async function run(
 async function resolveRepoTarget(ctx: ToolContext, value: string): Promise<RepoRef> {
   const trimmed = value.trim();
 
-  // If already a valid canonical owner/name format, return directly
-  if (trimmed.includes("/")) {
+  if (trimmed.includes('/')) {
     try {
       return parseRepo(trimmed);
     } catch {
-      // If owner/name has spaces or typos, allow fuzzy resolution against reachable repos
+      // A human may have typed an informal owner/name; reachable repos below
+      // are the only fuzzy candidates Forge is allowed to substitute.
     }
   }
 
-  // Check if it matches a known documentation platform alias (e.g. "cloudflare", "nextjs", "react", "mdn")
-  const platform = resolveDocPlatform(trimmed);
-  if (platform) {
-    return platform.repo;
-  }
-
-  // Check reachable repos for exact, normalized, or Jev semantic match
   try {
     const repos = await listRepos(ctx.gh);
-
-    // 1. Exact match against owner/name or repo name (case-insensitive)
-    const exactNameMatches = repos.filter((r) => {
-      const parts = r.repo.split("/");
-      return (
-        parts[1]?.toLowerCase() === trimmed.toLowerCase() ||
-        r.repo.toLowerCase() === trimmed.toLowerCase()
-      );
+    const lower = trimmed.toLowerCase();
+    const exact = repos.filter((entry) => {
+      const name = entry.repo.split('/')[1] ?? entry.repo;
+      return entry.repo.toLowerCase() === lower || name.toLowerCase() === lower;
     });
-    if (exactNameMatches.length === 1 && exactNameMatches[0]) {
-      return parseRepo(exactNameMatches[0].repo);
-    }
+    if (exact.length === 1 && exact[0]) return parseRepo(exact[0].repo);
 
-    // 2. Normalized alphanumeric match (e.g. "easy roads" -> "easyroads" matches "EasyRoads")
-    const cleanQuery = trimmed.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (cleanQuery.length > 0) {
-      const normalizedMatches = repos.filter((r) => {
-        const repoName = (r.repo.split("/")[1] ?? r.repo).toLowerCase().replace(/[^a-z0-9]/g, "");
-        const fullRepo = r.repo.toLowerCase().replace(/[^a-z0-9]/g, "");
-        return repoName === cleanQuery || fullRepo === cleanQuery;
+    const normalized = lower.replace(/[^a-z0-9]/g, '');
+    if (normalized) {
+      const matches = repos.filter((entry) => {
+        const name = entry.repo.split('/')[1] ?? entry.repo;
+        return (
+          name.toLowerCase().replace(/[^a-z0-9]/g, '') === normalized ||
+          entry.repo.toLowerCase().replace(/[^a-z0-9]/g, '') === normalized
+        );
       });
-      if (normalizedMatches.length === 1 && normalizedMatches[0]) {
-        return parseRepo(normalizedMatches[0].repo);
-      }
+      if (matches.length === 1 && matches[0]) return parseRepo(matches[0].repo);
     }
 
-    // 3. Jev semantic / fuzzy repository resolution
     if (ctx.env.TYPESAFE_API_KEY && repos.length > 0) {
       const match = await resolveRepoWithJev(ctx.env, trimmed, repos);
-      if (match && match.confidence >= 0.8) {
-        return parseRepo(match.repo);
-      }
+      if (match?.confidence && match.confidence >= 0.8) return parseRepo(match.repo);
     }
   } catch {
-    // If listing fails, fall through to default parse
+    // Resolution is convenience. Canonical parsing below remains deterministic.
   }
 
-  // 4. Default: parse as user's own repo (or throw standard validation error if invalid)
-  return parseRepo(trimmed.includes("/") ? trimmed : `${ctx.identity.githubLogin}/${trimmed}`);
+  return parseRepo(trimmed.includes('/') ? trimmed : `${ctx.identity.githubLogin}/${trimmed}`);
 }
 
 function changeNames(changes: Change[]): string[] {
@@ -383,124 +358,60 @@ const readOutput = {
       })
     )
     .optional(),
-  platforms: z
-    .array(
-      z.object({
-        name: z.string(),
-        repo: z.string(),
-        description: z.string()
-      })
-    )
-    .optional(),
   ...receiptFields
 };
 
-async function searchGlobalOrDocs(
-  ctx: ToolContext,
-  targetRepo: string | undefined,
-  query: string
-): Promise<ToolOutcome> {
-  const gh = ctx.ghUser ?? ctx.gh;
-  const isTargetDocs = targetRepo === 'docs';
-  const isTargetGlobal = targetRepo === 'global' || targetRepo === 'search' || targetRepo === 'public';
-
-  const platform =
-    targetRepo && !isTargetDocs && !isTargetGlobal
-      ? resolveDocPlatform(targetRepo)
-      : isTargetGlobal
-        ? null
-        : resolveDocPlatform(query);
-
-  const isDocsMode = (isTargetDocs || Boolean(platform)) && !isTargetGlobal;
-  const mode = isDocsMode
-    ? 'docs'
-    : /\b(repo|repos|repository|repositories|libraries)\b/i.test(query)
-      ? 'repos'
-      : 'code';
-
-  if (isDocsMode && !platform && (!query || query.trim() === '')) {
+async function searchGlobal(ctx: ToolContext, query: string): Promise<ToolOutcome> {
+  const trimmed = query.trim();
+  if (!trimmed) {
     return {
-      summary: `Forge Documentation Search supports: ${SUPPORTED_PLATFORMS.map((p) => p.name).join(', ')}.`,
-      structured: {
-        platforms: SUPPORTED_PLATFORMS.map((p) => ({
-          name: p.name,
-          repo: formatRepo(p.repo),
-          description: p.description
-        })),
-        next: 'Specify repo: "<platform>" (e.g. repo: "cloudflare") and a query to search documentation.'
-      }
-    };
-  }
-
-  const { query: advancedQuery, detectedPlatform, intentMode } = await buildAdvancedSearchQuery(ctx.env, query, mode);
-  const activePlatform = isTargetGlobal ? null : (platform ?? detectedPlatform);
-  const effectiveMode = activePlatform ? 'docs' : (intentMode ?? mode);
-
-  const limits: string[] = [];
-
-  if (effectiveMode === 'repos') {
-    const { total, items } = await searchGitHubRepos(gh, advancedQuery, 10);
-    const ranked = await rankSearchResultsWithJev(ctx.env, query, items);
-
-    if (ranked.length === 0) {
-      return {
-        summary: `No public GitHub repositories matched "${query}".`,
-        structured: {
-          searchResults: [],
-          next: 'Try broader search terms, or specify repo: "docs" with a platform name like "cloudflare" or "nextjs".'
-        }
-      };
-    }
-
-    return {
-      summary: `Found ${total} public GitHub repositor${total === 1 ? 'y' : 'ies'} for "${query}" (advanced query: \`${advancedQuery}\`).`,
-      structured: withLimits(
-        {
-          repos: ranked.map((r) => ({
-            repo: r.repo,
-            about: [r.snippet, r.stars ? `⭐ ${r.stars}` : '', r.url].filter(Boolean).join(' · ')
-          })),
-          searchResults: ranked,
-          next: 'Pass repo: "<owner>/<name>" to inspect tree or files of any of these repositories.'
-        },
-        limits
-      )
-    };
-  }
-
-  // Code / Documentation search
-  const { total, items } = await searchGitHubCode(gh, advancedQuery, 10);
-  const ranked = await rankSearchResultsWithJev(ctx.env, query, items);
-
-  const scopeLabel = activePlatform
-    ? `${activePlatform.name} documentation (${formatRepo(activePlatform.repo)})`
-    : 'public GitHub code';
-
-  if (ranked.length === 0) {
-    return {
-      summary: `No code matches found across ${scopeLabel} for "${query}" (query: \`${advancedQuery}\`).`,
+      summary: 'Say what to search for on public GitHub.',
       structured: {
         searchResults: [],
-        next: 'Try broader keywords or omit language/path qualifiers.'
+        next: 'Pass a query, for example "MCP TypeScript repositories" or "OAuth callback code".'
       }
     };
   }
 
-  return {
-    summary: `Found ${total} code matches across ${scopeLabel} for "${query}".`,
-    structured: withLimits(
-      {
-        files: ranked.map((item) => ({
-          path: item.path ? `${item.repo}:${item.path}` : item.title,
-          text: item.snippet ?? ''
+  const mode = /\b(repo|repos|repository|repositories|libraries)\b/i.test(trimmed) ? 'repos' : 'code';
+  const searchQuery = buildSearchQuery(trimmed, mode);
+
+  if (mode === 'repos') {
+    const { total, items } = await searchGitHubRepos(ctx.ghUser, searchQuery, 10);
+    const ranked = await rankSearchResultsWithJev(ctx.env, trimmed, items);
+    return {
+      summary: ranked.length
+        ? `Found ${total} public GitHub repositor${total === 1 ? 'y' : 'ies'} for "${trimmed}".`
+        : `No public GitHub repositories matched "${trimmed}".`,
+      structured: {
+        repos: ranked.map((item) => ({
+          repo: item.repo,
+          about: [item.snippet, item.stars ? `⭐ ${item.stars}` : '', item.url].filter(Boolean).join(' · ')
         })),
         searchResults: ranked,
-        next: activePlatform
-          ? `Read full doc file with repo: "${formatRepo(activePlatform.repo)}" and paths: ["${ranked[0]?.path ?? '...'}"]`
-          : 'Read any matching file with repo: "<owner>/<name>" and paths: ["..."]'
-      },
-      limits
-    )
+        next: ranked.length
+          ? 'Pass one result as owner/name to inspect it.'
+          : 'Try fewer or broader search terms.'
+      }
+    };
+  }
+
+  const { total, items } = await searchGitHubCode(ctx.ghUser, searchQuery, 10);
+  const ranked = await rankSearchResultsWithJev(ctx.env, trimmed, items);
+  return {
+    summary: ranked.length
+      ? `Found ${total} public GitHub code match${total === 1 ? '' : 'es'} for "${trimmed}".`
+      : `No public GitHub code matched "${trimmed}".`,
+    structured: {
+      files: ranked.map((item) => ({
+        path: item.path ? `${item.repo}:${item.path}` : item.title,
+        text: item.snippet ?? ''
+      })),
+      searchResults: ranked,
+      next: ranked.length
+        ? 'Pass a matching owner/name and path to inspect the committed file.'
+        : 'Try fewer or broader search terms.'
+    }
   };
 }
 
