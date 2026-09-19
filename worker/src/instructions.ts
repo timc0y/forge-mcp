@@ -13,7 +13,7 @@ export const LEAD = [
   'For plans, research, direction and routine content, edit the default branch. Use the one Forge change only when work needs human review.',
   'Every result lists the repo\'s open Forge change, so nothing has to be remembered.',
   'forge_merge and forge_discard only return a link a human opens to decide; it still works after this chat ends.',
-  'forge_see needs a public URL; it returns screenshots inline with the same call.'
+  'forge_see needs a public URL; screenshots return inline.'
 ].join(' ');
 
 const DETAIL = [
