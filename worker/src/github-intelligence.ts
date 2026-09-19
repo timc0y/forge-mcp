@@ -57,7 +57,11 @@ export async function readRecentChurn(
     return { entries: [], commitsSampled: 0, truncated: false, unavailable: history.unavailable };
   }
   const details = await Promise.all(
-    history.commits.map(async (commit) => {
+    history.commits.map(async (commit): Promise<{
+      files: Array<{ filename: string; additions: number; deletions: number }>;
+      truncated: boolean;
+      unavailable?: string;
+    }> => {
       const response = await request(`/repos/${repo.owner}/${repo.name}/commits/${encodeURIComponent(commit.sha)}?per_page=100`);
       if (response.status !== 200) {
         return {
