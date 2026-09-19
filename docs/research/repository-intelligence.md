@@ -27,6 +27,12 @@ remain a deterministic pre-blob guard over the exact resolved file content, whil
 reserved for screening, ranking and advisory review. A probabilistic classifier should
 direct attention, not decide whether GitHub truth is allowed to change.
 
+Natural repository questions now apply the Sift principle directly: path triage produces a
+small candidate set, GitHub reads at most eight complete candidates inside the Worker, and
+one Jev fan-out gives each candidate an independent relevance probability. Full screened
+contents stay out of the MCP result; only the strongest bounded excerpts are returned.
+Missing judgments remain unknown rather than being treated as irrelevant.
+
 Research and implementation note, 2026-09-19.
 
 ## Goal

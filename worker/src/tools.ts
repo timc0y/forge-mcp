@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { classifyExactMatchContextsWithJev, classifyHygieneCandidatesWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, resolveRepoWithJev, routeForgeReadEvidenceWithJev, semanticFileExcerpt, semanticPathTriageDetailed } from './jev';
+import { classifyExactMatchContextsWithJev, classifyHygieneCandidatesWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, resolveRepoWithJev, routeForgeReadEvidenceWithJev, screenFileContentsWithJev, semanticFileExcerpt, semanticPathTriageDetailed } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
@@ -60,6 +60,7 @@ import {
   lintCommittedFiles,
   patchIdentifierCandidates,
   qualityCandidatePaths,
+  queryContentPreview,
   representativePatchHunks,
   splitPatchHunks,
   repositoryMap,
@@ -1012,10 +1013,58 @@ async function readTreeLevel(
     }
   }
 
+  const fileExcerpts: Array<{ path: string; text: string }> = [...contentFallbackExcerpts];
+  let contentScreened = false;
+
+  if (isSemanticSearch && paths.length > 0 && ctx.env.TYPESAFE_API_KEY) {
+    try {
+      const candidatePaths = paths.slice(0, 8);
+      const readResult = await readFiles(gh, repo, base, candidatePaths, MAX_FILE_BYTES);
+      const complete = readResult.files.filter((file) => !file.truncated);
+      const relevance = await screenFileContentsWithJev(
+        ctx.env,
+        trimmedQuery ?? '',
+        complete.map((file) => ({
+          path: file.path,
+          preview: queryContentPreview(file.content, trimmedQuery ?? '')
+        }))
+      );
+      const scored = relevance
+        .filter((item): item is typeof item & { probability: number } => item.probability !== null)
+        .sort((left, right) => right.probability - left.probability);
+      const strong = scored.filter((item) => item.probability >= 0.35);
+
+      if (scored.length > 0) contentScreened = true;
+      if (strong.length > 0) {
+        const strongPaths = strong.map((item) => item.path);
+        const strongSet = new Set(strongPaths);
+        paths = [...strongPaths, ...paths.filter((path) => !strongSet.has(path))];
+
+        const byPath = new Map(complete.map((file) => [file.path, file]));
+        for (const candidate of strong.slice(0, 2)) {
+          const file = byPath.get(candidate.path);
+          if (!file) continue;
+          const excerpt = await semanticFileExcerpt(ctx.env, file.path, file.content, trimmedQuery ?? '');
+          if (excerpt && excerpt.confidence >= 0.35) {
+            fileExcerpts.push({
+              path: `${file.path} (lines ${excerpt.startLine}-${excerpt.endLine})`,
+              text: excerpt.content
+            });
+          }
+        }
+      }
+    } catch {
+      // Path ranking still answers the query when content screening is unavailable.
+    }
+  }
+
   const shown = paths.slice(0, MAX_TREE_ENTRIES);
 
   const limits: string[] = [];
   if (semanticCoverageNote) limits.push(semanticCoverageNote);
+  if (contentScreened) {
+    limits.push('Jev independently screened up to eight committed candidate files; only selected excerpts are returned, not the screened file contents.');
+  }
   if (paths.length > shown.length) {
     limits.push(`Showing ${shown.length} of ${paths.length} files. Pass query to narrow the list.`);
   }
@@ -1023,29 +1072,8 @@ async function readTreeLevel(
     limits.push('GitHub truncated this listing, so some files are missing from it.');
   }
 
-  const fileExcerpts: Array<{ path: string; text: string }> = [...contentFallbackExcerpts];
-  if (isSemanticSearch && paths.length > 0 && ctx.env.TYPESAFE_API_KEY) {
-    try {
-      const topCandidates = paths.slice(0, 2);
-      const readResult = await readFiles(gh, repo, base, topCandidates, MAX_FILE_BYTES);
-      for (const candidateFile of readResult.files) {
-        if (!candidateFile.truncated) {
-          const excerpt = await semanticFileExcerpt(ctx.env, candidateFile.path, candidateFile.content, query!.trim());
-          if (excerpt && excerpt.confidence >= 0.4) {
-            fileExcerpts.push({
-              path: `${candidateFile.path} (lines ${excerpt.startLine}-${excerpt.endLine})`,
-              text: excerpt.content
-            });
-          }
-        }
-      }
-    } catch {
-      // Degrade gracefully to listing only
-    }
-  }
-
   const queryNote = isSemanticSearch
-    ? ` matching "${query?.trim()}" (semantically ranked by Jev across ${allFilePaths.length} files)`
+    ? ` matching "${query?.trim()}" (semantically ranked by Jev across ${allFilePaths.length} paths${contentScreened ? ' and bounded committed content' : ''})`
     : isContentFallback
       ? ` matching "${query?.trim()}" (committed-code fallback after no filename match)`
       : query?.trim()

@@ -146,6 +146,37 @@ const HYGIENE_CONTENT_MARKER = /\b(?:legacy|deprecated|fallback|compat(?:ibility
  * Keep marker-bearing neighborhoods plus representative file context. This is
  * more informative to Jev than blindly taking the first N characters.
  */
+export function queryContentPreview(content: string, query: string, maxChars = 4500): string {
+  if (content.length <= maxChars) return content;
+
+  const lines = content.split('\n');
+  const tokens = [...new Set(query.toLowerCase().match(/[a-z0-9_/-]{3,}/g) ?? [])];
+  const selected = new Set<number>([0, 1, lines.length - 2, lines.length - 1]);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const lower = (lines[index] ?? '').toLowerCase();
+    if (!tokens.some((token) => lower.includes(token))) continue;
+    for (let around = Math.max(0, index - 1); around <= Math.min(lines.length - 1, index + 1); around += 1) {
+      selected.add(around);
+    }
+    if (selected.size >= 32) break;
+  }
+
+  if (selected.size < 12) {
+    const slots = 12 - selected.size;
+    for (let index = 0; index < slots; index += 1) {
+      selected.add(Math.min(lines.length - 1, Math.floor((index * lines.length) / Math.max(1, slots))));
+    }
+  }
+
+  return [...selected]
+    .filter((index) => index >= 0 && index < lines.length)
+    .sort((left, right) => left - right)
+    .map((index) => `L${index + 1}: ${lines[index] ?? ''}`)
+    .join('\n')
+    .slice(0, maxChars);
+}
+
 export function hygieneContentPreview(content: string, maxChars = 3200): string {
   const lines = content.split('\n');
   if (content.length <= maxChars) return content;
