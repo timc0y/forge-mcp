@@ -59,6 +59,10 @@ export function isDependencyQuery(query: string): boolean {
   return /^(?:deps?|dependencies|dependency review|dependency changes|vulnerabilities)$/i.test(query.trim());
 }
 
+export function isReviewQuery(query: string): boolean {
+  return /^(?:review|review change|change review|review packet|merge review)$/i.test(query.trim());
+}
+
 export function isPolicyQuery(query: string): boolean {
   return /^(?:policy|rules|ruleset|rulesets|branch protection|required checks)$/i.test(query.trim());
 }
