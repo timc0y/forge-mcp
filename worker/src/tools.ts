@@ -48,6 +48,7 @@ import {
   isMapQuery,
   isPolicyQuery,
   isQualityQuery,
+  isReviewQuery,
   isStatsQuery,
   lintCommittedFiles,
   qualityCandidatePaths,
@@ -57,6 +58,7 @@ import {
   statsScope
 } from './repository-intelligence';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
+import { buildChangeReviewPacket, changeReviewLines, changeReviewNotices } from './change-review';
 import {
   readBranchPolicy,
   readCodeownersErrors,
@@ -1029,6 +1031,39 @@ async function readChangeLevel(
   let semanticallyRanked = false;
   let statsNote = '';
   const trimmedQuery = query?.trim();
+
+  if (trimmedQuery && isReviewQuery(trimmedQuery)) {
+    const packet = await buildChangeReviewPacket(ctx.env, gh, repo, base, change, comparison);
+    const changes = await openChanges(ctx.gh, repo);
+    const names = changeNames(changes);
+    const size = totals(comparison);
+    const reviewLines = changeReviewLines(packet);
+    const reviewLimits = [
+      ...limits,
+      ...changeReviewNotices(packet, comparison, base),
+      ...(comparison.truncated ? ['GitHub truncated this comparison, so changed-file evidence is incomplete.'] : [])
+    ];
+    return {
+      summary: `Review of "${change.name}" against ${base}: ${size.files} file${size.files === 1 ? '' : 's'}, +${size.additions}/-${size.deletions}${packet.impactSummary ? `; ${packet.impactSummary}` : ''}.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          diff: {
+            status: comparison.status,
+            ahead: comparison.aheadBy,
+            behind: comparison.behindBy,
+            files: comparison.files.slice(0, MAX_DIFF_FILES).map((file) => ({
+              path: file.path,
+              change: describeChangedFile(file)
+            }))
+          },
+          ...(reviewLines.length > 0 ? { tree: reviewLines } : {}),
+          changes: names,
+          next: 'Ask for specific paths to inspect their patches, or forge_merge when the evidence is sufficient.'
+        },
+        reviewLimits
+      )
+    };
+  }
 
   if (trimmedQuery && isDependencyQuery(trimmedQuery)) {
     const review = await readDependencyReview(gh, repo, base, change.branch);

@@ -745,6 +745,61 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.tree[0]).toContain("required_status_checks");
   });
 
+  it("builds a read-only review packet before merge approval", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        result: {
+          result: {
+            answers: {
+              primaryArea: { type: 'choice', choice: 'authentication/security', confidence: 0.95 },
+              matchesIntent: { type: 'noul', noul: 0.9 },
+              breakingChange: { type: 'noul', noul: 0.1 },
+              securitySensitive: { type: 'noul', noul: 0.95 },
+              persistentDataChange: { type: 'noul', noul: 0.1 },
+              userVisible: { type: 'noul', noul: 0.5 },
+              testsRelevant: { type: 'noul', noul: 0.9 },
+              docsRelevant: { type: 'noul', noul: 0.2 },
+              multipleConcerns: { type: 'noul', noul: 0.1 },
+              hasOutlier: { type: 'noul', noul: 0.1 }
+            }
+          }
+        }
+      })
+    }) as unknown as typeof fetch;
+    try {
+      const { server } = createMockToolContext({
+        "GET /repos/testuser/test-repo/rules/branches/main": {
+          status: 200,
+          json: [{ type: 'pull_request', parameters: { required_approving_review_count: 1 } }]
+        },
+        "GET /repos/testuser/test-repo/pulls/42": {
+          status: 200,
+          json: { mergeable: true, draft: true }
+        },
+        "GET /repos/testuser/test-repo/pulls/42/reviews": {
+          status: 200,
+          json: [{ state: 'APPROVED', user: { login: 'reviewer' } }]
+        }
+      }, {
+        TYPESAFE_API_KEY: 'cfut_mock_token_123',
+        TYPESAFE_BASE_URL: 'https://api.cloudflare.com/client/v4/accounts/test/ai/run'
+      });
+      const readTool = (server as any)._registeredTools['forge_read'];
+      const res = await readTool.handler({ repo: 'test-repo', change: 'forge', query: 'review' });
+
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain('Authentication/security');
+      expect(res.structuredContent.tree).toContain('POLICY approvals · 1 required');
+      expect(res.structuredContent.tree.some((line: string) => line.includes('REVIEWS approvals 1'))).toBe(true);
+      expect(res.structuredContent.limits.some((line: string) => line.includes('security-sensitive'))).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("reports change hotspots without semantic guessing", async () => {
     const { server } = createMockToolContext();
     const readTool = (server as any)._registeredTools["forge_read"];

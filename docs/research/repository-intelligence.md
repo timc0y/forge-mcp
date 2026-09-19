@@ -110,6 +110,10 @@ This gives a safe workflow for "find every X and replace it with Y":
 Forge intentionally does not add a top-level "replace the entire repository"
 mutation. Discovery and mutation remain separate, observable acts.
 
+### Read-only change review packets
+
+The same evidence used to prepare a merge approval is now available through `forge_read` with a change and `query: "review"`. This route is read-only: it combines GitHub branch rules, required approval/check names, latest review states, one-shot mergeability, dependency-diff findings and one bounded patch-rich Jev assessment before Forge creates any approval record. The packet builder lives in `change-review.ts` so merge preparation can reuse exactly the same evidence rather than developing a second definition of what matters.
+
 ### Change-aware stats and diff semantics
 
 The same `stats [path]` query now has a useful meaning when reading an open
