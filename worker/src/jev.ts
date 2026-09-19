@@ -368,15 +368,8 @@ export async function semanticPathTriageDetailed(
 
   let rankedPaths: string[] = [];
   if (finalResp && noulOf(finalResp.answers.exists, 1) >= 0.2) {
-    const answer = finalResp.answers.bestMatch as JevChoiceAnswer | undefined;
-    if (answer) {
-      rankedPaths = Object.entries(answer.distribution)
-        .filter(([path, probability]) => bestByPath.has(path) && probability > 0.02)
-        .sort((left, right) => right[1] - left[1])
-        .slice(0, 20)
-        .map(([path]) => path);
-      if (rankedPaths.length === 0 && bestByPath.has(answer.choice)) rankedPaths = [answer.choice];
-    }
+    rankedPaths = rankedChoices(finalResp.answers.bestMatch, bestByPath.keys(), 0.02, 20)
+      .map(({ id }) => id);
   }
   if (rankedPaths.length === 0) rankedPaths = finalists.slice(0, 20).map((candidate) => candidate.path);
 
@@ -489,11 +482,8 @@ export async function semanticFileExcerpt(
 
   if (!resp) return null;
 
-  const targetAnswer = resp.answers.targetSection as JevChoiceAnswer | undefined;
-  const relevanceAnswer = resp.answers.isRelevant as JevNoulAnswer | undefined;
-
-  const chosenId = targetAnswer?.choice;
-  const confidence = relevanceAnswer?.noul ?? 0.5;
+  const chosenId = choiceOf(resp.answers.targetSection)?.choice;
+  const confidence = noulOf(resp.answers.isRelevant, 0.5);
 
   if (!chosenId || confidence < 0.35) return null;
 
@@ -640,21 +630,6 @@ export interface SeePointer {
 const EXISTS_ACT = 0.35;
 const ERROR_ACT = 0.8;
 
-/** Choice may return L4, l4, or the line text itself. */
-export function lineFromChoice(choice: string | undefined, ids: string[], lines: string[]): string | null {
-  if (!choice) return null;
-  const idIndex = ids.indexOf(choice);
-  if (idIndex >= 0) return lines[idIndex] ?? null;
-  const textIndex = lines.indexOf(choice);
-  if (textIndex >= 0) return lines[textIndex] ?? null;
-  const numbered = /^L(\d+)$/i.exec(choice.trim());
-  if (numbered) {
-    const index = Number(numbered[1]) - 1;
-    return lines[index] ?? null;
-  }
-  return null;
-}
-
 /**
  * One fan-out over a capture outline. `next` is derived in code from exists/error.
  * Jev never sees the screenshot.
@@ -709,15 +684,14 @@ export async function judgeSeePacket(
 
   const isError = noulOf(resp.answers.isError, 0);
   const exists = noulOf(resp.answers.exists, 0);
-  const suspectChoice = (resp.answers.suspect as JevChoiceAnswer | undefined)?.choice;
-  const suspect = lineFromChoice(suspectChoice, ids, lines);
+  const suspectId = choiceOf(resp.answers.suspect)?.choice;
+  const suspectIndex = suspectId ? ids.indexOf(suspectId) : -1;
+  const suspect = suspectIndex >= 0 ? lines[suspectIndex] ?? null : null;
   const isErrorPage = isError >= ERROR_ACT;
   const next: SeePointer['next'] = isErrorPage || exists < EXISTS_ACT ? 'stop' : 'read';
 
-  const pageTypeAnswer = resp.answers.pageType as JevChoiceAnswer | undefined;
-  const unlabeledAnswer = resp.answers.hasUnlabeledControls as JevNoulAnswer | undefined;
-  const pageType = pageTypeAnswer?.choice;
-  const hasUnlabeledControls = (unlabeledAnswer?.noul ?? 0) > 0.7;
+  const pageType = choiceOf(resp.answers.pageType)?.choice;
+  const hasUnlabeledControls = noulOf(resp.answers.hasUnlabeledControls, 0) > 0.7;
 
   const result: SeePointer = {
     isErrorPage,
@@ -838,12 +812,12 @@ export async function assessChangeWithJev(
   });
   if (!resp) return null;
 
-  const area = resp.answers.primaryArea as JevChoiceAnswer | undefined;
-  const outlier = resp.answers.outlierFile as JevChoiceAnswer | undefined;
+  const area = choiceOf(resp.answers.primaryArea);
+  const outlier = choiceOf(resp.answers.outlierFile);
   const outlierProbability = noulOf(resp.answers.hasOutlier, 0);
   return {
     primaryArea: area?.choice || 'general code',
-    areaConfidence: area?.confidence ?? Math.max(0, ...Object.values(area?.distribution ?? {})),
+    areaConfidence: choiceConfidence(area),
     intentMatch: noulOf(resp.answers.matchesIntent, 0.5),
     breakingChange: noulOf(resp.answers.breakingChange, 0),
     securitySensitive: noulOf(resp.answers.securitySensitive, 0),
@@ -1029,10 +1003,9 @@ export async function classifyQualityGatesWithJev(
 
   const results: QualityGateGuess[] = [];
   for (const [kind] of definitions) {
-    const answer = resp.answers[`gate_${kind.replace(/[^a-z]/g, '_')}`] as JevChoiceAnswer | undefined;
-    if (!answer || answer.choice === 'none' || !paths.includes(answer.choice)) continue;
-    const confidence = answer.confidence || Math.max(0, ...Object.values(answer.distribution ?? {}));
-    if (confidence < 0.45) continue;
+    const answer = choiceOf(resp.answers[`gate_${kind.replace(/[^a-z]/g, '_')}`]);
+    const confidence = choiceConfidence(answer);
+    if (!answer || answer.choice === 'none' || !paths.includes(answer.choice) || confidence < 0.45) continue;
     results.push({ kind, path: answer.choice, confidence });
   }
   return results;
@@ -1106,11 +1079,11 @@ export async function classifyHygieneCandidatesWithJev(
   if (!resp) return [];
 
   return bounded.map((file, index): HygieneClassification => {
-    const answer = resp.answers[`hygieneKind_${index}`] as JevChoiceAnswer | undefined;
+    const answer = choiceOf(resp.answers[`hygieneKind_${index}`]);
     const kind = answer?.choice && kinds.includes(answer.choice as HygieneKind)
       ? answer.choice as HygieneKind
       : 'unclear';
-    const confidence = answer?.confidence || Math.max(0, ...Object.values(answer?.distribution ?? {}));
+    const confidence = choiceConfidence(answer);
     return {
       path: file.path,
       kind,

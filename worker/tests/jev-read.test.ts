@@ -341,7 +341,7 @@ describe("resolveRepoWithJev", () => {
   });
 });
 
-import { judgeSeePacket, lineFromChoice, rankChangeFilesWithJev } from "../src/jev";
+import { judgeSeePacket, rankChangeFilesWithJev } from "../src/jev";
 import { lintCommittedFiles } from "../src/repository-intelligence";
 
 describe("rankChangeFilesWithJev", () => {
@@ -472,18 +472,6 @@ describe("judgeSeePacket", () => {
     expect(pointer?.isErrorPage).toBe(true);
     expect(pointer?.next).toBe("stop");
     expect(pointer?.suspect).toBe("heading: 404 Not Found");
-  });
-});
-
-describe("lineFromChoice", () => {
-  const ids = ["L1", "L2"];
-  const lines = ["banner", "button: Menu"];
-
-  it("resolves L-ids, case, and line text", () => {
-    expect(lineFromChoice("L2", ids, lines)).toBe("button: Menu");
-    expect(lineFromChoice("l1", ids, lines)).toBe("banner");
-    expect(lineFromChoice("button: Menu", ids, lines)).toBe("button: Menu");
-    expect(lineFromChoice("nope", ids, lines)).toBeNull();
   });
 });
 
