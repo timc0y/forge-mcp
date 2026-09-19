@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { parsePathRange, readFiles } from '../src/read';
-import { semanticFileExcerpt, semanticPathTriage, typesafeSystemOne, type JevChoiceAnswer } from '../src/jev';
+import { semanticFileExcerpt, semanticPathTriage, semanticPathTriageDetailed, typesafeSystemOne, type JevChoiceAnswer } from '../src/jev';
 import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 
@@ -212,6 +212,26 @@ describe('Jev semantic triage and excerpt slicing', () => {
     expect(ranked).toEqual(['src/tokens.ts', 'src/auth.ts', 'README.md']);
   });
 
+  it('globally reranks winners from multiple semantic path batches', async () => {
+    let call = 0;
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      call += 1;
+      if (call === 1) {
+        return { ok: true, json: async () => ({ answers: { bestMatch: { type: 'choice', choice: 'src/a.ts', distribution: { 'src/a.ts': 0.8 } }, exists: { type: 'noul', noul: 0.9 } } }) };
+      }
+      if (call === 2) {
+        return { ok: true, json: async () => ({ answers: { bestMatch: { type: 'choice', choice: 'src/z.ts', distribution: { 'src/z.ts': 0.95 } }, exists: { type: 'noul', noul: 0.95 } } }) };
+      }
+      return { ok: true, json: async () => ({ answers: { bestMatch: { type: 'choice', choice: 'src/z.ts', distribution: { 'src/z.ts': 0.9, 'src/a.ts': 0.1 } }, exists: { type: 'noul', noul: 0.95 } } }) };
+    }) as unknown as typeof fetch;
+
+    const paths = Array.from({ length: 201 }, (_, index) => index === 0 ? 'src/a.ts' : index === 200 ? 'src/z.ts' : `src/file-${index}.ts`);
+    const result = await semanticPathTriageDetailed(fakeEnv, paths, 'token rotation');
+
+    expect(result?.paths[0]).toBe('src/z.ts');
+    expect(call).toBe(3);
+  });
+
   it('extracts focused line windows from large files using Jev', async () => {
     const codeLines = Array.from({ length: 120 }, (_, i) => {
       if (i === 45) return 'export function rotateRefreshToken() { return "rotated"; }';
@@ -242,6 +262,26 @@ describe('Jev semantic triage and excerpt slicing', () => {
     expect(excerpt?.startLine).toBe(31);
     expect(excerpt?.endLine).toBe(70);
     expect(excerpt?.content).toContain('export function rotateRefreshToken');
+  });
+
+  it('can select a relevant section near the end of a file longer than the old 1,200-line window', async () => {
+    const codeLines = Array.from({ length: 1800 }, (_, index) =>
+      index === 1700 ? 'export function finalCredentialRotation() { return true; }' : `const line_${index} = ${index};`
+    ).join('\n');
+
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const sections = body.state?.sections ?? body.input?.state?.sections ?? [];
+      const target = sections.find((section: { preview?: string }) => section.preview?.includes('finalCredentialRotation'))?.range ?? sections.at(-1)?.range;
+      return {
+        ok: true,
+        json: async () => ({ answers: { targetSection: { type: 'choice', choice: target }, isRelevant: { type: 'noul', noul: 0.98 } } })
+      };
+    }) as unknown as typeof fetch;
+
+    const excerpt = await semanticFileExcerpt(fakeEnv, 'src/huge.ts', codeLines, 'final credential rotation');
+    expect(excerpt?.content).toContain('finalCredentialRotation');
+    expect((excerpt?.startLine ?? 0)).toBeGreaterThan(1600);
   });
 });
 

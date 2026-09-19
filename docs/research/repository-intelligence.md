@@ -189,6 +189,14 @@ The correct shape, if the permission cost is accepted, is:
 - quality-gate inventory: inspect committed workflow/config files and package scripts to identify which test/typecheck/lint/security gates a repo declares. That is configuration evidence, distinct from running those gates.
 - targeted recent churn: fetch a small bounded set of recent commits and their changed-file lists to identify frequently touched files. Avoid a permanent history index and disclose the sampled window.
 
+## Jev high-cardinality retrieval and context compaction
+
+Aider's repository map demonstrates the value of query-personalized context, but achieves it with Tree-sitter tags, a reference graph, PageRank and caches. Forge should not recreate that index. TypeSafe's own Wikiracing example provides a better fit: Jev has a 255-choice ceiling, and TypeSafe describes using a two-stage scoring/choice system for higher-cardinality decisions.
+
+Forge's path triage now follows that shape. Up to 5,000 representative paths are ranked in parallel batches, each batch contributes a handful of finalists, and a final Jev choice globally reranks those finalists. Enormous repositories use lexical-priority plus even sampling across the whole tree, and the read result discloses when only a representative subset was considered. This replaces the previous first-750-files cap and the incorrect concatenation of independently ranked batches.
+
+Long-file excerpting is similarly query-personalized without an index. Each 40-line window now shows Jev query-bearing lines plus first/middle/last context rather than only its first five lines. Files with more than 40 windows select lexical hits plus an even sample across the full file, so relevant code near the end is no longer excluded by position alone.
+
 ## Candidate: richer semantic repository map
 
 Current semantic repository search ranks paths and selectively reads relevant

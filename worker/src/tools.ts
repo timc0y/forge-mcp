@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage, suggestCommitMessageWithJev, summarizeChangeImpactWithJev } from './jev';
+import { judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev, summarizeChangeImpactWithJev } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
@@ -698,14 +698,18 @@ async function readTreeLevel(
 
   let paths = allFilePaths;
   let isSemanticSearch = false;
+  let semanticCoverageNote: string | undefined;
   let isContentFallback = false;
   let contentFallbackExcerpts: Array<{ path: string; text: string }> = [];
 
   if (trimmedQuery) {
     const trimmed = trimmedQuery;
-    const semanticResults = await semanticPathTriage(ctx.env, allFilePaths, trimmed);
-    if (semanticResults && semanticResults.length > 0) {
-      paths = semanticResults;
+    const semanticResult = await semanticPathTriageDetailed(ctx.env, allFilePaths, trimmed);
+    if (semanticResult?.truncated) {
+      semanticCoverageNote = `Jev semantic path triage considered ${semanticResult.considered} representative paths from ${semanticResult.total} tracked files before the global rerank.`;
+    }
+    if (semanticResult && semanticResult.paths.length > 0) {
+      paths = semanticResult.paths;
       isSemanticSearch = true;
     } else {
       const needle = trimmed.toLowerCase();
@@ -739,6 +743,7 @@ async function readTreeLevel(
   const shown = paths.slice(0, MAX_TREE_ENTRIES);
 
   const limits: string[] = [];
+  if (semanticCoverageNote) limits.push(semanticCoverageNote);
   if (paths.length > shown.length) {
     limits.push(`Showing ${shown.length} of ${paths.length} files. Pass query to narrow the list.`);
   }

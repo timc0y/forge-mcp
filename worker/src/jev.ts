@@ -165,64 +165,158 @@ export async function typesafeSystemOne(
   }
 }
 
+export interface SemanticPathTriageResult {
+  paths: string[];
+  considered: number;
+  total: number;
+  truncated: boolean;
+}
+
+const MAX_SEMANTIC_PATHS = 5000;
+const SEMANTIC_PATH_BATCH = 200;
+const SEMANTIC_BATCH_FINALISTS = 5;
+
+function representativePaths(paths: string[], query: string, limit: number): string[] {
+  if (paths.length <= limit) return paths;
+  const tokens = query.toLowerCase().match(/[a-z0-9_/-]{2,}/g) ?? [];
+  const scored = paths
+    .map((path) => ({
+      path,
+      score: tokens.reduce((sum, token) => sum + (path.toLowerCase().includes(token) ? 1 : 0), 0)
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+
+  const selected = new Set(scored.slice(0, Math.min(1000, limit)).map((entry) => entry.path));
+  const remaining = paths.filter((path) => !selected.has(path));
+  const slots = limit - selected.size;
+  if (slots > 0 && remaining.length > 0) {
+    for (let index = 0; index < slots; index += 1) {
+      const at = Math.min(remaining.length - 1, Math.floor((index * remaining.length) / slots));
+      selected.add(remaining[at]!);
+    }
+  }
+  return [...selected].slice(0, limit);
+}
+
+async function rankPathBatch(
+  env: Env,
+  batch: string[],
+  query: string
+): Promise<Array<{ path: string; score: number }>> {
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: { searchQuery: query, candidatePaths: batch },
+    questions: {
+      bestMatch: {
+        type: 'choice',
+        instructions: `Which file in 'candidatePaths' most directly implements, configures, or documents: "${query}"?`,
+        criteria: batch
+      },
+      exists: {
+        type: 'noul',
+        instructions: `Does any path in candidatePaths actually implement or document: "${query}"? Answer no if the list is only weakly related.`
+      }
+    }
+  });
+  if (!resp) return [];
+  const exists = noulOf(resp.answers.exists, 1);
+  if (exists < 0.2) return [];
+  const answer = resp.answers.bestMatch as JevChoiceAnswer | undefined;
+  if (!answer) return [];
+
+  const ranked = Object.entries(answer.distribution)
+    .filter(([path, probability]) => batch.includes(path) && probability > 0.01)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, SEMANTIC_BATCH_FINALISTS)
+    .map(([path, probability]) => ({ path, score: probability * exists }));
+  if (ranked.length > 0) return ranked;
+  return batch.includes(answer.choice) ? [{ path: answer.choice, score: exists }] : [];
+}
+
 /**
- * Rank candidate paths by semantic relevance to a query in batches of up to 250.
- * Returns paths sorted by descending relevance probability.
+ * High-cardinality semantic path triage. Jev supports at most 255 choices, so
+ * large repositories are reduced in parallel batches and then globally ranked
+ * in a second Jev choice. A bounded representative sample protects latency on
+ * enormous trees and the caller can disclose when that bound applied.
  */
-export async function semanticPathTriage(
+export async function semanticPathTriageDetailed(
   env: Env,
   paths: string[],
   query: string
-): Promise<string[] | null> {
+): Promise<SemanticPathTriageResult | null> {
   if (!env.TYPESAFE_API_KEY || paths.length === 0 || !query.trim()) return null;
-
-  // Jev choice supports up to 255 options. Take the first 250 candidate paths.
-  // For larger repos, chunking into parallel batches is fast (<200ms).
-  const batchSize = 250;
+  const candidates = representativePaths(paths, query.trim(), MAX_SEMANTIC_PATHS);
   const batches: string[][] = [];
-  for (let i = 0; i < Math.min(paths.length, 750); i += batchSize) {
-    batches.push(paths.slice(i, i + batchSize));
+  for (let index = 0; index < candidates.length; index += SEMANTIC_PATH_BATCH) {
+    batches.push(candidates.slice(index, index + SEMANTIC_PATH_BATCH));
   }
 
-  const results = await Promise.all(
-    batches.map(async (batch) => {
-      const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
-        state: {
-          searchQuery: query,
-          candidatePaths: batch
-        },
-        questions: {
-          bestMatch: {
-            type: 'choice',
-            instructions: `Which file in 'candidatePaths' most directly implements, configures, or documents: "${query}"?`,
-            criteria: batch
-          },
-          exists: {
-            type: 'noul',
-            instructions: `Does any path in candidatePaths actually implement or document: "${query}"? Answer no if the list is only weakly related.`
-          }
-        }
-      });
+  const batchResults = (await Promise.all(batches.map((batch) => rankPathBatch(env, batch, query.trim())))).flat();
+  const bestByPath = new Map<string, number>();
+  for (const candidate of batchResults) {
+    bestByPath.set(candidate.path, Math.max(bestByPath.get(candidate.path) ?? 0, candidate.score));
+  }
+  const finalists = [...bestByPath.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 250)
+    .map(([path, score]) => ({ path, score }));
 
-      if (!resp) return [];
+  if (finalists.length === 0) {
+    return { paths: [], considered: candidates.length, total: paths.length, truncated: candidates.length < paths.length };
+  }
+  if (finalists.length === 1) {
+    return {
+      paths: [finalists[0]!.path],
+      considered: candidates.length,
+      total: paths.length,
+      truncated: candidates.length < paths.length
+    };
+  }
 
-      const exists = noulOf(resp.answers.exists, 1);
-      if (exists < 0.2) return [];
+  const finalResp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: {
+      searchQuery: query.trim(),
+      finalists: finalists.map((candidate) => ({ path: candidate.path, preliminaryRelevance: candidate.score }))
+    },
+    questions: {
+      bestMatch: {
+        type: 'choice',
+        instructions: `Rank the finalist paths by which most directly implements, configures, or documents: "${query.trim()}".`,
+        criteria: Object.fromEntries(finalists.map((candidate) => [candidate.path, candidate.path]))
+      },
+      exists: {
+        type: 'noul',
+        instructions: `Does at least one finalist genuinely implement, configure, or document: "${query.trim()}"?`
+      }
+    }
+  });
 
-      const matchAnswer = resp.answers.bestMatch as JevChoiceAnswer | undefined;
-      if (!matchAnswer) return [];
-
-      const ranked = Object.entries(matchAnswer.distribution)
-        .filter(([path, prob]) => batch.includes(path) && prob > 0.03)
-        .sort((a, b) => b[1] - a[1])
+  let rankedPaths: string[] = [];
+  if (finalResp && noulOf(finalResp.answers.exists, 1) >= 0.2) {
+    const answer = finalResp.answers.bestMatch as JevChoiceAnswer | undefined;
+    if (answer) {
+      rankedPaths = Object.entries(answer.distribution)
+        .filter(([path, probability]) => bestByPath.has(path) && probability > 0.02)
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 20)
         .map(([path]) => path);
-      if (ranked.length > 0) return ranked;
-      return batch.includes(matchAnswer.choice) ? [matchAnswer.choice] : [];
-    })
-  );
+      if (rankedPaths.length === 0 && bestByPath.has(answer.choice)) rankedPaths = [answer.choice];
+    }
+  }
+  if (rankedPaths.length === 0) rankedPaths = finalists.slice(0, 20).map((candidate) => candidate.path);
 
-  const flat = results.flat();
-  return flat.length > 0 ? Array.from(new Set(flat)) : null;
+  return {
+    paths: rankedPaths,
+    considered: candidates.length,
+    total: paths.length,
+    truncated: candidates.length < paths.length
+  };
+}
+
+/** Compatibility wrapper for callers that only need the ranked paths. */
+export async function semanticPathTriage(env: Env, paths: string[], query: string): Promise<string[] | null> {
+  const result = await semanticPathTriageDetailed(env, paths, query);
+  return result && result.paths.length > 0 ? result.paths : null;
 }
 
 export interface ExcerptResult {
@@ -253,27 +347,57 @@ export async function semanticFileExcerpt(
     };
   }
 
-  // Create overlapping windows of 40 lines with 10 lines overlap
+  // Create overlapping windows of 40 lines with 10 lines overlap. The preview
+  // includes query-bearing lines plus first/middle/last context; using only the
+  // first five lines made a 40-line section semantically invisible when the
+  // implementation sat in its middle or tail.
   const windowSize = 40;
   const step = 30;
-  const chunks: Array<{ id: string; start: number; end: number; preview: string }> = [];
+  const queryTokens = query.toLowerCase().match(/[a-z0-9_]{2,}/g) ?? [];
+  const chunks: Array<{ id: string; start: number; end: number; preview: string; lexicalScore: number }> = [];
 
   for (let i = 0; i < lines.length; i += step) {
     const start = i + 1;
     const end = Math.min(lines.length, i + windowSize);
     const chunkLines = lines.slice(i, end);
-    const id = `L${start}-L${end}`;
-    chunks.push({
-      id,
-      start,
-      end,
-      preview: chunkLines.slice(0, 5).join('\n')
-    });
+    const interesting = new Set<number>([0, 1, Math.floor(chunkLines.length / 2), chunkLines.length - 2, chunkLines.length - 1]);
+    let lexicalScore = 0;
+    for (let local = 0; local < chunkLines.length; local += 1) {
+      const lower = (chunkLines[local] ?? '').toLowerCase();
+      const hits = queryTokens.filter((token) => lower.includes(token)).length;
+      if (hits > 0) {
+        lexicalScore += hits;
+        interesting.add(local);
+        if (local > 0) interesting.add(local - 1);
+        if (local + 1 < chunkLines.length) interesting.add(local + 1);
+      }
+    }
+    const preview = [...interesting]
+      .filter((local) => local >= 0 && local < chunkLines.length)
+      .sort((left, right) => left - right)
+      .slice(0, 12)
+      .map((local) => `L${start + local}: ${(chunkLines[local] ?? '').slice(0, 220)}`)
+      .join('\n');
+    chunks.push({ id: `L${start}-L${end}`, start, end, preview, lexicalScore });
     if (end >= lines.length) break;
   }
 
-  // Limit to 40 chunks max for prompt state limits
-  const limitedChunks = chunks.slice(0, 40);
+  // Very long files are represented by the strongest lexical windows plus an
+  // even sample across the whole file, so code near the end is not silently
+  // excluded merely because it falls after the first 1,200 lines.
+  let limitedChunks = chunks;
+  if (chunks.length > 40) {
+    const selected = new Map<string, (typeof chunks)[number]>();
+    for (const chunk of [...chunks].sort((left, right) => right.lexicalScore - left.lexicalScore).slice(0, 20)) {
+      if (chunk.lexicalScore > 0) selected.set(chunk.id, chunk);
+    }
+    const remainingSlots = 40 - selected.size;
+    for (let index = 0; index < remainingSlots; index += 1) {
+      const at = Math.min(chunks.length - 1, Math.floor((index * chunks.length) / Math.max(1, remainingSlots)));
+      selected.set(chunks[at]!.id, chunks[at]!);
+    }
+    limitedChunks = [...selected.values()].sort((left, right) => left.start - right.start).slice(0, 40);
+  }
 
   const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
     state: {
