@@ -15,8 +15,9 @@ procedure.
 **[Going live](./going-live.md)** — everything between the current deployment
 and strangers relying on it: production proof, hardening, privacy and review.
 
-**[Forge V1 architecture](./plans/forge-v1.md)** — the five-tool, GitHub-first
-system that is now implemented.
+**[Forge V1 architecture](./plans/forge-v1.md)** — historical design record for
+the five-tool, GitHub-first reset. Current behavior and invariants live in
+`SIMPLE.md`.
 
 **[Research](./research/)** — current platform notes and historical evidence.
 Start with the dated

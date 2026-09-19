@@ -1,7 +1,7 @@
 # Forge V1
 
-**Status**: Proposed. Supersedes the executor-era architecture and the archived
-[cost controls](./cost-controls.md) proposal.
+**Status**: Historical design record. The reset was implemented and later evolved.
+For current behavior and invariants, use [`../../SIMPLE.md`](../../SIMPLE.md).
 
 ## Thesis
 
@@ -16,7 +16,7 @@ a tool the model has to choose, wearing a disguise.
 | Tool | What it does | Gate |
 |---|---|---|
 | `forge_read` | no repo → your repos. repo → tree and open changes. repo + change → what that change did. add paths → file contents, or the patch for those paths. | free |
-| `forge_edit` | write files. Creates the repo if it is new. Creates the change from the intent. Never touches the default branch. | free |
+| `forge_edit` | write files. Creates the repo if it is new. Current Forge commits ordinary work directly and uses one fixed change only when review is requested. | free |
 | `forge_merge` | land a change on `main` | **approved** |
 | `forge_discard` | throw a change away | **approved** |
 | `forge_see` | screenshot a public URL | free, quota'd |
@@ -33,9 +33,9 @@ card must never be ambiguous about which one it is.
 ### The two rules that keep it small
 
 **Nothing is created by ceremony.** Write to a repo that does not exist and it is
-created. Write with a new intent and a change is created, on a branch named by a
-deterministic slug of that intent. The model never names a ref and never asks for
-a repo to be made.
+created. The model never names a ref and never asks for a repo to be made. The
+current implementation uses one fixed `forge` branch only for work explicitly
+held for review.
 
 Guard: Forge refuses to create a repo whose name is within a character or two of
 one you already have, and names the candidate instead — the same

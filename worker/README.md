@@ -28,7 +28,6 @@ HTTP route families:
 - `/mcp` — authenticated MCP transport
 - `/.well-known/oauth-*` and `/oauth/*` — discovery and OAuth 2.1/PKCE
 - `/approvals/:id` — durable merge and discard decisions
-- `/see/:id` — signed hosted capture
 - `/health` and icon assets
 
 There is no dashboard, observer API, task console or repository mirror.
@@ -56,15 +55,15 @@ worker/scripts/smoke.sh
 ```
 
 The unauthenticated smoke script covers the mount, OAuth discovery and PKCE
-boundary, dynamic client registration, invalid approval and capture links, and
-the MCP authentication boundary. A real ChatGPT/GitHub run is recorded separately
-under [`../docs/test-runs/`](../docs/test-runs/).
+boundary, dynamic client registration, invalid approval links, and the MCP
+authentication boundary. A real ChatGPT/GitHub run is recorded separately under
+[`../docs/test-runs/`](../docs/test-runs/).
 
 ## Deployment configuration
 
 Committed, non-secret configuration lives in `wrangler.jsonc`. Production and
-development D1 databases, R2 buckets, Durable Object bindings, routes and GitHub
-App identifiers are already named there.
+development D1 databases, Durable Object bindings, routes and GitHub App
+identifiers are already named there.
 
 Required secrets:
 
@@ -86,11 +85,10 @@ limit.
 ## Deliberate boundary
 
 No containers, shell, builds, tests, deployment, preview hosting, private-page
-browsing or site crawl. One Durable Object, one database, one capture bucket and
-one paid action.
+browsing, site crawl, object storage or capture gallery. One Durable Object, one
+database and one paid action.
 
-`forge_see` returns images inline and stores a signed HTML copy because MCP
-clients disagree about rendering image content. The same Cloudflare snapshot
-also returns an accessibility tree; Forge now reduces it to a bounded semantic
-outline so a model can reason about page structure without receiving the raw
-browser tree.
+`forge_see` returns images inline with the call that requested them. The same
+Cloudflare snapshot also returns an accessibility tree; Forge reduces it to a
+bounded semantic outline so a model can reason about page structure without
+receiving the raw browser tree.
