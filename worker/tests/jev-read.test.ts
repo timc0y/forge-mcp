@@ -734,7 +734,61 @@ describe("assessChangeWithJev", () => {
   });
 });
 
-describe("typesafeSystemOne Cloudflare Workers AI protocol", () => {
+describe("typesafeSystemOne typed protocol", () => {
+  it("rejects malformed probabilities and choices outside the requested criteria", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          target: {
+            type: "choice",
+            choice: "not-a-candidate",
+            probabilities: { "not-a-candidate": 1.2 }
+          }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    await expect(
+      typesafeSystemOne("key", undefined, {
+        state: "x",
+        questions: {
+          target: {
+            type: "choice",
+            instructions: "Which?",
+            criteria: ["a", "b"]
+          }
+        }
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("lets missing optional judgments degrade independently", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          exists: { type: "noul", noul: 0.9 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const result = await typesafeSystemOne("key", undefined, {
+      state: "x",
+      questions: {
+        exists: { type: "noul", instructions: "Exists?" },
+        category: {
+          type: "choice",
+          instructions: "Category?",
+          criteria: ["a", "b"]
+        }
+      }
+    });
+    expect(result?.answers.exists).toEqual({ type: "noul", noul: 0.9 });
+    expect(result?.answers.category).toBeUndefined();
+  });
+
+  describe("Cloudflare Workers AI envelope", () => {
   const originalFetch = globalThis.fetch;
 
   afterEach(() => {
@@ -805,6 +859,7 @@ describe("typesafeSystemOne Cloudflare Workers AI protocol", () => {
       "worker/src/read.ts": 0.98,
       "worker/src/write.ts": 0.02
     });
+  });
   });
 });
 

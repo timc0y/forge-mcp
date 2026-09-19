@@ -1,4 +1,28 @@
-# Repository intelligence without a runner
+# Repository intelligence
+
+## 2026-09-19 — Jev Sift reference
+
+Reviewed `kbhuw/jev-sift` as an architecture reference. The useful pattern is a small,
+framework-independent classification core: typed questions, strict answer validation,
+bounded concurrency, stable item ordering, explicit truncation/error metadata, and
+source content going to Jev without first entering the main agent context.
+
+Forge should adopt those principles, not the package itself. Jev Sift is Node 20/stdin
+MCP software with local filesystem and Node HTTP/DNS readers, while Forge is a
+Cloudflare Worker whose authoritative file source is GitHub. Installing it would add a
+second MCP surface and duplicate Forge's Jev adapter.
+
+No LICENSE file was present in the reviewed repository tree and its package is marked
+`private`. Treat it as an architecture reference only; do not copy/vendor source code
+without an explicit license or permission.
+
+Applied learning: Forge now validates every returned Jev answer against the exact
+requested question type, choice set, probability range, or score range before using it.
+Malformed semantic evidence degrades to no Jev result instead of being silently coerced.
+Missing independent judgments may still degrade individually because Forge deliberately
+fans out several optional signals in one request.
+
+ without a runner
 
 Research and implementation note, 2026-09-19.
 

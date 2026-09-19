@@ -68,93 +68,140 @@ const JEV_TIMEOUT_MS = 6000;
  * Returns null on missing key, timeout, or network error so Forge degrades
  * gracefully to deterministic behavior.
  */
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function probabilityOf(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value
+    : null;
+}
+
+function choiceIds(question: JevChoiceQuestion): string[] {
+  return Array.isArray(question.criteria)
+    ? question.criteria.map(String)
+    : Object.keys(question.criteria);
+}
+
+function distributionOf(value: unknown, allowed: Set<string>): Record<string, number> | null {
+  if (value === undefined) return {};
+  const record = recordOf(value);
+  if (!record) return null;
+  const distribution: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(record)) {
+    const probability = probabilityOf(raw);
+    if (!allowed.has(key) || probability === null) return null;
+    distribution[key] = probability;
+  }
+  return distribution;
+}
+
+function parseJevAnswer(question: JevQuestion, raw: unknown): JevAnswer | null {
+  const answer = recordOf(raw);
+  if (!answer) return null;
+
+  if (question.type === 'choice') {
+    const allowed = new Set(choiceIds(question));
+    const choice = typeof answer.choice === 'string' ? answer.choice : null;
+    if (!choice || !allowed.has(choice)) return null;
+    const distribution = distributionOf(answer.distribution ?? answer.probabilities, allowed);
+    if (distribution === null) return null;
+    const confidence = probabilityOf(answer.confidence) ?? Math.max(0, ...Object.values(distribution));
+    return { type: 'choice', choice, confidence, distribution };
+  }
+
+  if (question.type === 'score') {
+    const score = answer.score;
+    const max = question.criteria.length - 1;
+    if (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > max) return null;
+    return { type: 'score', score, confidence: probabilityOf(answer.confidence) ?? 0 };
+  }
+
+  const noul = probabilityOf(answer.noul) ?? probabilityOf(answer.probability);
+  return noul === null ? null : { type: 'noul', noul };
+}
+
+function answersOf(data: unknown): Record<string, unknown> | null {
+  const root = recordOf(data);
+  if (!root) return null;
+  const result = recordOf(root.result);
+  const nested = result ? recordOf(result.result) : null;
+  return recordOf(nested?.answers ?? result?.answers ?? root.answers);
+}
+
+/**
+ * Execute a TypeSafe System One evaluation.
+ *
+ * Jev is optional semantic evidence: missing configuration, transport failure,
+ * or malformed answers return null so deterministic GitHub evidence can carry
+ * on. Returned answers are accepted only when they match the requested typed
+ * question and allowed choice/score range.
+ */
 export async function typesafeSystemOne(
   apiKey: string | undefined,
   baseUrl: string | undefined,
   payload: JevRequest,
   timeoutMs = JEV_TIMEOUT_MS
 ): Promise<JevResponse | null> {
-  if (!apiKey || apiKey.trim() === '') return null;
+  const key = apiKey?.trim();
+  if (!key) return null;
 
-  const endpoint = baseUrl?.trim() ? baseUrl.trim() : DEFAULT_JEV_URL;
+  const endpoint = baseUrl?.trim() || DEFAULT_JEV_URL;
   const isCloudflare =
-    endpoint.includes("cloudflare.com") ||
-    endpoint.includes("/ai/run") ||
-    apiKey.trim().startsWith("cfut_");
+    endpoint.includes('cloudflare.com') ||
+    endpoint.includes('/ai/run') ||
+    key.startsWith('cfut_');
 
-  // Choice criteria must be a map. Arrays 422 on the public API.
-  const questions: Record<string, JevQuestion> = {};
-  for (const [key, question] of Object.entries(payload.questions)) {
-    if (question.type === "choice" && Array.isArray(question.criteria)) {
-      questions[key] = {
-        ...question,
-        criteria: Object.fromEntries(question.criteria.map((item) => [String(item), String(item)]))
-      };
-    } else {
-      questions[key] = question;
-    }
-  }
+  const questions = Object.fromEntries(
+    Object.entries(payload.questions).map(([id, question]) => [
+      id,
+      question.type === 'choice' && Array.isArray(question.criteria)
+        ? {
+            ...question,
+            criteria: Object.fromEntries(question.criteria.map((item) => [String(item), String(item)]))
+          }
+        : question
+    ])
+  ) as Record<string, JevQuestion>;
 
   const body = isCloudflare
-    ? JSON.stringify({
-        model: "typesafe/jev",
-        input: {
-          state: payload.state,
-          questions
-        }
-      })
-    : JSON.stringify({
-        model: "jev-latest",
+    ? {
+        model: 'typesafe/jev',
+        input: { state: payload.state, questions }
+      }
+    : {
+        model: 'jev-latest',
         state: payload.state,
         questions
-      });
+      };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
     const response = await fetch(endpoint, {
-      method: "POST",
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey.trim()}`
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`
       },
-      body,
+      body: JSON.stringify(body),
       signal: controller.signal
     });
-
     if (!response.ok) return null;
 
-    const data = (await response.json()) as any;
-    if (!data || typeof data !== "object") return null;
-
-    // Cloudflare returns { result: { result: { answers } } } or { result: { answers } }
-    // Native TypeSafe returns { answers }
-    const rawAnswers = data.result?.result?.answers ?? data.result?.answers ?? data.answers;
-    if (!rawAnswers || typeof rawAnswers !== "object") return null;
+    const rawAnswers = answersOf(await response.json());
+    if (!rawAnswers) return null;
 
     const answers: Record<string, JevAnswer> = {};
-    for (const [k, v] of Object.entries(rawAnswers as Record<string, any>)) {
-      if (!v || typeof v !== "object") continue;
-      if (v.type === "choice" || v.choice !== undefined) {
-        answers[k] = {
-          type: "choice",
-          choice: String(v.choice ?? ""),
-          confidence: typeof v.confidence === "number" ? v.confidence : 0,
-          distribution: v.distribution ?? v.probabilities ?? {}
-        };
-      } else if (v.type === "score" || v.score !== undefined) {
-        answers[k] = {
-          type: "score",
-          score: typeof v.score === "number" ? v.score : 0,
-          confidence: typeof v.confidence === "number" ? v.confidence : 0
-        };
-      } else {
-        const noul = typeof v.noul === "number" ? v.noul : typeof v.probability === "number" ? v.probability : 0;
-        answers[k] = { type: "noul", noul };
-      }
+    for (const [id, question] of Object.entries(payload.questions)) {
+      if (!(id in rawAnswers)) continue;
+      const parsed = parseJevAnswer(question, rawAnswers[id]);
+      if (!parsed) return null;
+      answers[id] = parsed;
     }
-
     return Object.keys(answers).length > 0 ? { answers } : null;
   } catch {
     return null;
