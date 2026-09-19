@@ -5,16 +5,15 @@ For whoever runs the deployment. If you only want to *use* Forge, read
 
 ## What is deployed
 
-One Worker, one D1 database, one R2 bucket, one Durable Object. No containers,
-no queues, no workflows, no cron. Nothing runs between requests, so there is
-nothing to reap and nothing to babysit.
+One Worker, one D1 database and one Durable Object. No R2, containers, queues,
+workflows or cron. Nothing runs between requests, so there is nothing to reap
+and nothing to babysit.
 
 | | Production | Development |
 |---|---|---|
 | Worker | `forge` | `forge-development` |
 | URL | `https://timcoy.uk/forge` | workers.dev |
 | D1 | `forge-v1-production` | `forge-v1-development` |
-| R2 | `forge-v1-captures` | `forge-v1-captures-development` |
 
 Forge is mounted at a **path**, not a hostname. The router derives that mount
 from `FORGE_PUBLIC_ORIGIN`, so moving it is a config change, not a code change.
@@ -28,7 +27,7 @@ Non-secret values live in `worker/wrangler.jsonc`.
 
 | Variable | Meaning |
 |---|---|
-| `FORGE_PUBLIC_ORIGIN` | The public address **including the mount path**. Every OAuth redirect, approval link and capture link is minted from it, and the router takes its mount from it. Load-bearing. |
+| `FORGE_PUBLIC_ORIGIN` | The public address **including the mount path**. OAuth redirects and approval links are minted from it, and the router takes its mount from it. Load-bearing. |
 | `FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS` | Hosts a registering client may redirect to |
 | `GITHUB_APP_ID` / `_CLIENT_ID` / `_SLUG` | The GitHub App |
 | `FORGE_CAPTURE_DAILY_LIMIT` | Captures per person per UTC day (default 30) |
@@ -41,7 +40,7 @@ Secrets, via `wrangler secret put` from `worker/`:
 |---|---|
 | `GITHUB_APP_PRIVATE_KEY` | PKCS#8 PEM (`BEGIN PRIVATE KEY`). Convert GitHub's PKCS#1 download with `openssl pkcs8 -topk8 -nocrypt` before `wrangler secret put`. |
 | `GITHUB_APP_CLIENT_SECRET` | |
-| `FORGE_SIGNING_KEY` | 32+ random bytes. Signs access and approval/capture links, fingerprints rotating refresh-token families, and derives the key encrypting stored GitHub credentials. Rotating it invalidates all of them at once and forces everyone to sign in again |
+| `FORGE_SIGNING_KEY` | 32+ random bytes. Signs access and approval tokens, fingerprints rotating refresh-token families, and derives the key encrypting stored GitHub credentials. Rotating it invalidates all of them at once and forces everyone to sign in again |
 | `CLOUDFLARE_API_TOKEN` | Scoped to Browser Rendering only |
 | `POSTHOG_API_KEY` | Optional. Unset means no analytics, not broken analytics |
 
@@ -105,17 +104,16 @@ worker/scripts/smoke.sh     # 28 checks against a deployment
 
 The smoke test needs no GitHub credentials. It covers the mount path, the auth
 boundary, both discovery spellings, dynamic client registration (which exercises
-D1 for real), PKCE hardening, and that unknown approvals and captures answer
-identically to a wrong token.
+D1 for real), PKCE hardening, and invalid approval links.
 
 ## Migrations
 
 Apply migrations before deploying worker code that depends on them. Migration
-`0002_capture_ownership.sql` records capture ownership. Migration
-`0003_security_hardening.sql` adds rotating, hashed OAuth refresh tokens and is
-required **before** deploying code that issues them. Existing signed refresh
-tokens intentionally stop working after that deploy, so connected clients may
-need one GitHub reconnect.
+`0002_capture_ownership.sql` is retained as historical schema from the removed
+capture-gallery implementation; current code does not read or write that table.
+Migration `0003_security_hardening.sql` adds rotating, hashed OAuth refresh tokens
+and is required before code that issues them. Existing signed refresh tokens from
+before that migration intentionally stop working after the deploy.
 
 ```sh
 pnpm exec wrangler d1 migrations apply forge-v1-production --remote
@@ -126,11 +124,8 @@ pnpm exec wrangler d1 migrations apply forge-v1-production --remote
 - **The published MCP catalogue is a frozen snapshot.** Changing a tool's name
   or schema needs a re-scan and a republished version in the client. It is a
   release event, not an edit.
-- **`FORGE_PUBLIC_ORIGIN` is three things at once** — mount path, link origin,
-  and OAuth issuer. Changing it invalidates outstanding approval and capture
-  links.
-- **R2 will not delete a non-empty bucket**, and wrangler has no bulk delete.
-  Set a lifecycle rule to expire the objects, then delete the bucket.
+- **`FORGE_PUBLIC_ORIGIN` is three things at once** — mount path, approval-link
+  origin, and OAuth issuer. Changing it invalidates outstanding approval links.
 - **Historical deployments may still have executor-era containers.** The current
   worker creates none, but check `wrangler containers list` before assuming an
   old deployment was fully removed.

@@ -40,10 +40,9 @@
 
   "vars": {
     "FORGE_ENVIRONMENT": "production",
-    // Not forge.timcoy.uk — that hostname still serves Forge 1. Every OAuth
-    // redirect, approval link and capture link is minted from this value, and
-    // the router derives its mount path from it, so the path here is
-    // load-bearing rather than cosmetic.
+    // Not forge.timcoy.uk — that hostname still serves Forge 1. OAuth redirects
+    // and approval links are minted from this value, and the router derives its
+    // mount path from it, so the path here is load-bearing rather than cosmetic.
     "FORGE_PUBLIC_ORIGIN": "https://timcoy.uk/forge",
     "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,grok.com,vscode.dev,oauth-redirect.googleusercontent.com,localhost,127.0.0.1",
     "GITHUB_APP_ID": "4658328",

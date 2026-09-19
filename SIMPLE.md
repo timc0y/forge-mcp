@@ -11,8 +11,8 @@
   be the surface it is designed for.
 - Purpose: think of something and have it become real in GitHub — repos, plans,
   research, code, content — and look at rendered pages with real eyes.
-- Durable plane: GitHub. Forge holds no copy of repository state. What Forge
-  stores is identity, approvals, capture artifacts, and receipts.
+- Durable plane: GitHub. Forge holds no copy of repository state. Outside GitHub,
+  Forge stores only identity/OAuth state, approval evidence and capture quota counts.
 - Cost: GitHub work is metered per user by GitHub itself and costs Forge nothing.
   Page capture is the only user action that spends Forge's money, so it is the
   only action with a number on it. What keeps an open preview affordable is a
@@ -88,7 +88,7 @@ Forge hosts nothing.
 - Fast semantic decisions need no server-side index. Vector databases, periodic
   repo indexing, and background embeddings workers add infrastructure that drifts
   out of sync with GitHub. TypeSafe Jev evaluates trees, paths, diffs, repository
-  hygiene candidates, and security gates on the fly using bounded evidence.
+  hygiene candidates, and review judgments on the fly using bounded evidence.
   Repository hygiene labels remain investigation prompts rather than claims that
   code is unreachable, broken, or safe to delete; compiler/static-analysis/CI
   evidence remains stronger. Remote GitHub stays the sole source of truth, and
