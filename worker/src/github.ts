@@ -1,10 +1,11 @@
 /**
  * The only place a GitHub credential is minted, held, or attached to a request.
  *
- * Two callers exist and they authenticate differently: everything that touches
- * a repository runs on the user's own installation token — their rate limit,
- * their grant — while creating a repository on a personal account is something
- * an installation token cannot do at all, so that one path runs as the user.
+ * Two credential scopes exist. Everything inside an installed repository runs
+ * on the user's own installation token — their rate limit and repository grant.
+ * The user-authenticated credential is reserved for the two account/public
+ * operations installation scope cannot replace here: creating a personal
+ * repository and explicit public GitHub search.
  *
  * Nothing here interprets a response. Status is data: a 404, 409 or 422 is an
  * answer a receipt gets shaped from, and throwing on one would turn every

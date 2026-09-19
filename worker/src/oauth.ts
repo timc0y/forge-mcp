@@ -275,9 +275,9 @@ export async function callback(env: Env, request: Request): Promise<Response> {
   const userId = found.id;
   if (found.created) analyticsFor(env, userId)('user_signed_up');
 
-  // Kept solely so `forge_edit` can create a repository later, when nobody is
-  // present to authorize anything. See user-token.ts for why this is the one
-  // long-lived credential in the system.
+  // Kept for the two explicit user-authenticated GitHub operations: creating a
+  // personal repository later and public GitHub search. Ordinary repository
+  // work never uses it. See user-token.ts for the narrow credential boundary.
   await storeUserCredential(env, userId, {
     token: account.token,
     refreshToken: account.refreshToken,
