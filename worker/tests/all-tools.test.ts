@@ -417,7 +417,7 @@ describe("End-to-End Test for all 5 Forge tools", () => {
 
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toContain("4 numbered SQL migration files");
-    expect(res.content[0].text).toContain("2 structural issues");
+    expect(res.content[0].text).toContain("2 structural irregularities");
     expect(res.structuredContent.tree).toContain(
       "DUPLICATE? apps/site/migrations/ · prefix 0002 · apps/site/migrations/0002_legacy.sql, apps/site/migrations/0002_users.sql"
     );
@@ -426,7 +426,8 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.tree).toContain(
       "EXCEPTION? apps/site/migrations/ · prefix 0002 · scripts/verification/verify-d1-migration-history.mjs explicitly names 0002_legacy.sql, 0002_users.sql"
     );
-    expect(res.content[0].text).toContain("1 duplicate exception explicitly referenced by committed checker");
+    expect(res.content[0].text).toContain("1 recognized duplicate exception");
+    expect(res.content[0].text).toContain("1 unresolved");
     expect(res.structuredContent.files[0].path).toBe(
       "scripts/verification/verify-d1-migration-history.mjs"
     );

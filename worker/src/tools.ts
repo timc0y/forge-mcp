@@ -701,7 +701,7 @@ async function readTreeLevel(
       ...(routeNote ? [routeNote] : []),
       ...(tree.truncated ? ['GitHub truncated the repository tree, so migration evidence may be incomplete.'] : []),
       ...(migration.issues > 0
-        ? ['DUPLICATE? and MISSING? are structural evidence, not proof a deployment is unsafe.']
+        ? ['DUPLICATE? and MISSING? are structural irregularities, not proof a deployment is unsafe. Recognized EXCEPTION? duplicates are removed from the unresolved count.']
         : []),
       ...(exceptionLines.length > 0
         ? ['EXCEPTION? means a committed migration checker literally names every file in that duplicate-prefix set. It is evidence of an intentional repository policy, not proof that deployed database state is correct.']
@@ -710,19 +710,22 @@ async function readTreeLevel(
       'Forge does not execute migrations or query deployed database state; this view inspects committed filenames and verifier evidence only.',
       ...changesLimits(changes)
     ];
+    const unresolvedIssues = Math.max(0, migration.issues - exceptionLines.length);
     const exceptionSummary = exceptionLines.length > 0
-      ? `; ${exceptionLines.length} duplicate exception${exceptionLines.length === 1 ? '' : 's'} explicitly referenced by committed checker`
+      ? `; ${exceptionLines.length} recognized duplicate exception${exceptionLines.length === 1 ? '' : 's'}`
       : '';
     return {
-      summary: `${formatRepo(repo)} at ${base}: ${migration.files} numbered SQL migration file${migration.files === 1 ? '' : 's'}; ${migration.issues} structural issue${migration.issues === 1 ? '' : 's'} flagged${exceptionSummary}.${changesSentence(names)}`,
+      summary: `${formatRepo(repo)} at ${base}: ${migration.files} numbered SQL migration file${migration.files === 1 ? '' : 's'}; ${migration.issues} structural irregularit${migration.issues === 1 ? 'y' : 'ies'}${exceptionSummary}; ${unresolvedIssues} unresolved.${changesSentence(names)}`,
       structured: withLimits(
         {
           tree: [...migration.lines, ...exceptionLines],
           ...(checkerEvidence.length > 0 ? { files: checkerEvidence } : {}),
           changes: names,
-          next: migration.issues > 0
-            ? 'Inspect any unrecognized duplicate/missing prefixes and compare the committed migration policy with deployed database state before release.'
-            : 'Use "quality" to inspect the committed scripts/CI that validate migrations.'
+          next: unresolvedIssues > 0
+            ? 'Inspect the unresolved duplicate/missing prefixes and compare committed migration policy with deployed database state before release.'
+            : migration.issues > 0
+              ? 'All structural irregularities found here are explicitly recognized by committed checker evidence. Confirm deployed database state separately before release.'
+              : 'Use "quality" to inspect the committed scripts/CI that validate migrations.'
         },
         limits
       )
