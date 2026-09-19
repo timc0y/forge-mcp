@@ -63,6 +63,18 @@ export function isPolicyQuery(query: string): boolean {
   return /^(?:policy|rules|ruleset|rulesets|branch protection|required checks)$/i.test(query.trim());
 }
 
+export function historyScope(query: string): string | null | undefined {
+  const trimmed = query.trim();
+  if (!/^history(?:\s|:|$)/i.test(trimmed)) return undefined;
+  const match = /^history(?:\s+|:\s*)(.*)$/i.exec(trimmed);
+  const scope = match?.[1]?.trim().replace(/^\/+|\/+$/g, '');
+  return scope ? scope : null;
+}
+
+export function isLanguagesQuery(query: string): boolean {
+  return /^(?:languages?|language stats?|tech stack|stack)$/i.test(query.trim());
+}
+
 /** Paths whose committed diff can change the dependency graph. */
 export function isCodeownersPath(path: string): boolean {
   const normalized = path.replace(/^\.\//, '').toLowerCase();
@@ -112,7 +124,20 @@ export function repositoryStats(entries: RepositoryTreeEntry[]): {
       .sort((left, right) => right[1].bytes - left[1].bytes || right[1].files - left[1].files)
       .slice(0, count);
 
-  const lines = [`TOTAL · ${files.length} files · ${humanBytes(bytes)}`];
+  const directories = entries.filter((entry) => entry.type === 'dir');
+  const deepest = [...files].sort(
+    (left, right) => right.path.split('/').length - left.path.split('/').length || right.path.length - left.path.length
+  )[0];
+  const longest = [...files].sort((left, right) => right.path.length - left.path.length)[0];
+  const directChildren = new Map<string, number>();
+  for (const entry of entries) {
+    const parts = entry.path.split('/');
+    const parent = parts.length === 1 ? '(root)' : parts.slice(0, -1).join('/');
+    directChildren.set(parent, (directChildren.get(parent) ?? 0) + 1);
+  }
+  const widest = [...directChildren.entries()].sort((left, right) => right[1] - left[1])[0];
+
+  const lines = [`TOTAL · ${files.length} files · ${directories.length} dirs · ${humanBytes(bytes)}`];
   for (const [folder, stats] of top(folders, 6)) {
     lines.push(`FOLDER ${folder === '(root)' ? folder : `${folder}/`} · ${stats.files} files · ${humanBytes(stats.bytes)}`);
   }
@@ -122,6 +147,9 @@ export function repositoryStats(entries: RepositoryTreeEntry[]): {
   for (const file of [...files].sort((left, right) => right.size - left.size).slice(0, 6)) {
     lines.push(`LARGE ${file.path} · ${humanBytes(file.size)}`);
   }
+  if (deepest) lines.push(`SHAPE max depth ${deepest.path.split('/').length} · ${deepest.path}`);
+  if (longest) lines.push(`SHAPE longest path ${longest.path.length} chars · ${longest.path}`);
+  if (widest) lines.push(`SHAPE widest ${widest[0]} · ${widest[1]} direct entries`);
 
   return { files: files.length, bytes, lines };
 }

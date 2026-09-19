@@ -6,6 +6,108 @@
  */
 import type { GitHubRequest, RepoRef } from './contracts';
 
+export interface RepositoryLanguage {
+  name: string;
+  bytes: number;
+}
+
+export async function readRepositoryLanguages(
+  request: GitHubRequest,
+  repo: RepoRef
+): Promise<{ languages: RepositoryLanguage[]; unavailable?: string }> {
+  const response = await request(`/repos/${repo.owner}/${repo.name}/languages`);
+  if (response.status !== 200) {
+    return { languages: [], unavailable: `GitHub language statistics returned HTTP ${response.status}.` };
+  }
+  if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
+    return { languages: [], unavailable: 'GitHub returned unreadable language statistics.' };
+  }
+  const languages = Object.entries(response.json as Record<string, unknown>)
+    .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))
+    .map(([name, bytes]) => ({ name, bytes }))
+    .sort((left, right) => right.bytes - left.bytes);
+  return { languages };
+}
+
+export interface CommitHistoryEntry {
+  sha: string;
+  message: string;
+  date: string | null;
+  author: string | null;
+  committer: string | null;
+  verified: boolean | null;
+  url: string | null;
+}
+
+export async function readRecentHistory(
+  request: GitHubRequest,
+  repo: RepoRef,
+  branch: string,
+  path?: string,
+  limit = 12
+): Promise<{ commits: CommitHistoryEntry[]; truncated: boolean; unavailable?: string }> {
+  const query = new URLSearchParams({ sha: branch, per_page: String(Math.max(1, Math.min(limit, 100))) });
+  if (path) query.set('path', path);
+  const response = await request(`/repos/${repo.owner}/${repo.name}/commits?${query.toString()}`);
+  if (response.status !== 200) {
+    return {
+      commits: [],
+      truncated: false,
+      unavailable: `GitHub commit history returned HTTP ${response.status}.`
+    };
+  }
+  const commits = Array.isArray(response.json)
+    ? response.json.flatMap((value): CommitHistoryEntry[] => {
+        if (typeof value !== 'object' || value === null) return [];
+        const row = value as Record<string, unknown>;
+        if (typeof row.sha !== 'string') return [];
+        const commit = typeof row.commit === 'object' && row.commit !== null
+          ? row.commit as Record<string, unknown>
+          : {};
+        const authorData = typeof commit.author === 'object' && commit.author !== null
+          ? commit.author as Record<string, unknown>
+          : {};
+        const committerData = typeof commit.committer === 'object' && commit.committer !== null
+          ? commit.committer as Record<string, unknown>
+          : {};
+        const verification = typeof commit.verification === 'object' && commit.verification !== null
+          ? commit.verification as Record<string, unknown>
+          : null;
+        const authorAccount = typeof row.author === 'object' && row.author !== null
+          ? row.author as Record<string, unknown>
+          : null;
+        const committerAccount = typeof row.committer === 'object' && row.committer !== null
+          ? row.committer as Record<string, unknown>
+          : null;
+        return [{
+          sha: row.sha,
+          message: typeof commit.message === 'string' ? commit.message.split('\n')[0]!.slice(0, 240) : '',
+          date: typeof authorData.date === 'string'
+            ? authorData.date
+            : typeof committerData.date === 'string'
+              ? committerData.date
+              : null,
+          author: typeof authorAccount?.login === 'string'
+            ? authorAccount.login
+            : typeof authorData.name === 'string'
+              ? authorData.name
+              : null,
+          committer: typeof committerAccount?.login === 'string'
+            ? committerAccount.login
+            : typeof committerData.name === 'string'
+              ? committerData.name
+              : null,
+          verified: typeof verification?.verified === 'boolean' ? verification.verified : null,
+          url: typeof row.html_url === 'string' ? row.html_url : null
+        }];
+      })
+    : [];
+  return {
+    commits,
+    truncated: /rel="next"/.test(response.headers.get('Link') ?? '') || commits.length >= limit
+  };
+}
+
 export interface DependencyVulnerability {
   severity: string;
   advisoryId: string;

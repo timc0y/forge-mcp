@@ -4,12 +4,10 @@
  * Jev is TypeSafe AI's System One decision engine. It evaluates state and typed
  * questions in ~70-200ms using a single non-autoregressive forward pass.
  *
- * In Forge, Jev performs two tasks without storing repository copies:
- * 1. Semantic Path Triage: Given hundreds of raw repo file paths, score and rank
- *    which files implement or document a user's natural query.
- * 2. Token-Safe Excerpt Slicing: Given a large file and a query, pinpoint the
- *    exact line window implementing the concept so mobile ChatGPT isn't flooded
- *    with thousands of irrelevant tokens.
+ * Forge uses Jev only for bounded semantic decisions over GitHub evidence:
+ * path/result ranking, excerpt selection, intent routing, change assessment,
+ * capture-outline classification and safety predicates. Deterministic facts
+ * remain GitHub's job; Jev may abstain without making a tool call fail.
  */
 import type { Env } from './env';
 import type { Comparison } from './contracts';

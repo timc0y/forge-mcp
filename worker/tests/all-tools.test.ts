@@ -418,6 +418,50 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     }
   });
 
+  it("reads bounded repository history without a checkout", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/commits": {
+        status: 200,
+        json: [
+          {
+            sha: "abcdef1234567890",
+            html_url: "https://github.com/testuser/test-repo/commit/abcdef1",
+            author: { login: "alice" },
+            commit: {
+              message: "fix: tighten token rotation\n\nmore detail",
+              author: { name: "Alice", date: "2026-09-19T10:00:00Z" },
+              committer: { name: "Alice", date: "2026-09-19T10:00:00Z" },
+              verification: { verified: true }
+            }
+          }
+        ]
+      }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "history src/auth.ts" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("recent commit for src/auth.ts");
+    expect(res.structuredContent.tree[0]).toContain("abcdef1 · 2026-09-19 · alice · verified · fix: tighten token rotation");
+  });
+
+  it("reads GitHub language byte distribution", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/languages": {
+        status: 200,
+        json: { TypeScript: 9000, CSS: 1000 }
+      }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "languages" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.tree).toContain("LANG TypeScript · 8.8 KiB · 90.0%");
+    expect(res.structuredContent.tree).toContain("LANG CSS · 1000 B · 10.0%");
+  });
+
   it("reports repository size statistics from the Git tree", async () => {
     const { server } = createMockToolContext();
     const readTool = (server as any)._registeredTools["forge_read"];

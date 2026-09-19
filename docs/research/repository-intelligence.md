@@ -191,6 +191,14 @@ Forge's current Pull Requests permission can read review records, and Contents r
 
 GitHub also exposes CODEOWNERS syntax errors through a Contents-read endpoint. When a Forge commit changes one of GitHub's recognized CODEOWNERS locations, the post-commit advisory asks GitHub to validate the committed version and attaches any syntax errors/suggestions to the durable receipt. This is stronger than maintaining a second CODEOWNERS parser inside Forge.
 
+## Bounded history, language distribution and current-tree shape
+
+GitHub's commit-list endpoint accepts both a branch and optional path filter under the existing Contents permission, so Forge now supports recent repository or path history without cloning Git. The result is deliberately bounded to the twelve newest matching commits and includes the short SHA, date, author, signature-verification state when GitHub provides it, and first commit-message line. It is a history window, not a permanent churn index.
+
+GitHub's language endpoint uses Metadata read and returns byte counts by detected language. Forge exposes that distribution separately from tree statistics because GitHub Linguist's classified-language bytes and raw tracked-file bytes answer different questions.
+
+Current-tree statistics now also report structural shape borrowed from the useful parts of `git-sizer`: directory count, maximum file path depth, longest tracked path, and the widest directory by direct entries. These are measurements only—Forge does not invent universal thresholds or a repository-health score. Full historical Git object sizing still belongs to a real `git-sizer` run outside Forge.
+
 ## More GitHub-state ideas that still fit the boundary
 
 - `history [path]`: GitHub's list-commits endpoint accepts a path filter and requires only Contents read. A bounded history view could answer who/when/why a file last moved without a clone.

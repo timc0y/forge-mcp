@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { isCodeownersPath, isDependencyManifestPath, lintCommittedFiles } from '../src/repository-intelligence';
+import { historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, lintCommittedFiles, repositoryStats } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -186,6 +186,26 @@ describe('guidance integrity', () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('repository intelligence query parsing', () => {
+  it('parses bounded history scopes and language queries', () => {
+    expect(historyScope('history')).toBeNull();
+    expect(historyScope('history worker/src/write.ts')).toBe('worker/src/write.ts');
+    expect(historyScope('authentication')).toBeUndefined();
+    expect(isLanguagesQuery('languages')).toBe(true);
+  });
+
+  it('reports current-tree shape without assigning a quality score', () => {
+    const stats = repositoryStats([
+      { path: 'src', type: 'dir', size: 0 },
+      { path: 'src/deep', type: 'dir', size: 0 },
+      { path: 'src/deep/file.ts', type: 'file', size: 100 },
+      { path: 'README.md', type: 'file', size: 50 }
+    ]);
+    expect(stats.lines.some((line) => line.startsWith('SHAPE max depth'))).toBe(true);
+    expect(stats.lines.some((line) => line.startsWith('SHAPE widest'))).toBe(true);
   });
 });
 

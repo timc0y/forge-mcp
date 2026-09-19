@@ -37,10 +37,12 @@ import {
   changeHotspots,
   exactFindNeedle,
   fileTotals,
+  historyScope,
   humanBytes,
   isCodeownersPath,
   isDependencyManifestPath,
   isDependencyQuery,
+  isLanguagesQuery,
   isMapQuery,
   isPolicyQuery,
   isStatsQuery,
@@ -56,6 +58,8 @@ import {
   readCodeownersErrors,
   readDependencyReview,
   readPullReviewState,
+  readRecentHistory,
+  readRepositoryLanguages,
   requiredApprovalCount,
   requiredCheckNames,
   requiresCodeOwnerReview,
@@ -545,6 +549,102 @@ async function readTreeLevel(
 ): Promise<ToolOutcome> {
   const gh = ghForRepo(ctx, repo);
   const base = await defaultBranch(gh, repo);
+  const trimmedQuery = query?.trim();
+  const requestedHistory = trimmedQuery ? historyScope(trimmedQuery) : undefined;
+
+  if (requestedHistory !== undefined) {
+    const [history, changes] = await Promise.all([
+      readRecentHistory(gh, repo, base, requestedHistory ?? undefined, 12),
+      openChanges(ctx.gh, repo)
+    ]);
+    const names = changeNames(changes);
+    const where = requestedHistory ? ` for ${requestedHistory}` : '';
+    const limits = [
+      ...(history.unavailable ? [history.unavailable] : []),
+      ...(history.truncated ? ['Showing the 12 most recent matching commits; older history exists.'] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)} ${base}: ${history.commits.length} recent commit${history.commits.length === 1 ? '' : 's'}${where}.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: history.commits.map((commit) => {
+            const who = commit.author ?? commit.committer ?? 'unknown author';
+            const when = commit.date?.slice(0, 10) ?? 'unknown date';
+            const verified = commit.verified === null ? '' : commit.verified ? ' · verified' : ' · unverified';
+            return `${commit.sha.slice(0, 7)} · ${when} · ${who}${verified} · ${commit.message || '(no message)'}`;
+          }),
+          changes: names,
+          next: requestedHistory
+            ? 'Read the current file or ask a semantic question about its implementation.'
+            : 'Use "history <path>" to narrow history to one file or folder.'
+        },
+        limits
+      )
+    };
+  }
+
+  if (trimmedQuery && isLanguagesQuery(trimmedQuery)) {
+    const [languages, changes] = await Promise.all([
+      readRepositoryLanguages(gh, repo),
+      openChanges(ctx.gh, repo)
+    ]);
+    const names = changeNames(changes);
+    const total = languages.languages.reduce((sum, language) => sum + language.bytes, 0);
+    const limits = [
+      ...(languages.unavailable ? [languages.unavailable] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)}: ${languages.languages.length} language${languages.languages.length === 1 ? '' : 's'} reported by GitHub, ${humanBytes(total)} classified.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: languages.languages.slice(0, 20).map((language) => {
+            const percentage = total > 0 ? ((language.bytes / total) * 100).toFixed(1) : '0.0';
+            return `LANG ${language.name} · ${humanBytes(language.bytes)} · ${percentage}%`;
+          }),
+          changes: names,
+          next: 'Use "stats" for file/folder size and tree-shape statistics.'
+        },
+        limits
+      )
+    };
+  }
+
+  if (trimmedQuery && isPolicyQuery(trimmedQuery)) {
+    const [policy, changes] = await Promise.all([
+      readBranchPolicy(gh, repo, base),
+      openChanges(ctx.gh, repo)
+    ]);
+    const names = changeNames(changes);
+    const checks = requiredCheckNames(policy);
+    const lines = policy.rules.map((rule) => {
+      if (rule.type === 'required_status_checks' && checks.length > 0) {
+        return `RULE required_status_checks · ${checks.join(', ')}`;
+      }
+      const source = [rule.sourceType, rule.source].filter(Boolean).join(' · ');
+      return `RULE ${rule.type}${source ? ` · ${source}` : ''}`;
+    });
+    const limits = [
+      ...(policy.unavailable ? [policy.unavailable] : []),
+      ...(policy.truncated ? ['GitHub returned more than 100 active branch rules; this list is incomplete.'] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)} ${base}: ${policy.rules.length} active branch rule${policy.rules.length === 1 ? '' : 's'}${checks.length ? `; required checks: ${checks.join(', ')}` : ''}.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: lines,
+          changes: names,
+          next: checks.length > 0
+            ? 'These are requirements GitHub enforces; Forge cannot see whether each check passed without additional Checks/Statuses permission.'
+            : 'Ask for a change to see what would be merged.'
+        },
+        limits
+      )
+    };
+  }
+
   const [tree, changes] = await Promise.all([
     readTree(gh, repo, base),
     openChanges(ctx.gh, repo)
@@ -554,7 +654,6 @@ async function readTreeLevel(
     .filter((entry) => entry.type === 'file')
     .map((entry) => entry.path);
   const names = changeNames(changes);
-  const trimmedQuery = query?.trim();
 
   if (trimmedQuery && isStatsQuery(trimmedQuery)) {
     const scope = statsScope(trimmedQuery);
@@ -594,36 +693,6 @@ async function readTreeLevel(
           tree: lines,
           changes: names,
           next: 'Ask about a mapped area semantically, or use "code:<concept>" to search committed code rather than filenames.'
-        },
-        limits
-      )
-    };
-  }
-
-  if (trimmedQuery && isPolicyQuery(trimmedQuery)) {
-    const policy = await readBranchPolicy(gh, repo, base);
-    const checks = requiredCheckNames(policy);
-    const lines = policy.rules.map((rule) => {
-      if (rule.type === 'required_status_checks' && checks.length > 0) {
-        return `RULE required_status_checks · ${checks.join(', ')}`;
-      }
-      const source = [rule.sourceType, rule.source].filter(Boolean).join(' · ');
-      return `RULE ${rule.type}${source ? ` · ${source}` : ''}`;
-    });
-    const limits = [
-      ...(policy.unavailable ? [policy.unavailable] : []),
-      ...(policy.truncated ? ['GitHub returned more than 100 active branch rules; this list is incomplete.'] : []),
-      ...changesLimits(changes)
-    ];
-    return {
-      summary: `${formatRepo(repo)} ${base}: ${policy.rules.length} active branch rule${policy.rules.length === 1 ? '' : 's'}${checks.length ? `; required checks: ${checks.join(', ')}` : ''}.${changesSentence(names)}`,
-      structured: withLimits(
-        {
-          tree: lines,
-          changes: names,
-          next: checks.length > 0
-            ? 'These are requirements GitHub enforces; Forge cannot see whether each check passed without additional Checks/Statuses permission.'
-            : 'Ask for a change to see what would be merged.'
         },
         limits
       )
@@ -1220,6 +1289,9 @@ async function requestAct(
 
   const limits: string[] = [];
   if (assessment) limits.push(...changeAssessmentNotices(assessment, comparison));
+  if (assessment && comparison.files.length > 20) {
+    limits.push(`Jev change assessment used patch evidence from the first 20 of ${comparison.files.length} changed files; deterministic GitHub evidence still covers the full comparison GitHub returned.`);
+  }
   if (comparison.truncated) {
     limits.push('GitHub truncated this comparison, so the file counts above are a floor, not a total.');
   }
@@ -1292,7 +1364,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         repo: z.string().optional().describe('owner/name. Omit to list your repositories.'),
         change: z.string().optional().describe('An open change, named by the words that created it.'),
         paths: z.array(z.string()).max(20).optional(),
-        query: z.string().optional().describe('Narrows semantically. Also: "stats [path]", "map", "find:<text>", "code:<concept>", "dependencies", or "policy".')
+        query: z.string().optional().describe('Question or filter over repository state: code, shape/size, history, dependencies, languages, or branch policy.')
       },
       outputSchema: readOutput,
       // Nothing here writes, and it reaches nothing but GitHub.
