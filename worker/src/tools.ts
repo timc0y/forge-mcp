@@ -756,14 +756,15 @@ async function readTreeLevel(
         const [references, history] = await Promise.all([
           term
             ? searchGitHubCode(gh, `repo:${formatRepo(repo)} "${term.replaceAll('"', ' ')}"`, 10)
-            : Promise.resolve({ total: 0, items: [] }),
+            : Promise.resolve({ total: 0, items: [], unavailable: undefined }),
           readRecentHistory(gh, repo, base, candidate.path, 1)
         ]);
         const outside = references.items.filter((item) => item.path && item.path !== candidate.path);
         return {
           path: candidate.path,
           term,
-          totalReferences: term ? references.total : null,
+          totalReferences: term && !references.unavailable ? references.total : null,
+          referenceUnavailable: references.unavailable ?? null,
           outsideShown: outside.length,
           recent: history.commits[0]
         };
@@ -782,7 +783,9 @@ async function readTreeLevel(
     const lines = classifications.map((candidate) => {
       const evidenceItem = evidenceByPath.get(candidate.path);
       const reference = evidenceItem?.term
-        ? ` · ref "${evidenceItem.term}" ${evidenceItem.totalReferences} GitHub result${evidenceItem.totalReferences === 1 ? '' : 's'}, ${evidenceItem.outsideShown} outside shown`
+        ? evidenceItem.referenceUnavailable
+          ? ` · ref "${evidenceItem.term}" unavailable`
+          : ` · ref "${evidenceItem.term}" ${evidenceItem.totalReferences} GitHub result${evidenceItem.totalReferences === 1 ? '' : 's'}, ${evidenceItem.outsideShown} outside shown`
         : '';
       const history = evidenceItem?.recent
         ? ` · last ${evidenceItem.recent.date?.slice(0, 10) ?? 'unknown date'} ${evidenceItem.recent.sha.slice(0, 7)} ${evidenceItem.recent.message || '(no message)'}`
@@ -794,12 +797,18 @@ async function readTreeLevel(
     }
 
     const markerTotal = markerSearches.reduce((sum, search) => sum + search.result.total, 0);
+    const markerUnavailable = [...new Set(
+      markerSearches
+        .map((search) => search.result.unavailable)
+        .filter((value): value is string => Boolean(value))
+    )];
     const limits = [
       ...(routeNote ? [routeNote] : []),
       ...(tree.truncated ? ['GitHub truncated the repository tree, so hygiene discovery is incomplete.'] : []),
       ...(semantic?.truncated ? [`Jev hygiene path triage considered ${semantic.considered} representative paths from ${semantic.total} source files.`] : []),
       ...(candidatePaths.length >= 20 ? ['Hygiene content inspection is capped at 20 candidate paths and Jev classification at 12 complete files.'] : []),
       ...(markerTotal > markerPaths.length ? ['GitHub marker searches are bounded; additional lexical matches may exist beyond the returned candidate paths.'] : []),
+      ...markerUnavailable,
       ...(classifications.length === 0 && prepared.length > 0 ? ['Jev returned no hygiene classification; CANDIDATE? lines are deterministic discovery evidence only.'] : []),
       ...read.skipped.map((skip) => `${skip.path} ${skip.reason}.`),
       'LEGACY?, FALLBACK?, DEAD? and BROKEN? are investigation labels from bounded semantic evidence, not proof that code is unreachable, defective, or safe to delete.',
@@ -1067,7 +1076,10 @@ async function readTreeLevel(
           const built = buildSearchQuery(trimmed, 'code');
           const withoutRepo = built.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
           const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 10);
-          const ranked = await rankSearchResultsWithJev(ctx.env, trimmed, found.items);
+          if (found.unavailable) semanticCoverageNote = found.unavailable;
+          const ranked = found.unavailable
+            ? []
+            : await rankSearchResultsWithJev(ctx.env, trimmed, found.items);
           const contentPaths = [...new Set(ranked.map((item) => item.path).filter((path): path is string => Boolean(path)))];
           if (contentPaths.length > 0) {
             paths = contentPaths;
