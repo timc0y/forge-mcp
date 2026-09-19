@@ -19,8 +19,6 @@
 import { formatRepo } from './contracts';
 import type { CommitReceipt, FileWrite, GitHubRequest, RepoRef } from './contracts';
 import { ForgeError } from './errors';
-import { checkCommitSafety } from './jev';
-import type { Env } from './env';
 
 /**
  * Chat-facing bounds, deliberately small. The client is a phone conversation,
@@ -30,6 +28,15 @@ import type { Env } from './env';
  */
 const MAX_FILES = 10;
 const MAX_CONTENT_BYTES = 200 * 1024;
+
+const HIGH_SEVERITY_SECRET_PATTERNS = [
+  /-----BEGIN [A-Z]+ PRIVATE KEY-----/,
+  /\bghp_[A-Za-z0-9_]{36,}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{82}\b/,
+  /\bsk_live_[0-9a-zA-Z]{24,}\b/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*\b/
+];
 
 /** Three attempts is enough for a branch that is moving; more just hides that. */
 const MAX_ATTEMPTS = 3;
@@ -93,8 +100,7 @@ export async function commitFiles(
   branch: string,
   baseBranch: string,
   message: string,
-  files: FileWrite[],
-  env?: Env
+  files: FileWrite[]
 ): Promise<CommitReceipt> {
   validate(message, files);
 
@@ -124,19 +130,10 @@ export async function commitFiles(
 
   if (outOfTime()) giveUp('reading the files being edited');
 
-  // Safety is evaluated against the exact candidate content produced from the
-  // current GitHub head, not the tool payload. Fragment replacements carry no
-  // whole-file `content`, so checking before resolve would inspect nothing and
-  // could let a replacement introduce the very secret/truncation patterns this
-  // gate exists to stop.
-  const safety = await checkCommitSafety(env, resolved);
-  if (!safety.safe) {
-    throw new ForgeError({
-      code: 'FORGE_VALIDATION_FAILED',
-      message: safety.reason ?? 'Commit rejected: security or integrity check failed.',
-      details: { repo: formatRepo(repo), branch }
-    });
-  }
+  // Secret checks run against the exact candidate content produced from the
+  // current GitHub head. This catches secrets introduced by fragment edits
+  // without putting an optional semantic service on the durable write path.
+  assertNoHighSeveritySecrets(resolved);
   if (outOfTime()) giveUp('checking the resolved content');
 
   // Blobs are content-addressed, so they are identical however many times the
@@ -339,6 +336,18 @@ interface ResolvedFile {
   path: string;
   /** `null` deletes. */
   content: string | null;
+}
+
+function assertNoHighSeveritySecrets(files: ResolvedFile[]): void {
+  for (const file of files) {
+    if (!file.content) continue;
+    if (!HIGH_SEVERITY_SECRET_PATTERNS.some((pattern) => pattern.test(file.content))) continue;
+    throw new ForgeError({
+      code: 'FORGE_VALIDATION_FAILED',
+      message: `Commit rejected: ${file.path} contains what appears to be an unredacted secret token or private key.`,
+      details: { path: file.path }
+    });
+  }
 }
 
 async function resolveContents(

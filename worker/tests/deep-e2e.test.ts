@@ -3,7 +3,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTools, type ToolContext } from "../src/tools";
 import type { GitHubRequest, Identity } from "../src/contracts";
 import type { Env } from "../src/env";
-import { checkCommitSafety } from "../src/jev";
 import { lintCommittedFiles } from "../src/repository-intelligence";
 
 function ok(json: any, status = 200) {
@@ -301,16 +300,7 @@ describe("In-Depth Forge End-to-End Suite", () => {
     expect(mergeRes.content[0].text).toContain("Merging \"Initial draft change\" into main brings 1 commit: 1 file");
   });
 
-  it("3. Commit security & safety: rejects credentials, truncations, and detects dangling imports", async () => {
-    // 3a. Rejects secret
-    const fakeSecret = ['sk', 'live', '1234567890abcdef12345678'].join('_');
-    const secretCheck = await checkCommitSafety(undefined, [
-      { path: "config.ts", content: `const key = "${fakeSecret}";` }
-    ]);
-    expect(secretCheck.safe).toBe(false);
-    expect(secretCheck.reason).toContain("secret token");
-
-    // 3b. Dangling relative import linting
+  it("3. Committed-file lint detects dangling imports", async () => {
     const lintWarnings = await lintCommittedFiles(
       [{ path: "src/main.ts", content: "import { auth } from './auth/index';" }],
       ["src/main.ts", "package.json"]

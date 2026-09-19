@@ -1730,8 +1730,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           branch,
           base,
           message,
-          input.files,
-          ctx.env
+          input.files
         );
         if (commit.outcome === 'committed') {
           ctx.track('change_committed', { files: commit.paths.length, created_repo: created });
