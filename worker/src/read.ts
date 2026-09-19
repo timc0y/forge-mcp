@@ -53,6 +53,14 @@ function upstreamUnavailable(status: number, what: string): ForgeError {
   });
 }
 
+function unreadableGitHub(what: string): ForgeError {
+  return new ForgeError({
+    code: 'FORGE_UPSTREAM_UNAVAILABLE',
+    message: `GitHub returned an unreadable response while ${what}.`,
+    retryable: true
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Which repos
 // ---------------------------------------------------------------------------
@@ -80,11 +88,11 @@ export async function listRepos(
       throw upstreamUnavailable(response.status, 'listing repositories for this installation');
     }
     if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
-      throw upstreamUnavailable(response.status, 'reading the repository list payload');
+      throw unreadableGitHub('reading the repository list');
     }
     const body = response.json as { repositories?: unknown };
     if (!Array.isArray(body.repositories)) {
-      throw upstreamUnavailable(response.status, 'reading the repository list payload');
+      throw unreadableGitHub('reading the repository list');
     }
     const repositories = body.repositories.filter((value): value is GitHubInstallationRepo => {
       if (typeof value !== 'object' || value === null) return false;
@@ -102,7 +110,7 @@ export async function listRepos(
       );
     });
     if (repositories.length !== body.repositories.length) {
-      throw upstreamUnavailable(response.status, 'reading the repository list payload');
+      throw unreadableGitHub('reading the repository list');
     }
     all.push(...repositories);
     if (repositories.length < 100) break;
@@ -151,11 +159,11 @@ export async function readTree(
   }
 
   if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
-    throw upstreamUnavailable(response.status, `reading the tree payload at ${ref} on ${formatRepo(repo)}`);
+    throw unreadableGitHub(`reading the tree at ${ref} on ${formatRepo(repo)}`);
   }
   const body = response.json as { tree?: unknown; truncated?: boolean };
   if (!Array.isArray(body.tree)) {
-    throw upstreamUnavailable(response.status, `reading the tree payload at ${ref} on ${formatRepo(repo)}`);
+    throw unreadableGitHub(`reading the tree at ${ref} on ${formatRepo(repo)}`);
   }
   const raw = body.tree.filter((value): value is GitHubTreeEntry => {
     if (typeof value !== 'object' || value === null) return false;
@@ -167,7 +175,7 @@ export async function readTree(
     );
   });
   if (raw.length !== body.tree.length) {
-    throw upstreamUnavailable(response.status, `reading the tree payload at ${ref} on ${formatRepo(repo)}`);
+    throw unreadableGitHub(`reading the tree at ${ref} on ${formatRepo(repo)}`);
   }
 
   // Narrow to a subtree by prefix. GitHub's recursive listing includes the
@@ -399,8 +407,31 @@ export async function compare(
     throw upstreamUnavailable(response.status, `comparing ${base}...${head} on ${formatRepo(repo)}`);
   }
 
-  const body = response.json as GitHubComparison;
-  const rawFiles = body.files ?? [];
+  if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
+    throw unreadableGitHub(`comparing ${base}...${head} on ${formatRepo(repo)}`);
+  }
+  const body = response.json as Partial<GitHubComparison>;
+  if (
+    (body.status !== 'identical' && body.status !== 'ahead' && body.status !== 'behind' && body.status !== 'diverged') ||
+    typeof body.ahead_by !== 'number' ||
+    !Number.isFinite(body.ahead_by) ||
+    typeof body.behind_by !== 'number' ||
+    !Number.isFinite(body.behind_by) ||
+    !Array.isArray(body.files)
+  ) {
+    throw unreadableGitHub(`comparing ${base}...${head} on ${formatRepo(repo)}`);
+  }
+  const rawFiles = body.files;
+  if (rawFiles.some((file) =>
+    typeof file !== 'object' ||
+    file === null ||
+    typeof file.filename !== 'string' ||
+    typeof file.status !== 'string' ||
+    typeof file.additions !== 'number' ||
+    typeof file.deletions !== 'number'
+  )) {
+    throw unreadableGitHub(`reading changed-file evidence for ${base}...${head} on ${formatRepo(repo)}`);
+  }
   const wantPatch = new Set(patchPaths ?? []);
 
   const files: ChangedFile[] = rawFiles.map((file) => {
@@ -428,16 +459,9 @@ export async function compare(
   return {
     // Same reasoning as the counts: an unrecognised status must not become a
     // schema violation on a read that otherwise succeeded.
-    status:
-      body.status === 'identical' || body.status === 'ahead' || body.status === 'behind' || body.status === 'diverged'
-        ? body.status
-        : 'diverged',
-    // GitHub's own fields, but treated as untrusted: these land directly in
-    // required output-schema numbers, and an interposed proxy or a truncated
-    // body would turn a successful read into a schema rejection the model can
-    // do nothing about.
-    aheadBy: typeof body.ahead_by === 'number' ? body.ahead_by : 0,
-    behindBy: typeof body.behind_by === 'number' ? body.behind_by : 0,
+    status: body.status,
+    aheadBy: body.ahead_by,
+    behindBy: body.behind_by,
     files,
     truncated
   };

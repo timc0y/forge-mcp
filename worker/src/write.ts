@@ -823,8 +823,26 @@ async function assertNoOverlap(
 ): Promise<void> {
   const response = await request(`${api}/compare/${from}...${to}`);
   if (response.status !== 200) throw githubError(response, 'compare');
-  const body = response.json as { files?: Array<{ filename?: unknown }> };
-  const files = body.files ?? [];
+  if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
+    throw new ForgeError({
+      code: 'FORGE_CONFLICT',
+      message:
+        'The branch moved, but GitHub returned unreadable comparison evidence. Nothing was committed. ' +
+        'Read the changed paths again and retry; Forge will not guess that there is no overlap.',
+      details: { paths, from, to }
+    });
+  }
+  const body = response.json as { files?: unknown };
+  if (!Array.isArray(body.files) || body.files.some((file) => typeof file !== 'object' || file === null)) {
+    throw new ForgeError({
+      code: 'FORGE_CONFLICT',
+      message:
+        'The branch moved, but GitHub did not return a readable changed-file list. Nothing was committed. ' +
+        'Read the changed paths again and retry; Forge will not guess that there is no overlap.',
+      details: { paths, from, to }
+    });
+  }
+  const files = body.files as Array<{ filename?: unknown }>;
 
   if (files.length >= COMPARE_FILE_CAP) {
     throw new ForgeError({

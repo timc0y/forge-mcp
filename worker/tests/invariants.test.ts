@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CHANGE_BRANCH, changeName, openChanges } from '../src/change';
 import { assertNotNearExisting } from '../src/repo';
-import { listRepos, readFiles, readTree } from '../src/read';
+import { compare, listRepos, readFiles, readTree } from '../src/read';
 import { commitFiles } from '../src/write';
 import { isForgeError } from '../src/errors';
 import type { GitHubRequest } from '../src/contracts';
@@ -83,6 +83,18 @@ describe('GitHub navigation payload integrity', () => {
       headers: new Headers()
     });
     await expect(readTree(request, { owner: 'o', name: 'r' }, 'main')).rejects.toMatchObject({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE'
+    });
+  });
+
+  it('refuses unreadable compare evidence instead of inventing a harmless diff', async () => {
+    const request: GitHubRequest = async () => ({
+      status: 200,
+      json: { status: 'mystery', ahead_by: 0, behind_by: 0 },
+      text: '',
+      headers: new Headers()
+    });
+    await expect(compare(request, { owner: 'o', name: 'r' }, 'main', 'forge')).rejects.toMatchObject({
       code: 'FORGE_UPSTREAM_UNAVAILABLE'
     });
   });
