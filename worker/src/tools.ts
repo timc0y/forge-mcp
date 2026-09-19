@@ -1089,8 +1089,23 @@ async function readChangeLevel(
   let semanticallyRanked = false;
   let statsNote = '';
   const trimmedQuery = query?.trim();
+  const explicitMode = Boolean(
+    trimmedQuery && (
+      isReviewQuery(trimmedQuery) ||
+      isImpactQuery(trimmedQuery) ||
+      isDependencyQuery(trimmedQuery) ||
+      isPolicyQuery(trimmedQuery) ||
+      isStatsQuery(trimmedQuery)
+    )
+  );
+  const routed = trimmedQuery && !explicitMode
+    ? await routeForgeReadEvidenceWithJev(ctx.env, trimmedQuery, 'change')
+    : null;
+  if (routed) {
+    limits.push(`Jev routed this natural-language change question to ${routed.mode} evidence (${Math.round(routed.confidence * 100)}% choice confidence).`);
+  }
 
-  if (trimmedQuery && isReviewQuery(trimmedQuery)) {
+  if (trimmedQuery && (isReviewQuery(trimmedQuery) || routed?.mode === 'review')) {
     const packet = await buildChangeReviewPacket(ctx.env, gh, repo, base, change, comparison);
     const changes = await openChanges(ctx.gh, repo);
     const names = changeNames(changes);
@@ -1123,7 +1138,7 @@ async function readChangeLevel(
     };
   }
 
-  if (trimmedQuery && isImpactQuery(trimmedQuery)) {
+  if (trimmedQuery && (isImpactQuery(trimmedQuery) || routed?.mode === 'impact')) {
     const patchPaths = comparison.files.slice(0, 20).map((file) => file.path);
     const enriched = patchPaths.length > 0
       ? await compare(gh, repo, base, change.branch, patchPaths)
@@ -1178,7 +1193,7 @@ async function readChangeLevel(
     };
   }
 
-  if (trimmedQuery && isDependencyQuery(trimmedQuery)) {
+  if (trimmedQuery && (isDependencyQuery(trimmedQuery) || routed?.mode === 'dependencies')) {
     const review = await readDependencyReview(gh, repo, base, change.branch);
     const vulnerabilities = review.changes.flatMap((dependency) =>
       dependency.vulnerabilities.map((vulnerability) => ({ dependency, vulnerability }))
@@ -1219,7 +1234,7 @@ async function readChangeLevel(
     };
   }
 
-  if (trimmedQuery && isPolicyQuery(trimmedQuery)) {
+  if (trimmedQuery && (isPolicyQuery(trimmedQuery) || routed?.mode === 'policy')) {
     const policy = await readBranchPolicy(gh, repo, base);
     const checks = requiredCheckNames(policy);
     const policyLimits = [
@@ -1248,7 +1263,7 @@ async function readChangeLevel(
     };
   }
 
-  if (trimmedQuery && isStatsQuery(trimmedQuery)) {
+  if (trimmedQuery && (isStatsQuery(trimmedQuery) || routed?.mode === 'stats')) {
     const scope = statsScope(trimmedQuery);
     const scoped = scope
       ? comparison.files.filter((file) => file.path === scope || file.path.startsWith(`${scope}/`))

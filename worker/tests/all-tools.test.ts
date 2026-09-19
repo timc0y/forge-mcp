@@ -736,6 +736,46 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.files[0].text).toContain("high GHSA-xxxx-yyyy-zzzz");
   });
 
+  it("routes a natural repository question to branch-policy evidence", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        result: {
+          result: {
+            answers: {
+              evidenceMode: {
+                type: 'choice', choice: 'policy', confidence: 0.93,
+                probabilities: { policy: 0.93, quality: 0.04 }
+              },
+              shouldRoute: { type: 'noul', noul: 0.97 }
+            }
+          }
+        }
+      })
+    }) as unknown as typeof fetch;
+    try {
+      const { server } = createMockToolContext({
+        "GET /repos/testuser/test-repo/rules/branches/main": {
+          status: 200,
+          json: [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'CI' }] } }]
+        }
+      }, {
+        TYPESAFE_API_KEY: 'cfut_mock_token_123',
+        TYPESAFE_BASE_URL: 'https://api.cloudflare.com/client/v4/accounts/test/ai/run'
+      });
+      const readTool = (server as any)._registeredTools['forge_read'];
+      const res = await readTool.handler({ repo: 'test-repo', query: 'what checks and rules protect merges here?' });
+
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain('required checks: CI');
+      expect(res.structuredContent.limits.some((line: string) => line.includes('routed this natural-language question to policy evidence'))).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("reads active branch policy and required status-check names", async () => {
     const { server } = createMockToolContext({
       "GET /repos/testuser/test-repo/rules/branches/main": {
