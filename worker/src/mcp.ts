@@ -20,7 +20,7 @@ import { analyticsFor } from './analytics';
 import { INSTRUCTIONS } from './instructions';
 
 const SERVER_NAME = 'Forge';
-const SERVER_VERSION = '1.0.0';
+export const SERVER_VERSION = '1.1.0';
 
 export class ForgeMcpSession extends McpAgent<Env, never, { identity: Identity }> {
   // Replaced in init: props are not hydrated until then, and the tools need

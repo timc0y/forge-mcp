@@ -19,8 +19,10 @@
   daily ceiling per person, not a gate at the door: a limit degrades for one
   person on one day, where a gate refuses everyone who does not know somebody.
 - Compatibility: only the tools currently advertised to ChatGPT. The published
-  catalog is a frozen snapshot until re-scanned, so a tool change is a release
-  event, not an edit.
+  catalog is a frozen snapshot until re-scanned, so a tool/schema/instruction
+  change is a release event, not an edit. Bump the MCP server version and
+  reconnect/re-scan clients after such a release; deploying Worker code alone
+  does not refresh an already-published client catalogue.
 
 ## Preserve
 

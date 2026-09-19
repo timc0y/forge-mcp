@@ -634,7 +634,7 @@ async function readTreeLevel(
   if (trimmedQuery && (isHygieneQuery(trimmedQuery) || routed?.mode === 'hygiene')) {
     const sourcePaths = allFilePaths.filter(isHygieneSourcePath);
     const pathCandidates = hygienePathCandidates(tree.entries, 24);
-    const markerTerms = ['legacy', 'deprecated', 'fallback', 'compatibility', 'unused', '"not implemented"'];
+    const markerTerms = ['legacy', 'deprecated', 'retired', 'fallback', 'compatibility', 'unused', '"not implemented"'];
     const markerSearches = await Promise.all(
       markerTerms.map(async (marker) => ({
         marker,

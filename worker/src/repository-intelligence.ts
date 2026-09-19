@@ -95,7 +95,7 @@ export function isHygieneQuery(query: string): boolean {
   return /^(?:hygiene|code hygiene|repo hygiene|legacy(?: code)?|dead(?: code)?|fallback(?: code)?|obsolete(?: code)?|deprecated(?: code)?|broken(?: code)?|unused(?: code)?|find (?:legacy|dead|fallback|obsolete|deprecated|broken|unused)(?: code)?|find fallbacks?|cleanup candidates?)$/i.test(query.trim());
 }
 
-const HYGIENE_SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?|py|rb|php|go|rs|java|kt|kts|swift|cs|fs|fsx|scala|vue|svelte|c|cc|cpp|cxx|h|hh|hpp)$/i;
+const HYGIENE_SOURCE_EXTENSION = /\.(?:[cm]?[jt]sx?|astro|liquid|vue|svelte|html?|css|scss|less|sql|graphql|gql|ya?ml|toml|jsonc?|py|rb|php|go|rs|java|kt|kts|swift|cs|fs|fsx|scala|c|cc|cpp|cxx|h|hh|hpp)$/i;
 const HYGIENE_IGNORED_PATH = /(^|\/)(?:node_modules|vendor|dist|build|coverage|\.next|\.nuxt|target|Pods|DerivedData|generated|__generated__)(\/|$)/i;
 
 export function isHygieneSourcePath(path: string): boolean {
@@ -140,7 +140,7 @@ export function hygienePathCandidates(
     .slice(0, limit);
 }
 
-const HYGIENE_CONTENT_MARKER = /\b(?:legacy|deprecated|fallback|compat(?:ibility)?|obsolete|temporary|workaround|backward(?:s)?[- ]compat(?:ible|ibility)?|dead code|unused)\b|\bremove\s+(?:after|when|once)\b|\bTODO\b.{0,80}\bremove\b/i;
+const HYGIENE_CONTENT_MARKER = /\b(?:legacy|deprecated|retired|fallback|compat(?:ibility)?|obsolete|temporary|workaround|backward(?:s)?[- ]compat(?:ible|ibility)?|dead code|unused)\b|\bremove\s+(?:after|when|once)\b|\bTODO\b.{0,80}\bremove\b/i;
 
 /**
  * Keep marker-bearing neighborhoods plus representative file context. This is

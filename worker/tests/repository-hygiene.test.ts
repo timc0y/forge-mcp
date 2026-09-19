@@ -29,6 +29,25 @@ describe('repository hygiene candidate discovery', () => {
       'src/api/fallback-client.ts'
     ]);
     expect(isHygieneSourcePath('dist/legacy-session.js')).toBe(false);
+    expect(isHygieneSourcePath('src/components/LegacyCheckout.astro')).toBe(true);
+    expect(isHygieneSourcePath('sections/fallback-cart.liquid')).toBe(true);
+    expect(isHygieneSourcePath('migrations/0015_legacy_aliases.sql')).toBe(true);
+    expect(isHygieneSourcePath('schema/storefront.graphql')).toBe(true);
+    expect(isHygieneSourcePath('config/legacy-rules.yaml')).toBe(true);
+  });
+
+  it('can surface template and migration path residue', () => {
+    const candidates = hygienePathCandidates([
+      { path: 'src/components/legacy-checkout.astro', type: 'file', size: 10 },
+      { path: 'sections/deprecated-cart.liquid', type: 'file', size: 10 },
+      { path: 'migrations/0042_old-schema.sql', type: 'file', size: 10 }
+    ]);
+
+    expect(candidates.map((candidate) => candidate.path)).toEqual([
+      'sections/deprecated-cart.liquid',
+      'src/components/legacy-checkout.astro',
+      'migrations/0042_old-schema.sql'
+    ]);
   });
 
   it('keeps marker neighborhoods when a large file hides compatibility code away from the start', () => {
