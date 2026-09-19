@@ -20,7 +20,9 @@ Applied learning: Forge now validates every returned Jev answer against the exac
 requested question type, choice set, probability range, or score range before using it.
 Malformed semantic evidence degrades to no Jev result instead of being silently coerced.
 Missing independent judgments may still degrade individually because Forge deliberately
-fans out several optional signals in one request.
+fans out only review signals that affect a concrete summary or caution. Speculative
+"tests relevant" and "docs relevant" judgments were removed once companion-file
+suggestions were deleted.
 
 Jev is also no longer allowed to block a durable write. High-severity secret patterns
 remain a deterministic pre-blob guard over the exact resolved file content, while Jev is

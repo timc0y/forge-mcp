@@ -761,8 +761,6 @@ export interface ChangeAssessment {
   securitySensitive: number;
   persistentDataChange: number;
   userVisible: number;
-  testsRelevant: number;
-  docsRelevant: number;
   multipleConcerns: number;
   outlierProbability: number;
   outlierPath: string | null;
@@ -823,14 +821,6 @@ export async function assessChangeWithJev(
       type: 'noul',
       instructions: 'Is this change likely visible to an end user through UI, copy, API behavior, or externally observable product behavior?'
     },
-    testsRelevant: {
-      type: 'noul',
-      instructions: 'Would automated tests plausibly be important evidence for this particular change, beyond trivial formatting or documentation-only edits?'
-    },
-    docsRelevant: {
-      type: 'noul',
-      instructions: 'Would user/developer documentation plausibly need updating because this change alters public behavior, configuration, setup, or an interface?'
-    },
     multipleConcerns: {
       type: 'noul',
       instructions: 'Does this diff combine two or more substantially independent technical concerns that could reasonably be reviewed separately?'
@@ -871,8 +861,6 @@ export async function assessChangeWithJev(
     securitySensitive: noulOf(resp.answers.securitySensitive, 0),
     persistentDataChange: noulOf(resp.answers.persistentDataChange, 0),
     userVisible: noulOf(resp.answers.userVisible, 0),
-    testsRelevant: noulOf(resp.answers.testsRelevant, 0),
-    docsRelevant: noulOf(resp.answers.docsRelevant, 0),
     multipleConcerns: noulOf(resp.answers.multipleConcerns, 0),
     outlierProbability,
     outlierPath: outlierProbability >= 0.7 && outlier?.choice && filePaths.includes(outlier.choice) ? outlier.choice : null
@@ -892,9 +880,6 @@ export function summarizeChangeAssessment(assessment: ChangeAssessment, fileCoun
 
 export function changeAssessmentNotices(assessment: ChangeAssessment, comparison: Comparison): string[] {
   const notices: string[] = [];
-  const paths = comparison.files.map((file) => file.path.toLowerCase());
-  const hasTests = paths.some((path) => /(^|\/)(test|tests|__tests__|spec|specs)(\/|$)/.test(path) || /\.(test|spec)\.[^.]+$/.test(path));
-  const hasDocs = paths.some((path) => path.startsWith('docs/') || /(^|\/)(readme|changelog)(\.|$)/.test(path) || /\.(md|mdx|rst)$/.test(path));
 
   if (assessment.intentMatch <= 0.2) notices.push('Jev notice: the diff appears weakly aligned with the change intent; inspect scope before merging.');
   if (assessment.securitySensitive >= 0.85) notices.push('Jev notice: this diff appears security-sensitive; give authentication, authorization, credential and trust-boundary changes extra review.');
@@ -902,8 +887,6 @@ export function changeAssessmentNotices(assessment: ChangeAssessment, comparison
   if (assessment.breakingChange >= 0.85) notices.push('Jev notice: this diff appears potentially breaking for an API, schema, protocol, export, or configuration contract.');
   if (assessment.multipleConcerns >= 0.85) notices.push('Jev notice: this diff appears to combine multiple independent concerns; consider whether the review scope is broader than intended.');
   if (assessment.outlierProbability >= 0.8 && assessment.outlierPath) notices.push(`Jev notice: ${assessment.outlierPath} looks like a scope outlier relative to the rest of this change.`);
-  if (assessment.testsRelevant >= 0.9 && !hasTests) notices.push('Jev notice: tests appear materially relevant, but no obvious test file is changed. This is advisory, not evidence that coverage is missing.');
-  if (assessment.docsRelevant >= 0.92 && !hasDocs) notices.push('Jev notice: documentation appears relevant, but no obvious documentation file is changed. This is advisory, not evidence that documentation is missing.');
   return notices;
 }
 

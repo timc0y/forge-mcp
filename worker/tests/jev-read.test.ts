@@ -667,7 +667,6 @@ describe("assessChangeWithJev", () => {
     expect(changeAssessmentNotices(assessment!, comparison)).toContain(
       "Jev notice: src/unrelated.ts looks like a scope outlier relative to the rest of this change."
     );
-    expect(changeAssessmentNotices(assessment!, comparison).some((notice) => notice.includes("tests appear materially relevant"))).toBe(true);
   });
 });
 
