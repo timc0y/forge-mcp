@@ -1669,7 +1669,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         repo: z.string().optional().describe('owner/name, a bare reachable repo name, or "global" for public GitHub search. Omit to list your repositories.'),
         change: z.string().optional().describe('An open change, named by the words that created it.'),
         paths: z.array(z.string()).max(20).optional(),
-        query: z.string().optional().describe('Question or filter over GitHub state: code, size/shape, history, hygiene, quality, dependencies, languages, or branch policy.')
+        query: z.string().optional().describe('Question or filter over GitHub state: code, size/shape, history, hygiene, migrations, quality, dependencies, languages, or branch policy.')
       },
       outputSchema: readOutput,
       // Nothing here writes, and it reaches nothing but GitHub.

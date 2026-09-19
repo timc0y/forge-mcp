@@ -141,6 +141,12 @@ Reading a change **is** the diff — there is no separate diff tool, because
 "what does this change contain" and "show me the diff" are the same question.
 Ask about specific paths inside a change and you get their patches.
 
+Repository queries can also ask for `hygiene`, `migrations`, `quality`,
+`policy`, `history`, `churn`, `languages`, `stats` or `map`.
+`migrations` reports deterministic numbered-SQL history evidence such as
+duplicate or missing prefixes and any committed migration-checker scripts; it
+does not claim migrations were executed successfully.
+
 ### forge_edit
 
 Prefers **fragment replacement** over whole files: you say what text to replace,

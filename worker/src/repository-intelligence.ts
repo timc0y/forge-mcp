@@ -679,7 +679,7 @@ export async function lintCommittedFiles(
     return parts.join('/');
   };
 
-  const sourceLike = /\.(?:[cm]?[jt]sx?|py|go|rs|swift|java|kt|kts|cs|php|rb|css|scss|html|sql)$/i;
+  const sourceLike = /\.(?:[cm]?[jt]sx?|astro|liquid|vue|svelte|py|go|rs|swift|java|kt|kts|cs|php|rb|css|scss|html?|sql|graphql|gql)$/i;
 
   for (const file of files) {
     if (!file.content) continue;
