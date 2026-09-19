@@ -418,11 +418,9 @@ async function searchGlobal(ctx: ToolContext, query: string): Promise<ToolOutcom
 async function readRepositories(ctx: ToolContext, query: string | undefined): Promise<ToolOutcome> {
   const trimmedQuery = query?.trim();
 
-  // If query starts with search/docs prefix
-  if (trimmedQuery && /^(global|search|code|docs|platform):/i.test(trimmedQuery)) {
-    const cleanQuery = trimmedQuery.replace(/^(global|search|code|docs|platform):\s*/i, '');
-    const isDocs = /^docs:/i.test(trimmedQuery);
-    return searchGlobalOrDocs(ctx, isDocs ? 'docs' : 'global', cleanQuery);
+  if (trimmedQuery && /^(global|search|code):/i.test(trimmedQuery)) {
+    const cleanQuery = trimmedQuery.replace(/^(global|search|code):\s*/i, '');
+    return searchGlobal(ctx, cleanQuery);
   }
 
   const found = await listRepos(ctx.gh, query);
@@ -438,7 +436,7 @@ async function readRepositories(ctx: ToolContext, query: string | undefined): Pr
 
   if (shown.length === 0) {
     if (trimmedQuery) {
-      return searchGlobalOrDocs(ctx, 'global', trimmedQuery);
+      return searchGlobal(ctx, trimmedQuery);
     }
     return {
       summary: 'Forge cannot reach any repository for this account yet.',
@@ -951,8 +949,8 @@ async function readTreeLevel(
 
   const codeNeedle = trimmedQuery ? semanticCodeNeedle(trimmedQuery) : null;
   if (codeNeedle) {
-    const built = await buildAdvancedSearchQuery(ctx.env, codeNeedle, 'code');
-    const withoutRepo = built.query.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
+    const built = buildSearchQuery(codeNeedle, 'code');
+    const withoutRepo = built.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
     const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 15);
     const ranked = await rankSearchResultsWithJev(ctx.env, codeNeedle, found.items);
     const shown = ranked.slice(0, 15);
@@ -999,8 +997,8 @@ async function readTreeLevel(
       // cheap path answers produced nothing; GitHub remains the index.
       if (paths.length === 0 && trimmed.length >= 3) {
         try {
-          const built = await buildAdvancedSearchQuery(ctx.env, trimmed, 'code');
-          const withoutRepo = built.query.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
+          const built = buildSearchQuery(trimmed, 'code');
+          const withoutRepo = built.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
           const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 10);
           const ranked = await rankSearchResultsWithJev(ctx.env, trimmed, found.items);
           const contentPaths = [...new Set(ranked.map((item) => item.path).filter((path): path is string => Boolean(path)))];
@@ -1628,10 +1626,10 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       description:
         'Show what is there. No repo lists your repositories; a repo shows its files and open changes; adding a change shows what that change did; adding paths returns file contents, or that change\'s patch for those paths.',
       inputSchema: {
-        repo: z.string().optional().describe('owner/name. Omit to list your repositories.'),
+        repo: z.string().optional().describe('owner/name, a bare reachable repo name, or "global" for public GitHub search. Omit to list your repositories.'),
         change: z.string().optional().describe('An open change, named by the words that created it.'),
         paths: z.array(z.string()).max(20).optional(),
-        query: z.string().optional().describe('Question or filter over repository state: code, shape/size, history, quality gates, dependencies, languages, or branch policy.')
+        query: z.string().optional().describe('Question or filter over GitHub state: code, size/shape, history, hygiene, quality, dependencies, languages, or branch policy.')
       },
       outputSchema: readOutput,
       // Nothing here writes, and it reaches nothing but GitHub.
@@ -1644,13 +1642,8 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     async (input) =>
       run('forge_read', ctx.track, async () => {
         const repoStr = input.repo?.trim();
-        const isGlobalSearch = repoStr === 'global' || repoStr === 'search' || repoStr === 'public';
-        const isDocsSearch =
-          repoStr === 'docs' ||
-          (repoStr !== undefined && resolveDocPlatform(repoStr) !== null && input.paths === undefined && input.change === undefined);
-
-        if (isGlobalSearch || (isDocsSearch && input.paths === undefined && input.change === undefined)) {
-          return searchGlobalOrDocs(ctx, repoStr, input.query ?? '');
+        if (repoStr === 'global' || repoStr === 'search' || repoStr === 'public') {
+          return searchGlobal(ctx, input.query ?? '');
         }
 
         if (input.repo === undefined) {
@@ -1766,17 +1759,6 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             `The work is committed, but its review pull request could not be opened: ${toForgeError(error).message} ` +
               'The branch exists on GitHub either way.'
           );
-        }
-
-        if (message.length < 15 || /^(update|fix|edits|test|patch)$/i.test(message)) {
-          try {
-            const suggestion = await suggestCommitMessageWithJev(ctx.env, input.files);
-            if (suggestion) {
-              limits.push(`Tip: consider conventional commit "${suggestion}" for clearer history.`);
-            }
-          } catch {
-            // Non-fatal
-          }
         }
 
         if (commit.outcome === 'committed') {
