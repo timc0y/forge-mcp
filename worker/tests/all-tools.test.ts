@@ -399,6 +399,17 @@ describe("End-to-End Test for all 5 Forge tools", () => {
             { path: "scripts/verification/verify-d1-migration-history.mjs", type: "blob", size: 10 }
           ]
         }
+      },
+      "GET /repos/testuser/test-repo/contents/scripts/verification/verify-d1-migration-history.mjs": {
+        status: 200,
+        json: {
+          type: "file",
+          encoding: "base64",
+          content: btoa(
+            "const LEGACY_DUPLICATE_FILES = new Set(['0002_users.sql', '0002_legacy.sql']);"
+          ),
+          size: 88
+        }
       }
     });
     const readTool = (server as any)._registeredTools["forge_read"];
@@ -412,6 +423,13 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     );
     expect(res.structuredContent.tree).toContain("MISSING? apps/site/migrations/ · 0003");
     expect(res.structuredContent.tree).toContain("CHECKER scripts/verification/verify-d1-migration-history.mjs");
+    expect(res.structuredContent.tree).toContain(
+      "EXCEPTION? apps/site/migrations/ · prefix 0002 · scripts/verification/verify-d1-migration-history.mjs explicitly names 0002_legacy.sql, 0002_users.sql"
+    );
+    expect(res.content[0].text).toContain("1 duplicate exception explicitly referenced by committed checker");
+    expect(res.structuredContent.files[0].path).toBe(
+      "scripts/verification/verify-d1-migration-history.mjs"
+    );
   });
 
   it("executes forge_edit direct commit to default branch", async () => {
