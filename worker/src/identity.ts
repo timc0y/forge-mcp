@@ -289,7 +289,7 @@ async function sha256(value: string): Promise<string> {
 
 async function signingKeyTag(env: Env): Promise<string> {
   // Non-secret fingerprint: rotating the signing key invalidates refresh-token
-  // families as well as access/approval/capture tokens and stored credentials.
+  // families as well as access/approval tokens and stored credentials.
   return (await sha256(`forge.refresh.key:${env.FORGE_SIGNING_KEY}`)).slice(0, 22);
 }
 

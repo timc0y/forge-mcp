@@ -10,12 +10,6 @@ import type { ForgeMcpSession } from './mcp';
  */
 export interface Env {
   METADATA: D1Database;
-  /**
-   * Rendered captures only. Kept because MCP clients disagree about whether
-   * they render inline images, so a hosted copy is the half of the evidence
-   * that works everywhere — and the half a human can still open tomorrow.
-   */
-  ARTIFACTS: R2Bucket;
   MCP_SESSIONS: DurableObjectNamespace<ForgeMcpSession>;
 
   FORGE_ENVIRONMENT: 'production' | 'development' | 'local';

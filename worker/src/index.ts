@@ -9,7 +9,6 @@ import {
   token
 } from './oauth';
 import { approvalPage, resolveApproval } from './approve';
-import { galleryPage } from './gallery';
 import { installedPage, landingPage } from './landing';
 import { privacyPage } from './privacy';
 import { iconResponse } from './icon';
@@ -21,15 +20,11 @@ export { ForgeMcpSession };
 
 /**
  * The whole surface. Operational capabilities reach the outside world through
- * the MCP endpoint, OAuth, approval pages and stored captures. The landing,
- * privacy notice, icons and health route are public information surfaces only.
+ * the MCP endpoint, OAuth and approval pages. The landing, privacy notice,
+ * icons and health route are public information surfaces only.
  *
- * There is no dashboard, no observer API, no task or workspace console. Every
- * one of those existed in the previous system and every one was a surface to
- * keep working, secure and honest. The capture page earns its place because
- * clients disagree about rendering inline images, so it is the only copy of
- * that evidence guaranteed to be viewable — and the only one that outlives the
- * conversation.
+ * There is no dashboard, observer API, task console, workspace console or
+ * capture gallery. Evidence from forge_see is returned inline with that call.
  */
 
 /**
@@ -170,11 +165,6 @@ export default {
       if (path === '/oauth/authorize') return authorize(env, request);
       if (path === '/oauth/callback') return callback(env, request);
       if (path === '/oauth/token') return token(env, request);
-
-      const gallery = /^\/see\/([A-Za-z0-9-]+)$/.exec(path);
-      if (gallery?.[1]) {
-        return await galleryPage(env, gallery[1], url.searchParams.get('t') ?? '');
-      }
 
       const approval = /^\/approvals\/([A-Za-z0-9-]+)$/.exec(path);
       if (approval?.[1]) {

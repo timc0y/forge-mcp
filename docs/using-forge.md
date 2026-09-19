@@ -30,8 +30,8 @@ did was an ordinary commit.
 draft pull request. Each new proposed edit continues it. A repository cannot
 have two active Forge changes.
 
-**Capture** — a screenshot of a page that is already public, returned inline and
-at a link.
+**Capture** — a screenshot of a page that is already public, returned inline with
+the tool call.
 
 That is the whole vocabulary. There is no workspace, no session, no task, no job
 and no id to carry.
@@ -133,7 +133,7 @@ Until you install it, tools will tell you so and give you this link.
 | `forge_edit` | Writes files directly, or on the one Forge change when the work needs review | no |
 | `forge_merge` | Returns one link for you to land a change | **yes** |
 | `forge_discard` | Returns one link for you to throw a change away | **yes** |
-| `forge_see` | Screenshots a public URL, inline and at a link | no |
+| `forge_see` | Screenshots a public URL and returns the images inline | no |
 
 ### forge_read
 
@@ -167,8 +167,7 @@ and IP literals are refused, and Browser Rendering is told to reject redirects
 to literal local/private destinations. Arbitrary-host capture still relies on
 the rendering platform's network boundary for hostname-to-private-IP resolution;
 it is not equivalent to a fixed hostname allowlist. Images come back inline with
-the call **and** at a link, because clients disagree about which of the two they
-will display.
+the same tool call; Forge does not retain a screenshot gallery.
 
 Each image is the top of the page at that viewport, not the full scrollable
 page. Default viewports are phone and desktop.
@@ -181,7 +180,6 @@ page. Default viewports are phone and desktop.
 |---|---|
 | Captures | 30 per person per UTC day |
 | Everything else | unlimited — it runs against your own GitHub allowance |
-| Capture links | expire after 30 days |
 | Approval links | expire after 7 days |
 
 Repository work costs Forge nothing, because every call is metered against the

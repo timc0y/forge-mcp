@@ -83,7 +83,6 @@ import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
 import { buildSearchQuery, rankSearchResultsWithJev, searchGitHubCode, searchGitHubRepos } from './search';
 import { capture } from './capture';
-import { storeGallery } from './gallery';
 import { releaseCaptureQuota, reserveCaptureQuota } from './quota';
 import { requestApproval } from './approve';
 import type { Analytics } from './analytics';
@@ -1925,7 +1924,6 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       },
       outputSchema: {
         page: z.object({ url: z.string(), title: z.string(), shown: z.array(z.string()) }).optional(),
-        gallery: z.string().optional().describe('A link to these images that works in any client, and later.'),
         quota: z.string().optional(),
         pointer: z
           .object({
@@ -2004,19 +2002,6 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           kept.push(image);
         }
 
-        // Stored before the images are trimmed for transport: the hosted copy
-        // is the one place every viewport survives, including any the payload
-        // budget drops below.
-        const gallery = await storeGallery(
-          ctx.env,
-          shot,
-          new Date().toISOString(),
-          ctx.identity.userId
-        );
-        if (gallery === null && shot.images.length > 0) {
-          limits.push('These images could not be saved to a link, so they exist only in this reply.');
-        }
-
         let pointer: Awaited<ReturnType<typeof judgeSeePacket>> = null;
         let jevInsightNote = '';
         if (shot.outline.length > 0) {
@@ -2064,7 +2049,6 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           structured: withLimits(
             {
               page: { url: shot.url, title: shot.title, shown },
-              ...(gallery === null ? {} : { gallery }),
               ...(quota.unlimited ? {} : { quota: `${quota.used} of ${quota.limit} used today` }),
               ...(pointer
                 ? {

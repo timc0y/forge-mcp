@@ -79,10 +79,6 @@
     }
   ],
 
-  // Rendered captures only. Set a lifecycle rule on this bucket (30 days is
-  // plenty) — nothing here deletes, so expiry is the bucket's job.
-  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "forge-v1-captures" }],
-
   "durable_objects": {
     "bindings": [{ "class_name": "ForgeMcpSession", "name": "MCP_SESSIONS" }]
   },
@@ -113,7 +109,6 @@
           "migrations_dir": "migrations"
         }
       ],
-      "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "forge-v1-captures-development" }],
       "durable_objects": {
         "bindings": [{ "class_name": "ForgeMcpSession", "name": "MCP_SESSIONS" }]
       }

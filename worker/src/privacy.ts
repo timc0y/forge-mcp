@@ -14,8 +14,8 @@ export function privacyPage(env: Env): Response {
     body: `
 <h1>Privacy</h1>
 <p class="lead">Forge stores the minimum state needed to connect your GitHub account,
-  prepare reviewable changes, show captures later and carry out decisions you approve.</p>
-<p class="note">Last updated 21 August 2026.</p>
+  prepare reviewable changes and carry out decisions you approve.</p>
+<p class="note">Last updated 19 September 2026.</p>
 
 <h2>What Forge stores</h2>
 <div class="section">
@@ -38,9 +38,9 @@ export function privacyPage(env: Env): Response {
     currently remains until the Forge account is deleted.</p>
 
   <h3>Public-page captures</h3>
-  <p>A capture page contains the public source URL, title and screenshots you requested.
-    New captures are mapped to your Forge account for deletion and expire after 30 days.
-    The signed link is a bearer link: anyone you give it to can view it until it expires.</p>
+  <p>Forge renders public pages on demand and returns screenshots in the tool response.
+    It stores only your daily capture count; it does not keep a screenshot gallery or
+    persistent copy of captured pages.</p>
 
   <h3>Usage and analytics</h3>
   <p>Forge stores one daily capture count per user. When PostHog analytics is enabled,
@@ -59,14 +59,14 @@ export function privacyPage(env: Env): Response {
 
 <h2>Who processes data</h2>
 <p>GitHub provides identity and repository operations. Cloudflare hosts the Worker,
-  database, capture bucket and Browser Rendering. PostHog receives the limited analytics
-  described above only when its optional key is configured. Forge does not sell personal data.</p>
+  database and Browser Rendering. PostHog receives the limited analytics described above
+  only when its optional key is configured. Forge does not sell personal data.</p>
 
 <h2>Your controls</h2>
 <ul>
   <li>Revoke or narrow the Forge GitHub App installation from GitHub at any time.</li>
   <li>Disconnect Forge from your chat client to stop that client using it.</li>
-  <li>Ask for the Forge account and its mapped captures to be deleted.</li>
+  <li>Ask for the Forge account and its stored Forge metadata to be deleted.</li>
 </ul>
 <p>For support or deletion, use one of the public contact links at
   <a href="${escapeHtml(contact)}">timcoy.uk</a> and ask for a private response route.
@@ -74,9 +74,9 @@ export function privacyPage(env: Env): Response {
 
 <h2>Security and changes</h2>
 <p>Forge uses repository-scoped GitHub App access, encrypted storage for the one user
-  credential, signed capture and approval links, and explicit approval before Forge merges
-  or discards a proposed change. This notice will be updated when the stored data,
-  processors or retention behaviour changes.</p>
+  credential, signed approval links, and explicit approval before Forge merges or discards
+  a proposed change. This notice will be updated when the stored data, processors or
+  retention behaviour changes.</p>
 
 <footer><a href="${escapeHtml(origin)}">Back to Forge</a> ·
   <a href="${escapeHtml(contact)}">About &amp; contact</a></footer>`
