@@ -87,10 +87,12 @@ Forge hosts nothing.
   open in one repository.
 - Fast semantic decisions need no server-side index. Vector databases, periodic
   repo indexing, and background embeddings workers add infrastructure that drifts
-  out of sync with GitHub. TypeSafe Jev evaluates trees, paths, diffs, and security
-  gates on the fly in ~70-200ms using a single non-autoregressive forward pass.
-  Remote GitHub remains the sole source of truth; if Jev is unavailable or
-  unconfigured, Forge degrades cleanly to exact matching and honest receipts.
+  out of sync with GitHub. TypeSafe Jev evaluates trees, paths, diffs, repository
+  hygiene candidates, and security gates on the fly using bounded evidence.
+  Repository hygiene labels remain investigation prompts rather than claims that
+  code is unreachable, broken, or safe to delete; compiler/static-analysis/CI
+  evidence remains stronger. Remote GitHub stays the sole source of truth, and
+  unavailable Jev degrades to deterministic discovery and honest receipts.
 
 ## Proof
 

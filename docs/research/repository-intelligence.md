@@ -253,6 +253,24 @@ A repository's committed automation/configuration is evidence about what quality
 
 The distinction is load-bearing: `SCRIPT` lines are exact committed configuration; `LIKELY GATE` lines are Jev interpretations of configuration naming/content and explicitly do **not** mean the check executed or passed. `policy` remains the authoritative view of which status-check names GitHub actually requires at merge time.
 
+## Jev repository hygiene: find residue without pretending to prove dead code
+
+Repository cleanup is a strong Jev use case only when discovery, semantics, and proof remain separate. `query: hygiene` (plus natural questions about legacy, fallback, dead-looking, obsolete, deprecated, broken-looking, or cleanup code) now runs a bounded investigation over committed GitHub state.
+
+Candidate discovery deliberately blends three sources:
+
+- path/name signals such as `legacy`, `fallback`, `compat`, `deprecated`, `old`, or `unused`;
+- bounded GitHub code searches for strong content markers such as `legacy`, `deprecated`, `fallback`, and `compatibility`;
+- Jev semantic path triage only when deterministic/search discovery is still sparse, avoiding a costly high-cardinality semantic pass when enough evidence already exists.
+
+The strongest complete candidate files are compacted around marker-bearing neighborhoods and sent through one Jev fan-out. Each candidate gets an independent Choice classification (`legacy/superseded`, `fallback/recovery`, `compatibility-intentional`, `likely-dead/unreachable`, `possibly-broken/incomplete`, `active/current`, or `unclear`) plus separate Noul predicates for whether it merits cleanup investigation and whether deletion could plausibly change live runtime, build, API, migration, compatibility, or recovery behaviour.
+
+That separation is intentional. Forge reports `LEGACY?`, `FALLBACK?`, `DEAD?`, and `BROKEN?` with question marks because Jev is semantic triage, not a reachability engine. `COMPAT` and `ACTIVE` are first-class counter-evidence so old-looking code is not automatically pushed toward deletion.
+
+For the strongest suspicious candidates Forge then adds two bounded GitHub facts: a text-search reference anchor chosen from a distinctive exported/public symbol (or file-stem fallback), and the newest commit touching that path. These improve investigation quality but still do not become a compiler-backed reference graph. Knip, dependency-cruiser, language compilers, and repository CI remain the right place to prove unused exports/files, reachability, syntax/type validity, or runtime breakage before deletion.
+
+The hygiene path is capped at 20 candidate reads, 12 Jev classifications, and four enriched candidates. Generated/vendor/build outputs are excluded from source discovery. When Jev is unavailable, the same route degrades to explicit `CANDIDATE?` discovery evidence rather than silently inventing a verdict.
+
 ## Bounded churn without a history index
 
 `query: "churn"` samples the eight newest commits from GitHub, reads their changed-file summaries in parallel, and aggregates touch count plus line churn by path. The output is explicitly a bounded recent window, not a timeless maintainability score. If GitHub signals older commits or a commit with more changed files than the sampled detail exposes, Forge marks the sample incomplete. This gets much of the practical “what are our hot files?” value of history-analysis tools without storing an index or cloning the repository.
@@ -277,7 +295,7 @@ Current-tree statistics now also report structural shape borrowed from the usefu
 
 ## Jev as an evidence router, not a command language
 
-As `forge_read` gained useful evidence modes, explicit strings such as `quality`, `policy`, `churn`, `review`, `impact` and `dependencies` risked becoming a hidden command language. Forge now has a high-confidence Jev router for natural-language questions that contain evidence-domain hints. Repository questions can route to quality gates, GitHub policy, languages, churn, stats, structure or recent history; change questions can route to review, impact, dependency review, policy or change stats.
+As `forge_read` gained useful evidence modes, explicit strings such as `quality`, `hygiene`, `policy`, `churn`, `review`, `impact` and `dependencies` risked becoming a hidden command language. Forge now has a high-confidence Jev router for natural-language questions that contain evidence-domain hints. Repository questions can route to quality gates, repository hygiene, GitHub policy, languages, churn, stats, structure or recent history; change questions can route to review, impact, dependency review, policy or change stats.
 
 Routing is deliberately conservative. Ordinary navigation/implementation questions do not call the router at all. Even when hint words are present, a separate Noul predicate must say specialized evidence is the right answer with at least 0.72 probability, and the Choice must clear a confidence threshold. Otherwise the original question continues through ordinary semantic path/code search. Call sites disclose the selected evidence mode and confidence when routing occurs.
 
