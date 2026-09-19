@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev, summarizeChangeAssessment } from './jev';
+import { classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
@@ -64,13 +64,9 @@ import {
   readCodeownersErrors,
   readCommitParents,
   readDependencyReview,
-  readPullReviewState,
   readRecentHistory,
   readRepositoryLanguages,
-  requiredApprovalCount,
-  requiredCheckNames,
-  requiresCodeOwnerReview,
-  requiresReviewThreadResolution
+  requiredCheckNames
 } from './github-intelligence';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
@@ -1319,36 +1315,10 @@ async function requestAct(
   const comparison = await compare(ctx.gh, repo, base, change.branch);
   const head = await headSha(ctx.gh, repo, change.branch);
   const size = totals(comparison);
-  const dependencyFilesChanged = comparison.files.some((file) => isDependencyManifestPath(file.path));
-  const [policy, dependencies] = act === 'merge'
-    ? await Promise.all([
-        readBranchPolicy(ctx.gh, repo, base).catch(() => ({ rules: [], truncated: false })),
-        dependencyFilesChanged
-          ? readDependencyReview(ctx.gh, repo, base, change.branch).catch(() => ({ changes: [], truncated: false }))
-          : Promise.resolve({ changes: [], truncated: false })
-      ])
-    : [{ rules: [], truncated: false }, { changes: [], truncated: false }];
-  const requiredChecks = requiredCheckNames(policy);
-  const requiredApprovals = requiredApprovalCount(policy);
-  const needsCodeOwnerReview = requiresCodeOwnerReview(policy);
-  const needsThreadResolution = requiresReviewThreadResolution(policy);
-  const reviewState = act === 'merge' && change.number !== null
-    ? await readPullReviewState(ctx.gh, repo, change.number).catch(() => null)
+  const review = act === 'merge'
+    ? await buildChangeReviewPacket(ctx.env, ctx.gh, repo, base, change, comparison)
     : null;
-  const dependencyVulnerabilities = dependencies.changes.flatMap((dependency) => dependency.vulnerabilities);
-
-  let assessment = null;
-  let impactSummary: string | undefined;
-  if (act === 'merge' && ctx.env.TYPESAFE_API_KEY && comparison.files.length > 0) {
-    try {
-      const patchPaths = comparison.files.slice(0, 20).map((file) => file.path);
-      const enriched = await compare(ctx.gh, repo, base, change.branch, patchPaths);
-      assessment = await assessChangeWithJev(ctx.env, change.name, enriched);
-      if (assessment) impactSummary = summarizeChangeAssessment(assessment, comparison.files.length);
-    } catch {
-      // Approval remains useful with deterministic GitHub evidence alone.
-    }
-  }
+  const impactSummary = review?.impactSummary;
 
   // `change` goes in as it came out of GitHub, without `stats` copied onto it:
   // the comparison stored beside it already carries those numbers, and a
@@ -1386,52 +1356,13 @@ async function requestAct(
       : `Discarding "${change.name}" drops ${files}. ${loss}${impactNote ? ' ' + impactNote : ''}`;
 
   const limits: string[] = [];
-  if (assessment) limits.push(...changeAssessmentNotices(assessment, comparison));
-  if (assessment && comparison.files.length > 20) {
-    limits.push(`Jev change assessment used patch evidence from the first 20 of ${comparison.files.length} changed files; deterministic GitHub evidence still covers the full comparison GitHub returned.`);
-  }
+  if (review) limits.push(...changeReviewNotices(review, comparison, base));
   if (comparison.truncated) {
     limits.push('GitHub truncated this comparison, so the file counts above are a floor, not a total.');
   }
   if (act === 'merge' && comparison.behindBy > 0) {
     limits.push(`This change is ${comparison.behindBy} commit${comparison.behindBy === 1 ? '' : 's'} behind ${base}; GitHub decides at merge time whether it still applies cleanly.`);
   }
-  if (act === 'merge' && requiredChecks.length > 0) {
-    limits.push(`GitHub requires these checks on ${base}: ${requiredChecks.join(', ')}. Forge can see the rule names but not their current pass/fail state with its present permissions.`);
-  }
-  if (act === 'merge' && requiredApprovals > 0) {
-    const current = reviewState?.approvals;
-    limits.push(
-      current === undefined
-        ? `GitHub requires ${requiredApprovals} approving review${requiredApprovals === 1 ? '' : 's'} before merge.`
-        : `GitHub requires ${requiredApprovals} approving review${requiredApprovals === 1 ? '' : 's'}; the latest review states currently show ${current} approval${current === 1 ? '' : 's'}.`
-    );
-  }
-  if (act === 'merge' && needsCodeOwnerReview) {
-    limits.push('GitHub requires code-owner review for matching changed files.');
-  }
-  if (act === 'merge' && needsThreadResolution) {
-    limits.push('GitHub requires review threads to be resolved before merge.');
-  }
-  if (act === 'merge' && reviewState?.changesRequested && reviewState.changesRequested > 0) {
-    limits.push(`The latest GitHub review states include ${reviewState.changesRequested} change-requested review${reviewState.changesRequested === 1 ? '' : 's'}.`);
-  }
-  if (act === 'merge' && reviewState?.mergeable === false) {
-    limits.push('GitHub currently reports this pull request as not automatically mergeable.');
-  } else if (act === 'merge' && reviewState?.mergeable === null && !reviewState?.unavailable) {
-    limits.push('GitHub has not finished computing pull-request mergeability; Forge does not poll, so this remains unknown in this receipt.');
-  }
-  if (act === 'merge' && reviewState?.truncated) {
-    limits.push('Pull-request review state is based on the first 100 review records only.');
-  }
-  if (act === 'merge' && dependencyVulnerabilities.length > 0) {
-    const highest = dependencyVulnerabilities
-      .map((finding) => finding.severity)
-      .filter(Boolean)
-      .join(', ');
-    limits.push(`GitHub dependency review reports ${dependencyVulnerabilities.length} vulnerability finding${dependencyVulnerabilities.length === 1 ? '' : 's'} in dependency changes${highest ? ` (${highest})` : ''}. Inspect them before approving.`);
-  }
-
   const changes = await openChanges(ctx.gh, repo);
   return {
     summary: `${evidence} Nothing has happened yet — open ${approval.url} to decide.`,
