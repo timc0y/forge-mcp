@@ -10,7 +10,6 @@ import type { Env } from './env';
 import {
   readBranchPolicy,
   readDependencyReview,
-  repositoryPathExists,
   readPullReviewState,
   requiredApprovalCount,
   requiredCheckNames,
@@ -26,21 +25,11 @@ import {
 import {
   assessChangeWithJev,
   changeAssessmentNotices,
-  classifyChangedFileAreasWithJev,
-  semanticPathTriageDetailed,
   summarizeChangeAssessment,
   type ChangeAssessment
 } from './jev';
-import { compare, readTree } from './read';
-import {
-  contractLikePaths,
-  documentationCandidatePaths,
-  hasChangesetFile,
-  isDependencyManifestPath,
-  isDocumentationLikePath,
-  isTestLikePath,
-  testCandidatePaths
-} from './repository-intelligence';
+import { compare } from './read';
+import { isDependencyManifestPath } from './repository-intelligence';
 
 export interface ChangeReviewPacket {
   policy: BranchPolicy;
@@ -58,12 +47,6 @@ export interface ChangeReviewPacket {
   assessment: ChangeAssessment | null;
   impactSummary?: string;
   assessmentFiles: number;
-  usesChangesets: boolean | null;
-  contractPaths: string[];
-  suggestedTestPaths: string[];
-  suggestedDocPaths: string[];
-  companionTreeTruncated: boolean;
-  splitGroups: Array<{ area: string; paths: string[] }>;
 }
 
 export async function buildChangeReviewPacket(
@@ -106,82 +89,6 @@ export async function buildChangeReviewPacket(
   const impactSummary = assessment
     ? summarizeChangeAssessment(assessment, comparison.files.length)
     : undefined;
-  const releaseMetadataLooksRelevant = Boolean(
-    assessment && (assessment.userVisible >= 0.8 || assessment.breakingChange >= 0.8 || assessment.docsRelevant >= 0.92)
-  );
-  const usesChangesets = releaseMetadataLooksRelevant
-    ? await repositoryPathExists(gh, repo, base, '.changeset/config.json').catch(() => null)
-    : null;
-
-  const changedPaths = comparison.files.map((file) => file.path);
-  const needsTestSuggestion = Boolean(
-    assessment && assessment.testsRelevant >= 0.9 && !changedPaths.some(isTestLikePath)
-  );
-  const needsDocSuggestion = Boolean(
-    assessment && assessment.docsRelevant >= 0.92 && !changedPaths.some(isDocumentationLikePath)
-  );
-  let suggestedTestPaths: string[] = [];
-  let suggestedDocPaths: string[] = [];
-  let companionTreeTruncated = false;
-  let splitGroups: Array<{ area: string; paths: string[] }> = [];
-
-  if (assessment && assessment.multipleConcerns >= 0.85 && comparison.files.length >= 3) {
-    try {
-      const classified = await classifyChangedFileAreasWithJev(env, comparison.files.slice(0, 12));
-      const grouped = new Map<string, string[]>();
-      for (const item of classified) {
-        const paths = grouped.get(item.area) ?? [];
-        paths.push(item.path);
-        grouped.set(item.area, paths);
-      }
-      if (grouped.size >= 2) {
-        splitGroups = [...grouped.entries()].map(([area, paths]) => ({ area, paths }));
-      }
-    } catch {
-      // Split suggestions are advisory only.
-    }
-  }
-
-  if (needsTestSuggestion || needsDocSuggestion) {
-    try {
-      const tree = await readTree(gh, repo, base);
-      companionTreeTruncated = tree.truncated;
-      const changedContext = changedPaths.slice(0, 12).join(', ');
-      const tasks: Array<Promise<void>> = [];
-      if (needsTestSuggestion) {
-        const candidates = testCandidatePaths(tree.entries);
-        if (candidates.length > 0) {
-          tasks.push(
-            semanticPathTriageDetailed(
-              env,
-              candidates,
-              `Tests most likely related to change "${change.name}" touching: ${changedContext}`
-            ).then((result) => {
-              suggestedTestPaths = result?.paths.slice(0, 3) ?? [];
-            })
-          );
-        }
-      }
-      if (needsDocSuggestion) {
-        const candidates = documentationCandidatePaths(tree.entries);
-        if (candidates.length > 0) {
-          tasks.push(
-            semanticPathTriageDetailed(
-              env,
-              candidates,
-              `Documentation most likely related to change "${change.name}" touching: ${changedContext}`
-            ).then((result) => {
-              suggestedDocPaths = result?.paths.slice(0, 3) ?? [];
-            })
-          );
-        }
-      }
-      await Promise.all(tasks);
-    } catch {
-      // Suggestions are optional semantic pointers, never merge requirements.
-    }
-  }
-
   return {
     policy,
     requiredChecks: requiredCheckNames(policy),
@@ -196,13 +103,7 @@ export async function buildChangeReviewPacket(
     ),
     assessment,
     ...(impactSummary ? { impactSummary } : {}),
-    assessmentFiles,
-    usesChangesets,
-    contractPaths: contractLikePaths(comparison.files),
-    suggestedTestPaths,
-    suggestedDocPaths,
-    companionTreeTruncated,
-    splitGroups
+    assessmentFiles
   };
 }
 
@@ -248,29 +149,6 @@ export function changeReviewNotices(
     notices.push('GitHub has not finished computing pull-request mergeability; Forge does not poll, so this remains unknown.');
   }
   if (packet.reviewState?.truncated) notices.push('Pull-request review state is based on the first 100 review records only.');
-  if (
-    packet.usesChangesets === true &&
-    packet.assessment &&
-    (packet.assessment.userVisible >= 0.8 || packet.assessment.breakingChange >= 0.8 || packet.assessment.docsRelevant >= 0.92) &&
-    !hasChangesetFile(comparison.files)
-  ) {
-    notices.push('Release metadata notice: this repository uses Changesets and the diff looks release/user-facing, but no .changeset/*.md file is changed. This is advisory; repository policy may intentionally exempt the change.');
-  }
-  if (packet.contractPaths.length > 0) {
-    notices.push(`Contract-file notice: ${packet.contractPaths.join(', ')} changed. Forge does not replace parser/compiler compatibility checks for these contracts.`);
-  }
-  if (packet.suggestedTestPaths.length > 0) {
-    notices.push(`Jev test candidates: ${packet.suggestedTestPaths.join(', ')}. These are likely companion files, not proof that tests are missing or required.`);
-  }
-  if (packet.suggestedDocPaths.length > 0) {
-    notices.push(`Jev documentation candidates: ${packet.suggestedDocPaths.join(', ')}. These are likely companion files, not proof that documentation is missing or required.`);
-  }
-  if (packet.splitGroups.length >= 2) {
-    notices.push('Jev split candidates group changed files by likely technical concern. They are review aids, not an instruction to rewrite Git history.');
-  }
-  if (packet.companionTreeTruncated) {
-    notices.push('GitHub truncated the repository tree used for companion-file suggestions, so other candidates may exist.');
-  }
   if (packet.dependencies.unavailable) notices.push(packet.dependencies.unavailable);
   if (packet.dependencies.snapshotWarning) notices.push(`GitHub dependency snapshot warning: ${packet.dependencies.snapshotWarning}`);
   if (packet.dependencies.truncated) notices.push('Dependency review was capped at 300 dependency changes.');
@@ -286,11 +164,6 @@ export function changeReviewNotices(
 export function changeReviewLines(packet: ChangeReviewPacket): string[] {
   const lines: string[] = [];
   if (packet.impactSummary) lines.push(`JEV ${packet.impactSummary}`);
-  if (packet.usesChangesets === true) lines.push('RELEASE changesets convention detected');
-  if (packet.contractPaths.length > 0) lines.push(`CONTRACT ${packet.contractPaths.join(', ')}`);
-  for (const path of packet.suggestedTestPaths) lines.push(`TEST? ${path}`);
-  for (const path of packet.suggestedDocPaths) lines.push(`DOC? ${path}`);
-  for (const group of packet.splitGroups) lines.push(`SPLIT? ${group.area} · ${group.paths.join(', ')}`);
   if (packet.requiredChecks.length > 0) lines.push(`POLICY checks · ${packet.requiredChecks.join(', ')}`);
   if (packet.requiredApprovals > 0) lines.push(`POLICY approvals · ${packet.requiredApprovals} required`);
   if (packet.needsCodeOwnerReview) lines.push('POLICY code-owner review required');
