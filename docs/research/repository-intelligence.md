@@ -191,6 +191,12 @@ Forge's current Pull Requests permission can read review records, and Contents r
 
 GitHub also exposes CODEOWNERS syntax errors through a Contents-read endpoint. When a Forge commit changes one of GitHub's recognized CODEOWNERS locations, the post-commit advisory asks GitHub to validate the committed version and attaches any syntax errors/suggestions to the durable receipt. This is stronger than maintaining a second CODEOWNERS parser inside Forge.
 
+## Declared quality-gate interpretation
+
+A repository's committed automation/configuration is evidence about what quality gates it *declares*, even when Forge cannot run them or read their current Action status. `query: "quality"` now selects a bounded set of likely workflow/package/tooling configuration paths from the Git tree. Package scripts with test/lint/type/check/build/security/deploy-like commands are parsed deterministically. One Jev fan-out then independently chooses the most likely owning config file for tests, type checking, lint/format, security, build, deploy, and dependency automation, with an explicit `none` choice and confidence threshold.
+
+The distinction is load-bearing: `SCRIPT` lines are exact committed configuration; `LIKELY GATE` lines are Jev interpretations of configuration naming/content and explicitly do **not** mean the check executed or passed. `policy` remains the authoritative view of which status-check names GitHub actually requires at merge time.
+
 ## Bounded history, language distribution and current-tree shape
 
 GitHub's commit-list endpoint accepts both a branch and optional path filter under the existing Contents permission, so Forge now supports recent repository or path history without cloning Git. The result is deliberately bounded to the twelve newest matching commits and includes the short SHA, date, author, signature-verification state when GitHub provides it, and first commit-message line. It is a history window, not a permanent churn index.

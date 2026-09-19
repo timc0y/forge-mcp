@@ -597,7 +597,39 @@ describe("typesafeSystemOne noul field names", () => {
   });
 });
 
-import { assessChangeWithJev, changeAssessmentNotices, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+import { assessChangeWithJev, changeAssessmentNotices, classifyQualityGatesWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+
+describe("classifyQualityGatesWithJev", () => {
+  it("maps oddly named committed configuration to gate categories without claiming execution", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          gate_tests: { type: 'choice', choice: '.github/workflows/guard.yml', confidence: 0.92 },
+          gate_types: { type: 'choice', choice: 'package.json', confidence: 0.88 },
+          gate_lint_format: { type: 'choice', choice: 'none', confidence: 0.8 },
+          gate_security: { type: 'choice', choice: 'none', confidence: 0.8 },
+          gate_build: { type: 'choice', choice: 'none', confidence: 0.8 },
+          gate_deploy: { type: 'choice', choice: 'none', confidence: 0.8 },
+          gate_dependencies: { type: 'choice', choice: 'none', confidence: 0.8 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const gates = await classifyQualityGatesWithJev(
+      { TYPESAFE_API_KEY: 'key' } as unknown as Env,
+      [
+        { path: '.github/workflows/guard.yml', content: 'jobs:\n  verify_everything:\n    steps:\n      - run: pnpm test' },
+        { path: 'package.json', content: '{"scripts":{"prove":"tsc --noEmit"}}' }
+      ]
+    );
+
+    expect(gates.map((gate) => [gate.kind, gate.path])).toEqual([
+      ['tests', '.github/workflows/guard.yml'],
+      ['types', 'package.json']
+    ]);
+  });
+});
 
 describe("assessChangeWithJev", () => {
   it("returns independent change signals and a scoped outlier", async () => {

@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, lintCommittedFiles, repositoryStats } from '../src/repository-intelligence';
+import { extractDeclaredQualityScripts, historyScope, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, lintCommittedFiles, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -195,6 +195,19 @@ describe('repository intelligence query parsing', () => {
     expect(historyScope('history worker/src/write.ts')).toBe('worker/src/write.ts');
     expect(historyScope('authentication')).toBeUndefined();
     expect(isLanguagesQuery('languages')).toBe(true);
+  });
+
+  it('finds likely committed quality configuration and exact package scripts', () => {
+    const candidates = qualityCandidatePaths([
+      { path: '.github/workflows/ci.yml', type: 'file', size: 100 },
+      { path: 'package.json', type: 'file', size: 100 },
+      { path: 'src/index.ts', type: 'file', size: 100 }
+    ]);
+    expect(candidates).toEqual(['.github/workflows/ci.yml', 'package.json']);
+    expect(isQualityQuery('quality gates')).toBe(true);
+    expect(extractDeclaredQualityScripts([
+      { path: 'package.json', content: JSON.stringify({ scripts: { check: 'tsc --noEmit && vitest run', start: 'node app.js' } }) }
+    ])).toEqual([{ path: 'package.json', name: 'check', command: 'tsc --noEmit && vitest run' }]);
   });
 
   it('reports current-tree shape without assigning a quality score', () => {

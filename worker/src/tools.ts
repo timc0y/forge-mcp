@@ -32,10 +32,11 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { assessChangeWithJev, changeAssessmentNotices, judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev, summarizeChangeAssessment } from './jev';
+import { assessChangeWithJev, changeAssessmentNotices, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev, summarizeChangeAssessment } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
+  extractDeclaredQualityScripts,
   fileTotals,
   historyScope,
   humanBytes,
@@ -45,8 +46,10 @@ import {
   isLanguagesQuery,
   isMapQuery,
   isPolicyQuery,
+  isQualityQuery,
   isStatsQuery,
   lintCommittedFiles,
+  qualityCandidatePaths,
   repositoryMap,
   repositoryStats,
   semanticCodeNeedle,
@@ -674,6 +677,41 @@ async function readTreeLevel(
           tree: stats.lines,
           changes: names,
           next: 'Ask for another folder with "stats <path>", use "map" for repository shape, or "find:<text>" for exact committed-code search.'
+        },
+        limits
+      )
+    };
+  }
+
+  if (trimmedQuery && isQualityQuery(trimmedQuery)) {
+    const candidates = qualityCandidatePaths(tree.entries, 16);
+    const read = candidates.length > 0
+      ? await readFiles(gh, repo, base, candidates, MAX_FILE_BYTES)
+      : { files: [], skipped: [] };
+    const completeFiles = read.files
+      .filter((file) => !file.truncated)
+      .map((file) => ({ path: file.path, content: file.content }));
+    const scripts = extractDeclaredQualityScripts(completeFiles);
+    const gates = await classifyQualityGatesWithJev(ctx.env, completeFiles);
+    const lines = [
+      ...scripts.map((script) => `SCRIPT ${script.path} · ${script.name} = ${script.command}`),
+      ...gates.map((gate) => `LIKELY GATE ${gate.kind} · ${gate.path} · ${Math.round(gate.confidence * 100)}%`)
+    ];
+    if (lines.length === 0) lines.push(...candidates.map((path) => `CONFIG ${path}`));
+    const limits = [
+      ...(tree.truncated ? ['GitHub truncated the repository tree, so some quality configuration may be absent.'] : []),
+      ...(candidates.length >= 16 ? ['Quality-gate inspection is capped at 16 likely configuration files.'] : []),
+      ...read.skipped.map((skip) => `${skip.path} ${skip.reason}.`),
+      ...(gates.length > 0 ? ['LIKELY GATE lines are Jev interpretations of committed configuration; they do not mean a check ran or passed.'] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)} at ${base}: ${scripts.length} declared quality-related script${scripts.length === 1 ? '' : 's'} and ${gates.length} likely gate categor${gates.length === 1 ? 'y' : 'ies'} from committed configuration.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: lines,
+          changes: names,
+          next: 'Use "policy" to see which status-check names GitHub actually requires at merge time.'
         },
         limits
       )
@@ -1364,7 +1402,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         repo: z.string().optional().describe('owner/name. Omit to list your repositories.'),
         change: z.string().optional().describe('An open change, named by the words that created it.'),
         paths: z.array(z.string()).max(20).optional(),
-        query: z.string().optional().describe('Question or filter over repository state: code, shape/size, history, dependencies, languages, or branch policy.')
+        query: z.string().optional().describe('Question or filter over repository state: code, shape/size, history, quality gates, dependencies, languages, or branch policy.')
       },
       outputSchema: readOutput,
       // Nothing here writes, and it reaches nothing but GitHub.

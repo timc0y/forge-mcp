@@ -75,6 +75,64 @@ export function isLanguagesQuery(query: string): boolean {
   return /^(?:languages?|language stats?|tech stack|stack)$/i.test(query.trim());
 }
 
+export function isQualityQuery(query: string): boolean {
+  return /^(?:quality|quality gates?|gates?|ci|checks configured|repo checks|validation)$/i.test(query.trim());
+}
+
+export function qualityCandidatePaths(entries: RepositoryTreeEntry[], limit = 16): string[] {
+  const files = entries.filter((entry) => entry.type === 'file').map((entry) => entry.path);
+  const priority = (path: string): number => {
+    const lower = path.toLowerCase();
+    const name = lower.split('/').pop() ?? lower;
+    if (lower.startsWith('.github/workflows/') && /\.ya?ml$/.test(lower)) return 0;
+    if (name === 'package.json') return 1;
+    if (
+      /^(?:makefile|justfile|pyproject\.toml|tox\.ini|pytest\.ini|cargo\.toml|go\.mod|biome\.jsonc?|eslint\.config\.[cm]?[jt]s|vitest\.config\.[cm]?[jt]s|jest\.config\.[cm]?[jt]s|ruff\.toml|\.pre-commit-config\.ya?ml|dependabot\.ya?ml|codeql-config\.ya?ml|tsconfig(?:\.[^.]+)?\.json)$/.test(name)
+    ) return 2;
+    return 99;
+  };
+  return files
+    .map((path) => ({ path, priority: priority(path) }))
+    .filter((entry) => entry.priority < 99)
+    .sort(
+      (left, right) =>
+        left.priority - right.priority ||
+        left.path.split('/').length - right.path.split('/').length ||
+        left.path.localeCompare(right.path)
+    )
+    .slice(0, limit)
+    .map((entry) => entry.path);
+}
+
+export interface DeclaredScript {
+  path: string;
+  name: string;
+  command: string;
+}
+
+export function extractDeclaredQualityScripts(
+  files: Array<{ path: string; content: string }>,
+  limit = 30
+): DeclaredScript[] {
+  const scripts: DeclaredScript[] = [];
+  const useful = /(test|spec|lint|format|type|check|verify|validate|build|security|audit|deploy|quality|ci|guard)/i;
+  for (const file of files) {
+    if (!file.path.toLowerCase().endsWith('package.json')) continue;
+    try {
+      const parsed = JSON.parse(file.content.replace(/^\uFEFF/, '')) as { scripts?: Record<string, unknown> };
+      if (!parsed.scripts || typeof parsed.scripts !== 'object') continue;
+      for (const [name, command] of Object.entries(parsed.scripts)) {
+        if (typeof command !== 'string' || !useful.test(`${name} ${command}`)) continue;
+        scripts.push({ path: file.path, name, command: command.slice(0, 240) });
+        if (scripts.length >= limit) return scripts;
+      }
+    } catch {
+      // Invalid JSON is already surfaced by the post-commit advisory path.
+    }
+  }
+  return scripts;
+}
+
 /** Paths whose committed diff can change the dependency graph. */
 export function isCodeownersPath(path: string): boolean {
   const normalized = path.replace(/^\.\//, '').toLowerCase();

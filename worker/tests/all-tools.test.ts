@@ -485,6 +485,64 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.tree[0]).toContain("TOTAL · 2 files · 6.0 KiB");
   });
 
+  it("interprets declared quality gates from committed configuration", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        result: {
+          result: {
+            answers: {
+              gate_tests: { type: 'choice', choice: '.github/workflows/ci.yml', confidence: 0.94 },
+              gate_types: { type: 'choice', choice: 'package.json', confidence: 0.91 },
+              gate_lint_format: { type: 'choice', choice: 'none', confidence: 0.8 },
+              gate_security: { type: 'choice', choice: 'none', confidence: 0.8 },
+              gate_build: { type: 'choice', choice: 'none', confidence: 0.8 },
+              gate_deploy: { type: 'choice', choice: 'none', confidence: 0.8 },
+              gate_dependencies: { type: 'choice', choice: 'none', confidence: 0.8 }
+            }
+          }
+        }
+      })
+    }) as unknown as typeof fetch;
+    try {
+      const { server } = createMockToolContext({
+        "GET /repos/testuser/test-repo/git/trees/main": {
+          status: 200,
+          json: {
+            truncated: false,
+            tree: [
+              { path: '.github/workflows/ci.yml', type: 'blob', size: 100 },
+              { path: 'package.json', type: 'blob', size: 100 },
+              { path: 'src/index.ts', type: 'blob', size: 100 }
+            ]
+          }
+        },
+        "GET /repos/testuser/test-repo/contents/.github/workflows/ci.yml": {
+          status: 200,
+          json: { type: 'file', encoding: 'base64', content: btoa('jobs:\n  prove:\n    steps:\n      - run: pnpm test'), size: 50 }
+        },
+        "GET /repos/testuser/test-repo/contents/package.json": {
+          status: 200,
+          json: { type: 'file', encoding: 'base64', content: btoa('{"scripts":{"check":"tsc --noEmit && vitest run"}}'), size: 55 }
+        }
+      }, {
+        TYPESAFE_API_KEY: 'cfut_mock_token_123',
+        TYPESAFE_BASE_URL: 'https://api.cloudflare.com/client/v4/accounts/test/ai/run'
+      });
+      const readTool = (server as any)._registeredTools['forge_read'];
+      const res = await readTool.handler({ repo: 'test-repo', query: 'quality' });
+
+      expect(res.isError).toBeFalsy();
+      expect(res.structuredContent.tree.some((line: string) => line.includes('SCRIPT package.json · check'))).toBe(true);
+      expect(res.structuredContent.tree).toContain('LIKELY GATE tests · .github/workflows/ci.yml · 94%');
+      expect(res.structuredContent.tree).toContain('LIKELY GATE types · package.json · 91%');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("maps repository areas and likely entry points from committed paths", async () => {
     const { server } = createMockToolContext();
     const readTool = (server as any)._registeredTools["forge_read"];

@@ -885,6 +885,60 @@ export async function summarizeChangeImpactWithJev(
   return assessment ? summarizeChangeAssessment(assessment, comparison.files.length) : null;
 }
 
+export type QualityGateKind = 'tests' | 'types' | 'lint/format' | 'security' | 'build' | 'deploy' | 'dependencies';
+
+export interface QualityGateGuess {
+  kind: QualityGateKind;
+  path: string;
+  confidence: number;
+}
+
+/**
+ * Interpret committed configuration naming without claiming anything ran.
+ * Each gate is an independent Choice over the same bounded candidate set, with
+ * an explicit none option so Jev can abstain rather than force a match.
+ */
+export async function classifyQualityGatesWithJev(
+  env: Env,
+  files: Array<{ path: string; content: string }>
+): Promise<QualityGateGuess[]> {
+  if (!env.TYPESAFE_API_KEY || files.length === 0) return [];
+  const candidates = files.slice(0, 16).map((file) => ({
+    path: file.path,
+    preview: file.content.slice(0, 1800)
+  }));
+  const paths = candidates.map((candidate) => candidate.path);
+  const criteria = ['none', ...paths];
+  const definitions: Array<[QualityGateKind, string]> = [
+    ['tests', 'Which candidate most directly declares or runs automated tests? Choose none if no candidate does.'],
+    ['types', 'Which candidate most directly declares or runs static type checking? Choose none if no candidate does.'],
+    ['lint/format', 'Which candidate most directly declares or runs linting or formatting validation? Choose none if no candidate does.'],
+    ['security', 'Which candidate most directly declares or runs security, secret, dependency-vulnerability, or static security analysis? Choose none if no candidate does.'],
+    ['build', 'Which candidate most directly declares or runs a production/build/compile gate? Choose none if no candidate does.'],
+    ['deploy', 'Which candidate most directly declares deployment or release automation? Choose none if no candidate does.'],
+    ['dependencies', 'Which candidate most directly declares dependency update, lockfile, or dependency-health automation? Choose none if no candidate does.']
+  ];
+  const questions: Record<string, JevQuestion> = {};
+  for (const [kind, instructions] of definitions) {
+    questions[`gate_${kind.replace(/[^a-z]/g, '_')}`] = { type: 'choice', instructions, criteria };
+  }
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: { candidates },
+    questions
+  });
+  if (!resp) return [];
+
+  const results: QualityGateGuess[] = [];
+  for (const [kind] of definitions) {
+    const answer = resp.answers[`gate_${kind.replace(/[^a-z]/g, '_')}`] as JevChoiceAnswer | undefined;
+    if (!answer || answer.choice === 'none' || !paths.includes(answer.choice)) continue;
+    const confidence = answer.confidence || Math.max(0, ...Object.values(answer.distribution ?? {}));
+    if (confidence < 0.45) continue;
+    results.push({ kind, path: answer.choice, confidence });
+  }
+  return results;
+}
+
 export interface SearchIntentResult {
   intent: "docs" | "code" | "repos";
   platformId: string | null;
