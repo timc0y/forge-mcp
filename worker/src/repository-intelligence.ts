@@ -680,6 +680,7 @@ export async function lintCommittedFiles(
   };
 
   const sourceLike = /\.(?:[cm]?[jt]sx?|astro|liquid|vue|svelte|py|go|rs|swift|java|kt|kts|cs|php|rb|css|scss|html?|sql|graphql|gql)$/i;
+  const testLike = /(^|\/)(?:test|tests|__tests__|spec|specs)(\/|$)|\.(?:test|spec)\.[^.]+$/i;
 
   for (const file of files) {
     if (!file.content) continue;
@@ -695,6 +696,12 @@ export async function lintCommittedFiles(
         warnings.push(`Post-commit notice: ${file.path} is not valid JSON.`);
       }
     }
+
+    // Test/spec files routinely contain source snippets and mocked import
+    // strings. A regex cannot distinguish those from executable imports
+    // reliably; the repository's real compiler/test runner owns test-module
+    // resolution. Keep this lightweight advisory focused on production files.
+    if (testLike.test(file.path)) continue;
 
     const relativeImports = new Set<string>();
     const importPatterns = [
