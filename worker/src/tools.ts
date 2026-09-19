@@ -304,20 +304,6 @@ function totals(comparison: Comparison): { files: number; additions: number; del
   return fileTotals(comparison.files);
 }
 
-function ghForRepo(ctx: ToolContext): GitHubRequest {
-  return async (path, init) => {
-    const appResponse = await ctx.gh(path, init);
-    if (appResponse.status !== 403 && appResponse.status !== 404) return appResponse;
-
-    try {
-      const userResponse = await ctx.ghUser(path, init);
-      return userResponse.status === 200 ? userResponse : appResponse;
-    } catch {
-      return appResponse;
-    }
-  };
-}
-
 /** "modified +12/-3" — status and size in one field rather than three. */
 function describeChangedFile(file: ChangedFile): string {
   return `${file.status} +${file.additions}/-${file.deletions}`;
@@ -467,7 +453,7 @@ async function readTreeLevel(
   repo: RepoRef,
   query: string | undefined
 ): Promise<ToolOutcome> {
-  const gh = ghForRepo(ctx);
+  const gh = ctx.gh;
   const base = await defaultBranch(gh, repo);
   const trimmedQuery = query?.trim();
   const explicitMode = Boolean(
@@ -1111,7 +1097,7 @@ async function readFilesLevel(
   paths: string[],
   query?: string
 ): Promise<ToolOutcome> {
-  const gh = ghForRepo(ctx);
+  const gh = ctx.gh;
   const base = await defaultBranch(gh, repo);
   const [read, changes] = await Promise.all([
     readFiles(gh, repo, base, paths, MAX_FILE_BYTES),
@@ -1166,7 +1152,7 @@ async function readChangeLevel(
   paths: string[] | undefined,
   query?: string
 ): Promise<ToolOutcome> {
-  const gh = ghForRepo(ctx);
+  const gh = ctx.gh;
   const base = await defaultBranch(gh, repo);
   const change = await findChange(ctx.gh, repo, wanted);
   const comparison = await compare(gh, repo, base, change.branch, paths);
