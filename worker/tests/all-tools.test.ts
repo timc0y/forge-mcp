@@ -256,6 +256,22 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(seeTool.description).toContain("nothing to fetch afterwards");
   });
 
+  it("does not report zero exact matches when GitHub code search is unavailable", async () => {
+    const { server } = createMockToolContext({
+      "GET /search/code": {
+        status: 429,
+        json: { message: "rate limited" }
+      }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+    const res = await readTool.handler({ repo: "test-repo", query: "find:needle" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("No absence conclusion was made");
+    expect(res.content[0].text).toContain("was not completed");
+    expect(res.structuredContent.tree).toEqual([]);
+  });
+
   it("investigates repository hygiene with GitHub evidence and Jev", async () => {
     const priorFetch = globalThis.fetch;
     globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
