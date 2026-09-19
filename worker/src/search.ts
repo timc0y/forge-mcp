@@ -1,187 +1,10 @@
 /**
- * Global GitHub search and authoritative platform documentation discovery.
- *
- * Provides:
- * 1. Curated mapping of major technical platforms to their open-source GitHub docs.
- * 2. High-precision Blackbird query synthesis (language, symbol, path, and anti-noise qualifiers).
- * 3. TypeSafe Jev System One candidate scoring to isolate production-grade references.
+ * Small GitHub search helpers. GitHub is the index; Jev only ranks the bounded
+ * results GitHub returns.
  */
-import type { GitHubRequest, RepoRef } from './contracts';
-import { formatRepo } from './contracts';
+import type { GitHubRequest } from './contracts';
 import type { Env } from './env';
-import { typesafeSystemOne, analyzeSearchIntentWithJev, type JevChoiceAnswer, type JevNoulAnswer } from './jev';
-
-export interface DocPlatform {
-  id: string;
-  name: string;
-  repo: RepoRef;
-  docPathPrefix?: string;
-  defaultBranch?: string;
-  aliases: string[];
-  description: string;
-}
-
-export const SUPPORTED_PLATFORMS: DocPlatform[] = [
-  {
-    id: 'cloudflare',
-    name: 'Cloudflare',
-    repo: { owner: 'cloudflare', name: 'cloudflare-docs' },
-    docPathPrefix: 'content',
-    defaultBranch: 'production',
-    aliases: ['cf', 'workers', 'pages', 'r2', 'd1', 'hyperdrive'],
-    description: 'Cloudflare Workers, Pages, D1, KV, R2, and developer docs'
-  },
-  {
-    id: 'nextjs',
-    name: 'Next.js',
-    repo: { owner: 'vercel', name: 'next.js' },
-    docPathPrefix: 'docs',
-    defaultBranch: 'canary',
-    aliases: ['next', 'vercel'],
-    description: 'Next.js App Router, server components, and routing documentation'
-  },
-  {
-    id: 'react',
-    name: 'React',
-    repo: { owner: 'reactjs', name: 'react.dev' },
-    docPathPrefix: 'src/content',
-    defaultBranch: 'main',
-    aliases: ['reactjs', 'react-dom'],
-    description: 'Official React documentation, hooks, and architecture guides'
-  },
-  {
-    id: 'tailwind',
-    name: 'Tailwind CSS',
-    repo: { owner: 'tailwindlabs', name: 'tailwindcss.com' },
-    docPathPrefix: 'src/pages/docs',
-    defaultBranch: 'master',
-    aliases: ['tailwindcss', 'tw'],
-    description: 'Tailwind CSS utility classes, configuration, and plugins'
-  },
-  {
-    id: 'mdn',
-    name: 'MDN Web Docs',
-    repo: { owner: 'mdn', name: 'content' },
-    docPathPrefix: 'files/en-us',
-    defaultBranch: 'main',
-    aliases: ['webdocs', 'mozilla', 'html', 'css', 'javascript-api'],
-    description: 'Web standards, JavaScript APIs, Web APIs, and CSS reference'
-  },
-  {
-    id: 'hono',
-    name: 'Hono',
-    repo: { owner: 'honojs', name: 'website' },
-    defaultBranch: 'main',
-    aliases: ['honojs'],
-    description: 'Fast, lightweight web framework for Cloudflare Workers, Node, and edge runtimes'
-  },
-  {
-    id: 'mcp',
-    name: 'Model Context Protocol',
-    repo: { owner: 'modelcontextprotocol', name: 'specification' },
-    defaultBranch: 'main',
-    aliases: ['modelcontextprotocol', 'mcp-sdk'],
-    description: 'Official Model Context Protocol specification, schema, and guidelines'
-  },
-  {
-    id: 'bun',
-    name: 'Bun',
-    repo: { owner: 'oven-sh', name: 'bun' },
-    docPathPrefix: 'docs',
-    defaultBranch: 'main',
-    aliases: ['oven', 'oven-sh'],
-    description: 'Bun runtime documentation, package manager, and native APIs'
-  },
-  {
-    id: 'supabase',
-    name: 'Supabase',
-    repo: { owner: 'supabase', name: 'supabase' },
-    docPathPrefix: 'apps/docs',
-    defaultBranch: 'master',
-    aliases: ['supa', 'postgres'],
-    description: 'Supabase database, auth, storage, and edge functions documentation'
-  },
-  {
-    id: 'typescript',
-    name: 'TypeScript',
-    repo: { owner: 'microsoft', name: 'TypeScript-Website' },
-    defaultBranch: 'v2',
-    aliases: ['ts', 'tsc'],
-    description: 'TypeScript handbook, compiler configuration, and language reference'
-  },
-  {
-    id: 'typesafe',
-    name: 'TypeSafe Jev',
-    repo: { owner: 'typesafe-ai', name: 'typesafe' },
-    defaultBranch: 'main',
-    aliases: ['jev', 'systemone', 'system-one'],
-    description: 'TypeSafe AI System One decision engine and API specification'
-  },
-  {
-    id: 'webflow',
-    name: 'Webflow',
-    repo: { owner: 'webflow', name: 'developer-documentation' },
-    defaultBranch: 'main',
-    aliases: ['wf', 'webflow-api'],
-    description: 'Webflow REST API, Apps, and Designer APIs documentation'
-  },
-  {
-    id: 'astro',
-    name: 'Astro',
-    repo: { owner: 'withastro', name: 'docs' },
-    docPathPrefix: 'src/content/docs',
-    defaultBranch: 'main',
-    aliases: ['withastro'],
-    description: 'Astro web framework documentation, islands, and content collections'
-  },
-  {
-    id: 'svelte',
-    name: 'Svelte',
-    repo: { owner: 'sveltejs', name: 'svelte' },
-    docPathPrefix: 'documentation',
-    defaultBranch: 'main',
-    aliases: ['sveltejs', 'sveltekit'],
-    description: 'Svelte and SvelteKit reactive framework documentation'
-  },
-  {
-    id: 'vue',
-    name: 'Vue.js',
-    repo: { owner: 'vuejs', name: 'docs' },
-    docPathPrefix: 'src',
-    defaultBranch: 'main',
-    aliases: ['vuejs'],
-    description: 'Vue 3 composition API and component documentation'
-  },
-  {
-    id: 'prisma',
-    name: 'Prisma',
-    repo: { owner: 'prisma', name: 'docs' },
-    docPathPrefix: 'content',
-    defaultBranch: 'main',
-    aliases: ['prismadb', 'prisma-orm'],
-    description: 'Prisma ORM, schema modeling, and database migration documentation'
-  }
-];
-
-/**
- * Resolves a platform name or alias to a known documentation platform.
- */
-export function resolveDocPlatform(rawInput: string): DocPlatform | null {
-  const needle = rawInput.trim().toLowerCase();
-  for (const platform of SUPPORTED_PLATFORMS) {
-    if (platform.id === needle || platform.name.toLowerCase() === needle) {
-      return platform;
-    }
-    if (platform.aliases.includes(needle)) {
-      return platform;
-    }
-    const fullRepo = formatRepo(platform.repo).toLowerCase();
-    if (fullRepo === needle || (platform.repo.name.toLowerCase() !== 'docs' && platform.repo.name.toLowerCase() === needle)) {
-      return platform;
-    }
-  }
-  return null;
-}
+import { typesafeSystemOne, type JevChoiceAnswer, type JevNoulAnswer } from './jev';
 
 export interface SearchItem {
   id: string;
@@ -195,120 +18,37 @@ export interface SearchItem {
   confidence?: number;
 }
 
-export interface SearchResultOutcome {
-  mode: 'code' | 'repos' | 'docs';
-  queryUsed: string;
-  totalFound: number;
-  items: SearchItem[];
-}
-
 /**
- * Builds an advanced GitHub Blackbird search query from natural input.
- * Applies language detection, symbol qualifiers, and noise exclusion.
+ * Deterministic query shaping. Native GitHub qualifiers always win; Forge only
+ * adds obvious language and noise filters.
  */
-export async function buildAdvancedSearchQuery(
-  env: Env | undefined,
-  rawQuery: string,
-  mode: 'code' | 'repos' | 'docs' = 'code'
-): Promise<{ query: string; detectedPlatform?: DocPlatform | null; intentMode?: 'code' | 'repos' | 'docs' }> {
-  const trimmed = rawQuery.trim();
-  if (!trimmed) {
-    return { query: mode === 'repos' ? 'stars:>50 fork:false' : 'path:src/ NOT path:test' };
+export function buildSearchQuery(rawQuery: string, mode: 'code' | 'repos' = 'code'): string {
+  const query = rawQuery.trim();
+  if (!query) return mode === 'repos' ? 'stars:>50 fork:false archived:false' : 'path:src/';
+
+  if (/\b(repo|org|path|filename|language|stars|fork|symbol):/i.test(query)) return query;
+
+  let language = '';
+  if (/\b(typescript|ts)\b/i.test(query)) language = 'language:typescript';
+  else if (/\b(javascript|js)\b/i.test(query)) language = 'language:javascript';
+  else if (/\b(python|py)\b/i.test(query)) language = 'language:python';
+  else if (/\b(rust|rs)\b/i.test(query)) language = 'language:rust';
+  else if (/\b(golang|go)\b/i.test(query)) language = 'language:go';
+
+  const parts = [query, language].filter(Boolean);
+  if (mode === 'repos') {
+    parts.push('fork:false', 'archived:false');
+  } else {
+    parts.push(
+      'NOT path:test/',
+      'NOT path:tests/',
+      'NOT path:vendor/',
+      'NOT path:node_modules/',
+      'NOT path:dist/'
+    );
   }
-
-  // If query already contains explicit GitHub qualifiers (e.g. path:, repo:, stars:), preserve directly
-  const hasQualifiers = /\b(repo|org|path|filename|language|stars|fork|symbol):/i.test(trimmed);
-  if (hasQualifiers) {
-    return { query: trimmed };
-  }
-
-  // 1. Try Jev System One semantic query analysis for deep intent understanding
-  let jevPlatform: DocPlatform | null = null;
-  let jevLanguage: string | null = null;
-  let queryText = trimmed;
-  let activeMode = mode;
-
-  if (env?.TYPESAFE_API_KEY) {
-    try {
-      const intentAnalysis = await analyzeSearchIntentWithJev(
-        env,
-        trimmed,
-        SUPPORTED_PLATFORMS.map((p) => p.id)
-      );
-      if (intentAnalysis) {
-        if (intentAnalysis.platformId) {
-          jevPlatform = SUPPORTED_PLATFORMS.find((p) => p.id === intentAnalysis.platformId) ?? null;
-        }
-        if (intentAnalysis.language) {
-          jevLanguage = intentAnalysis.language;
-        }
-        if (intentAnalysis.coreQuery) {
-          queryText = intentAnalysis.coreQuery;
-        }
-        if (mode === 'code' && intentAnalysis.intent === 'docs' && jevPlatform) {
-          activeMode = 'docs';
-        }
-      }
-    } catch {
-      // Degrade gracefully to heuristics
-    }
-  }
-
-  // 2. Fallback heuristic detection for platform and language if Jev abstained
-  let detectedPlatform: DocPlatform | null = jevPlatform;
-  if (!detectedPlatform) {
-    for (const platform of SUPPORTED_PLATFORMS) {
-      const pattern = new RegExp(`\\b(${platform.id}|${platform.aliases.join('|')})\\b`, 'i');
-      if (pattern.test(trimmed)) {
-        detectedPlatform = platform;
-        break;
-      }
-    }
-  }
-
-  let languageQualifier = jevLanguage ? `language:${jevLanguage}` : '';
-  if (!languageQualifier) {
-    if (/\b(typescript|ts)\b/i.test(trimmed)) languageQualifier = 'language:typescript';
-    else if (/\b(javascript|js)\b/i.test(trimmed)) languageQualifier = 'language:javascript';
-    else if (/\b(python|py)\b/i.test(trimmed)) languageQualifier = 'language:python';
-    else if (/\b(rust|rs)\b/i.test(trimmed)) languageQualifier = 'language:rust';
-    else if (/\b(golang|go)\b/i.test(trimmed)) languageQualifier = 'language:go';
-  }
-
-  // If mode is repos
-  if (activeMode === 'repos') {
-    const parts = [queryText];
-    if (languageQualifier) parts.push(languageQualifier);
-    parts.push('fork:false');
-    parts.push('archived:false');
-    return { query: parts.join(' '), detectedPlatform, intentMode: activeMode };
-  }
-
-  // If mode is docs and a platform is detected
-  if (activeMode === 'docs' && detectedPlatform) {
-    const cleanTokens = queryText
-      .replace(new RegExp(`\\b(${detectedPlatform.id}|${detectedPlatform.aliases.join('|')})\\b`, 'gi'), '')
-      .replace(/\b(docs|documentation|guide|reference)\b/gi, '')
-      .trim();
-
-    const parts = [`repo:${formatRepo(detectedPlatform.repo)}`];
-    if (detectedPlatform.docPathPrefix) {
-      parts.push(`path:${detectedPlatform.docPathPrefix}/`);
-    }
-    if (cleanTokens) {
-      parts.push(cleanTokens);
-    }
-    return { query: parts.join(' '), detectedPlatform, intentMode: activeMode };
-  }
-
-  // Advanced code search with noise suppression
-  const parts = [queryText];
-  if (languageQualifier) parts.push(languageQualifier);
-  // Suppress test files, vendor dirs, and compiled code
-  parts.push('NOT path:test/ NOT path:tests/ NOT path:vendor/ NOT path:node_modules/ NOT path:dist/');
-
-  return { query: parts.join(' '), detectedPlatform, intentMode: activeMode };
-};
+  return parts.join(' ');
+}
 
 /**
  * Searches public repositories on GitHub.

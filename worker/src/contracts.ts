@@ -121,23 +121,6 @@ export interface CommitReceipt {
 }
 
 // ---------------------------------------------------------------------------
-// Results
-// ---------------------------------------------------------------------------
-
-/**
- * Every tool result carries the repository's open Forge change. This replaces
- * client memory. Nothing else in the system stores conversational state.
- */
-export interface Receipt<T> {
-  value: T;
-  openChanges: Change[];
-  /** What was not done, in plain words. Never omitted to make a result look clean. */
-  limitations?: string[];
-  /** At most one, and it must name a tool that exists. */
-  nextStep?: string;
-}
-
-// ---------------------------------------------------------------------------
 // Approval
 // ---------------------------------------------------------------------------
 
