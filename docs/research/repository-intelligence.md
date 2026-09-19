@@ -251,6 +251,12 @@ Current-tree statistics now also report structural shape borrowed from the usefu
 - quality-gate inventory: inspect committed workflow/config files and package scripts to identify which test/typecheck/lint/security gates a repo declares. That is configuration evidence, distinct from running those gates.
 - targeted recent churn: fetch a small bounded set of recent commits and their changed-file lists to identify frequently touched files. Avoid a permanent history index and disclose the sampled window.
 
+## Jev as an evidence router, not a command language
+
+As `forge_read` gained useful evidence modes, explicit strings such as `quality`, `policy`, `churn`, `review`, `impact` and `dependencies` risked becoming a hidden command language. Forge now has a high-confidence Jev router for natural-language questions that contain evidence-domain hints. Repository questions can route to quality gates, GitHub policy, languages, churn, stats, structure or recent history; change questions can route to review, impact, dependency review, policy or change stats.
+
+Routing is deliberately conservative. Ordinary navigation/implementation questions do not call the router at all. Even when hint words are present, a separate Noul predicate must say specialized evidence is the right answer with at least 0.72 probability, and the Choice must clear a confidence threshold. Otherwise the original question continues through ordinary semantic path/code search. Call sites disclose the selected evidence mode and confidence when routing occurs.
+
 ## Jev change assessment: independent signals, not a score
 
 TypeSafe's workflow evals repeatedly decompose a policy into independent Noul/Choice/Score questions and combine the probabilities in code. Forge now applies that pattern to merge evidence. A bounded patch-rich state is asked, in one Jev call, about primary technical area, intent alignment, breaking-contract likelihood, security sensitivity, persistent-data changes, user visibility, test relevance, documentation relevance, multiple independent concerns, and a possible scope-outlier file.

@@ -1041,6 +1041,67 @@ export async function classifyQualityGatesWithJev(
   return results;
 }
 
+export type ForgeReadEvidenceMode =
+  | 'quality'
+  | 'policy'
+  | 'languages'
+  | 'churn'
+  | 'stats'
+  | 'map'
+  | 'history'
+  | 'review'
+  | 'impact'
+  | 'dependencies';
+
+export interface ForgeReadEvidenceRoute {
+  mode: ForgeReadEvidenceMode;
+  confidence: number;
+}
+
+/**
+ * Route only questions that look like they are asking for a specialized
+ * evidence source. Ordinary implementation/navigation questions skip this call
+ * entirely and continue to semantic path/code search.
+ */
+export async function routeForgeReadEvidenceWithJev(
+  env: Env,
+  query: string,
+  scope: 'repository' | 'change'
+): Promise<ForgeReadEvidenceRoute | null> {
+  if (!env.TYPESAFE_API_KEY || !query.trim()) return null;
+  const trimmed = query.trim();
+  const hints = scope === 'repository'
+    ? /\b(test|tests|lint|format|typecheck|quality|ci|checks?|protect(?:ion)?|rules?|policy|languages?|stack|sizes?|large|big|structure|shape|history|recent|churn|hot|frequently changed)\b/i
+    : /\b(review|merge|safe|safety|break|impact|references?|uses?|dependencies?|deps?|vulnerab|rules?|policy|checks?|sizes?|large|scope)\b/i;
+  if (!hints.test(trimmed)) return null;
+
+  const modes: ForgeReadEvidenceMode[] = scope === 'repository'
+    ? ['quality', 'policy', 'languages', 'churn', 'stats', 'map', 'history']
+    : ['review', 'impact', 'dependencies', 'policy', 'stats'];
+  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+    state: { query: trimmed, scope },
+    questions: {
+      evidenceMode: {
+        type: 'choice',
+        instructions: scope === 'repository'
+          ? 'Which specialized evidence source best answers this repository question? quality=configured test/lint/type/build/security gates; policy=GitHub merge/branch rules; languages=language/stack distribution; churn=frequently changed files; stats=size/large files; map=repository structure; history=recent commits. Choose the closest only if the question primarily asks for that evidence.'
+          : 'Which specialized evidence source best answers this change question? review=overall merge/review evidence; impact=what else may be affected or break; dependencies=dependency additions/removals/vulnerabilities; policy=GitHub merge rules; stats=change size/hotspots. Choose the closest only if the question primarily asks for that evidence.',
+        criteria: modes
+      },
+      shouldRoute: {
+        type: 'noul',
+        instructions: 'Should this question be answered primarily from the specialized evidence mode rather than ordinary semantic code/file search?'
+      }
+    }
+  });
+  if (!resp || noulOf(resp.answers.shouldRoute, 0) < 0.72) return null;
+  const answer = resp.answers.evidenceMode as JevChoiceAnswer | undefined;
+  if (!answer?.choice || !modes.includes(answer.choice as ForgeReadEvidenceMode)) return null;
+  const confidence = answer.confidence || Math.max(0, ...Object.values(answer.distribution ?? {}));
+  if (confidence < 0.55) return null;
+  return { mode: answer.choice as ForgeReadEvidenceMode, confidence };
+}
+
 export interface SearchIntentResult {
   intent: "docs" | "code" | "repos";
   platformId: string | null;
