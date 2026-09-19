@@ -22,7 +22,8 @@ export function privacyPage(env: Env): Response {
   <h3>Account and GitHub access</h3>
   <p>Your GitHub numeric user id, current login and Forge GitHub App installation id.
     Forge also keeps one GitHub user credential encrypted at rest. It is used only to
-    create a personal repository, because a GitHub App installation token cannot do that.</p>
+    create a personal repository and when you explicitly ask Forge to search public GitHub.
+    Ordinary repository work uses your repository-scoped App installation instead.</p>
 
   <h3>OAuth connection</h3>
   <p>Registered client names and redirect addresses, hashes of short-lived authorization

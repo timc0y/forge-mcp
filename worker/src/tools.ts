@@ -97,7 +97,7 @@ export interface ToolContext {
   track: Analytics;
   /** The user's own installation. Everything that touches a repository. */
   gh: GitHubRequest;
-  /** Authenticated as the human. Only creating a repository needs it. */
+  /** Authenticated as the human. Only new-repo creation and explicit global public search use it. */
   ghUser: GitHubRequest;
 }
 

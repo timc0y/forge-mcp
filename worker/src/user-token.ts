@@ -4,18 +4,17 @@ import type { Env } from './env';
 import { ForgeError } from './errors';
 
 /**
- * The one long-lived third-party credential Forge holds, and the only reason it
- * exists: creating a repository.
+ * The one long-lived third-party credential Forge holds.
  *
- * An installation token cannot create a repository on a personal account —
- * `POST /user/repos` is user-authenticated only. Since a repository is created
- * by writing to one that does not exist, and nobody is present to tap anything
- * at that moment, Forge has to be able to act as the user later.
+ * It has two deliberately narrow uses that an installation-scoped repository
+ * client cannot replace: creating a personal repository with `POST /user/repos`,
+ * and explicit `repo:"global"` searches over public GitHub. Ordinary reads,
+ * writes, diffs, history and approvals always use the user's GitHub App
+ * installation token and therefore remain repository-scoped.
  *
- * So the scope is deliberately narrow. This credential is minted for repository
- * creation and nothing else; every other GitHub call in the product uses the
- * user's own installation token, which they granted per repository and can
- * revoke from GitHub without involving Forge.
+ * The credential is never used as a fallback for an installed-repository
+ * request. Revoking it may disable new-repo creation and global search, but must
+ * not break work in repositories the Forge App installation can already reach.
  *
  * It is encrypted at rest because D1 is not an appropriate place to keep a
  * bearer credential in plaintext, and revoked by deleting the row.
@@ -157,11 +156,11 @@ async function refresh(env: Env, userId: string, refreshToken: string): Promise<
 }
 
 /**
- * A GitHub request authenticated as the user. Only repository creation should
- * ever ask for this.
+ * A GitHub request authenticated as the user. Only repository creation and
+ * explicit global public search should ask for this.
  *
- * Failure names the fix: signing in again is what restores it, and saying so is
- * the difference between a dead end and a next step.
+ * Failure names the fix: signing in again is what restores those two features,
+ * while installed-repository work stays on the App installation credential.
  */
 export async function userRequestFor(env: Env, userId: string): Promise<GitHubRequest> {
   const stored = await load(env, userId);
@@ -169,7 +168,7 @@ export async function userRequestFor(env: Env, userId: string): Promise<GitHubRe
     throw new ForgeError({
       code: 'FORGE_AUTH_REQUIRED',
       message:
-        'Forge needs you to sign in with GitHub again before it can create a repository. ' +
+        'Forge needs you to sign in with GitHub again before it can create a repository or search public GitHub. ' +
         'Reconnect the Forge app, then ask again.',
       retryable: false
     });
@@ -185,8 +184,8 @@ export async function userRequestFor(env: Env, userId: string): Promise<GitHubRe
     throw new ForgeError({
       code: 'FORGE_AUTH_REQUIRED',
       message:
-        'Your GitHub sign-in has expired, so Forge cannot create a repository for you. ' +
-        'Reconnect the Forge app, then ask again. Nothing was created.',
+        'Your GitHub sign-in has expired, so Forge cannot create a repository or search public GitHub for you. ' +
+        'Reconnect the Forge app, then ask again. Installed-repository access is unchanged.',
       retryable: false
     });
   }

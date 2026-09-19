@@ -92,9 +92,10 @@ claude mcp add --transport http --scope user forge https://timcoy.uk/forge/mcp
 Your client opens a Forge page telling you what it is about to be allowed to do.
 Continue from there and GitHub asks whether to let Forge act as you.
 
-That is the last time tokens come up. Forge holds one GitHub credential for you,
-encrypted, and it is used for exactly one thing: creating a repository on your
-account, which an app installation cannot do on its own.
+That is the last time tokens come up. Forge holds one GitHub user credential
+encrypted for two narrow operations: creating a repository on your account and
+an explicit public GitHub search. All work inside installed repositories uses
+the repository-scoped GitHub App installation instead.
 
 ### 3. Install the GitHub App
 

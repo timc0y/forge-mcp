@@ -49,7 +49,7 @@ Secrets, via `wrangler secret put` from `worker/`:
 Needs **Contents: write**, **Pull requests: write**, **Metadata: read**, a
 callback URL of `<FORGE_PUBLIC_ORIGIN>/oauth/callback`, and **expiring user
 tokens enabled** — without that GitHub issues no refresh token and the stored
-credential can never rotate.
+credential used for new-repo creation and explicit public GitHub search can never rotate.
 
 ## Analytics
 
