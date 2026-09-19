@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import { parsePathRange, readFiles } from '../src/read';
 import { semanticFileExcerpt, semanticPathTriageDetailed, typesafeSystemOne, type JevChoiceAnswer } from '../src/jev';
 import type { GitHubRequest } from '../src/contracts';
@@ -154,7 +154,7 @@ describe('TypeSafe Jev System One client', () => {
         relevance: {
           type: 'score',
           instructions: 'Score relevance',
-          criteria: [0, 10]
+          criteria: Array.from({ length: 11 }, (_, i) => i)
         }
       }
     });
@@ -489,7 +489,9 @@ describe("typesafeSystemOne noul field names", () => {
         answers: {
           isError: { type: "noul", probability: 0.02 },
           exists: { type: "noul", probability: 0.91 },
-          suspect: { type: "choice", choice: "button: Menu" }
+          suspect: { type: "choice", choice: "L2" },
+          pageType: { type: "choice", choice: "landing" },
+          hasUnlabeledControls: { type: "noul", probability: 0.01 }
         }
       })
     }) as unknown as typeof fetch;
@@ -733,11 +735,9 @@ describe("typesafeSystemOne typed protocol", () => {
 
   it("handles Cloudflare Workers AI envelope, record criteria normalization, and probabilities parsing", async () => {
     let capturedBody: any = null;
-    let capturedHeaders: any = null;
-
+    
     globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
-      capturedHeaders = init?.headers;
-      capturedBody = JSON.parse(init?.body as string);
+            capturedBody = JSON.parse(init?.body as string);
       return {
         ok: true,
         json: async () => ({

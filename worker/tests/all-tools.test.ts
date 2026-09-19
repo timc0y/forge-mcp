@@ -160,9 +160,9 @@ function createMockToolContext(customRoutes: Record<string, any> = {}, envOverri
     CLOUDFLARE_ACCOUNT_ID: "cf-acc-123",
     CLOUDFLARE_API_TOKEN: "cf-token-123",
     METADATA: {
-      prepare(sql: string) {
+      prepare(_sql: string) {
         return {
-          bind(...args: unknown[]) {
+          bind(..._args: unknown[]) {
             return {
               async run() {
                 return { meta: { changes: 1 } };
@@ -481,12 +481,6 @@ describe("End-to-End Test for all 5 Forge tools", () => {
           status: 200,
           json: []
         }
-      }, {
-        ARTIFACTS: {
-          async put() {},
-          async get() { return null; },
-          async delete() {}
-        } as any
       });
       const seeTool = (server as any)._registeredTools["forge_see"];
       expect(seeTool).toBeDefined();
@@ -645,7 +639,7 @@ describe("End-to-End Test for all 5 Forge tools", () => {
 
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toContain("3 files");
-    expect(res.structuredContent.tree[0]).toContain("TOTAL · 3 files · 7.0 KiB");
+    expect(res.structuredContent.tree[0]).toContain("TOTAL · 3 files · 0 dirs · 7.0 KiB");
     expect(res.structuredContent.tree.some((line: string) => line.includes("FOLDER src/ · 2 files"))).toBe(true);
   });
 
@@ -657,7 +651,7 @@ describe("End-to-End Test for all 5 Forge tools", () => {
 
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toContain("under src: 2 files");
-    expect(res.structuredContent.tree[0]).toContain("TOTAL · 2 files · 6.0 KiB");
+    expect(res.structuredContent.tree[0]).toContain("TOTAL · 2 files · 0 dirs · 6.0 KiB");
   });
 
   it("interprets declared quality gates from committed configuration", async () => {

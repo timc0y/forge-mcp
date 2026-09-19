@@ -672,7 +672,7 @@ function notValid(): Response {
   );
 }
 
-function renderDecision(row: ApprovalRow, evidence: Evidence, id: string, token: string): Response {
+function renderDecision(row: ApprovalRow, evidence: Evidence, _id: string, token: string): Response {
   const merge = row.act === 'merge';
   const heading = merge ? 'Merge this change?' : 'Discard this change?';
   // Relative, so the POST always returns to the origin the human actually

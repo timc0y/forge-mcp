@@ -150,7 +150,7 @@ export async function githubRequest(env: Env, installationId: string): Promise<G
  * installation cannot create one on the account that installed it. Never
  * cached: the token belongs to a session, not to this isolate.
  */
-export async function githubUserRequest(env: Env, userAccessToken: string): Promise<GitHubRequest> {
+export async function githubUserRequest(_env: Env, userAccessToken: string): Promise<GitHubRequest> {
   return requester(userAccessToken);
 }
 

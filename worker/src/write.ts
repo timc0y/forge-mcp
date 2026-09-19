@@ -340,8 +340,9 @@ interface ResolvedFile {
 
 function assertNoHighSeveritySecrets(files: ResolvedFile[]): void {
   for (const file of files) {
-    if (!file.content) continue;
-    if (!HIGH_SEVERITY_SECRET_PATTERNS.some((pattern) => pattern.test(file.content))) continue;
+    const text = file.content;
+    if (!text) continue;
+    if (!HIGH_SEVERITY_SECRET_PATTERNS.some((pattern) => pattern.test(text))) continue;
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',
       message: `Commit rejected: ${file.path} contains what appears to be an unredacted secret token or private key.`,

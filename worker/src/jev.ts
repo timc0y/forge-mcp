@@ -878,7 +878,7 @@ export function summarizeChangeAssessment(assessment: ChangeAssessment, fileCoun
   return `${lead}: ${fileCount} file${fileCount === 1 ? '' : 's'}${flags.length ? `; ${flags.join(', ')}` : ''}.`;
 }
 
-export function changeAssessmentNotices(assessment: ChangeAssessment, comparison: Comparison): string[] {
+export function changeAssessmentNotices(assessment: ChangeAssessment, _comparison: Comparison): string[] {
   const notices: string[] = [];
 
   if (assessment.intentMatch <= 0.2) notices.push('Jev notice: the diff appears weakly aligned with the change intent; inspect scope before merging.');
@@ -1081,7 +1081,7 @@ export async function classifyHygieneCandidatesWithJev(
     'unclear'
   ];
   const questions: Record<string, JevQuestion> = {};
-  bounded.forEach((file, index) => {
+  bounded.forEach((_file, index) => {
     questions[`hygieneKind_${index}`] = {
       type: 'choice',
       instructions: `Classify candidate ${index} from its path, discovery signals and committed-code preview. "likely-dead/unreachable" means semantically suspicious only, not proven by a compiler. Prefer compatibility-intentional or active/current when the old-looking code appears deliberately live.`,

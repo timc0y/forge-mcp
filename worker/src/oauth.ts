@@ -23,7 +23,6 @@
  * user row there is no code to redeem.
  */
 import type { Env } from './env';
-import { isForgeError } from './errors';
 import { githubUserRequest } from './github';
 import { storeUserCredential } from './user-token';
 import { analyticsFor } from './analytics';
@@ -212,7 +211,7 @@ export async function authorize(env: Env, request: Request): Promise<Response> {
 
   if (request.method !== 'POST') return consentPage(client.client_name);
 
-  const form = await parseBody(request);
+  await parseBody(request);
   const state: FlowState = {
     client: client.client_id,
     redirect: redirectUri,
@@ -710,13 +709,6 @@ function redirect(location: string): Response {
   });
 }
 
-const HTML_ESCAPES: Record<string, string> = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;'
-};
 
 
 /**

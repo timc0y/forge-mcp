@@ -38,7 +38,7 @@ function createInMemoryForgeEnvironment() {
         head: { ref: "forge" },
         base: { ref: "main" },
         draft: true,
-        title: "Initial draft change",
+        title: "forge",
         updated_at: "2026-09-18T12:00:00Z"
       }
     ]
@@ -297,7 +297,7 @@ describe("In-Depth Forge End-to-End Suite", () => {
     });
     expect(mergeRes.isError).toBeFalsy();
     expect(mergeRes.structuredContent.approval.url).toContain("https://timcoy.uk/forge/approvals/");
-    expect(mergeRes.content[0].text).toContain("Merging \"Initial draft change\" into main brings 1 commit: 1 file");
+    expect(mergeRes.content[0].text).toContain("Merging \"forge\" into main brings 1 commit: 1 file");
   });
 
   it("3. Committed-file lint detects dangling imports", async () => {
