@@ -361,7 +361,21 @@ async function searchGlobal(ctx: ToolContext, query: string): Promise<ToolOutcom
   const searchQuery = buildSearchQuery(trimmed, mode);
 
   if (mode === 'repos') {
-    const { total, items } = await searchGitHubRepos(ctx.ghUser, searchQuery, 10);
+    const found = await searchGitHubRepos(ctx.ghUser, searchQuery, 10);
+    if (found.unavailable) {
+      return {
+        summary: found.unavailable,
+        structured: withLimits(
+          {
+            repos: [],
+            searchResults: [],
+            next: 'Try again later. If authentication keeps failing, reconnect Forge in your client.'
+          },
+          [found.unavailable]
+        )
+      };
+    }
+    const { total, items } = found;
     const ranked = await rankSearchResultsWithJev(ctx.env, trimmed, items);
     return {
       summary: ranked.length
@@ -380,7 +394,21 @@ async function searchGlobal(ctx: ToolContext, query: string): Promise<ToolOutcom
     };
   }
 
-  const { total, items } = await searchGitHubCode(ctx.ghUser, searchQuery, 10);
+  const found = await searchGitHubCode(ctx.ghUser, searchQuery, 10);
+  if (found.unavailable) {
+    return {
+      summary: found.unavailable,
+      structured: withLimits(
+        {
+          files: [],
+          searchResults: [],
+          next: 'Try again later. If authentication keeps failing, reconnect Forge in your client.'
+        },
+        [found.unavailable]
+      )
+    };
+  }
+  const { total, items } = found;
   const ranked = await rankSearchResultsWithJev(ctx.env, trimmed, items);
   return {
     summary: ranked.length
