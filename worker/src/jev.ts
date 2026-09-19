@@ -304,16 +304,8 @@ async function rankPathBatch(
   if (!resp) return [];
   const exists = noulOf(resp.answers.exists, 1);
   if (exists < 0.2) return [];
-  const answer = resp.answers.bestMatch as JevChoiceAnswer | undefined;
-  if (!answer) return [];
-
-  const ranked = Object.entries(answer.distribution)
-    .filter(([path, probability]) => batch.includes(path) && probability > 0.01)
-    .sort((left, right) => right[1] - left[1])
-    .slice(0, SEMANTIC_BATCH_FINALISTS)
-    .map(([path, probability]) => ({ path, score: probability * exists }));
-  if (ranked.length > 0) return ranked;
-  return batch.includes(answer.choice) ? [{ path: answer.choice, score: exists }] : [];
+  return rankedChoices(resp.answers.bestMatch, batch, 0.01, SEMANTIC_BATCH_FINALISTS)
+    .map(({ id, probability }) => ({ path: id, score: probability * exists }));
 }
 
 /**
@@ -528,38 +520,34 @@ export async function resolveRepoWithJev(
 ): Promise<{ repo: string; confidence: number } | null> {
   if (!env.TYPESAFE_API_KEY || availableRepos.length === 0 || !query.trim()) return null;
 
-  const repoNames = availableRepos.map((r) => r.repo);
+  const repos = availableRepos.slice(0, 50);
+  const repoNames = repos.map((entry) => entry.repo);
   const resp = await evaluateJev(env, {
     state: {
       userRepoQuery: query,
-      repositories: availableRepos.slice(0, 50).map((r) => ({
-        name: r.repo,
-        description: r.description ?? ""
+      repositories: repos.map((entry) => ({
+        name: entry.repo,
+        description: entry.description ?? ''
       }))
     },
     questions: {
       matchedRepo: {
-        type: "choice",
+        type: 'choice',
         instructions: `Which repository in 'repositories' does the user mean by: "${query}"?`,
-        criteria: repoNames.slice(0, 50)
+        criteria: repoNames
       },
       confidence: {
-        type: "noul",
+        type: 'noul',
         instructions: `How confident are you that this repository is the intended target for "${query}"?`
       }
     }
   });
 
-  if (!resp) return null;
-
-  const matchAnswer = resp.answers.matchedRepo as JevChoiceAnswer | undefined;
-  const confAnswer = resp.answers.confidence as JevNoulAnswer | undefined;
-
-  if (!matchAnswer?.choice) return null;
-
+  const match = choiceOf(resp?.answers.matchedRepo);
+  if (!match) return null;
   return {
-    repo: matchAnswer.choice,
-    confidence: confAnswer?.noul ?? matchAnswer.confidence ?? 0.5
+    repo: match.choice,
+    confidence: noulOf(resp?.answers.confidence, choiceConfidence(match) || 0.5)
   };
 }
 
@@ -573,38 +561,25 @@ export async function rankChangeFilesWithJev(
 ): Promise<string[] | null> {
   if (!env.TYPESAFE_API_KEY || files.length === 0 || !query.trim()) return null;
 
-  const fileEntries = files.slice(0, 30).map((f) => ({
-    path: f.path,
-    patchSnippet: (f.patch ?? "").slice(0, 500)
+  const changedFiles = files.slice(0, 30).map((file) => ({
+    path: file.path,
+    patchSnippet: (file.patch ?? '').slice(0, 500)
   }));
-
+  const paths = changedFiles.map((file) => file.path);
   const resp = await evaluateJev(env, {
-    state: {
-      userQuery: query,
-      changedFiles: fileEntries
-    },
+    state: { userQuery: query, changedFiles },
     questions: {
       relevantFiles: {
-        type: "choice",
+        type: 'choice',
         instructions: `Which changed file in 'changedFiles' is most relevant to the query: "${query}"?`,
-        criteria: fileEntries.map((f) => f.path)
+        criteria: paths
       }
     }
   });
-
   if (!resp) return null;
-
-  const answer = resp.answers.relevantFiles as JevChoiceAnswer | undefined;
-  if (!answer?.distribution) {
-    return answer?.choice ? [answer.choice] : null;
-  }
-
-  const sorted = Object.entries(answer.distribution)
-    .filter(([_, score]) => score > 0.05)
-    .sort((a, b) => b[1] - a[1])
-    .map(([path]) => path);
-
-  return sorted.length > 0 ? sorted : null;
+  const ranked = rankedChoices(resp.answers.relevantFiles, paths, 0.05, paths.length)
+    .map(({ id }) => id);
+  return ranked.length > 0 ? ranked : null;
 }
 
 export interface RankedPatchHunk {
@@ -620,9 +595,7 @@ export async function rankPatchHunksWithJev(
 ): Promise<RankedPatchHunk[]> {
   if (!env.TYPESAFE_API_KEY || hunks.length === 0 || !query.trim()) return [];
   const bounded = hunks.slice(0, 120);
-  const criteria = Object.fromEntries(
-    bounded.map((hunk) => [hunk.id, `${hunk.path} ${hunk.header}`])
-  );
+  const byId = new Map(bounded.map((hunk) => [hunk.id, hunk]));
   const resp = await evaluateJev(env, {
     state: {
       userQuery: query.trim(),
@@ -637,7 +610,7 @@ export async function rankPatchHunksWithJev(
       relevantHunk: {
         type: 'choice',
         instructions: `Which diff hunk most directly answers or changes the user's topic: "${query.trim()}"?`,
-        criteria
+        criteria: Object.fromEntries(bounded.map((hunk) => [hunk.id, `${hunk.path} ${hunk.header}`]))
       },
       hasRelevantHunk: {
         type: 'noul',
@@ -646,17 +619,12 @@ export async function rankPatchHunksWithJev(
     }
   });
   if (!resp || noulOf(resp.answers.hasRelevantHunk, 1) < 0.25) return [];
-  const answer = resp.answers.relevantHunk as JevChoiceAnswer | undefined;
-  if (!answer) return [];
-  const byId = new Map(bounded.map((hunk) => [hunk.id, hunk]));
-  const ranked = Object.entries(answer.distribution)
-    .filter(([id, probability]) => byId.has(id) && probability > 0.02)
-    .sort((left, right) => right[1] - left[1])
-    .slice(0, 6)
-    .map(([id, probability]) => ({ id, path: byId.get(id)!.path, score: probability }));
-  if (ranked.length > 0) return ranked;
-  const chosen = byId.get(answer.choice);
-  return chosen ? [{ id: chosen.id, path: chosen.path, score: answer.confidence || 1 }] : [];
+
+  return rankedChoices(resp.answers.relevantHunk, byId.keys(), 0.02, 6)
+    .flatMap(({ id, probability }) => {
+      const hunk = byId.get(id);
+      return hunk ? [{ id, path: hunk.path, score: probability }] : [];
+    });
 }
 
 export interface SeePointer {
@@ -928,9 +896,9 @@ export async function rankImpactIdentifiersWithJev(
   changeIntent: string,
   candidates: ImpactIdentifierCandidate[]
 ): Promise<string[]> {
-  if (!env.TYPESAFE_API_KEY || candidates.length === 0) {
-    return candidates.slice(0, 5).map((candidate) => candidate.identifier);
-  }
+  const fallback = candidates.slice(0, 5).map((candidate) => candidate.identifier);
+  if (!env.TYPESAFE_API_KEY || candidates.length === 0) return fallback;
+
   const bounded = candidates.slice(0, 100);
   const identifiers = bounded.map((candidate) => candidate.identifier);
   const resp = await evaluateJev(env, {
@@ -947,16 +915,12 @@ export async function rankImpactIdentifiersWithJev(
       }
     }
   });
-  if (!resp || noulOf(resp.answers.hasMeaningfulCandidate, 1) < 0.25) return [];
-  const answer = resp.answers.mostImpactful as JevChoiceAnswer | undefined;
-  if (!answer) return identifiers.slice(0, 5);
-  const ranked = Object.entries(answer.distribution)
-    .filter(([identifier, probability]) => identifiers.includes(identifier) && probability > 0.02)
-    .sort((left, right) => right[1] - left[1])
-    .slice(0, 5)
-    .map(([identifier]) => identifier);
-  if (ranked.length > 0) return ranked;
-  return identifiers.includes(answer.choice) ? [answer.choice] : identifiers.slice(0, 5);
+  if (!resp) return fallback;
+  if (noulOf(resp.answers.hasMeaningfulCandidate, 1) < 0.25) return [];
+
+  const ranked = rankedChoices(resp.answers.mostImpactful, identifiers, 0.02, 5)
+    .map(({ id }) => id);
+  return ranked.length > 0 ? ranked : fallback;
 }
 
 export type ExactMatchKind =
@@ -992,30 +956,31 @@ export async function classifyExactMatchContextsWithJev(
     'generated/vendor',
     'unknown'
   ];
-  const questions: Record<string, JevQuestion> = {};
-  for (const context of bounded) {
-    questions[`match_${context.id}`] = {
-      type: 'choice',
-      instructions: `Classify the role of the exact text ${JSON.stringify(needle)} in match ${context.id}. Use only that match's path and local snippet from state.`,
-      criteria: kinds
-    };
-  }
+  const questions = Object.fromEntries(
+    bounded.map((context) => [
+      `match_${context.id}`,
+      {
+        type: 'choice',
+        instructions: `Classify the role of the exact text ${JSON.stringify(needle)} in match ${context.id}. Use only that match's path and local snippet from state.`,
+        criteria: kinds
+      } satisfies JevChoiceQuestion
+    ])
+  );
   const resp = await evaluateJev(env, {
-    state: {
-      needle,
-      matches: bounded
-    },
+    state: { needle, matches: bounded },
     questions
   });
   if (!resp) return [];
 
   return bounded.map((context): ExactMatchClassification => {
-    const answer = resp.answers[`match_${context.id}`] as JevChoiceAnswer | undefined;
-    const kind = answer?.choice && kinds.includes(answer.choice as ExactMatchKind)
-      ? answer.choice as ExactMatchKind
-      : 'unknown';
-    const confidence = answer?.confidence || Math.max(0, ...Object.values(answer?.distribution ?? {}));
-    return { id: context.id, kind: confidence >= 0.4 ? kind : 'unknown', confidence };
+    const answer = choiceOf(resp.answers[`match_${context.id}`]);
+    const confidence = choiceConfidence(answer);
+    const kind = answer?.choice as ExactMatchKind | undefined;
+    return {
+      id: context.id,
+      kind: confidence >= 0.4 && kind ? kind : 'unknown',
+      confidence
+    };
   });
 }
 
@@ -1216,10 +1181,11 @@ export async function routeForgeReadEvidenceWithJev(
     }
   });
   if (!resp || noulOf(resp.answers.shouldRoute, 0) < 0.72) return null;
-  const answer = resp.answers.evidenceMode as JevChoiceAnswer | undefined;
-  if (!answer?.choice || !modes.includes(answer.choice as ForgeReadEvidenceMode)) return null;
-  const confidence = answer.confidence || Math.max(0, ...Object.values(answer.distribution ?? {}));
-  if (confidence < 0.55) return null;
-  return { mode: answer.choice as ForgeReadEvidenceMode, confidence };
-}
 
+  const answer = choiceOf(resp.answers.evidenceMode);
+  const mode = answer?.choice as ForgeReadEvidenceMode | undefined;
+  const confidence = choiceConfidence(answer);
+  return mode && modes.includes(mode) && confidence >= 0.55
+    ? { mode, confidence }
+    : null;
+}
