@@ -22,11 +22,18 @@ export async function readRepositoryLanguages(
   if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
     return { languages: [], unavailable: 'GitHub returned unreadable language statistics.' };
   }
-  const languages = Object.entries(response.json as Record<string, unknown>)
+  const rawLanguages = Object.entries(response.json as Record<string, unknown>);
+  const languages = rawLanguages
     .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))
     .map(([name, bytes]) => ({ name, bytes }))
     .sort((left, right) => right.bytes - left.bytes);
-  return { languages };
+  const unreadable = rawLanguages.length - languages.length;
+  return {
+    languages,
+    ...(unreadable > 0
+      ? { unavailable: `GitHub language statistics contained ${unreadable} unreadable entr${unreadable === 1 ? 'y' : 'ies'}; visible language data is partial.` }
+      : {})
+  };
 }
 
 export interface CommitHistoryEntry {
@@ -53,7 +60,7 @@ export async function readRecentChurn(
   commitLimit = 8
 ): Promise<{ entries: ChurnEntry[]; commitsSampled: number; truncated: boolean; unavailable?: string }> {
   const history = await readRecentHistory(request, repo, branch, undefined, commitLimit);
-  if (history.unavailable) {
+  if (history.unavailable && history.commits.length === 0) {
     return { entries: [], commitsSampled: 0, truncated: false, unavailable: history.unavailable };
   }
   const details = await Promise.all(
@@ -125,13 +132,19 @@ export async function readRecentChurn(
     ),
     commitsSampled: history.commits.length,
     truncated: history.truncated || details.some((detail) => detail.truncated),
-    ...(details.some((detail) => detail.unavailable)
-      ? {
-          unavailable:
-            `Recent churn is partial: ${details.filter((detail) => detail.unavailable).length} of ${details.length} commit-detail lookups were unavailable. ` +
-            details.filter((detail) => detail.unavailable).map((detail) => detail.unavailable).join(' ')
-        }
-      : {})
+    ...(
+      history.unavailable || details.some((detail) => detail.unavailable)
+        ? {
+            unavailable: [
+              history.unavailable,
+              details.some((detail) => detail.unavailable)
+                ? `Recent churn is partial: ${details.filter((detail) => detail.unavailable).length} of ${details.length} commit-detail lookups were unavailable. ` +
+                  details.filter((detail) => detail.unavailable).map((detail) => detail.unavailable).join(' ')
+                : undefined
+            ].filter(Boolean).join(' ')
+          }
+        : {}
+    )
   };
 }
 
