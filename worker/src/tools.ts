@@ -75,6 +75,7 @@ import {
   requiredCheckNames
 } from './github-intelligence';
 import { commitFiles } from './write';
+import { auditDurableCommitWithJev } from './post-commit-audit';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
 import {
   SUPPORTED_PLATFORMS,
@@ -1728,6 +1729,23 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
                   knownPaths
                 );
                 limits.push(...lintWarnings);
+
+                if (!proposed) {
+                  try {
+                    limits.push(
+                      ...(await auditDurableCommitWithJev(
+                        ctx.env,
+                        committedGh,
+                        repo,
+                        commit.sha,
+                        message,
+                        commit.paths
+                      ))
+                    );
+                  } catch {
+                    // Durable direct work remains successful if semantic audit is unavailable.
+                  }
+                }
 
                 if (commit.paths.some(isDependencyManifestPath)) {
                   const parent = await readCommitParents(committedGh, repo, commit.sha);

@@ -178,6 +178,12 @@ syntax:
 If this analysis fails, the commit remains a successful commit. Forge never
 turns durable work into an error because an advisory check failed.
 
+## Post-commit Jev audit for ordinary durable edits
+
+Ordinary `forge_edit` calls intentionally commit directly to the default branch, so they do not pass through the later change-review packet. Forge now gives those direct code/config commits a semantic receipt audit **after durability**. It resolves the real committed SHA's parent, compares parent→commit through GitHub with patches for at most ten changed paths, and runs the same decomposed Jev change assessment against the commit message as intent. Security-sensitive, persistent-data, breaking-contract, mixed-concern or intent-mismatch signals are returned as `Post-commit Jev` notices.
+
+The audit never blocks, rewrites or rolls back a durable commit, and a failure can only remove advisory text from the receipt. Docs-only commits skip it entirely. This is a better fit than a speculative pre-write reviewer because the model is judging the exact GitHub diff that actually became repository truth.
+
 ## Committed-work compiler linting
 
 Forge's worker TypeScript configuration now enables `noUnusedLocals` and `noUnusedParameters`. The existing GitHub CI already runs `pnpm typecheck` only after a push/PR exists, so this catches stale imports, dead locals and forgotten parameters on committed work without adding ESLint/Biome, a pre-commit hook, or any execution capability to Forge itself. Parameters intentionally unused can still follow TypeScript's underscore convention.
