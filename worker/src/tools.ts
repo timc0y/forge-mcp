@@ -650,23 +650,78 @@ async function readTreeLevel(
 
   if (trimmedQuery && (isMigrationQuery(trimmedQuery) || routed?.mode === 'migrations')) {
     const migration = migrationHistoryEvidence(tree.entries);
+    let checkerFiles: Array<{ path: string; content: string }> = [];
+    const checkerLimits: string[] = [];
+    if (migration.checkerPaths.length > 0) {
+      try {
+        const checkerRead = await readFiles(
+          gh,
+          repo,
+          base,
+          migration.checkerPaths.slice(0, 4),
+          MAX_FILE_BYTES
+        );
+        checkerFiles = checkerRead.files
+          .filter((file) => !file.truncated)
+          .map((file) => ({ path: file.path, content: file.content }));
+        checkerLimits.push(
+          ...checkerRead.skipped.map((skip) => `${skip.path} ${skip.reason}.`)
+        );
+      } catch {
+        checkerLimits.push('Committed migration-checker files were discovered but could not be read in this call.');
+      }
+    }
+
+    const exceptionLines: string[] = [];
+    const exceptionCheckers = new Set<string>();
+    for (const duplicate of migration.duplicates) {
+      const names = duplicate.paths.map((path) => path.split('/').pop() ?? path);
+      const checker = checkerFiles.find((file) =>
+        names.every((name) => file.content.includes(name))
+      );
+      if (!checker) continue;
+      exceptionCheckers.add(checker.path);
+      exceptionLines.push(
+        `EXCEPTION? ${duplicate.directory}/ · prefix ${duplicate.prefix} · ${checker.path} explicitly names ${names.join(', ')}`
+      );
+    }
+
+    const duplicateNames = migration.duplicates
+      .flatMap((duplicate) => duplicate.paths)
+      .map((path) => path.split('/').pop() ?? path)
+      .join(' ');
+    const checkerEvidence = checkerFiles
+      .filter((file) => exceptionCheckers.has(file.path))
+      .map((file) => ({
+        path: file.path,
+        text: queryContentPreview(file.content, duplicateNames || 'migration exception', 3200)
+      }));
+
     const limits = [
       ...(routeNote ? [routeNote] : []),
       ...(tree.truncated ? ['GitHub truncated the repository tree, so migration evidence may be incomplete.'] : []),
       ...(migration.issues > 0
-        ? ['DUPLICATE? and MISSING? are structural evidence only. Read the repository\'s committed migration checker before deciding whether a historical exception is intentional.']
+        ? ['DUPLICATE? and MISSING? are structural evidence, not proof a deployment is unsafe.']
         : []),
-      'Forge does not execute migrations or query deployed database state; this view inspects committed filenames and verifier presence only.',
+      ...(exceptionLines.length > 0
+        ? ['EXCEPTION? means a committed migration checker literally names every file in that duplicate-prefix set. It is evidence of an intentional repository policy, not proof that deployed database state is correct.']
+        : []),
+      ...checkerLimits,
+      'Forge does not execute migrations or query deployed database state; this view inspects committed filenames and verifier evidence only.',
       ...changesLimits(changes)
     ];
+    const exceptionSummary = exceptionLines.length > 0
+      ? `; ${exceptionLines.length} duplicate exception${exceptionLines.length === 1 ? '' : 's'} explicitly referenced by committed checker`
+      : '';
     return {
-      summary: `${formatRepo(repo)} at ${base}: ${migration.files} numbered SQL migration file${migration.files === 1 ? '' : 's'}; ${migration.issues} structural issue${migration.issues === 1 ? '' : 's'} flagged.${changesSentence(names)}`,
+      summary: `${formatRepo(repo)} at ${base}: ${migration.files} numbered SQL migration file${migration.files === 1 ? '' : 's'}; ${migration.issues} structural issue${migration.issues === 1 ? '' : 's'} flagged${exceptionSummary}.${changesSentence(names)}`,
       structured: withLimits(
         {
-          tree: migration.lines,
+          tree: [...migration.lines, ...exceptionLines],
+          ...(checkerEvidence.length > 0 ? { files: checkerEvidence } : {}),
           changes: names,
           next: migration.issues > 0
-            ? 'Read the migration checker and the flagged migration files to determine whether each exception is intentional.'
+            ? 'Inspect any unrecognized duplicate/missing prefixes and compare the committed migration policy with deployed database state before release.'
             : 'Use "quality" to inspect the committed scripts/CI that validate migrations.'
         },
         limits
