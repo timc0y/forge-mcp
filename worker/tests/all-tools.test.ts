@@ -260,9 +260,9 @@ describe("End-to-End Test for all 5 Forge tools", () => {
             answers: {
               bestMatch: {
                 type: "choice",
-                choice: "src/legacy-auth.ts",
+                choice: "src/legacy-auth.astro",
                 confidence: 0.96,
-                distribution: { "src/legacy-auth.ts": 0.96 }
+                distribution: { "src/legacy-auth.astro": 0.96 }
               },
               exists: { type: "noul", noul: 0.98 }
             }
@@ -289,7 +289,8 @@ describe("End-to-End Test for all 5 Forge tools", () => {
             json: {
               truncated: false,
               tree: [
-                { path: "src/legacy-auth.ts", type: "blob", size: 1800 },
+                { path: "src/legacy-auth.astro", type: "blob", size: 1800 },
+                { path: "sections/retired-cart.liquid", type: "blob", size: 1200 },
                 { path: "src/current.ts", type: "blob", size: 900 }
               ]
             }
@@ -300,8 +301,8 @@ describe("End-to-End Test for all 5 Forge tools", () => {
               total_count: 1,
               items: [
                 {
-                  name: "legacy-auth.ts",
-                  path: "src/legacy-auth.ts",
+                  name: "legacy-auth.astro",
+                  path: "src/legacy-auth.astro",
                   repository: { full_name: "testuser/test-repo" },
                   text_matches: [
                     {
@@ -313,7 +314,7 @@ describe("End-to-End Test for all 5 Forge tools", () => {
               ]
             }
           },
-          "GET /repos/testuser/test-repo/contents/src/legacy-auth.ts": {
+          "GET /repos/testuser/test-repo/contents/src/legacy-auth.astro": {
             status: 200,
             json: {
               type: "file",
@@ -350,12 +351,41 @@ describe("End-to-End Test for all 5 Forge tools", () => {
 
       expect(res.isError).toBeFalsy();
       expect(res.content[0].text).toContain("Jev surfaced 1");
-      expect(res.structuredContent.tree[0]).toContain("LEGACY? src/legacy-auth.ts");
+      expect(res.structuredContent.tree[0]).toContain("LEGACY? src/legacy-auth.astro");
       expect(res.structuredContent.tree[0]).toContain("legacyAuthenticationAdapter");
       expect(res.structuredContent.limits.join(" ")).toContain("not proof");
     } finally {
       globalThis.fetch = priorFetch;
     }
+  });
+
+  it("reports numbered migration history, duplicate prefixes, gaps, and committed checkers", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/git/trees/main": {
+        status: 200,
+        json: {
+          truncated: false,
+          tree: [
+            { path: "apps/site/migrations/0001_init.sql", type: "blob", size: 10 },
+            { path: "apps/site/migrations/0002_users.sql", type: "blob", size: 10 },
+            { path: "apps/site/migrations/0002_legacy.sql", type: "blob", size: 10 },
+            { path: "apps/site/migrations/0004_orders.sql", type: "blob", size: 10 },
+            { path: "scripts/verification/verify-d1-migration-history.mjs", type: "blob", size: 10 }
+          ]
+        }
+      }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+    const res = await readTool.handler({ repo: "test-repo", query: "migration safety" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("4 numbered SQL migration files");
+    expect(res.content[0].text).toContain("2 structural issues");
+    expect(res.structuredContent.tree).toContain(
+      "DUPLICATE? apps/site/migrations/ · prefix 0002 · apps/site/migrations/0002_legacy.sql, apps/site/migrations/0002_users.sql"
+    );
+    expect(res.structuredContent.tree).toContain("MISSING? apps/site/migrations/ · 0003");
+    expect(res.structuredContent.tree).toContain("CHECKER scripts/verification/verify-d1-migration-history.mjs");
   });
 
   it("executes forge_edit direct commit to default branch", async () => {
