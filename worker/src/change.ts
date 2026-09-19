@@ -171,11 +171,29 @@ async function findOpenPullRequestForBranch(
   const response = await request(
     `/repos/${repo.owner}/${repo.name}/pulls?state=open&head=${encodeURIComponent(`${repo.owner}:${branch}`)}&per_page=1`
   );
-  // A failed lookup here isn't fatal on its own — the create attempt below
-  // will surface GitHub's real error if this genuinely can't be resolved.
-  if (response.status !== 200) return null;
-  const [first] = parsePullRequests(response.json);
-  return first?.number ?? null;
+  if (response.status !== 200) {
+    throw new ForgeError({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE',
+      message: `Could not check for an existing pull request on ${formatRepo(repo)} (HTTP ${response.status}).`,
+      retryable: true
+    });
+  }
+  if (!Array.isArray(response.json)) {
+    throw new ForgeError({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE',
+      message: `GitHub returned an unreadable pull-request lookup for ${formatRepo(repo)}.`,
+      retryable: true
+    });
+  }
+  const parsed = parsePullRequests(response.json);
+  if (parsed.length !== response.json.length) {
+    throw new ForgeError({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE',
+      message: `GitHub returned malformed pull-request data for ${formatRepo(repo)}.`,
+      retryable: true
+    });
+  }
+  return parsed[0]?.number ?? null;
 }
 
 /**
