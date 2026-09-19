@@ -1030,7 +1030,9 @@ async function readTreeLevel(
         }))
       );
       const scored = relevance
-        .filter((item): item is typeof item & { probability: number } => item.probability !== null)
+        .flatMap((item) =>
+          item.probability === null ? [] : [{ path: item.path, probability: item.probability }]
+        )
         .sort((left, right) => right.probability - left.probability);
       const strong = scored.filter((item) => item.probability >= 0.35);
 

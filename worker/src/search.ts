@@ -4,7 +4,7 @@
  */
 import type { GitHubRequest } from './contracts';
 import type { Env } from './env';
-import { typesafeSystemOne, type JevChoiceAnswer, type JevNoulAnswer } from './jev';
+import { typesafeSystemOne } from './jev';
 
 export interface SearchItem {
   id: string;
@@ -190,27 +190,26 @@ export async function rankSearchResultsWithJev(
         instructions: `Which candidate is the highest quality, most production-ready implementation or authoritative documentation for: "${query}"?`,
         criteria
       },
-      isQuality: {
+      isUseful: {
         type: 'noul',
-        instructions: `Does candidate list contain high-quality, practical code or documentation for: "${query}"?`
+        instructions: `Does this candidate list contain at least one genuinely useful result for: "${query}"?`
       }
     }
   });
 
   if (!resp) return candidates;
 
-  const bestChoice = resp.answers.bestReference as JevChoiceAnswer | undefined;
-  const qualityNoul = resp.answers.isQuality as JevNoulAnswer | undefined;
+  const bestChoice = resp.answers.bestReference;
+  if (bestChoice?.type !== 'choice') return candidates;
 
-  if (bestChoice?.distribution) {
-    const dist = bestChoice.distribution;
-    const ranked = [...candidates].sort((a, b) => (dist[b.id] ?? 0) - (dist[a.id] ?? 0));
-    return ranked.map((item) => ({
-      ...item,
-      confidence: qualityNoul?.noul ?? 0.8,
-      score: dist[item.id] ?? 0
-    }));
-  }
-
-  return candidates;
+  const usefulness = resp.answers.isUseful;
+  const confidence = usefulness?.type === 'noul' ? usefulness.noul : 0.8;
+  const ranked = [...candidates].sort(
+    (left, right) => (bestChoice.distribution[right.id] ?? 0) - (bestChoice.distribution[left.id] ?? 0)
+  );
+  return ranked.map((item) => ({
+    ...item,
+    confidence,
+    score: bestChoice.distribution[item.id] ?? 0
+  }));
 }
