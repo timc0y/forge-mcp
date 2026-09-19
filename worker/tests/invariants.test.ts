@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { contractLikePaths, exactOccurrenceContexts, extractDeclaredQualityScripts, hasChangesetFile, historyScope, isChurnQuery, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, repositoryStats } from '../src/repository-intelligence';
+import { contractLikePaths, documentationCandidatePaths, exactOccurrenceContexts, extractDeclaredQualityScripts, hasChangesetFile, historyScope, isChurnQuery, isCodeownersPath, isDependencyManifestPath, isDocumentationLikePath, isLanguagesQuery, isQualityQuery, isReviewQuery, isTestLikePath, lintCommittedFiles, patchIdentifierCandidates, qualityCandidatePaths, repositoryStats, testCandidatePaths } from '../src/repository-intelligence';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -221,6 +221,22 @@ describe('repository intelligence query parsing', () => {
     ]);
     expect(stats.lines.some((line) => line.startsWith('SHAPE max depth'))).toBe(true);
     expect(stats.lines.some((line) => line.startsWith('SHAPE widest'))).toBe(true);
+  });
+});
+
+describe('review companion path detection', () => {
+  it('recognizes common test and documentation layouts without claiming coverage', () => {
+    expect(isTestLikePath('src/auth.test.ts')).toBe(true);
+    expect(isTestLikePath('tests/test_auth.py')).toBe(true);
+    expect(isDocumentationLikePath('docs/auth.md')).toBe(true);
+    expect(testCandidatePaths([
+      { path: 'src/auth.ts', type: 'file', size: 1 },
+      { path: 'src/auth.test.ts', type: 'file', size: 1 }
+    ])).toEqual(['src/auth.test.ts']);
+    expect(documentationCandidatePaths([
+      { path: 'README.md', type: 'file', size: 1 },
+      { path: 'src/auth.ts', type: 'file', size: 1 }
+    ])).toEqual(['README.md']);
   });
 });
 

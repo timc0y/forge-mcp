@@ -126,6 +126,12 @@ Similarly, contract-like changed paths such as OpenAPI/Swagger/AsyncAPI schemas,
 
 The packet now runs its GitHub policy/review/dependency reads and the bounded Jev assessment concurrently, then performs the optional Changesets convention lookup only when the semantic assessment says release metadata is plausibly relevant.
 
+### Actionable companion-file suggestions
+
+The decomposed Jev review signals are now used to find evidence, not merely produce warnings. If Jev is highly confident that tests matter and no obvious test path changed, the shared review packet reads the base tree, filters to real test-like paths, and reuses high-cardinality semantic path triage to suggest up to three likely `TEST?` companion files. The same happens for documentation when documentation relevance is very high and no documentation-like path changed.
+
+These pointers are deliberately labelled candidates. Forge does not say a suggested test covers the change, that the file must be edited, or that a missing suggestion means coverage is absent. A truncated GitHub tree is disclosed. This is the preferred Jev pattern for Forge: **turn an uncertain predicate into a bounded path to evidence**, rather than converting it into a verdict.
+
 ### Read-only change review packets
 
 The same evidence used to prepare a merge approval is now available through `forge_read` with a change and `query: "review"`. This route is read-only: it combines GitHub branch rules, required approval/check names, latest review states, one-shot mergeability, dependency-diff findings and one bounded patch-rich Jev assessment before Forge creates any approval record. The packet builder lives in `change-review.ts` so merge preparation can reuse exactly the same evidence rather than developing a second definition of what matters.

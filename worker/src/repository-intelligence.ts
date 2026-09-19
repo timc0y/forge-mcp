@@ -91,6 +91,38 @@ export function isQualityQuery(query: string): boolean {
   return /^(?:quality|quality gates?|gates?|ci|checks configured|repo checks|validation)$/i.test(query.trim());
 }
 
+export function isTestLikePath(path: string): boolean {
+  const lower = path.toLowerCase();
+  const name = lower.split('/').pop() ?? lower;
+  return (
+    /(^|\/)(test|tests|__tests__|spec|specs)(\/|$)/.test(lower) ||
+    /\.(?:test|spec)\.[^.]+$/.test(name) ||
+    /(^|\/)test_[^/]+\.py$/.test(lower) ||
+    /(^|\/)[^/]+_test\.(?:go|py|rb)$/.test(lower)
+  );
+}
+
+export function isDocumentationLikePath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return (
+    lower.startsWith('docs/') ||
+    /(^|\/)(readme|changelog|contributing)(\.|$)/.test(lower) ||
+    /\.(?:md|mdx|rst|adoc)$/.test(lower)
+  );
+}
+
+export function testCandidatePaths(entries: RepositoryTreeEntry[]): string[] {
+  return entries
+    .filter((entry) => entry.type === 'file' && isTestLikePath(entry.path))
+    .map((entry) => entry.path);
+}
+
+export function documentationCandidatePaths(entries: RepositoryTreeEntry[]): string[] {
+  return entries
+    .filter((entry) => entry.type === 'file' && isDocumentationLikePath(entry.path))
+    .map((entry) => entry.path);
+}
+
 export function qualityCandidatePaths(entries: RepositoryTreeEntry[], limit = 16): string[] {
   const files = entries.filter((entry) => entry.type === 'file').map((entry) => entry.path);
   const priority = (path: string): number => {

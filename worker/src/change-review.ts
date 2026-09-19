@@ -26,11 +26,20 @@ import {
 import {
   assessChangeWithJev,
   changeAssessmentNotices,
+  semanticPathTriageDetailed,
   summarizeChangeAssessment,
   type ChangeAssessment
 } from './jev';
-import { compare } from './read';
-import { contractLikePaths, hasChangesetFile, isDependencyManifestPath } from './repository-intelligence';
+import { compare, readTree } from './read';
+import {
+  contractLikePaths,
+  documentationCandidatePaths,
+  hasChangesetFile,
+  isDependencyManifestPath,
+  isDocumentationLikePath,
+  isTestLikePath,
+  testCandidatePaths
+} from './repository-intelligence';
 
 export interface ChangeReviewPacket {
   policy: BranchPolicy;
@@ -50,6 +59,9 @@ export interface ChangeReviewPacket {
   assessmentFiles: number;
   usesChangesets: boolean | null;
   contractPaths: string[];
+  suggestedTestPaths: string[];
+  suggestedDocPaths: string[];
+  companionTreeTruncated: boolean;
 }
 
 export async function buildChangeReviewPacket(
@@ -99,6 +111,57 @@ export async function buildChangeReviewPacket(
     ? await repositoryPathExists(gh, repo, base, '.changeset/config.json').catch(() => null)
     : null;
 
+  const changedPaths = comparison.files.map((file) => file.path);
+  const needsTestSuggestion = Boolean(
+    assessment && assessment.testsRelevant >= 0.9 && !changedPaths.some(isTestLikePath)
+  );
+  const needsDocSuggestion = Boolean(
+    assessment && assessment.docsRelevant >= 0.92 && !changedPaths.some(isDocumentationLikePath)
+  );
+  let suggestedTestPaths: string[] = [];
+  let suggestedDocPaths: string[] = [];
+  let companionTreeTruncated = false;
+
+  if (needsTestSuggestion || needsDocSuggestion) {
+    try {
+      const tree = await readTree(gh, repo, base);
+      companionTreeTruncated = tree.truncated;
+      const changedContext = changedPaths.slice(0, 12).join(', ');
+      const tasks: Array<Promise<void>> = [];
+      if (needsTestSuggestion) {
+        const candidates = testCandidatePaths(tree.entries);
+        if (candidates.length > 0) {
+          tasks.push(
+            semanticPathTriageDetailed(
+              env,
+              candidates,
+              `Tests most likely related to change "${change.name}" touching: ${changedContext}`
+            ).then((result) => {
+              suggestedTestPaths = result?.paths.slice(0, 3) ?? [];
+            })
+          );
+        }
+      }
+      if (needsDocSuggestion) {
+        const candidates = documentationCandidatePaths(tree.entries);
+        if (candidates.length > 0) {
+          tasks.push(
+            semanticPathTriageDetailed(
+              env,
+              candidates,
+              `Documentation most likely related to change "${change.name}" touching: ${changedContext}`
+            ).then((result) => {
+              suggestedDocPaths = result?.paths.slice(0, 3) ?? [];
+            })
+          );
+        }
+      }
+      await Promise.all(tasks);
+    } catch {
+      // Suggestions are optional semantic pointers, never merge requirements.
+    }
+  }
+
   return {
     policy,
     requiredChecks: requiredCheckNames(policy),
@@ -115,7 +178,10 @@ export async function buildChangeReviewPacket(
     ...(impactSummary ? { impactSummary } : {}),
     assessmentFiles,
     usesChangesets,
-    contractPaths: contractLikePaths(comparison.files)
+    contractPaths: contractLikePaths(comparison.files),
+    suggestedTestPaths,
+    suggestedDocPaths,
+    companionTreeTruncated
   };
 }
 
@@ -172,6 +238,15 @@ export function changeReviewNotices(
   if (packet.contractPaths.length > 0) {
     notices.push(`Contract-file notice: ${packet.contractPaths.join(', ')} changed. Forge does not replace parser/compiler compatibility checks for these contracts.`);
   }
+  if (packet.suggestedTestPaths.length > 0) {
+    notices.push(`Jev test candidates: ${packet.suggestedTestPaths.join(', ')}. These are likely companion files, not proof that tests are missing or required.`);
+  }
+  if (packet.suggestedDocPaths.length > 0) {
+    notices.push(`Jev documentation candidates: ${packet.suggestedDocPaths.join(', ')}. These are likely companion files, not proof that documentation is missing or required.`);
+  }
+  if (packet.companionTreeTruncated) {
+    notices.push('GitHub truncated the repository tree used for companion-file suggestions, so other candidates may exist.');
+  }
   if (packet.dependencies.unavailable) notices.push(packet.dependencies.unavailable);
   if (packet.dependencies.snapshotWarning) notices.push(`GitHub dependency snapshot warning: ${packet.dependencies.snapshotWarning}`);
   if (packet.dependencies.truncated) notices.push('Dependency review was capped at 300 dependency changes.');
@@ -189,6 +264,8 @@ export function changeReviewLines(packet: ChangeReviewPacket): string[] {
   if (packet.impactSummary) lines.push(`JEV ${packet.impactSummary}`);
   if (packet.usesChangesets === true) lines.push('RELEASE changesets convention detected');
   if (packet.contractPaths.length > 0) lines.push(`CONTRACT ${packet.contractPaths.join(', ')}`);
+  for (const path of packet.suggestedTestPaths) lines.push(`TEST? ${path}`);
+  for (const path of packet.suggestedDocPaths) lines.push(`DOC? ${path}`);
   if (packet.requiredChecks.length > 0) lines.push(`POLICY checks · ${packet.requiredChecks.join(', ')}`);
   if (packet.requiredApprovals > 0) lines.push(`POLICY approvals · ${packet.requiredApprovals} required`);
   if (packet.needsCodeOwnerReview) lines.push('POLICY code-owner review required');
