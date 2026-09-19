@@ -190,7 +190,7 @@ export async function readRecentHistory(
     : [];
   return {
     commits,
-    truncated: /rel="next"/.test(response.headers.get('Link') ?? '') || commits.length >= limit
+    truncated: /rel="next"/.test(response.headers.get('Link') ?? '')
   };
 }
 

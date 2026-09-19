@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubRequest } from '../src/contracts';
-import { readPullReviewState } from '../src/github-intelligence';
+import { readPullReviewState, readRecentHistory } from '../src/github-intelligence';
 
 function requestFor(reviews: unknown[]): GitHubRequest {
   return async (path) => {
@@ -25,6 +25,54 @@ function requestFor(reviews: unknown[]): GitHubRequest {
 }
 
 const repo = { owner: 'o', name: 'r' };
+
+describe('recent history', () => {
+  it('does not claim older history merely because one full page was returned', async () => {
+    const request: GitHubRequest = async () => ({
+      status: 200,
+      json: [
+        {
+          sha: 'abc123',
+          commit: {
+            message: 'only commit',
+            author: { name: 'Dev', date: '2026-09-01T10:00:00Z' },
+            committer: { name: 'Dev', date: '2026-09-01T10:00:00Z' }
+          }
+        }
+      ],
+      text: '',
+      headers: new Headers()
+    });
+
+    const history = await readRecentHistory(request, repo, 'main', undefined, 1);
+    expect(history.commits).toHaveLength(1);
+    expect(history.truncated).toBe(false);
+  });
+
+  it('uses GitHub pagination as the evidence that older history exists', async () => {
+    const headers = new Headers({
+      Link: '<https://api.github.com/repositories/1/commits?page=2>; rel="next"'
+    });
+    const request: GitHubRequest = async () => ({
+      status: 200,
+      json: [
+        {
+          sha: 'abc123',
+          commit: {
+            message: 'newest',
+            author: { name: 'Dev', date: '2026-09-01T10:00:00Z' },
+            committer: { name: 'Dev', date: '2026-09-01T10:00:00Z' }
+          }
+        }
+      ],
+      text: '',
+      headers
+    });
+
+    const history = await readRecentHistory(request, repo, 'main', undefined, 1);
+    expect(history.truncated).toBe(true);
+  });
+});
 
 describe('pull review state', () => {
   it('keeps an approval when the same reviewer later leaves a comment', async () => {

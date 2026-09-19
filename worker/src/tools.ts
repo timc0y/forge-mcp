@@ -305,20 +305,17 @@ function totals(comparison: Comparison): { files: number; additions: number; del
   return fileTotals(comparison.files);
 }
 
-function ghForRepo(ctx: ToolContext, repo: RepoRef): GitHubRequest {
+function ghForRepo(ctx: ToolContext): GitHubRequest {
   return async (path, init) => {
-    const res = await ctx.gh(path, init);
-    if ((res.status === 404 || res.status === 403) && ctx.ghUser) {
-      try {
-        const userRes = await ctx.ghUser(path, init);
-        if (userRes.status === 200 || res.status !== 404) {
-          return userRes;
-        }
-      } catch {
-        // Fall back to original res
-      }
+    const appResponse = await ctx.gh(path, init);
+    if (appResponse.status !== 403 && appResponse.status !== 404) return appResponse;
+
+    try {
+      const userResponse = await ctx.ghUser(path, init);
+      return userResponse.status === 200 ? userResponse : appResponse;
+    } catch {
+      return appResponse;
     }
-    return res;
   };
 }
 
@@ -471,7 +468,7 @@ async function readTreeLevel(
   repo: RepoRef,
   query: string | undefined
 ): Promise<ToolOutcome> {
-  const gh = ghForRepo(ctx, repo);
+  const gh = ghForRepo(ctx);
   const base = await defaultBranch(gh, repo);
   const trimmedQuery = query?.trim();
   const explicitMode = Boolean(
@@ -1086,7 +1083,7 @@ async function readFilesLevel(
   paths: string[],
   query?: string
 ): Promise<ToolOutcome> {
-  const gh = ghForRepo(ctx, repo);
+  const gh = ghForRepo(ctx);
   const base = await defaultBranch(gh, repo);
   const [read, changes] = await Promise.all([
     readFiles(gh, repo, base, paths, MAX_FILE_BYTES),
@@ -1141,7 +1138,7 @@ async function readChangeLevel(
   paths: string[] | undefined,
   query?: string
 ): Promise<ToolOutcome> {
-  const gh = ghForRepo(ctx, repo);
+  const gh = ghForRepo(ctx);
   const base = await defaultBranch(gh, repo);
   const change = await findChange(ctx.gh, repo, wanted);
   const comparison = await compare(gh, repo, base, change.branch, paths);
@@ -1763,7 +1760,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
         if (commit.outcome === 'committed') {
           try {
-            const committedGh = ghForRepo(ctx, repo);
+            const committedGh = ghForRepo(ctx);
             const committedTree = await readTree(committedGh, repo, commit.sha);
             if (committedTree.truncated) {
               limits.push('Post-commit advisory was skipped because GitHub truncated the committed tree.');

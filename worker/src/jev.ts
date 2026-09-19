@@ -311,12 +311,6 @@ export async function semanticPathTriageDetailed(
   };
 }
 
-/** Compatibility wrapper for callers that only need the ranked paths. */
-export async function semanticPathTriage(env: Env, paths: string[], query: string): Promise<string[] | null> {
-  const result = await semanticPathTriageDetailed(env, paths, query);
-  return result && result.paths.length > 0 ? result.paths : null;
-}
-
 export interface ExcerptResult {
   content: string;
   startLine: number;
