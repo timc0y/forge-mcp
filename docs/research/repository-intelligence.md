@@ -27,8 +27,6 @@ remain a deterministic pre-blob guard over the exact resolved file content, whil
 reserved for screening, ranking and advisory review. A probabilistic classifier should
 direct attention, not decide whether GitHub truth is allowed to change.
 
- without a runner
-
 Research and implementation note, 2026-09-19.
 
 ## Goal
