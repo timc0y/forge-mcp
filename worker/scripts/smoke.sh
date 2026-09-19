@@ -5,8 +5,8 @@
 # Covers everything reachable without GitHub credentials: the router and its
 # mount path, the auth boundary, both OAuth discovery spellings, dynamic client
 # registration (which exercises D1 for real), PKCE hardening, the public privacy
-# notice, and the rule that an unknown approval or capture must answer identically
-# to a wrong token so the URL cannot be used to learn what exists.
+# notice, and the rule that an unknown approval cannot disclose whether a
+# pending decision exists.
 #
 #   worker/scripts/smoke.sh [base-url]
 #
@@ -20,7 +20,8 @@ code() { curl -s -o /dev/null -w "%{http_code}" --max-time 25 "$@"; }
 body() { curl -s --max-time 25 "$@"; }
 
 echo "── liveness"
-chk "health answers"                 '{"status":"ok"}' "$(body $B/health)"
+chk "health answers"                 '"status":"ok"'   "$(body $B/health)"
+chk "health exposes server version"  '"version":"1.1.0"' "$(body $B/health)"
 chk "unknown route 404s"             "404"            "$(code $B/nope)"
 chk "mount root serves the page"     "Forge"          "$(body $B)"
 # GitHub always appends a query when returning from an install, and an exact
@@ -65,14 +66,13 @@ chk "rejects unknown client"         "400"            "$(code "$B/oauth/authoriz
 chk "token rejects bad grant"        "invalid_grant"  "$(body -X POST $B/oauth/token -H 'content-type: application/x-www-form-urlencoded' -d 'grant_type=authorization_code&code=nope&code_verifier=xyz&client_id='"$CID")"
 chk "token rejects bad refresh"      "invalid_grant"  "$(body -X POST $B/oauth/token -H 'content-type: application/x-www-form-urlencoded' -d 'grant_type=refresh_token&refresh_token=nope&client_id='"$CID")"
 
-echo "── approvals and captures are not oracles"
+echo "── approvals are not oracles"
 chk "unknown approval is not a 500"  "404"            "$(code $B/approvals/11111111-1111-1111-1111-111111111111?t=wrong)"
 chk "approval POST needs a decision" "400"            "$(code -X POST $B/approvals/11111111-1111-1111-1111-111111111111?t=wrong)"
 chk "approval rejects PUT"           "405"            "$(code -X PUT $B/approvals/11111111-1111-1111-1111-111111111111?t=wrong)"
-chk "unknown capture 404s"           "404"            "$(code $B/see/11111111-1111-1111-1111-111111111111?t=wrong)"
 
 echo "── one design system"
-for path in "" "/privacy" "/approvals/11111111-1111-1111-1111-111111111111?t=x" "/see/11111111-1111-1111-1111-111111111111?t=x"; do
+for path in "" "/privacy" "/approvals/11111111-1111-1111-1111-111111111111?t=x"; do
   html="$(body "$B$path")"
   chk "shared shell on ${path:-/}"    'class="mark"'      "$html"
   chk "skip link on ${path:-/}"       'Skip to content'   "$html"

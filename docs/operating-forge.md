@@ -116,7 +116,7 @@ results.
 pnpm check                  # types and invariants
 pnpm --dir worker dev
 pnpm --dir worker deploy
-worker/scripts/smoke.sh     # 28 checks against a deployment
+worker/scripts/smoke.sh     # deployed HTTP/OAuth smoke
 ```
 
 The smoke test needs no GitHub credentials. It covers the mount path, the auth
