@@ -479,9 +479,12 @@ export async function readPullReviewState(
     };
   }
 
-  // GitHub returns reviews chronologically. Keep the latest state per reviewer
-  // so repeated approvals/comments by one person do not inflate the count.
-  const latest = new Map<string, string>();
+  // GitHub returns reviews chronologically. Only APPROVED and
+  // CHANGES_REQUESTED are decisive review states; a later COMMENTED review must
+  // not erase an earlier approval. DISMISSED clears that reviewer's decisive
+  // state. Comments are counted separately as review records, not reviewers.
+  const decisive = new Map<string, 'APPROVED' | 'CHANGES_REQUESTED'>();
+  let comments = 0;
   let anonymousIndex = 0;
   for (const value of reviewResponse.json) {
     if (typeof value !== 'object' || value === null) continue;
@@ -491,16 +494,24 @@ export async function readPullReviewState(
       ? review.user as Record<string, unknown>
       : null;
     const key = typeof user?.login === 'string' ? user.login : `anonymous-${anonymousIndex++}`;
-    if (state) latest.set(key, state);
+    if (state === 'COMMENTED') {
+      comments += 1;
+      continue;
+    }
+    if (state === 'DISMISSED') {
+      decisive.delete(key);
+      continue;
+    }
+    if (state === 'APPROVED' || state === 'CHANGES_REQUESTED') decisive.set(key, state);
   }
 
-  const states = [...latest.values()];
+  const states = [...decisive.values()];
   return {
     mergeable,
     draft,
     approvals: states.filter((state) => state === 'APPROVED').length,
     changesRequested: states.filter((state) => state === 'CHANGES_REQUESTED').length,
-    comments: states.filter((state) => state === 'COMMENTED').length,
+    comments,
     truncated: /rel="next"/.test(reviewResponse.headers.get('Link') ?? '') || reviewResponse.json.length >= 100
   };
 }
