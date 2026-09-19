@@ -3,9 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTools, type ToolContext } from "../src/tools";
 import type { GitHubRequest, Identity } from "../src/contracts";
 import type { Env } from "../src/env";
-import { checkCommitSafety, analyzeSearchIntentWithJev } from "../src/jev";
+import { checkCommitSafety } from "../src/jev";
 import { lintCommittedFiles } from "../src/repository-intelligence";
-import { buildAdvancedSearchQuery, SUPPORTED_PLATFORMS } from "../src/search";
 
 function ok(json: any, status = 200) {
   return {
@@ -300,19 +299,6 @@ describe("In-Depth Forge End-to-End Suite", () => {
     expect(mergeRes.isError).toBeFalsy();
     expect(mergeRes.structuredContent.approval.url).toContain("https://timcoy.uk/forge/approvals/");
     expect(mergeRes.content[0].text).toContain("Merging \"Initial draft change\" into main brings 1 commit: 1 file");
-  });
-
-  it("2. Search platform coverage: all 16 platforms resolve and build clean queries", async () => {
-    expect(SUPPORTED_PLATFORMS.length).toBeGreaterThanOrEqual(16);
-
-    for (const p of SUPPORTED_PLATFORMS) {
-      const q = await buildAdvancedSearchQuery(undefined, `${p.id} routing guide`, "docs");
-      expect(q.detectedPlatform?.id).toBe(p.id);
-      expect(q.query).toContain(`repo:${p.repo.owner}/${p.repo.name}`);
-      if (p.docPathPrefix) {
-        expect(q.query).toContain(`path:${p.docPathPrefix}/`);
-      }
-    }
   });
 
   it("3. Commit security & safety: rejects credentials, truncations, and detects dangling imports", async () => {

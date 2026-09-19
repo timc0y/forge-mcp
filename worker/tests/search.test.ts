@@ -1,9 +1,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
-  SUPPORTED_PLATFORMS,
-  buildAdvancedSearchQuery,
+  buildSearchQuery,
   rankSearchResultsWithJev,
-  resolveDocPlatform,
   searchGitHubCode,
   searchGitHubRepos,
   type SearchItem
@@ -13,88 +11,26 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 
-describe('Documentation Platform Registry and Resolution', () => {
-  it('contains curated platforms for major web and edge technologies', () => {
-    const ids = SUPPORTED_PLATFORMS.map((p) => p.id);
-    expect(ids).toContain('cloudflare');
-    expect(ids).toContain('nextjs');
-    expect(ids).toContain('react');
-    expect(ids).toContain('tailwind');
-    expect(ids).toContain('mdn');
-    expect(ids).toContain('hono');
-    expect(ids).toContain('mcp');
-    expect(ids).toContain('bun');
-    expect(ids).toContain('supabase');
-    expect(ids).toContain('typescript');
-    expect(ids).toContain('typesafe');
+describe('GitHub search query shaping', () => {
+  it('adds obvious language and code-noise filters', () => {
+    const query = buildSearchQuery('oauth callback in typescript', 'code');
+    expect(query).toContain('oauth callback in typescript');
+    expect(query).toContain('language:typescript');
+    expect(query).toContain('NOT path:test/');
+    expect(query).toContain('NOT path:vendor/');
+    expect(query).toContain('NOT path:node_modules/');
   });
 
-  it('resolves platforms by id, name, alias, and repo name case-insensitively', () => {
-    expect(resolveDocPlatform('cloudflare')?.id).toBe('cloudflare');
-    expect(resolveDocPlatform('CF')?.id).toBe('cloudflare');
-    expect(resolveDocPlatform('workers')?.id).toBe('cloudflare');
-    expect(resolveDocPlatform('cloudflare/cloudflare-docs')?.id).toBe('cloudflare');
-
-    expect(resolveDocPlatform('nextjs')?.id).toBe('nextjs');
-    expect(resolveDocPlatform('next')?.id).toBe('nextjs');
-    expect(resolveDocPlatform('vercel/next.js')?.id).toBe('nextjs');
-
-    expect(resolveDocPlatform('react')?.id).toBe('react');
-    expect(resolveDocPlatform('reactjs')?.id).toBe('react');
-
-    expect(resolveDocPlatform('tailwind')?.id).toBe('tailwind');
-    expect(resolveDocPlatform('tailwindcss')?.id).toBe('tailwind');
-
-    expect(resolveDocPlatform('mdn')?.id).toBe('mdn');
-    expect(resolveDocPlatform('mozilla')?.id).toBe('mdn');
-
-    expect(resolveDocPlatform('hono')?.id).toBe('hono');
-    expect(resolveDocPlatform('honojs')?.id).toBe('hono');
-
-    expect(resolveDocPlatform('mcp')?.id).toBe('mcp');
-    expect(resolveDocPlatform('modelcontextprotocol')?.id).toBe('mcp');
-
-    expect(resolveDocPlatform('jev')?.id).toBe('typesafe');
-    expect(resolveDocPlatform('systemone')?.id).toBe('typesafe');
-
-    expect(resolveDocPlatform('nonexistent-platform-xyz')).toBeNull();
-  });
-});
-
-describe('Advanced Search Query Synthesis', () => {
-  it('detects programming languages and adds Blackbird noise suppression filters in code mode', async () => {
-    const res = await buildAdvancedSearchQuery(undefined, 'oauth callback in typescript', 'code');
-    expect(res.query).toContain('oauth callback in typescript');
-    expect(res.query).toContain('language:typescript');
-    expect(res.query).toContain('NOT path:test/');
-    expect(res.query).toContain('NOT path:vendor/');
-    expect(res.query).toContain('NOT path:node_modules/');
+  it('adds repository noise filters', () => {
+    const query = buildSearchQuery('mcp server typescript', 'repos');
+    expect(query).toContain('language:typescript');
+    expect(query).toContain('fork:false');
+    expect(query).toContain('archived:false');
   });
 
-  it('detects python and adds language qualifier', async () => {
-    const res = await buildAdvancedSearchQuery(undefined, 'fastapi streaming response in python', 'code');
-    expect(res.query).toContain('language:python');
-  });
-
-  it('constructs clean repository search queries without fork noise', async () => {
-    const res = await buildAdvancedSearchQuery(undefined, 'mcp server typescript', 'repos');
-    expect(res.query).toContain('mcp server typescript');
-    expect(res.query).toContain('language:typescript');
-    expect(res.query).toContain('fork:false');
-    expect(res.query).toContain('archived:false');
-  });
-
-  it('preserves existing search qualifiers when provided directly', async () => {
-    const res = await buildAdvancedSearchQuery(undefined, 'repo:cloudflare/workers-sdk path:packages/ stars:>100', 'code');
-    expect(res.query).toBe('repo:cloudflare/workers-sdk path:packages/ stars:>100');
-  });
-
-  it('scopes documentation queries to the official documentation repository and path', async () => {
-    const res = await buildAdvancedSearchQuery(undefined, 'cloudflare workers kv binding', 'docs');
-    expect(res.detectedPlatform?.id).toBe('cloudflare');
-    expect(res.query).toContain('repo:cloudflare/cloudflare-docs');
-    expect(res.query).toContain('path:content/');
-    expect(res.query).toContain('kv binding');
+  it('preserves native GitHub qualifiers exactly', () => {
+    const query = 'repo:cloudflare/workers-sdk path:packages/ stars:>100';
+    expect(buildSearchQuery(query, 'code')).toBe(query);
   });
 });
 
@@ -192,7 +128,7 @@ describe('TypeSafe Jev System One Candidate Ranking', () => {
               'cloudflare/workers-sdk': 0.92
             }
           },
-          isQuality: {
+          isUseful: {
             type: 'noul',
             noul: 0.95
           }
@@ -248,42 +184,6 @@ describe('End-to-End forge_read search integration', () => {
     return (server as any)._registeredTools['forge_read'];
   }
 
-  it('lists supported documentation platforms when repo="docs" is requested without query', async () => {
-    const readTool = createTestServer({});
-    const res = await readTool.handler({ repo: 'docs' });
-
-    expect(res.isError).toBeFalsy();
-    expect(res.content[0].text).toContain('Forge Documentation Search supports: Cloudflare, Next.js');
-    expect(res.structuredContent.platforms).toBeDefined();
-    expect(res.structuredContent.platforms.length).toBeGreaterThan(5);
-  });
-
-  it('searches documentation when a platform name is specified as repo', async () => {
-    const readTool = createTestServer({
-      '/search/code': {
-        total_count: 1,
-        items: [
-          {
-            path: 'content/workers/runtime-apis/kv.md',
-            repository: { full_name: 'cloudflare/cloudflare-docs' },
-            html_url: 'https://github.com/cloudflare/cloudflare-docs/blob/production/content/workers/runtime-apis/kv.md',
-            text_matches: [
-              {
-                fragment: 'Workers KV is a global, low-latency key-value data store.'
-              }
-            ]
-          }
-        ]
-      }
-    });
-
-    const res = await readTool.handler({ repo: 'cloudflare', query: 'kv datastore' });
-    expect(res.isError).toBeFalsy();
-    expect(res.content[0].text).toContain('Cloudflare documentation (cloudflare/cloudflare-docs)');
-    expect(res.structuredContent.files[0].path).toContain('cloudflare/cloudflare-docs:content/workers/runtime-apis/kv.md');
-    expect(res.structuredContent.files[0].text).toContain('Workers KV is a global');
-  });
-
   it('searches public GitHub repositories when repo="global" and query mentions repos', async () => {
     const readTool = createTestServer({
       '/search/repositories': {
@@ -332,43 +232,6 @@ describe('End-to-End forge_read search integration', () => {
     const res = await readTool.handler({ query: 'cloudflare worker hello response' });
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent.searchResults[0].repo).toBe('awesome/cloudflare-worker');
-  });
-});
-
-describe("Jev-enhanced buildAdvancedSearchQuery", () => {
-  const originalFetch = globalThis.fetch;
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("extracts platform, language, and core intent using Jev", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        answers: {
-          intent: { type: "choice", choice: "docs" },
-          platform: { type: "choice", choice: "cloudflare" },
-          language: { type: "choice", choice: "typescript" },
-          isQuestionOrHowTo: { type: "noul", noul: 0.95 }
-        }
-      })
-    }) as unknown as typeof fetch;
-
-    const mockEnv = {
-      TYPESAFE_API_KEY: "test-key"
-    } as unknown as Env;
-
-    const res = await buildAdvancedSearchQuery(
-      mockEnv,
-      "how do I configure workers kv bindings in typescript?",
-      "code"
-    );
-
-    expect(res.detectedPlatform?.id).toBe("cloudflare");
-    expect(res.intentMode).toBe("docs");
-    expect(res.query).toContain("repo:cloudflare/cloudflare-docs");
-    expect(res.query).toContain("path:content/");
   });
 });
 

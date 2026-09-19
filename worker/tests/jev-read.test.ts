@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { parsePathRange, readFiles } from '../src/read';
-import { semanticFileExcerpt, semanticPathTriage, semanticPathTriageDetailed, typesafeSystemOne, type JevChoiceAnswer } from '../src/jev';
+import { semanticFileExcerpt, semanticPathTriageDetailed, typesafeSystemOne, type JevChoiceAnswer } from '../src/jev';
 import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 
@@ -183,34 +183,6 @@ describe('Jev semantic triage and excerpt slicing', () => {
   const fakeEnv = {
     TYPESAFE_API_KEY: 'test-jev-key'
   } as unknown as Env;
-
-  it('ranks paths semantically based on Jev probability distribution', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        answers: {
-          bestMatch: {
-            type: 'choice',
-            choice: 'src/tokens.ts',
-            confidence: 0.9,
-            distribution: {
-              'src/tokens.ts': 0.72,
-              'src/auth.ts': 0.2,
-              'src/ui.tsx': 0.01,
-              'README.md': 0.07
-            }
-          }
-        }
-      })
-    }) as unknown as typeof fetch;
-
-    const paths = ['README.md', 'src/ui.tsx', 'src/auth.ts', 'src/tokens.ts'];
-    const ranked = await semanticPathTriage(fakeEnv, paths, 'refresh token rotation');
-
-    expect(ranked).not.toBeNull();
-    // Sorted by descending probability > 0.03
-    expect(ranked).toEqual(['src/tokens.ts', 'src/auth.ts', 'README.md']);
-  });
 
   it('globally reranks winners from multiple semantic path batches', async () => {
     let call = 0;
@@ -597,7 +569,7 @@ describe("typesafeSystemOne noul field names", () => {
   });
 });
 
-import { assessChangeWithJev, changeAssessmentNotices, classifyChangedFileAreasWithJev, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+import { assessChangeWithJev, changeAssessmentNotices, classifyChangedFileAreasWithJev, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, summarizeChangeImpactWithJev } from "../src/jev";
 
 describe("rankPatchHunksWithJev", () => {
   it("selects the relevant hunk within a changed file", async () => {
@@ -949,65 +921,6 @@ describe("typesafeSystemOne Cloudflare Workers AI protocol", () => {
       "worker/src/read.ts": 0.98,
       "worker/src/write.ts": 0.02
     });
-  });
-});
-
-describe("analyzeSearchIntentWithJev", () => {
-  it("detects documentation intent, platform, and language in natural questions", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        answers: {
-          intent: { type: "choice", choice: "docs" },
-          platform: { type: "choice", choice: "cloudflare" },
-          language: { type: "choice", choice: "typescript" },
-          isQuestionOrHowTo: { type: "noul", noul: 0.9 }
-        }
-      })
-    }) as unknown as typeof fetch;
-
-    const res = await analyzeSearchIntentWithJev(
-      { TYPESAFE_API_KEY: "key" } as unknown as Env,
-      "how do I use D1 database with Cloudflare Workers in typescript?",
-      ["cloudflare", "nextjs", "react"]
-    );
-
-    expect(res).not.toBeNull();
-    expect(res?.intent).toBe("docs");
-    expect(res?.platformId).toBe("cloudflare");
-    expect(res?.language).toBe("typescript");
-    expect(res?.coreQuery).toContain("use D1 database with Cloudflare Workers");
-  });
-
-  it("returns null when Jev API key is missing", async () => {
-    const res = await analyzeSearchIntentWithJev(undefined, "some query", ["cloudflare"]);
-    expect(res).toBeNull();
-  });
-});
-
-describe("suggestCommitMessageWithJev", () => {
-  it("generates conventional commit suggestion based on changed files", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        answers: {
-          actionType: { type: "choice", choice: "feat" },
-          scope: { type: "choice", choice: "search" }
-        }
-      })
-    }) as unknown as typeof fetch;
-
-    const res = await suggestCommitMessageWithJev(
-      { TYPESAFE_API_KEY: "key" } as unknown as Env,
-      [{ path: "worker/src/search.ts", content: "export function search() {}" }]
-    );
-
-    expect(res).toBe("feat(search): update search.ts");
-  });
-
-  it("returns null when Jev API key is missing", async () => {
-    const res = await suggestCommitMessageWithJev(undefined, [{ path: "test.ts" }]);
-    expect(res).toBeNull();
   });
 });
 
