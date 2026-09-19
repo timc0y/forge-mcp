@@ -506,6 +506,34 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.tree).toEqual(["src/index.ts"]);
   });
 
+  it("falls back from unhelpful filenames to committed-code search", async () => {
+    const { server } = createMockToolContext({
+      "GET /search/code": {
+        status: 200,
+        json: {
+          total_count: 1,
+          items: [
+            {
+              name: "utils.ts",
+              path: "src/utils.ts",
+              html_url: "https://github.com/testuser/test-repo/blob/main/src/utils.ts",
+              repository: { full_name: "testuser/test-repo", description: "A test repository" },
+              text_matches: [{ fragment: "export function rotateCredential() {}" }]
+            }
+          ]
+        }
+      }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "rotateCredential" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("committed-code fallback after no filename match");
+    expect(res.structuredContent.tree).toEqual(["src/utils.ts"]);
+    expect(res.structuredContent.files[0].text).toContain("rotateCredential");
+  });
+
   it("reports change hotspots without semantic guessing", async () => {
     const { server } = createMockToolContext();
     const readTool = (server as any)._registeredTools["forge_read"];

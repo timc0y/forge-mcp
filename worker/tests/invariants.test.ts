@@ -194,6 +194,15 @@ describe('post-commit advisory lint', () => {
 
     expect(warnings).toContain('Post-commit notice: package.json is not valid JSON.');
   });
+
+  it('checks CommonJS relative requires against committed paths', async () => {
+    const warnings = await lintCommittedFiles(
+      [{ path: 'src/index.cjs', content: "const helper = require('./missing-helper');" }],
+      ['src/index.cjs']
+    );
+
+    expect(warnings[0]).toContain('imports "./missing-helper"');
+  });
 });
 
 describe('server instructions', () => {

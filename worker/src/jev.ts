@@ -795,13 +795,13 @@ export async function lintCommittedFiles(
 
     if (/\.json$/i.test(file.path)) {
       try {
-        JSON.parse(file.content);
+        JSON.parse(file.content.replace(/^\uFEFF/, ''));
       } catch {
         warnings.push(`Post-commit notice: ${file.path} is not valid JSON.`);
       }
     }
 
-    const importMatches = file.content.matchAll(/(?:from\s+|import\s*(?:\(\s*)?)['"](\.[^'"]+)['"]/g);
+    const importMatches = file.content.matchAll(/(?:from\s+|(?:import|require)\s*(?:\(\s*)?)['"](\.[^'"]+)['"]/g);
     for (const match of importMatches) {
       const importPath = match[1];
       if (!importPath) continue;

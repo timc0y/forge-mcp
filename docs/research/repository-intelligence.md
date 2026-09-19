@@ -87,7 +87,7 @@ returns matching paths plus snippets. For matching files small enough to read
 completely, Forge also counts exact occurrences. `query: "code:<concept>"`
 uses Forge's GitHub query synthesis and Jev ranking against committed-code
 results, which is useful when filenames do not describe the implementation.
-Normal queries continue to use the cheaper semantic path/file ranking.
+Normal queries continue to use the cheaper semantic path/file ranking first. If both semantic path triage and literal filename matching produce no candidate, Forge now falls through to a bounded committed-code search automatically; `code:` remains the explicit route when content semantics are wanted immediately.
 
 This gives a safe workflow for "find every X and replace it with Y":
 
@@ -126,7 +126,8 @@ syntax:
 1. read the committed tree at the returned SHA;
 2. read the final committed versions of changed text files;
 3. check relative imports against that committed tree;
-4. attach any warning to the receipt as a non-fatal post-commit notice.
+4. attach any warning to the receipt as a non-fatal post-commit notice;
+5. disclose changed files it could not inspect because of tree/read budgets instead of implying complete coverage.
 
 If this analysis fails, the commit remains a successful commit. Forge never
 turns durable work into an error because an advisory check failed.

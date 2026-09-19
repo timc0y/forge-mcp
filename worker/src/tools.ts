@@ -816,6 +816,8 @@ async function readTreeLevel(
 
   let paths = allFilePaths;
   let isSemanticSearch = false;
+  let isContentFallback = false;
+  let contentFallbackExcerpts: Array<{ path: string; text: string }> = [];
 
   if (trimmedQuery) {
     const trimmed = trimmedQuery;
@@ -826,6 +828,29 @@ async function readTreeLevel(
     } else {
       const needle = trimmed.toLowerCase();
       paths = allFilePaths.filter((path) => path.toLowerCase().includes(needle));
+
+      // A natural concept can be absent from every filename while still being
+      // plainly present in committed code. Only pay for code search when the
+      // cheap path answers produced nothing; GitHub remains the index.
+      if (paths.length === 0 && trimmed.length >= 3) {
+        try {
+          const built = await buildAdvancedSearchQuery(ctx.env, trimmed, 'code');
+          const withoutRepo = built.query.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
+          const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 10);
+          const ranked = await rankSearchResultsWithJev(ctx.env, trimmed, found.items);
+          const contentPaths = [...new Set(ranked.map((item) => item.path).filter((path): path is string => Boolean(path)))];
+          if (contentPaths.length > 0) {
+            paths = contentPaths;
+            isContentFallback = true;
+            contentFallbackExcerpts = ranked
+              .filter((item): item is typeof item & { path: string } => Boolean(item.path))
+              .slice(0, 5)
+              .map((item) => ({ path: item.path, text: item.snippet ?? '' }));
+          }
+        } catch {
+          // Exact path filtering remains the deterministic fallback.
+        }
+      }
     }
   }
 
@@ -839,7 +864,7 @@ async function readTreeLevel(
     limits.push('GitHub truncated this listing, so some files are missing from it.');
   }
 
-  const fileExcerpts: Array<{ path: string; text: string }> = [];
+  const fileExcerpts: Array<{ path: string; text: string }> = [...contentFallbackExcerpts];
   if (isSemanticSearch && paths.length > 0 && ctx.env.TYPESAFE_API_KEY) {
     try {
       const topCandidates = paths.slice(0, 2);
@@ -862,9 +887,11 @@ async function readTreeLevel(
 
   const queryNote = isSemanticSearch
     ? ` matching "${query?.trim()}" (semantically ranked by Jev across ${allFilePaths.length} files)`
-    : query?.trim()
-      ? ` matching "${query.trim()}"`
-      : '';
+    : isContentFallback
+      ? ` matching "${query?.trim()}" (committed-code fallback after no filename match)`
+      : query?.trim()
+        ? ` matching "${query.trim()}"`
+        : '';
   const excerptSentence =
     fileExcerpts.length === 1
       ? `. Relevant excerpt from ${fileExcerpts[0]?.path} included below`
@@ -1395,7 +1422,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           try {
             const committedGh = ghForRepo(ctx, repo);
             const committedTree = await readTree(committedGh, repo, commit.sha);
-            if (!committedTree.truncated) {
+            if (committedTree.truncated) {
+              limits.push('Post-commit advisory was skipped because GitHub truncated the committed tree.');
+            } else {
               const knownPaths = committedTree.entries
                 .filter((entry) => entry.type === 'file')
                 .map((entry) => entry.path);
@@ -1403,6 +1432,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
               const liveChangedPaths = commit.paths.filter((path) => knownSet.has(path));
               if (liveChangedPaths.length > 0) {
                 const committedFiles = await readFiles(committedGh, repo, commit.sha, liveChangedPaths, MAX_FILE_BYTES);
+                for (const skipped of committedFiles.skipped) {
+                  limits.push(`Post-commit advisory skipped ${skipped.path}: ${skipped.reason}.`);
+                }
                 const lintWarnings = await lintCommittedFiles(
                   committedFiles.files
                     .filter((file) => !file.truncated)
