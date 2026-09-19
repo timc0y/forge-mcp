@@ -60,6 +60,7 @@ import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openCha
 import {
   readBranchPolicy,
   readCodeownersErrors,
+  readCommitParents,
   readDependencyReview,
   readPullReviewState,
   readRecentHistory,
@@ -1598,6 +1599,33 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
                   knownPaths
                 );
                 limits.push(...lintWarnings);
+
+                if (commit.paths.some(isDependencyManifestPath)) {
+                  const parent = await readCommitParents(committedGh, repo, commit.sha);
+                  if (parent.unavailable) limits.push(parent.unavailable);
+                  if (parent.parents[0]) {
+                    const review = await readDependencyReview(committedGh, repo, parent.parents[0], commit.sha);
+                    if (review.unavailable) limits.push(review.unavailable);
+                    if (review.snapshotWarning) limits.push(`GitHub dependency snapshot warning: ${review.snapshotWarning}`);
+                    const added = review.changes.filter((dependency) => dependency.change === 'added').length;
+                    const removed = review.changes.filter((dependency) => dependency.change === 'removed').length;
+                    const vulnerabilities = review.changes.flatMap((dependency) =>
+                      dependency.vulnerabilities.map((vulnerability) => ({ dependency, vulnerability }))
+                    );
+                    if (review.changes.length > 0) {
+                      limits.push(`Post-commit dependency review: ${added} added, ${removed} removed.`);
+                    }
+                    for (const finding of vulnerabilities.slice(0, 10)) {
+                      limits.push(
+                        `Post-commit dependency notice: ${finding.vulnerability.severity} ${finding.vulnerability.advisoryId} on ${finding.dependency.name}@${finding.dependency.version} — ${finding.vulnerability.summary}`
+                      );
+                    }
+                    if (vulnerabilities.length > 10) {
+                      limits.push(`GitHub reported ${vulnerabilities.length} dependency vulnerability findings; showing the first 10.`);
+                    }
+                    if (review.truncated) limits.push('Post-commit dependency review was capped at 300 dependency changes.');
+                  }
+                }
 
                 if (commit.paths.some(isCodeownersPath)) {
                   const ownership = await readCodeownersErrors(committedGh, repo, commit.sha);

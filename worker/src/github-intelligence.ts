@@ -108,6 +108,23 @@ export async function readRecentHistory(
   };
 }
 
+export async function readCommitParents(
+  request: GitHubRequest,
+  repo: RepoRef,
+  sha: string
+): Promise<{ parents: string[]; unavailable?: string }> {
+  const response = await request(`/repos/${repo.owner}/${repo.name}/git/commits/${encodeURIComponent(sha)}`);
+  if (response.status !== 200) {
+    return { parents: [], unavailable: `GitHub commit-parent lookup returned HTTP ${response.status}.` };
+  }
+  if (typeof response.json !== 'object' || response.json === null) return { parents: [] };
+  const body = response.json as { parents?: Array<{ sha?: unknown }> };
+  const parents = (body.parents ?? [])
+    .map((parent) => parent.sha)
+    .filter((parent): parent is string => typeof parent === 'string' && parent.length > 0);
+  return { parents };
+}
+
 export interface DependencyVulnerability {
   severity: string;
   advisoryId: string;

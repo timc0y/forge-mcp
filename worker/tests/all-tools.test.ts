@@ -244,6 +244,44 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.commit.sha).toBe("newcommitsha99999");
   });
 
+  it("reviews dependency graph changes after a dependency commit is durable", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/contents/package.json": {
+        status: 200,
+        json: { type: 'file', encoding: 'base64', content: btoa('{"name":"demo"}'), size: 15 }
+      },
+      "GET /repos/testuser/test-repo/git/trees/newcommitsha99999": {
+        status: 200,
+        json: { truncated: false, tree: [{ path: 'package.json', type: 'blob', size: 50 }] }
+      },
+      "GET /repos/testuser/test-repo/contents/package.json@newcommitsha99999": { status: 404 },
+      "GET /repos/testuser/test-repo/git/commits/newcommitsha99999": {
+        status: 200,
+        json: { tree: { sha: 'newtreesha67890' }, parents: [{ sha: 'parentcommit123' }] }
+      },
+      "GET /repos/testuser/test-repo/dependency-graph/compare/parentcommit123...newcommitsha99999": {
+        status: 200,
+        json: [
+          {
+            change_type: 'added', manifest: 'package.json', ecosystem: 'npm', name: 'unsafe-dep', version: '1.0.0',
+            package_url: 'pkg:npm/unsafe-dep@1.0.0', license: 'MIT', scope: 'runtime', source_repository_url: null,
+            vulnerabilities: [{ severity: 'high', advisory_ghsa_id: 'GHSA-demo-demo-demo', advisory_summary: 'Demo advisory', advisory_url: 'https://github.com/advisories/GHSA-demo-demo-demo' }]
+          }
+        ]
+      }
+    });
+    const editTool = (server as any)._registeredTools['forge_edit'];
+
+    const res = await editTool.handler({
+      repo: 'test-repo',
+      message: 'chore: update dependency manifest',
+      files: [{ path: 'package.json', content: '{"name":"demo","dependencies":{"unsafe-dep":"1.0.0"}}' }]
+    });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.limits.some((line: string) => line.includes('Post-commit dependency notice: high GHSA-demo-demo-demo'))).toBe(true);
+  });
+
   it("executes forge_edit proposing work to the Forge change branch", async () => {
     const { server } = createMockToolContext();
     const editTool = (server as any)._registeredTools["forge_edit"];
