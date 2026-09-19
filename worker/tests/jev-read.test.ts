@@ -597,7 +597,7 @@ describe("typesafeSystemOne noul field names", () => {
   });
 });
 
-import { assessChangeWithJev, changeAssessmentNotices, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
+import { assessChangeWithJev, changeAssessmentNotices, classifyChangedFileAreasWithJev, classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, rankImpactIdentifiersWithJev, rankPatchHunksWithJev, summarizeChangeImpactWithJev, analyzeSearchIntentWithJev, suggestCommitMessageWithJev } from "../src/jev";
 
 describe("rankPatchHunksWithJev", () => {
   it("selects the relevant hunk within a changed file", async () => {
@@ -712,6 +712,36 @@ describe("classifyQualityGatesWithJev", () => {
     expect(gates.map((gate) => [gate.kind, gate.path])).toEqual([
       ['tests', '.github/workflows/guard.yml'],
       ['types', 'package.json']
+    ]);
+  });
+});
+
+describe("classifyChangedFileAreasWithJev", () => {
+  it("groups changed files into bounded technical concern labels", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        answers: {
+          fileArea_0: { type: 'choice', choice: 'authentication/security', confidence: 0.94 },
+          fileArea_1: { type: 'choice', choice: 'ui/ux', confidence: 0.91 },
+          fileArea_2: { type: 'choice', choice: 'testing', confidence: 0.88 }
+        }
+      })
+    }) as unknown as typeof fetch;
+
+    const result = await classifyChangedFileAreasWithJev(
+      { TYPESAFE_API_KEY: 'key' } as unknown as Env,
+      [
+        { path: 'src/auth.ts' },
+        { path: 'src/button.tsx' },
+        { path: 'src/auth.test.ts' }
+      ]
+    );
+
+    expect(result.map((item) => [item.path, item.area])).toEqual([
+      ['src/auth.ts', 'authentication/security'],
+      ['src/button.tsx', 'ui/ux'],
+      ['src/auth.test.ts', 'testing']
     ]);
   });
 });

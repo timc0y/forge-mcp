@@ -132,6 +132,12 @@ Similarly, contract-like changed paths such as OpenAPI/Swagger/AsyncAPI schemas,
 
 The packet now runs its GitHub policy/review/dependency reads and the bounded Jev assessment concurrently, then performs the optional Changesets convention lookup only when the semantic assessment says release metadata is plausibly relevant.
 
+### Concern split candidates for broad changes
+
+When the main Jev assessment is very confident that a change combines multiple independent concerns, the review packet now performs one extra bounded fan-out over at most twelve changed files. Each file is independently classified into a fixed technical area—security/auth, API/integration, UI/UX, data/schema, configuration/infrastructure, dependencies, testing, documentation or general code. If at least two distinct areas emerge, Forge shows `SPLIT?` groups.
+
+These are review/decomposition candidates only. Forge does not rewrite commits, create extra branches, or claim a technical-area label is compiler truth. The purpose is to turn “this looks broad” into a concrete set of file groupings a human can inspect.
+
 ### Actionable companion-file suggestions
 
 The decomposed Jev review signals are now used to find evidence, not merely produce warnings. If Jev is highly confident that tests matter and no obvious test path changed, the shared review packet reads the base tree, filters to real test-like paths, and reuses high-cardinality semantic path triage to suggest up to three likely `TEST?` companion files. The same happens for documentation when documentation relevance is very high and no documentation-like path changed.

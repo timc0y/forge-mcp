@@ -26,6 +26,7 @@ import {
 import {
   assessChangeWithJev,
   changeAssessmentNotices,
+  classifyChangedFileAreasWithJev,
   semanticPathTriageDetailed,
   summarizeChangeAssessment,
   type ChangeAssessment
@@ -62,6 +63,7 @@ export interface ChangeReviewPacket {
   suggestedTestPaths: string[];
   suggestedDocPaths: string[];
   companionTreeTruncated: boolean;
+  splitGroups: Array<{ area: string; paths: string[] }>;
 }
 
 export async function buildChangeReviewPacket(
@@ -121,6 +123,24 @@ export async function buildChangeReviewPacket(
   let suggestedTestPaths: string[] = [];
   let suggestedDocPaths: string[] = [];
   let companionTreeTruncated = false;
+  let splitGroups: Array<{ area: string; paths: string[] }> = [];
+
+  if (assessment && assessment.multipleConcerns >= 0.85 && comparison.files.length >= 3) {
+    try {
+      const classified = await classifyChangedFileAreasWithJev(env, comparison.files.slice(0, 12));
+      const grouped = new Map<string, string[]>();
+      for (const item of classified) {
+        const paths = grouped.get(item.area) ?? [];
+        paths.push(item.path);
+        grouped.set(item.area, paths);
+      }
+      if (grouped.size >= 2) {
+        splitGroups = [...grouped.entries()].map(([area, paths]) => ({ area, paths }));
+      }
+    } catch {
+      // Split suggestions are advisory only.
+    }
+  }
 
   if (needsTestSuggestion || needsDocSuggestion) {
     try {
@@ -181,7 +201,8 @@ export async function buildChangeReviewPacket(
     contractPaths: contractLikePaths(comparison.files),
     suggestedTestPaths,
     suggestedDocPaths,
-    companionTreeTruncated
+    companionTreeTruncated,
+    splitGroups
   };
 }
 
@@ -244,6 +265,9 @@ export function changeReviewNotices(
   if (packet.suggestedDocPaths.length > 0) {
     notices.push(`Jev documentation candidates: ${packet.suggestedDocPaths.join(', ')}. These are likely companion files, not proof that documentation is missing or required.`);
   }
+  if (packet.splitGroups.length >= 2) {
+    notices.push('Jev split candidates group changed files by likely technical concern. They are review aids, not an instruction to rewrite Git history.');
+  }
   if (packet.companionTreeTruncated) {
     notices.push('GitHub truncated the repository tree used for companion-file suggestions, so other candidates may exist.');
   }
@@ -266,6 +290,7 @@ export function changeReviewLines(packet: ChangeReviewPacket): string[] {
   if (packet.contractPaths.length > 0) lines.push(`CONTRACT ${packet.contractPaths.join(', ')}`);
   for (const path of packet.suggestedTestPaths) lines.push(`TEST? ${path}`);
   for (const path of packet.suggestedDocPaths) lines.push(`DOC? ${path}`);
+  for (const group of packet.splitGroups) lines.push(`SPLIT? ${group.area} · ${group.paths.join(', ')}`);
   if (packet.requiredChecks.length > 0) lines.push(`POLICY checks · ${packet.requiredChecks.join(', ')}`);
   if (packet.requiredApprovals > 0) lines.push(`POLICY approvals · ${packet.requiredApprovals} required`);
   if (packet.needsCodeOwnerReview) lines.push('POLICY code-owner review required');
