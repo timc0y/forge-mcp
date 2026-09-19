@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
+import { classifyExactMatchContextsWithJev, classifyQualityGatesWithJev, judgeSeePacket, rankChangeFilesWithJev, rankImpactIdentifiersWithJev, resolveRepoWithJev, routeForgeReadEvidenceWithJev, semanticFileExcerpt, semanticPathTriageDetailed, suggestCommitMessageWithJev } from './jev';
 import {
   changeHotspots,
   exactFindNeedle,
@@ -557,7 +557,30 @@ async function readTreeLevel(
   const gh = ghForRepo(ctx, repo);
   const base = await defaultBranch(gh, repo);
   const trimmedQuery = query?.trim();
-  const requestedHistory = trimmedQuery ? historyScope(trimmedQuery) : undefined;
+  const explicitMode = Boolean(
+    trimmedQuery && (
+      historyScope(trimmedQuery) !== undefined ||
+      isChurnQuery(trimmedQuery) ||
+      isLanguagesQuery(trimmedQuery) ||
+      isPolicyQuery(trimmedQuery) ||
+      isStatsQuery(trimmedQuery) ||
+      isQualityQuery(trimmedQuery) ||
+      isMapQuery(trimmedQuery) ||
+      exactFindNeedle(trimmedQuery) ||
+      semanticCodeNeedle(trimmedQuery)
+    )
+  );
+  const routed = trimmedQuery && !explicitMode
+    ? await routeForgeReadEvidenceWithJev(ctx.env, trimmedQuery, 'repository')
+    : null;
+  const routeNote = routed
+    ? `Jev routed this natural-language question to ${routed.mode} evidence (${Math.round(routed.confidence * 100)}% choice confidence).`
+    : null;
+  const requestedHistory = routed?.mode === 'history'
+    ? null
+    : trimmedQuery
+      ? historyScope(trimmedQuery)
+      : undefined;
 
   if (requestedHistory !== undefined) {
     const [history, changes] = await Promise.all([
@@ -567,6 +590,7 @@ async function readTreeLevel(
     const names = changeNames(changes);
     const where = requestedHistory ? ` for ${requestedHistory}` : '';
     const limits = [
+      ...(routeNote ? [routeNote] : []),
       ...(history.unavailable ? [history.unavailable] : []),
       ...(history.truncated ? ['Showing the 12 most recent matching commits; older history exists.'] : []),
       ...changesLimits(changes)
@@ -591,13 +615,14 @@ async function readTreeLevel(
     };
   }
 
-  if (trimmedQuery && isChurnQuery(trimmedQuery)) {
+  if (trimmedQuery && (isChurnQuery(trimmedQuery) || routed?.mode === 'churn')) {
     const [churn, changes] = await Promise.all([
       readRecentChurn(gh, repo, base, 8),
       openChanges(ctx.gh, repo)
     ]);
     const names = changeNames(changes);
     const limits = [
+      ...(routeNote ? [routeNote] : []),
       ...(churn.unavailable ? [churn.unavailable] : []),
       ...(churn.truncated ? [`Churn is a bounded sample of ${churn.commitsSampled} recent commits; at least one history/file list extends beyond the sampled evidence.`] : []),
       ...changesLimits(changes)
@@ -619,7 +644,7 @@ async function readTreeLevel(
     };
   }
 
-  if (trimmedQuery && isLanguagesQuery(trimmedQuery)) {
+  if (trimmedQuery && (isLanguagesQuery(trimmedQuery) || routed?.mode === 'languages')) {
     const [languages, changes] = await Promise.all([
       readRepositoryLanguages(gh, repo),
       openChanges(ctx.gh, repo)
@@ -627,6 +652,7 @@ async function readTreeLevel(
     const names = changeNames(changes);
     const total = languages.languages.reduce((sum, language) => sum + language.bytes, 0);
     const limits = [
+      ...(routeNote ? [routeNote] : []),
       ...(languages.unavailable ? [languages.unavailable] : []),
       ...changesLimits(changes)
     ];
@@ -646,7 +672,7 @@ async function readTreeLevel(
     };
   }
 
-  if (trimmedQuery && isPolicyQuery(trimmedQuery)) {
+  if (trimmedQuery && (isPolicyQuery(trimmedQuery) || routed?.mode === 'policy')) {
     const [policy, changes] = await Promise.all([
       readBranchPolicy(gh, repo, base),
       openChanges(ctx.gh, repo)
@@ -661,6 +687,7 @@ async function readTreeLevel(
       return `RULE ${rule.type}${source ? ` · ${source}` : ''}`;
     });
     const limits = [
+      ...(routeNote ? [routeNote] : []),
       ...(policy.unavailable ? [policy.unavailable] : []),
       ...(policy.truncated ? ['GitHub returned more than 100 active branch rules; this list is incomplete.'] : []),
       ...changesLimits(changes)
@@ -690,13 +717,14 @@ async function readTreeLevel(
     .map((entry) => entry.path);
   const names = changeNames(changes);
 
-  if (trimmedQuery && isStatsQuery(trimmedQuery)) {
+  if (trimmedQuery && (isStatsQuery(trimmedQuery) || routed?.mode === 'stats')) {
     const scope = statsScope(trimmedQuery);
     const scopedEntries = scope
       ? tree.entries.filter((entry) => entry.path === scope || entry.path.startsWith(`${scope}/`))
       : tree.entries;
     const stats = repositoryStats(scopedEntries);
     const limits = [
+      ...(routeNote ? [routeNote] : []),
       ...(scope && stats.files === 0 ? [`No tracked files were found under ${scope}.`] : []),
       ...(tree.truncated ? ['GitHub truncated this listing, so these statistics are incomplete.'] : []),
       ...changesLimits(changes)
@@ -715,7 +743,7 @@ async function readTreeLevel(
     };
   }
 
-  if (trimmedQuery && isQualityQuery(trimmedQuery)) {
+  if (trimmedQuery && (isQualityQuery(trimmedQuery) || routed?.mode === 'quality')) {
     const candidates = qualityCandidatePaths(tree.entries, 16);
     const read = candidates.length > 0
       ? await readFiles(gh, repo, base, candidates, MAX_FILE_BYTES)
@@ -731,6 +759,7 @@ async function readTreeLevel(
     ];
     if (lines.length === 0) lines.push(...candidates.map((path) => `CONFIG ${path}`));
     const limits = [
+      ...(routeNote ? [routeNote] : []),
       ...(tree.truncated ? ['GitHub truncated the repository tree, so some quality configuration may be absent.'] : []),
       ...(candidates.length >= 16 ? ['Quality-gate inspection is capped at 16 likely configuration files.'] : []),
       ...read.skipped.map((skip) => `${skip.path} ${skip.reason}.`),
@@ -750,9 +779,10 @@ async function readTreeLevel(
     };
   }
 
-  if (trimmedQuery && isMapQuery(trimmedQuery)) {
+  if (trimmedQuery && (isMapQuery(trimmedQuery) || routed?.mode === 'map')) {
     const lines = repositoryMap(tree.entries);
     const limits = [
+      ...(routeNote ? [routeNote] : []),
       ...(tree.truncated ? ['GitHub truncated this listing, so this repository map is incomplete.'] : []),
       ...changesLimits(changes)
     ];
