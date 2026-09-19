@@ -762,45 +762,56 @@ export async function suggestCommitMessageWithJev(
 }
 
 /**
- * Evaluates source files being committed for dangling relative imports or missing symbols,
- * returning advisory notices for the commit receipt without blocking execution.
+ * Deterministic post-commit advisory over the content GitHub actually stored.
+ * It never gates a write: the caller invokes it only after the commit is durable.
  */
-export async function lintCommitWithJev(
-  env: Env | undefined,
+export async function lintCommittedFiles(
   files: Array<{ path: string; content?: string | null }>,
-  knownRepoPaths?: string[]
+  knownRepoPaths: string[]
 ): Promise<string[]> {
-  if (!env?.TYPESAFE_API_KEY || files.length === 0) return [];
+  if (files.length === 0 || knownRepoPaths.length === 0) return [];
 
   const warnings: string[] = [];
+  const knownSet = new Set(knownRepoPaths);
 
-  // Fast static scan for dangling local imports (e.g. import './missing') if repo paths are provided
-  if (knownRepoPaths && knownRepoPaths.length > 0) {
-    const knownSet = new Set(knownRepoPaths);
-    for (const f of files) {
-      if (!f.content) continue;
-      const importMatches = f.content.matchAll(/(?:from|import)\s+['"](\.[^'"]+)['"]/g);
-      for (const match of importMatches) {
-        const importPath = match[1];
-        if (!importPath) continue;
-        const currentDir = f.path.split("/").slice(0, -1).join("/");
-        const normalized = (currentDir ? `${currentDir}/${importPath}` : importPath)
-          .replace(/\/\.\//g, "/")
-          .replace(/([^/]+)\/\.\.\//g, "");
-        const candidates = [
-          normalized,
-          `${normalized}.ts`,
-          `${normalized}.tsx`,
-          `${normalized}.js`,
-          `${normalized}.jsx`,
-          `${normalized}/index.ts`,
-          `${normalized}/index.js`
-        ];
-        const exists = candidates.some((c) => knownSet.has(c) || files.some((newF) => newF.path === c));
-        if (!exists && knownRepoPaths.length < 500) {
-          warnings.push(`Notice: ${f.path} imports "${importPath}", but no matching file was found in repo tree.`);
-          break;
-        }
+  const normalizeRelative = (fromPath: string, relative: string): string => {
+    const parts = fromPath.split('/').slice(0, -1);
+    for (const segment of relative.split('/')) {
+      if (segment === '' || segment === '.') continue;
+      if (segment === '..') parts.pop();
+      else parts.push(segment);
+    }
+    return parts.join('/');
+  };
+
+  for (const file of files) {
+    if (!file.content) continue;
+    const importMatches = file.content.matchAll(/(?:from|import)\s+['"](\.[^'"]+)['"]/g);
+    for (const match of importMatches) {
+      const importPath = match[1];
+      if (!importPath) continue;
+      const normalized = normalizeRelative(file.path, importPath);
+      const candidates = [
+        normalized,
+        `${normalized}.ts`,
+        `${normalized}.tsx`,
+        `${normalized}.js`,
+        `${normalized}.jsx`,
+        `${normalized}.mjs`,
+        `${normalized}.cjs`,
+        `${normalized}.json`,
+        `${normalized}/index.ts`,
+        `${normalized}/index.tsx`,
+        `${normalized}/index.js`,
+        `${normalized}/index.jsx`,
+        `${normalized}/index.mjs`,
+        `${normalized}/index.cjs`
+      ];
+      if (!candidates.some((candidate) => knownSet.has(candidate))) {
+        warnings.push(
+          `Post-commit notice: ${file.path} imports "${importPath}", but no matching committed file was found.`
+        );
+        break;
       }
     }
   }

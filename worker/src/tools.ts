@@ -32,7 +32,7 @@ import type { Env } from './env';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { parseRepo } from './github';
 import { compare, listRepos, readFiles, readTree } from './read';
-import { judgeSeePacket, lintCommitWithJev, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage, suggestCommitMessageWithJev, summarizeChangeImpactWithJev } from './jev';
+import { judgeSeePacket, lintCommittedFiles, rankChangeFilesWithJev, resolveRepoWithJev, semanticFileExcerpt, semanticPathTriage, suggestCommitMessageWithJev, summarizeChangeImpactWithJev } from './jev';
 import { CHANGE_BRANCH, ensureDraftPullRequest, findChange, openChanges, openChangesTruncated } from './change';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
@@ -313,6 +313,78 @@ function describeChangedFile(file: ChangedFile): string {
   return `${file.status} +${file.additions}/-${file.deletions}`;
 }
 
+function humanBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KiB', 'MiB', 'GiB'];
+  let value = bytes / 1024;
+  let unit = units[0]!;
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index]!;
+  }
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
+}
+
+function isStatsQuery(query: string): boolean {
+  const value = query.trim();
+  return (
+    /^stats?(?:\s|:|$)/i.test(value) ||
+    /^(?:sizes?|repo(?:sitory)? stats?|code size|folder sizes?|largest files?)$/i.test(value)
+  );
+}
+
+function exactFindNeedle(query: string): string | null {
+  const match = /^(?:find(?: all)?|text):\s*(.+)$/i.exec(query.trim());
+  const needle = match?.[1]?.trim();
+  return needle ? needle : null;
+}
+
+function repositoryStats(entries: Array<{ path: string; type: 'file' | 'dir'; size: number }>): {
+  files: number;
+  bytes: number;
+  lines: string[];
+} {
+  const files = entries.filter((entry) => entry.type === 'file');
+  const bytes = files.reduce((sum, file) => sum + file.size, 0);
+  const folders = new Map<string, { files: number; bytes: number }>();
+  const extensions = new Map<string, { files: number; bytes: number }>();
+
+  for (const file of files) {
+    const slash = file.path.indexOf('/');
+    const folder = slash === -1 ? '(root)' : file.path.slice(0, slash);
+    const folderStats = folders.get(folder) ?? { files: 0, bytes: 0 };
+    folderStats.files += 1;
+    folderStats.bytes += file.size;
+    folders.set(folder, folderStats);
+
+    const name = file.path.split('/').pop() ?? file.path;
+    const dot = name.lastIndexOf('.');
+    const extension = dot > 0 ? name.slice(dot).toLowerCase() : '(none)';
+    const extensionStats = extensions.get(extension) ?? { files: 0, bytes: 0 };
+    extensionStats.files += 1;
+    extensionStats.bytes += file.size;
+    extensions.set(extension, extensionStats);
+  }
+
+  const top = (values: Map<string, { files: number; bytes: number }>, count: number) =>
+    [...values.entries()]
+      .sort((left, right) => right[1].bytes - left[1].bytes || right[1].files - left[1].files)
+      .slice(0, count);
+
+  const lines = [`TOTAL · ${files.length} files · ${humanBytes(bytes)}`];
+  for (const [folder, stats] of top(folders, 6)) {
+    lines.push(`FOLDER ${folder === '(root)' ? folder : `${folder}/`} · ${stats.files} files · ${humanBytes(stats.bytes)}`);
+  }
+  for (const [extension, stats] of top(extensions, 6)) {
+    lines.push(`TYPE ${extension} · ${stats.files} files · ${humanBytes(stats.bytes)}`);
+  }
+  for (const file of [...files].sort((left, right) => right.size - left.size).slice(0, 6)) {
+    lines.push(`LARGE ${file.path} · ${humanBytes(file.size)}`);
+  }
+
+  return { files: files.length, bytes, lines };
+}
+
 // ---------------------------------------------------------------------------
 // forge_read
 // ---------------------------------------------------------------------------
@@ -533,12 +605,61 @@ async function readTreeLevel(
   const allFilePaths = tree.entries
     .filter((entry) => entry.type === 'file')
     .map((entry) => entry.path);
+  const names = changeNames(changes);
+  const trimmedQuery = query?.trim();
+
+  if (trimmedQuery && isStatsQuery(trimmedQuery)) {
+    const stats = repositoryStats(tree.entries);
+    const limits = [
+      ...(tree.truncated ? ['GitHub truncated this listing, so these statistics are incomplete.'] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `${formatRepo(repo)} at ${base}: ${stats.files} files, ${humanBytes(stats.bytes)} of tracked file content.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: stats.lines,
+          changes: names,
+          next: 'Ask for a path to read it, or use query "find:<text>" to find committed code containing exact text.'
+        },
+        limits
+      )
+    };
+  }
+
+  const findNeedle = trimmedQuery ? exactFindNeedle(trimmedQuery) : null;
+  if (findNeedle) {
+    const safeNeedle = findNeedle.replaceAll('"', ' ');
+    const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} "${safeNeedle}"`, 25);
+    const ranked = await rankSearchResultsWithJev(ctx.env, findNeedle, found.items);
+    const shown = ranked.slice(0, 25);
+    const uniquePaths = [...new Set(shown.map((item) => item.path).filter((path): path is string => Boolean(path)))];
+    const limits = [
+      ...(found.total > shown.length ? [`Showing ${shown.length} of ${found.total} code results.`] : []),
+      ...changesLimits(changes)
+    ];
+    return {
+      summary: `Found ${found.total} committed code result${found.total === 1 ? '' : 's'} for "${findNeedle}" in ${formatRepo(repo)}; showing ${shown.length}.${changesSentence(names)}`,
+      structured: withLimits(
+        {
+          tree: uniquePaths,
+          files: shown.map((item) => ({ path: item.path ?? item.title, text: item.snippet ?? '' })),
+          changes: names,
+          next:
+            uniquePaths.length > 0
+              ? 'Use these paths with forge_edit fragment replacements. A write is capped at 10 files, so wider replacements become several durable commits.'
+              : 'Try a shorter exact term, or use a normal semantic query instead.'
+        },
+        limits
+      )
+    };
+  }
 
   let paths = allFilePaths;
   let isSemanticSearch = false;
 
-  if (query?.trim()) {
-    const trimmed = query.trim();
+  if (trimmedQuery) {
+    const trimmed = trimmedQuery;
     const semanticResults = await semanticPathTriage(ctx.env, allFilePaths, trimmed);
     if (semanticResults && semanticResults.length > 0) {
       paths = semanticResults;
@@ -580,7 +701,6 @@ async function readTreeLevel(
     }
   }
 
-  const names = changeNames(changes);
   const queryNote = isSemanticSearch
     ? ` matching "${query?.trim()}" (semantically ranked by Jev across ${allFilePaths.length} files)`
     : query?.trim()
@@ -927,7 +1047,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         repo: z.string().optional().describe('owner/name. Omit to list your repositories.'),
         change: z.string().optional().describe('An open change, named by the words that created it.'),
         paths: z.array(z.string()).max(20).optional(),
-        query: z.string().optional().describe('Narrows the repository list, or the file list.')
+        query: z.string().optional().describe('Narrows semantically. Use "stats" for size summaries or "find:<text>" for exact committed-code search.')
       },
       outputSchema: readOutput,
       // Nothing here writes, and it reaches nothing but GitHub.
@@ -1075,12 +1195,29 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           }
         }
 
-        if (ctx.env.TYPESAFE_API_KEY) {
+        if (commit.outcome === 'committed') {
           try {
-            const lintWarnings = await lintCommitWithJev(ctx.env, input.files);
-            limits.push(...lintWarnings);
+            const committedGh = ghForRepo(ctx, repo);
+            const committedTree = await readTree(committedGh, repo, commit.sha);
+            if (!committedTree.truncated) {
+              const knownPaths = committedTree.entries
+                .filter((entry) => entry.type === 'file')
+                .map((entry) => entry.path);
+              const knownSet = new Set(knownPaths);
+              const liveChangedPaths = commit.paths.filter((path) => knownSet.has(path));
+              if (liveChangedPaths.length > 0) {
+                const committedFiles = await readFiles(committedGh, repo, commit.sha, liveChangedPaths, MAX_FILE_BYTES);
+                const lintWarnings = await lintCommittedFiles(
+                  committedFiles.files
+                    .filter((file) => !file.truncated)
+                    .map((file) => ({ path: file.path, content: file.content })),
+                  knownPaths
+                );
+                limits.push(...lintWarnings);
+              }
+            }
           } catch {
-            // Non-fatal
+            // The commit is already durable. Advisory analysis may disappear, never turn success into failure.
           }
         }
 

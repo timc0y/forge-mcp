@@ -8,6 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
+import { lintCommittedFiles } from '../src/jev';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -155,6 +156,28 @@ describe('guidance integrity', () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('post-commit advisory lint', () => {
+  it('spots a missing relative import from committed content and tree state', async () => {
+    const warnings = await lintCommittedFiles(
+      [{ path: 'src/index.ts', content: "import { x } from './missing';\nexport const y = x;" }],
+      ['src/index.ts', 'src/existing.ts']
+    );
+
+    expect(warnings).toEqual([
+      'Post-commit notice: src/index.ts imports "./missing", but no matching committed file was found.'
+    ]);
+  });
+
+  it('accepts extensionless imports when the committed target exists', async () => {
+    const warnings = await lintCommittedFiles(
+      [{ path: 'src/index.ts', content: "import { x } from './existing';\nexport const y = x;" }],
+      ['src/index.ts', 'src/existing.ts']
+    );
+
+    expect(warnings).toEqual([]);
   });
 });
 

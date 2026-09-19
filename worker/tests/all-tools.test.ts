@@ -60,9 +60,9 @@ function createMockToolContext(customRoutes: Record<string, any> = {}, envOverri
       json: {
         truncated: false,
         tree: [
-          { path: "README.md", type: "blob" },
-          { path: "src/index.ts", type: "blob" },
-          { path: "src/utils.ts", type: "blob" }
+          { path: "README.md", type: "blob", size: 1024 },
+          { path: "src/index.ts", type: "blob", size: 4096 },
+          { path: "src/utils.ts", type: "blob", size: 2048 }
         ]
       }
     },
@@ -415,6 +415,46 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("reports repository size statistics from the Git tree", async () => {
+    const { server } = createMockToolContext();
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "stats" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("3 files");
+    expect(res.structuredContent.tree[0]).toContain("TOTAL · 3 files · 7.0 KiB");
+    expect(res.structuredContent.tree.some((line: string) => line.includes("FOLDER src/ · 2 files"))).toBe(true);
+  });
+
+  it("finds exact committed code inside one repository", async () => {
+    const { server } = createMockToolContext({
+      "GET /search/code": {
+        status: 200,
+        json: {
+          total_count: 1,
+          items: [
+            {
+              name: "index.ts",
+              path: "src/index.ts",
+              html_url: "https://github.com/testuser/test-repo/blob/main/src/index.ts",
+              repository: { full_name: "testuser/test-repo", description: "A test repository" },
+              text_matches: [{ fragment: "export const version = \"1.0.0\";" }]
+            }
+          ]
+        }
+      }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "find:version" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("Found 1 committed code result");
+    expect(res.structuredContent.tree).toEqual(["src/index.ts"]);
+    expect(res.structuredContent.files[0].text).toContain("version");
   });
 
   it("executes targeted file excerpt through Jev in forge_read", async () => {
