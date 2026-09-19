@@ -13,11 +13,11 @@ export const LEAD = [
   'For plans, research, direction and routine content, edit the default branch. Use the one Forge change only when work needs human review.',
   'Every result lists the repo\'s open Forge change, so nothing has to be remembered.',
   'forge_merge and forge_discard only return a link a human opens to decide; it still works after this chat ends.',
-  'forge_see needs a public URL; it returns images and a link to them.'
+  'forge_see needs a public URL; it returns screenshots inline with the same call.'
 ].join(' ');
 
 const DETAIL = [
-  'forge_read is the only way to look: no repo lists repositories; repo="global" searches public GitHub code or repos; repo="docs" (or platform name like "cloudflare") searches platform documentation; a repo shows its files and open changes, adding a change shows what it did, and adding query filters or ranks semantically, and paths accepts line ranges (e.g. file.ts:1-200) or returns patches for changes.',
+  'forge_read is the only way to look: no repo lists repositories; repo="global" searches public GitHub code or repos; a repo shows its files and open changes; adding a change shows what it did; query asks about code, history, hygiene, quality, dependencies or policy; paths accepts line ranges or returns patches for changes.',
   'forge_edit creates the repository if it does not exist. It commits directly unless change explains why the work needs review. Prefer replace fragments over whole files.',
   'Forge does not run, build, test, or deploy anything. If a result names limitations, say them. forge_see pointer.next=stop means do not invent a code fix from that capture.'
 ].join(' ');

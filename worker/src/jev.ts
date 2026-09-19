@@ -210,6 +210,44 @@ export async function typesafeSystemOne(
   }
 }
 
+async function evaluateJev(env: Env, payload: JevRequest): Promise<JevResponse | null> {
+  if (!env.TYPESAFE_API_KEY) return null;
+  return typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, payload);
+}
+
+function choiceOf(answer: JevAnswer | undefined): JevChoiceAnswer | undefined {
+  return answer?.type === 'choice' ? answer : undefined;
+}
+
+function choiceConfidence(answer: JevAnswer | undefined): number {
+  const choice = choiceOf(answer);
+  return choice?.confidence ?? 0;
+}
+
+function noulOf(answer: JevAnswer | undefined, fallback: number): number {
+  return answer?.type === 'noul' ? answer.noul : fallback;
+}
+
+function rankedChoices(
+  answer: JevAnswer | undefined,
+  allowed: Iterable<string>,
+  minimumProbability: number,
+  limit: number
+): Array<{ id: string; probability: number }> {
+  const choice = choiceOf(answer);
+  if (!choice) return [];
+  const allowedSet = new Set(allowed);
+  const ranked = Object.entries(choice.distribution)
+    .filter(([id, probability]) => allowedSet.has(id) && probability > minimumProbability)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit)
+    .map(([id, probability]) => ({ id, probability }));
+  if (ranked.length > 0) return ranked;
+  return allowedSet.has(choice.choice)
+    ? [{ id: choice.choice, probability: choice.confidence || 1 }]
+    : [];
+}
+
 export interface SemanticPathTriageResult {
   paths: string[];
   considered: number;
@@ -249,7 +287,7 @@ async function rankPathBatch(
   batch: string[],
   query: string
 ): Promise<Array<{ path: string; score: number }>> {
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: { searchQuery: query, candidatePaths: batch },
     questions: {
       bestMatch: {
@@ -318,7 +356,7 @@ export async function semanticPathTriageDetailed(
     };
   }
 
-  const finalResp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const finalResp = await evaluateJev(env, {
     state: {
       searchQuery: query.trim(),
       finalists: finalists.map((candidate) => ({ path: candidate.path, preliminaryRelevance: candidate.score }))
@@ -438,7 +476,7 @@ export async function semanticFileExcerpt(
     limitedChunks = [...selected.values()].sort((left, right) => left.start - right.start).slice(0, 40);
   }
 
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: {
       file: path,
       query,
@@ -491,7 +529,7 @@ export async function resolveRepoWithJev(
   if (!env.TYPESAFE_API_KEY || availableRepos.length === 0 || !query.trim()) return null;
 
   const repoNames = availableRepos.map((r) => r.repo);
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: {
       userRepoQuery: query,
       repositories: availableRepos.slice(0, 50).map((r) => ({
@@ -540,7 +578,7 @@ export async function rankChangeFilesWithJev(
     patchSnippet: (f.patch ?? "").slice(0, 500)
   }));
 
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: {
       userQuery: query,
       changedFiles: fileEntries
@@ -585,7 +623,7 @@ export async function rankPatchHunksWithJev(
   const criteria = Object.fromEntries(
     bounded.map((hunk) => [hunk.id, `${hunk.path} ${hunk.header}`])
   );
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: {
       userQuery: query.trim(),
       hunks: bounded.map((hunk) => ({
@@ -634,11 +672,6 @@ export interface SeePointer {
 const EXISTS_ACT = 0.35;
 const ERROR_ACT = 0.8;
 
-function noulOf(answer: JevAnswer | undefined, fallback: number): number {
-  if (!answer || answer.type !== "noul") return fallback;
-  return answer.noul;
-}
-
 /** Choice may return L4, l4, or the line text itself. */
 export function lineFromChoice(choice: string | undefined, ids: string[], lines: string[]): string | null {
   if (!choice) return null;
@@ -669,7 +702,7 @@ export async function judgeSeePacket(
   const lines = outline.slice(0, 40);
   const ids = lines.map((_, index) => `L${index + 1}`);
 
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: {
       url,
       title,
@@ -825,7 +858,7 @@ export async function assessChangeWithJev(
     };
   }
 
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: {
       changeIntent,
       comparisonStatus: comparison.status,
@@ -900,7 +933,7 @@ export async function rankImpactIdentifiersWithJev(
   }
   const bounded = candidates.slice(0, 100);
   const identifiers = bounded.map((candidate) => candidate.identifier);
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: { changeIntent, candidates: bounded },
     questions: {
       mostImpactful: {
@@ -967,7 +1000,7 @@ export async function classifyExactMatchContextsWithJev(
       criteria: kinds
     };
   }
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: {
       needle,
       matches: bounded
@@ -1023,7 +1056,7 @@ export async function classifyQualityGatesWithJev(
   for (const [kind, instructions] of definitions) {
     questions[`gate_${kind.replace(/[^a-z]/g, '_')}`] = { type: 'choice', instructions, criteria };
   }
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: { candidates },
     questions
   });
@@ -1094,7 +1127,7 @@ export async function classifyHygieneCandidatesWithJev(
       instructions: `Could deleting candidate ${index} plausibly change current runtime, build, API, migration, compatibility, or recovery behavior? Answer high when it appears intentionally reachable or protective.`
     };
   });
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: {
       candidates: bounded.map((file, index) => ({
         id: index,
@@ -1166,7 +1199,7 @@ export async function routeForgeReadEvidenceWithJev(
   const modes: ForgeReadEvidenceMode[] = scope === 'repository'
     ? ['quality', 'hygiene', 'policy', 'languages', 'churn', 'stats', 'map', 'history']
     : ['review', 'impact', 'dependencies', 'policy', 'stats'];
-  const resp = await typesafeSystemOne(env.TYPESAFE_API_KEY, env.TYPESAFE_BASE_URL, {
+  const resp = await evaluateJev(env, {
     state: { query: trimmed, scope },
     questions: {
       evidenceMode: {
