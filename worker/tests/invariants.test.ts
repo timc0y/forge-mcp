@@ -359,11 +359,14 @@ describe('post-commit advisory lint', () => {
 });
 
 describe('server instructions', () => {
-  it('keeps repository reads off the user OAuth credential', async () => {
+  it('keeps the user OAuth credential out of installed-repository work', async () => {
     const { readFileSync } = await import('node:fs');
     const source = readFileSync('src/tools.ts', 'utf8');
     expect(source).not.toContain('ghForRepo');
-    expect(source.match(/ctx\.ghUser/g)?.length ?? 0).toBeLessThanOrEqual(1);
+    expect(source.match(/ctx\.ghUser/g)?.length ?? 0).toBe(3);
+    expect(source).toContain('searchGitHubRepos(ctx.ghUser');
+    expect(source).toContain('searchGitHubCode(ctx.ghUser');
+    expect(source).toContain('createRepo(ctx.ghUser');
   });
 
   it('keeps deployment smoke aligned with the MCP release version and retired routes removed', async () => {
