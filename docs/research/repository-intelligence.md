@@ -172,6 +172,12 @@ syntax:
 If this analysis fails, the commit remains a successful commit. Forge never
 turns durable work into an error because an advisory check failed.
 
+## Committed-work compiler linting
+
+Forge's worker TypeScript configuration now enables `noUnusedLocals` and `noUnusedParameters`. The existing GitHub CI already runs `pnpm typecheck` only after a push/PR exists, so this catches stale imports, dead locals and forgotten parameters on committed work without adding ESLint/Biome, a pre-commit hook, or any execution capability to Forge itself. Parameters intentionally unused can still follow TypeScript's underscore convention.
+
+This is exactly the sort of linting Forge should prefer: use the compiler for a concrete defect class before adding a general-purpose lint dependency.
+
 ## Tests and linting
 
 Forge's own repository already runs TypeScript checking and Vitest on GitHub
