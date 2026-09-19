@@ -280,8 +280,8 @@ async function headSha(gh: GitHubRequest, repo: RepoRef, branch: string): Promis
   return sha;
 }
 
-function totals(comparison: Comparison): { files: number; additions: number; deletions: number } {
-  return comparison.files.reduce(
+function fileTotals(files: ChangedFile[]): { files: number; additions: number; deletions: number } {
+  return files.reduce(
     (sum, file) => ({
       files: sum.files + 1,
       additions: sum.additions + file.additions,
@@ -289,6 +289,31 @@ function totals(comparison: Comparison): { files: number; additions: number; del
     }),
     { files: 0, additions: 0, deletions: 0 }
   );
+}
+
+function totals(comparison: Comparison): { files: number; additions: number; deletions: number } {
+  return fileTotals(comparison.files);
+}
+
+function changeHotspots(files: ChangedFile[]): string[] {
+  const folders = new Map<string, { files: number; additions: number; deletions: number }>();
+  for (const file of files) {
+    const slash = file.path.indexOf('/');
+    const folder = slash === -1 ? '(root)' : `${file.path.slice(0, slash)}/`;
+    const current = folders.get(folder) ?? { files: 0, additions: 0, deletions: 0 };
+    current.files += 1;
+    current.additions += file.additions;
+    current.deletions += file.deletions;
+    folders.set(folder, current);
+  }
+  return [...folders.entries()]
+    .sort(
+      (left, right) =>
+        right[1].additions + right[1].deletions - (left[1].additions + left[1].deletions) ||
+        right[1].files - left[1].files
+    )
+    .slice(0, 4)
+    .map(([folder, stats]) => `${folder} ${stats.files} file${stats.files === 1 ? '' : 's'} +${stats.additions}/-${stats.deletions}`);
 }
 
 function ghForRepo(ctx: ToolContext, repo: RepoRef): GitHubRequest {
@@ -946,15 +971,52 @@ async function readChangeLevel(
   ];
 
   let semanticallyRanked = false;
-  if (query?.trim() && ordered.length > 1) {
-    const trimmed = query.trim();
-    const rankedPaths = await rankChangeFilesWithJev(ctx.env, ordered, trimmed);
-    if (rankedPaths && rankedPaths.length > 0) {
+  let statsNote = '';
+  const trimmedQuery = query?.trim();
+  if (trimmedQuery && isStatsQuery(trimmedQuery)) {
+    const scope = statsScope(trimmedQuery);
+    const scoped = scope
+      ? comparison.files.filter((file) => file.path === scope || file.path.startsWith(`${scope}/`))
+      : comparison.files;
+    if (scope && scoped.length === 0) limits.push(`No changed files were found under ${scope}.`);
+    ordered = [...scoped].sort(
+      (left, right) => right.additions + right.deletions - (left.additions + left.deletions) || left.path.localeCompare(right.path)
+    );
+    const scopedSize = fileTotals(scoped);
+    const hotspots = changeHotspots(scoped);
+    statsNote = `; ${scope ? `scope ${scope}: ` : ''}${scopedSize.files} file${scopedSize.files === 1 ? '' : 's'} +${scopedSize.additions}/-${scopedSize.deletions}`;
+    if (hotspots.length > 0) statsNote += `; hotspots ${hotspots.join(', ')}`;
+  } else if (trimmedQuery && ordered.length > 1) {
+    const pathRanked = await rankChangeFilesWithJev(ctx.env, ordered, trimmedQuery);
+    const candidatePaths =
+      ordered.length <= 20
+        ? ordered.map((file) => file.path)
+        : (pathRanked && pathRanked.length > 0 ? pathRanked : ordered.map((file) => file.path)).slice(0, 20);
+
+    let semanticOrder = pathRanked;
+    if (ctx.env.TYPESAFE_API_KEY && candidatePaths.length > 0) {
+      try {
+        const withPatches = await compare(gh, repo, base, change.branch, candidatePaths);
+        const candidateSet = new Set(candidatePaths);
+        const enriched = withPatches.files.filter((file) => candidateSet.has(file.path));
+        const patchRanked = await rankChangeFilesWithJev(ctx.env, enriched, trimmedQuery);
+        if (patchRanked && patchRanked.length > 0) semanticOrder = patchRanked;
+      } catch {
+        // Path semantics still provide a useful fallback if patch enrichment fails.
+      }
+    }
+
+    if (semanticOrder && semanticOrder.length > 0) {
       semanticallyRanked = true;
-      const pathSet = new Set(rankedPaths);
+      const askedFiles = ordered.filter((file) => asked.has(file.path));
+      const askedSet = new Set(askedFiles.map((file) => file.path));
+      const rankedSet = new Set(semanticOrder);
       ordered = [
-        ...ordered.filter((f) => pathSet.has(f.path)).sort((a, b) => rankedPaths.indexOf(a.path) - rankedPaths.indexOf(b.path)),
-        ...ordered.filter((f) => !pathSet.has(f.path))
+        ...askedFiles,
+        ...ordered
+          .filter((file) => !askedSet.has(file.path) && rankedSet.has(file.path))
+          .sort((left, right) => semanticOrder.indexOf(left.path) - semanticOrder.indexOf(right.path)),
+        ...ordered.filter((file) => !askedSet.has(file.path) && !rankedSet.has(file.path))
       ];
     }
   }
@@ -970,9 +1032,9 @@ async function readChangeLevel(
   const changes = await openChanges(ctx.gh, repo);
   const names = changeNames(changes);
 
-    const queryNote = semanticallyRanked ? ` (ranked for "${query?.trim()}")` : "";
+    const queryNote = semanticallyRanked ? ` (diff-ranked for "${trimmedQuery}")` : "";
     return {
-      summary: `"${change.name}" is ${comparison.status} against ${base}: ${size.files} file${size.files === 1 ? "" : "s"}, +${size.additions}/-${size.deletions}${queryNote}.${changesSentence(names)}`,
+      summary: `"${change.name}" is ${comparison.status} against ${base}: ${size.files} file${size.files === 1 ? "" : "s"}, +${size.additions}/-${size.deletions}${statsNote}${queryNote}.${changesSentence(names)}`,
     structured: withLimits(
       {
         diff: {

@@ -100,6 +100,21 @@ This gives a safe workflow for "find every X and replace it with Y":
 Forge intentionally does not add a top-level "replace the entire repository"
 mutation. Discovery and mutation remain separate, observable acts.
 
+### Change-aware stats and diff semantics
+
+The same `stats [path]` query now has a useful meaning when reading an open
+Forge change: it sorts changed files by line churn, can scope that view to a
+folder, and reports the highest-churn top-level areas from GitHub's comparison.
+This is a change-size signal, not a quality or risk score.
+
+Semantic change queries also now use patch content where practical. Previously
+`rankChangeFilesWithJev` was usually handed changed paths with no patches, even
+though its interface accepted patch snippets. Forge now does a bounded second
+comparison for up to 20 candidate paths and re-ranks those candidates with their
+actual diff snippets. Large changes first narrow by path semantics, then enrich
+the bounded candidates. Explicitly requested paths remain first so semantic
+ranking cannot hide a file the caller asked to inspect.
+
 ### Post-commit advisory lint
 
 Forge already contained a dangling-relative-import check, but it was gated on
@@ -156,9 +171,9 @@ The correct shape, if the permission cost is accepted, is:
 Current semantic repository search ranks paths and selectively reads relevant
 file excerpts. Improvements that stay inside the boundary include:
 
-- decide whether normal natural-language queries should automatically blend
-  code-search candidates with semantic path ranking, or whether the explicit
-  `code:` mode is the better latency/cost boundary;
+- decide whether normal repository-level natural-language queries should
+automatically blend code-search candidates with semantic path ranking, or
+whether the explicit `code:` mode is the better latency/cost boundary;
 - enrich likely routes, schemas, migrations and entry points from small committed
   excerpts without claiming a full call graph;
 - summarize a change by subsystem concentration and churn, using its diff;
