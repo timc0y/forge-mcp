@@ -93,6 +93,23 @@ At roughly 5 s a capture, the included 10 hours is about 7,200 captures a month.
 Fifty people at 30 a day is ~62 browser hours, about **$4.73 a month in total**.
 That 5 s figure is an assumption and should be measured.
 
+## Releasing MCP metadata
+
+A Worker deploy updates server code, but an existing ChatGPT developer-mode
+connection may continue using its previously discovered tool metadata. After
+changing a tool name, description, input/output schema, annotations, auth
+metadata or server instructions:
+
+1. bump `SERVER_VERSION` in `worker/src/mcp.ts`;
+2. deploy the Worker;
+3. confirm `/forge/health` reports the new version;
+4. open the Forge connection in ChatGPT Plugins and choose **Refresh**;
+5. verify the discovered tool metadata, then start a **new conversation**.
+
+Do not diagnose cached catalog text as current Worker behavior. If two Forge
+connections exist, remove or refresh the stale one before comparing tool
+results.
+
 ## Running it
 
 ```sh

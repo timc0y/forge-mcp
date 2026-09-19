@@ -223,6 +223,29 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(changeRes.structuredContent.diff.files[0].path).toBe("src/index.ts");
   });
 
+  it("keeps existing-repository reads independent of the user OAuth credential", async () => {
+    const { server, ctx } = createMockToolContext();
+    ctx.ghUser = async () => {
+      throw new Error("stale user OAuth must never affect repository reads");
+    };
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", paths: ["README.md"] });
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent.files[0].text).toContain("# Test Repo");
+  });
+
+  it("publishes the current direct-write and inline-capture tool contract", () => {
+    const { server } = createMockToolContext();
+    const editTool = (server as any)._registeredTools["forge_edit"];
+    const seeTool = (server as any)._registeredTools["forge_see"];
+
+    expect(editTool.description).toContain("directly by omitting change");
+    expect(editTool.description).toContain("one fixed branch");
+    expect(seeTool.description).toContain("images come back with this call");
+    expect(seeTool.description).toContain("nothing to fetch afterwards");
+  });
+
   it("investigates repository hygiene with GitHub evidence and Jev", async () => {
     const priorFetch = globalThis.fetch;
     globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {

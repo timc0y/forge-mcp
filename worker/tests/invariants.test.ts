@@ -347,6 +347,13 @@ describe('post-commit advisory lint', () => {
 });
 
 describe('server instructions', () => {
+  it('keeps repository reads off the user OAuth credential', async () => {
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync('src/tools.ts', 'utf8');
+    expect(source).not.toContain('ghForRepo');
+    expect(source.match(/ctx\.ghUser/g)?.length ?? 0).toBeLessThanOrEqual(1);
+  });
+
   it('keeps every load-bearing fact inside the 512-character window', async () => {
     // OpenAI weights the first 512 characters of server instructions most
     // heavily. A fact past the cut is a fact the model may never weigh, so the

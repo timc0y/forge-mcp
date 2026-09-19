@@ -1,4 +1,4 @@
-import { ForgeMcpSession } from './mcp';
+import { ForgeMcpSession, SERVER_VERSION } from './mcp';
 import { authenticate } from './identity';
 import {
   authorizationServerMetadata,
@@ -141,7 +141,7 @@ export default {
       if (icon) return icon;
 
       if (path === '/health') {
-        return Response.json({ status: 'ok' });
+        return Response.json({ status: 'ok', version: SERVER_VERSION });
       }
 
       // Discovery, in every spelling a client might try.
