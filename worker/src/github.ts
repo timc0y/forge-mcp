@@ -58,7 +58,12 @@ async function appJwt(env: Env): Promise<string> {
     .sign(key);
 }
 
-async function installationToken(env: Env, installationId: string): Promise<string> {
+async function installationToken(
+  env: Env,
+  installationId: string,
+  forceRefresh = false
+): Promise<string> {
+  if (forceRefresh) installationTokens.delete(installationId);
   const cached = installationTokens.get(installationId);
   if (cached && cached.expiresAt - REFRESH_MARGIN_MS > Date.now()) return cached.token;
 
@@ -141,14 +146,41 @@ function requester(token: string): GitHubRequest {
   };
 }
 
-export async function githubRequest(env: Env, installationId: string): Promise<GitHubRequest> {
-  return requester(await installationToken(env, installationId));
+type InstallationTokenProvider = (
+  env: Env,
+  installationId: string,
+  forceRefresh?: boolean
+) => Promise<string>;
+
+/**
+ * Repository requests outlive individual installation tokens: MCP sessions can
+ * remain connected for hours while GitHub installation tokens expire after one.
+ * Resolve the cached token for every request and retry one 401 after forcing a
+ * fresh token. Other statuses are real GitHub answers and are never retried.
+ *
+ * The provider parameter exists only to make expiry/retry behavior testable
+ * without a real private key or GitHub call.
+ */
+export async function githubRequest(
+  env: Env,
+  installationId: string,
+  tokenProvider: InstallationTokenProvider = installationToken
+): Promise<GitHubRequest> {
+  // Fail connection setup immediately when the installation cannot mint at all.
+  await tokenProvider(env, installationId, false);
+
+  return async (path, init) => {
+    const first = await requester(await tokenProvider(env, installationId, false))(path, init);
+    if (first.status !== 401) return first;
+    return requester(await tokenProvider(env, installationId, true))(path, init);
+  };
 }
 
 /**
- * Authenticated as the human. Only creating a repository needs this, because an
- * installation cannot create one on the account that installed it. Never
- * cached: the token belongs to a session, not to this isolate.
+ * Authenticated as the human. Repository creation and explicit public GitHub
+ * search need this; ordinary reads/writes always use the installation token.
+ * Never cached here: the stored/rotating credential lifecycle lives in
+ * user-token.ts.
  */
 export async function githubUserRequest(_env: Env, userAccessToken: string): Promise<GitHubRequest> {
   return requester(userAccessToken);

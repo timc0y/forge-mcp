@@ -4,6 +4,7 @@ import { capture } from '../src/capture';
 import { approvalPage } from '../src/approve';
 import { toForgeError } from '../src/errors';
 import { registerClient, token } from '../src/oauth';
+import { githubRequest } from '../src/github';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -15,6 +16,46 @@ function captureEnv(): Env {
     CLOUDFLARE_API_TOKEN: 'browser-token'
   } as unknown as Env;
 }
+
+describe('GitHub installation token lifetime', () => {
+  it('refreshes a long-lived session after one 401 and retries exactly once', async () => {
+    const requestedTokens: string[] = [];
+    const tokenProvider = vi.fn(async (_env: Env, _installationId: string, forceRefresh = false) =>
+      forceRefresh ? 'fresh-token' : 'stale-token'
+    );
+
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get('authorization') ?? '';
+      requestedTokens.push(authorization);
+      if (authorization === 'Bearer stale-token') {
+        return new Response('{"message":"Bad credentials"}', { status: 401 });
+      }
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }));
+
+    const request = await githubRequest({} as Env, 'installation-1', tokenProvider);
+    const response = await request('/installation/repositories');
+
+    expect(response.status).toBe(200);
+    expect(requestedTokens).toEqual(['Bearer stale-token', 'Bearer fresh-token']);
+    expect(tokenProvider).toHaveBeenCalledWith({} as Env, 'installation-1', true);
+  });
+
+  it('does not retry ordinary GitHub refusals', async () => {
+    const tokenProvider = vi.fn(async () => 'token');
+    const fetchMock = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = await githubRequest({} as Env, 'installation-1', tokenProvider);
+    const response = await request('/repos/o/r');
+
+    expect(response.status).toBe(404);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('public exposure hardening', () => {
   it('renders a duplicated viewport only once and sends redirect guards', async () => {
