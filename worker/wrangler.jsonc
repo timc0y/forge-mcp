@@ -53,7 +53,7 @@
     // The operator's own escape hatch from the daily limit. Not a tier: there
     // is no path inside the product that grants it.
     "FORGE_UNLIMITED_LOGINS": "timc0y",
-    "FORGE_JEV_PRIVATE_SOURCE": "deny",
+    "FORGE_JEV_PRIVATE_SOURCE": "allow",
     "TYPESAFE_BASE_URL": "https://api.cloudflare.com/client/v4/accounts/d6784b5908746881ddb313d17efd5cc2/ai/run"
   },
 
@@ -95,7 +95,7 @@
         "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
         "FORGE_CAPTURE_DAILY_LIMIT": "30",
         "FORGE_UNLIMITED_LOGINS": "timc0y",
-        "FORGE_JEV_PRIVATE_SOURCE": "deny"
+        "FORGE_JEV_PRIVATE_SOURCE": "allow"
       },
       "d1_databases": [
         {

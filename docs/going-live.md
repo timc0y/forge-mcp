@@ -71,7 +71,9 @@ but makes authenticated MCP startup fail before any tools are registered.
 pnpm exec wrangler secret put CLOUDFLARE_API_TOKEN --env=""
 ```
 
-**Optional:** `POSTHOG_API_KEY`. Without it analytics is a no-op, by design.
+**JEV:** set `TYPESAFE_API_KEY`. Production configuration names the one admitted
+Cloudflare inference route and explicitly allows bounded private-source JEV
+processing. The privacy page must remain accurate for that processing boundary.
 
 ## Stage 2 — Prove it once
 
@@ -236,11 +238,13 @@ to be true, which means writing it from what the system does:
 - **Collected:** GitHub user id and login; a GitHub credential, encrypted, used
   only to create repositories; pending approvals with the diff evidence shown;
   captures; a daily capture count.
-- **Not collected:** repository contents at rest, chat transcripts, email.
-  Analytics carries tool name, outcome and duration — never file contents,
-  patches, intents, captured URLs or repository names.
-- **Recipients:** GitHub, Cloudflare (hosting, browser rendering), PostHog
-  (analytics) if enabled.
+- **Not collected at rest:** repository contents, chat transcripts, email.
+  Shape-only Cloudflare logs exclude repository names, source, queries, patches,
+  captured URLs and user identifiers.
+- **Recipients:** GitHub provides identity/repository operations. Cloudflare
+  hosts Forge, Browser Rendering and the configured JEV inference route. When
+  private semantic context is enabled, bounded relevant private source may be
+  processed by that JEV route; exact reads and writes do not require inference.
 - **Retention:** captures expire after 30 days. Approval links expire after seven
   days, but approval records currently remain until account deletion; do not
   describe link expiry as record deletion.
@@ -248,7 +252,7 @@ to be true, which means writing it from what the system does:
   request deletion through the documented operator procedure.
 
 The worker serves this notice at `/forge/privacy`, and the production route is
-verified. Verify the R2 lifecycle before treating retention as complete.
+verified. Forge V2 keeps no capture gallery or R2 repository/capture store.
 
 ---
 

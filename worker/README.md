@@ -71,11 +71,15 @@ Required secrets:
 - `GITHUB_APP_CLIENT_SECRET`
 - `FORGE_SIGNING_KEY` — 32+ random bytes
 - `CLOUDFLARE_API_TOKEN` — Browser Rendering only
-- `POSTHOG_API_KEY` — optional; absence makes analytics a no-op
+- `TYPESAFE_API_KEY` — the single configured JEV inference route
 
 The GitHub App needs **Contents: write**, **Pull requests: write** and
-**Metadata: read**. Expiring user tokens should be enabled so the encrypted
-credential used only for repository creation can rotate.
+**Metadata: read** for the core repository surface. Forge V2 also needs
+**Checks: read** for exact-commit execution evidence and **Actions: read** for
+the versioned `forge-analysis.json` artifact. Missing permission is reported as
+unavailable evidence; Forge never substitutes an older run. Expiring user
+tokens should be enabled so the encrypted credential used for repository
+creation and explicit public GitHub discovery can rotate.
 
 The preview is open to anyone who completes GitHub OAuth and installs the App.
 There is no invite table or invite code. Cost is bounded by a per-user daily
@@ -84,11 +88,12 @@ limit.
 
 ## Deliberate boundary
 
-No containers, shell, builds, tests, deployment, preview hosting, private-page
-browsing, site crawl, object storage or capture gallery. One Durable Object, one
-database and one paid action.
+No containers, shell, repository execution, deployment, preview hosting,
+private-page browsing, persistent repository index, site crawl, object storage
+or capture gallery. Repository CI may run normal GitHub Actions independently;
+Forge only reads their exact-commit evidence.
 
-`forge_see` returns images inline with the call that requested them. The same
-Cloudflare snapshot also returns an accessibility tree; Forge reduces it to a
-bounded semantic outline so a model can reason about page structure without
-receiving the raw browser tree.
+`forge_read` pins source to one immutable commit and can return exact files,
+symbols/records, checks, a repository-produced analysis artifact or a bounded
+JEV-selected context packet. `forge_see` returns public-page images inline with
+the call that requested them.

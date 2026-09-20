@@ -32,7 +32,8 @@ Non-secret values live in `worker/wrangler.jsonc`.
 | `GITHUB_APP_ID` / `_CLIENT_ID` / `_SLUG` | The GitHub App |
 | `FORGE_CAPTURE_DAILY_LIMIT` | Captures per person per UTC day (default 30) |
 | `FORGE_UNLIMITED_LOGINS` | GitHub logins exempt from that limit, comma separated. The operator's escape hatch — nothing inside the product grants it |
-| `POSTHOG_HOST` | Analytics endpoint |
+| `FORGE_JEV_PRIVATE_SOURCE` | `allow` permits bounded private-repository evidence to be processed by the configured JEV route; `deny` refuses semantic context before source is sent |
+| `TYPESAFE_BASE_URL` | The single admitted Cloudflare JEV inference route |
 
 Secrets, via `wrangler secret put` from `worker/`:
 
@@ -42,7 +43,7 @@ Secrets, via `wrangler secret put` from `worker/`:
 | `GITHUB_APP_CLIENT_SECRET` | |
 | `FORGE_SIGNING_KEY` | 32+ random bytes. Signs access and approval tokens, fingerprints rotating refresh-token families, and derives the key encrypting stored GitHub credentials. Rotating it invalidates all of them at once and forces everyone to sign in again |
 | `CLOUDFLARE_API_TOKEN` | Scoped to Browser Rendering only |
-| `POSTHOG_API_KEY` | Optional. Unset means no analytics, not broken analytics |
+| `TYPESAFE_API_KEY` | Authenticates the configured JEV route; semantic operations refuse when it is absent |
 
 ### The GitHub App
 
@@ -67,25 +68,28 @@ requests, Metadata and Workflows, and one `forge_edit` call created
 `timc0y/forge-self-test` from a document — the headline promise, proven end to
 end.
 
-## Analytics
+Forge V2 additionally reads exact-commit check runs and repository-produced
+analysis artifacts. Those capabilities require **Checks: read** and **Actions:
+read** on the GitHub App. They are capability requirements, not optional
+fallbacks: until an installation grants them, Forge reports the evidence as
+unavailable and does not substitute older checks or inferred test state.
 
-PostHog, on one rule: **analytics may never change what a caller sees.** Every
-send is fire-and-forget, every failure is swallowed, and an unset API key makes
-the module a no-op. If PostHog is down, Forge does not notice.
+## Operational measurements
 
-Events are `forge_tool_called`, `forge_user_signed_up`, `forge_user_connected`,
-`forge_change_committed`, `forge_approval_requested`,
-`forge_approval_resolved`, `forge_capture_taken` and `forge_quota_refused`.
-Properties are shape only — which tool, whether it worked, elapsed time, file
-count, viewport count, action and outcome. `forge_change_committed` is the
-primary activation event; a preceding `forge_capture_taken` is the stronger
-visual-review signal.
+Forge has no external analytics transport. Shape-only events are written to the
+existing Cloudflare logs and may include tool name, success/failure, elapsed
+time, byte/count budgets, capture count and context-stage counts. The logger
+allow-lists both property names and short labels before emission.
 
-Deliberately never sent: file contents, patches, commit messages, intents,
-captured URLs, repository names, tokens. Those are the user's work, and none of
-them are needed to know whether the product is usable. `distinct_id` is the
-Forge user id, not the GitHub login, because a login can be renamed and would
-then look like two people.
+Repository names, source, patches, queries, commit messages, captured URLs,
+user identifiers and credentials are not telemetry properties. Observation is
+best-effort and can never change a tool result.
+
+JEV is different from telemetry: semantic operations send their bounded state
+to the configured Cloudflare inference route. With
+`FORGE_JEV_PRIVATE_SOURCE=allow`, relevant private source may therefore be
+externally processed by that route. Exact reads, GitHub metadata and durable
+writes do not require JEV.
 
 ## Public abuse boundary
 
