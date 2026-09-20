@@ -41,4 +41,5 @@ export async function mergeEvidence(snapshot: Snapshot, comparison: Comparison, 
 export function requireMergeEvidence(report: Awaited<ReturnType<typeof mergeEvidence>>): void {
   if (report.blockers.length) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `Merge approval was not created. Repair the known blockers first: ${report.blockers.join(' ')}` });
   if (report.policy.unavailable || report.policy.truncated) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Merge approval was not created because GitHub policy could not be established. No permissive policy was substituted.' });
+  if (report.checks.coverage !== 'complete') throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Merge approval was not created because exact-head check evidence is incomplete or unavailable. Grant Checks read access or resolve the GitHub evidence gap; no inferred test state was substituted.' });
 }

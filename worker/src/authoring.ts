@@ -45,13 +45,17 @@ export async function author(ctx: ToolContext, input: EditInput): Promise<ToolOu
   // Every failure after this point is decoration on a write that is already durable.
   const limits = [...(commit.notes ?? [])];
   if (commit.outcome === 'committed' && input.files.some((file) => ['CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS'].includes(file.path))) {
-    const ownership = await readCodeownersErrors(ctx.gh, repo, commit.sha);
-    if (ownership.unavailable) limits.push(ownership.unavailable);
-    for (const error of ownership.errors.slice(0, 10)) {
-      const where = error.line ? ` line ${error.line}${error.column ? `:${error.column}` : ''}` : '';
-      limits.push(`CODEOWNERS notice${where}: ${error.message}${error.suggestion ? ` ${error.suggestion}` : ''}`);
+    try {
+      const ownership = await readCodeownersErrors(ctx.gh, repo, commit.sha);
+      if (ownership.unavailable) limits.push(ownership.unavailable);
+      for (const error of ownership.errors.slice(0, 10)) {
+        const where = error.line ? ` line ${error.line}${error.column ? `:${error.column}` : ''}` : '';
+        limits.push(`CODEOWNERS notice${where}: ${error.message}${error.suggestion ? ` ${error.suggestion}` : ''}`);
+      }
+      if (ownership.errors.length > 10) limits.push(`GitHub reported ${ownership.errors.length} CODEOWNERS errors; showing the first 10.`);
+    } catch (error) {
+      limits.push(`CODEOWNERS validation could not be completed after the durable commit: ${toForgeError(error).message}`);
     }
-    if (ownership.errors.length > 10) limits.push(`GitHub reported ${ownership.errors.length} CODEOWNERS errors; showing the first 10.`);
   }
   let number: number | null = null;
   if (proposed) {
