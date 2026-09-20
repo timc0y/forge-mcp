@@ -51,3 +51,9 @@ jobs:
 
       - name: Worker bundle dry run
         run: pnpm exec wrangler deploy --dry-run --config wrangler.jsonc --env="" --outdir /tmp/forge-worker
+
+      - name: Enforce Worker bundle headroom
+        run: node scripts/check-bundle-budget.mjs /tmp/forge-worker
+
+      - name: Profile Worker startup
+        run: pnpm exec wrangler check startup --config wrangler.jsonc --env=""

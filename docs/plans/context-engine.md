@@ -308,7 +308,7 @@ Initial targets below are acceptance goals, not measurements:
 | Sequential JEV stages | At most 3 normally; at most one bounded expansion |
 | Full-file/source/CI operations | No unnecessary JEV call |
 | Runtime resilience | Explicit outcome for every injected upstream/parse/schema failure; no substitute provider/result |
-| Runtime memory, bundle size and latency | Within deployed Worker limits under tested concurrency, with measured headroom |
+| Runtime memory, bundle size and latency | Within deployed Worker limits under tested concurrency; CI enforces ≤48 MiB dry-run bundle against Cloudflare’s 64 MiB limit and runs Wrangler startup profiling |
 
 Measure total JEV input/output usage and request cost, GitHub calls, bytes downloaded/retained, parser CPU, response bytes and end-to-end latency. Do not assert a 50–70% saving because another project reported it. Do not move cost from ChatGPT into repeated JEV requests or whole-archive downloads and call that success. Do not upload source, queries, repo names or private identifiers to analytics.
 
