@@ -9,7 +9,7 @@ import {
   searchGitHubRepos,
   type SearchItem
 } from '../src/search';
-import { registerTools, type ToolContext } from '../src/tools';
+import { registerTools, type ToolContext } from '../src/tool-catalog';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';

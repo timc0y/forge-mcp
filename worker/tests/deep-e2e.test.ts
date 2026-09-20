@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerTools, type ToolContext } from "../src/tools";
+import { registerTools, type ToolContext } from "../src/tool-catalog";
 import type { GitHubRequest, Identity } from "../src/contracts";
 import type { Env } from "../src/env";
 import { lintCommittedFiles } from "../src/repository-intelligence";
