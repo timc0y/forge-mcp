@@ -24,6 +24,7 @@ export async function mergeEvidence(snapshot: Snapshot, comparison: Comparison, 
   blockers.push(...failedChecks(checks).map((check) => `Check ${check.name}: ${check.conclusion}`));
   if (reviews?.changesRequested) blockers.push('GitHub reviews request changes.');
   if (reviews?.mergeable === false) blockers.push('GitHub reports this change is not automatically mergeable.');
+  if (comparison.truncated) blockers.push('GitHub did not return the complete changed-file comparison.');
   if (required.length && !requiredChecksSatisfied(checks, required)) blockers.push('Required checks are not all successful on this exact head revision. Synthetic merge checks must be inspected as separate evidence.');
   const minimumApprovals = requiredApprovalCount(policy);
   if (minimumApprovals && (!reviews || reviews.approvals < minimumApprovals)) blockers.push('Required independent GitHub approvals have not been established.');
@@ -41,5 +42,6 @@ export async function mergeEvidence(snapshot: Snapshot, comparison: Comparison, 
 export function requireMergeEvidence(report: Awaited<ReturnType<typeof mergeEvidence>>): void {
   if (report.blockers.length) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `Merge approval was not created. Repair the known blockers first: ${report.blockers.join(' ')}` });
   if (report.policy.unavailable || report.policy.truncated) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Merge approval was not created because GitHub policy could not be established. No permissive policy was substituted.' });
+  if (!report.reviews || report.reviews.unavailable || report.reviews.truncated || report.reviews.mergeable === null) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Merge approval was not created because pull-request review or mergeability evidence is incomplete. Retry after GitHub can provide the current state; no mergeability was inferred.' });
   if (report.checks.coverage !== 'complete') throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Merge approval was not created because exact-head check evidence is incomplete or unavailable. Grant Checks read access or resolve the GitHub evidence gap; no inferred test state was substituted.' });
 }

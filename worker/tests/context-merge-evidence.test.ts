@@ -6,6 +6,7 @@ function report(overrides: Record<string, unknown> = {}) {
     blockers: [],
     checks: { coverage: 'complete' },
     policy: { unavailable: undefined, truncated: false },
+    reviews: { unavailable: undefined, truncated: false, mergeable: true },
     ...overrides
   } as any;
 }
@@ -19,6 +20,12 @@ describe('merge evidence gate', () => {
   it('refuses known blockers and unavailable policy', () => {
     expect(() => requireMergeEvidence(report({ blockers: ['Check verify: failure'] }))).toThrow(/known blockers/);
     expect(() => requireMergeEvidence(report({ policy: { unavailable: '403', truncated: false } }))).toThrow(/policy could not be established/);
+  });
+
+  it('refuses missing, truncated or unresolved pull-request state', () => {
+    expect(() => requireMergeEvidence(report({ reviews: null }))).toThrow(/review or mergeability/);
+    expect(() => requireMergeEvidence(report({ reviews: { unavailable: undefined, truncated: true, mergeable: true } }))).toThrow(/review or mergeability/);
+    expect(() => requireMergeEvidence(report({ reviews: { unavailable: undefined, truncated: false, mergeable: null } }))).toThrow(/review or mergeability/);
   });
 
   it('permits approval preparation only when required evidence is complete and blocker-free', () => {
