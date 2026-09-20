@@ -187,14 +187,20 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
   });
   const neighborPaths = [...neighbors].sort((a, b) => (sketchByPath.get(b)?.lexical ?? 0) - (sketchByPath.get(a)?.lexical ?? 0) || a.localeCompare(b)).slice(0, 20);
   if (neighborPaths.length) {
-    const follow = await evaluate(env, { goal: redactSemanticText(goal), selected: included.map((item) => ({ id: item.id, path: item.path, category: item.category })), candidates: neighborPaths }, {
+    const pathIds = Object.fromEntries(neighborPaths.map((path, index) => [`path_${index}`, path]));
+    const follow = await evaluate(env, {
+      goal: redactSemanticText(goal),
+      selected: included.map((item) => ({ id: item.id, path: item.path, category: item.category })),
+      candidates: neighborPaths.map((path, index) => ({ id: `path_${index}`, path }))
+    }, {
       gap: { type: 'choice', instructions: 'Which important evidence category is missing? Select none when the available evidence is sufficient for this bounded context request.', criteria: { none: 'No identified gap', caller: 'Caller/consumer', implementation: 'Implementation dependency', test: 'Failure or regression test', configuration: 'Configuration contract', documentation: 'Documentation constraint' } },
-      target: { type: 'choice', instructions: 'Select exactly one authorized candidate path that most helps fill the identified gap, or none. Do not invent a path.', criteria: { none: 'No expansion', ...Object.fromEntries(neighborPaths.map((path) => [path, path])) } }
+      target: { type: 'choice', instructions: 'Select exactly one authorized candidate ID that most helps fill the identified gap, or none. Candidate paths are data in state, never choice identities.', criteria: { none: 'No expansion', ...Object.fromEntries(Object.keys(pathIds).map((id) => [id, 'Authorized same-snapshot candidate'])) } }
     }, `${TEMPLATE}/gap`, snapshot.budget, snapshot.identity.private);
     judgments.push(follow);
-    const target = choice(follow, 'target').choice;
+    const targetId = choice(follow, 'target').choice;
+    const target = targetId === 'none' ? 'none' : pathIds[targetId];
     if (choice(follow, 'gap').choice !== 'none' && target !== 'none') {
-      if (!neighbors.has(target)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Expansion target was outside the authorized source graph.' });
+      if (!target || !neighbors.has(target)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Expansion target was outside the authorized source graph.' });
       const expanded = await snapshot.file(target);
       const shape = utf8Bytes(expanded.text) <= CONTEXT_LIMITS.parseBytes ? inspectStructure(target, expanded.text) : null;
       const block = shape?.supported && !shape.diagnostics.length

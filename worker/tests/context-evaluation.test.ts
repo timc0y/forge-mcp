@@ -144,6 +144,7 @@ describe('30-case deterministic context plumbing evaluation', () => {
             };
           }
         } else if (questions.gap) {
+          const testId = state.candidates.find((entry: any) => entry.path === 'tests/core.test.ts')?.id;
           answers.gap = {
             type: 'choice',
             choice: 'test',
@@ -152,9 +153,9 @@ describe('30-case deterministic context plumbing evaluation', () => {
           };
           answers.target = {
             type: 'choice',
-            choice: 'tests/core.test.ts',
+            choice: testId,
             confidence: 0.9,
-            probabilities: probabilities(Object.keys(questions.target.criteria), 'tests/core.test.ts')
+            probabilities: probabilities(Object.keys(questions.target.criteria), testId)
           };
         } else {
           for (const [key] of Object.entries(questions)) {

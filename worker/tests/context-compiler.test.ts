@@ -84,8 +84,9 @@ describe('task-shaped context compilation', () => {
         }
       } else if (questions.gap) {
         const targets = Object.keys(questions.target.criteria);
+        const testId = state.candidates.find((entry: any) => entry.path === 'tests/core.test.ts')?.id;
         answers.gap = { type: 'choice', choice: 'test', confidence: 0.9, probabilities: distribution(Object.keys(questions.gap.criteria), 'test') };
-        answers.target = { type: 'choice', choice: 'tests/core.test.ts', confidence: 0.9, probabilities: distribution(targets, 'tests/core.test.ts') };
+        answers.target = { type: 'choice', choice: testId, confidence: 0.9, probabilities: distribution(targets, testId) };
       } else {
         for (const [id, question] of Object.entries(questions) as Array<[string, any]>) {
           if (id.startsWith('relevant_')) answers[id] = { type: 'noul', noul: 0.95 };
