@@ -17,6 +17,12 @@ importers:
       jose:
         specifier: 6.2.2
         version: 6.2.2
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -27,9 +33,6 @@ importers:
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1
-      typescript:
-        specifier: 5.9.3
-        version: 5.9.3
       vitest:
         specifier: 4.1.9
         version: 4.1.9(@types/node@24.10.1)(vite@8.2.2(@types/node@24.10.1)(esbuild@0.28.2)(yaml@2.9.0))
