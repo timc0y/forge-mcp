@@ -105,23 +105,21 @@ Permissions and scope are deterministic. A failed private-repository lookup must
 
 Use the existing TypeScript package's parse-only API for JS/TS/JSX/TSX. Do not execute source, load repository plugins or create a compiler program that resolves arbitrary filesystem/network inputs inside Forge. Extract declarations, signatures, literal imports/exports, source spans and syntactic call sites. Cross-file binding and reachability claims require the matching project/tool evidence described below.
 
-Use the upstream Astro compiler for Astro structure, and the upstream Shopify Liquid parser for Liquid structure, after their request-runtime and source-span tests pass. These are format owners, not interchangeable fallbacks. Astro's current README explicitly warns about imperfect position data; reconstruct and verify every exposed source span against the original bytes. Until validated, do not offer range-based Astro edits. Report unsupported coverage instead of treating Astro as TypeScript.
+Use format-owner parsers only after Worker/runtime and exact-span admission. Shopify Liquid is admitted through `@shopify/liquid-html-parser` with source-range tests. Astro remains deliberately unsupported for structural selection: the current official compiler's browser path requires asynchronous Wasm initialization and its synchronous path loads `astro.wasm` relative to `import.meta.url`; that bundling contract has not yet been proven inside the deployed Worker. Exact Astro source reads remain available. No delimiter or TypeScript approximation substitutes for an Astro AST.
 
-Use a Markdown AST for headings, paragraphs, links and task lists. Use a maintained JSONC parser for configurations that actually allow comments, and a maintained YAML parser in safe data-only mode. Strict JSON remains strict where its format requires it. Reject duplicate/ambiguous configuration keys and bound YAML aliases. Do not label valid JSONC invalid merely because a filename ends in `.json`.
+Markdown sections use Lezer's CommonMark parser so fenced content and Setext/ATX headings are syntax facts, not heading regexes. JSON/JSONC structure uses the already-bundled TypeScript parser with filename-specific comment policy and duplicate-key rejection; strict JSON stays strict. YAML uses the maintained `yaml` package in data-only parse/validation mode. Unsupported formats remain exact-source only.
 
-Selected implementation candidates:
+Admitted V2 implementations:
 
-| Library | Responsibility | Admission test |
+| Library | Responsibility | Evidence in this change |
 | --- | --- | --- |
-| `typescript` (already in repo) | JS/TS parse-only outline and spans | Worker bundle, parse-time and Unicode-span tests |
-| `@astrojs/compiler` | Astro AST and embedded-source boundaries | Precompiled Wasm/runtime compatibility and exact span round trips |
-| `@shopify/liquid-html-parser` | Liquid/HTML AST | Supported syntax and exact span tests against theme fixtures |
-| `mdast-util-from-markdown` | Markdown section/obligation selection | Exact section offsets, fenced code and nested-heading tests |
-| `jsonc-parser` | JSONC AST/locations and surgical data edits | Error reporting, duplicate-key policy and comment-preserving edits |
-| `yaml` | YAML data/config parsing | Safe schemas, bounded aliases and original range preservation |
-| `fast-check` (development only) | Property-based regression generation | Material coverage of selector, parser and edit invariants |
+| `typescript@5.9.3` | JS/TS/JSX/TSX declarations/imports/spans and JSON/JSONC syntax | Unicode/span, duplicate-key, selector and Worker bundle gates |
+| `@shopify/liquid-html-parser@2.10.0` | Strict Liquid/HTML AST and exact source spans | Nested Liquid/HTML source-range regression plus frozen lock metadata |
+| `@lezer/markdown@1.6.3` | CommonMark heading/section structure | Fenced-heading, Setext, nested and duplicate-heading selector tests |
+| `yaml@2.9.0` | YAML syntax/data validation | Valid/invalid document regressions; no runtime schema inference |
+| Astro compiler | **Not admitted yet** | Must prove official Wasm/runtime initialization and exact span round trips in the Worker before structural Astro selectors are exposed |
 
-Pin approved versions, review licenses and lockfiles, and record bundle costs before installation. This table selects responsibilities; it does not claim the packages are already installed or compatible. Do not add Babel, Oxc, SWC and Tree-sitter as alternative JS parsers. Tree-sitter is reserved for a later, explicitly supported additional language, not runtime rescue when another parser fails. No general LSP server inside Forge.
+Versions are pinned and Worker CI now performs a frozen install, typecheck/tests, a real Wrangler dry-run bundle, a 48 MiB internal bundle budget and startup profiling. Do not add Babel, Oxc, SWC, Tree-sitter, mdast or another JSON parser as alternative implementations for formats already owned above. No general LSP server runs inside Forge.
 
 ### Useful first-class selections
 
