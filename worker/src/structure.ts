@@ -93,14 +93,16 @@ function markdownStructure(_path: string, text: string): Structure {
     siblings.set(siblingKey, occurrence);
     const segment = occurrence === 1 ? heading.title : `${heading.title}[${occurrence}]`;
     const name = [parent, segment].filter(Boolean).join('/');
-    let end = text.length;
-    for (let next = index + 1; next < headings.length; next++) if (headings[next]!.level <= heading.level) { end = headings[next]!.start; break; }
+    // A selection is the heading's direct section, not its entire subtree.
+    // Hierarchy is carried by the stable name, so selecting an H1 never
+    // silently duplicates every nested H2/H3 block into the context packet.
+    const end = headings[index + 1]?.start ?? text.length;
     const range = sourceRange(text, heading.start, end);
     blocks.push({ name, kind: 'MarkdownSection', range, signature: `${'#'.repeat(heading.level)} ${heading.title}`, text: text.slice(range.start, range.end) });
     stack.push({ level: heading.level, segment });
   }
   if (!blocks.length && text.trim()) blocks.push({ name: '(document)', kind: 'MarkdownDocument', range: sourceRange(text, 0, text.length), signature: '(document)', text });
-  return { supported: true, parser: '@lezer/markdown/1.6.3:sections-v1', blocks, imports: [], diagnostics: [], limitation: 'CommonMark syntax tree with heading-delimited section ranges; inline Markdown is parsed but only section structure is returned.' };
+  return { supported: true, parser: '@lezer/markdown/1.6.3:sections-v1', blocks, imports: [], diagnostics: [], limitation: 'CommonMark syntax tree with non-overlapping direct heading sections and hierarchical selector names; inline Markdown is parsed but only section structure is returned.' };
 }
 function yamlStructure(text: string): Structure {
   assertParseSize(text);

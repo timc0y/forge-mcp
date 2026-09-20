@@ -25,6 +25,7 @@ describe('compact structural representations', () => {
     const shape = inspectStructure('AGENTS.md', source);
     expect(shape.parser).toContain('@lezer/markdown/1.6.3');
     expect(shape.blocks.map((block) => block.name)).toEqual(['Root', 'Root/Safety', 'Root/Operations']);
+    expect(selectSymbol('AGENTS.md', source, 'Root').text).not.toContain('important');
     expect(selectSymbol('AGENTS.md', source, 'Root/Safety').text).toContain('important');
   });
 
