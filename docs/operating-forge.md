@@ -51,6 +51,17 @@ callback URL of `<FORGE_PUBLIC_ORIGIN>/oauth/callback`, and **expiring user
 tokens enabled** — without that GitHub issues no refresh token and the stored
 credential used for new-repo creation and explicit public GitHub search can never rotate.
 
+It additionally needs **Administration: read and write** if `forge_edit` is to
+create a repository that does not exist yet. `POST /user/repos` answers 403
+("Resource not accessible by integration") without it, and no amount of retrying
+changes that. Adding the permission changes the App's consent, so every user
+must reconnect afterwards. Without the permission, Forge still commits to any
+repository that already exists; only creation is refused, with a message naming
+this permission and the one-click alternative at `https://github.com/new`.
+
+Verified 2026-09-20: the production App holds contents, pull_requests, workflows
+and metadata only, so creation is currently refused.
+
 ## Analytics
 
 PostHog, on one rule: **analytics may never change what a caller sees.** Every

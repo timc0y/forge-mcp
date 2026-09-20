@@ -105,6 +105,22 @@ export async function createRepo(
     });
   }
 
+  // 403 here is GitHub's "Resource not accessible by integration": creating a
+  // repository on a user account needs the App's Administration permission,
+  // which Forge's App does not hold. The remedy is not a retry, so say what it
+  // actually is rather than reporting a status code.
+  if (response.status === 403) {
+    throw new ForgeError({
+      code: 'FORGE_AUTH_REQUIRED',
+      message:
+        `Forge is not allowed to create "${name}" on your account. Creating a repository needs the Forge ` +
+        'GitHub App to hold the Administration permission, and it does not. Either create the repository ' +
+        `once at https://github.com/new and write to it again — Forge can commit to it straight away — or ` +
+        'grant the App Administration (read and write) and reconnect so it can create repositories for you.',
+      details: { repo: name }
+    });
+  }
+
   if (response.status !== 201) {
     throw new ForgeError({
       code: 'FORGE_UPSTREAM_UNAVAILABLE',

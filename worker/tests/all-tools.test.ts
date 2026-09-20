@@ -505,6 +505,24 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.content[0].text).toContain("unknown rather than empty");
   });
 
+  it("explains the missing permission when the App cannot create a repository", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/brand-new-2": { status: 404, json: null },
+      "POST /user/repos": { status: 403, json: { message: "Resource not accessible by integration" } }
+    });
+    const editTool = (server as any)._registeredTools["forge_edit"];
+
+    const res = await editTool.handler({
+      repo: "testuser/brand-new-2",
+      message: "docs: first write",
+      files: [{ path: "README.md", content: "# Brand new 2\n" }]
+    });
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("Administration permission");
+    expect(res.content[0].text).toContain("https://github.com/new");
+  });
+
   it("uses a repository that a concurrent first write created first", async () => {
     let exists = false;
     const { server, calls } = createMockToolContext({
