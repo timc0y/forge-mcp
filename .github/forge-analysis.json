@@ -1,4 +1,11 @@
 {
   "workflowPath": ".github/workflows/forge-analysis.yml",
-  "configurationHash": "c7e327f805fe049793fa5e7cc1c7d8cc8fa4e048dd0748c73ddd9e93db6ea59e"
+  "configurationPaths": [
+    ".github/forge-analysis.json",
+    ".github/workflows/forge-analysis.yml",
+    "worker/scripts/forge-analysis.mjs",
+    "worker/tsconfig.json",
+    "worker/package.json",
+    "worker/pnpm-lock.yaml"
+  ]
 }

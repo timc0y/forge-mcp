@@ -29,7 +29,6 @@ jobs:
           FORGE_ANALYSIS_RUN_ID: ${{ github.run_id }}
           FORGE_ANALYSIS_RUN_ATTEMPT: ${{ github.run_attempt }}
           FORGE_ANALYSIS_WORKFLOW_PATH: .github/workflows/forge-analysis.yml
-          FORGE_ANALYSIS_CONFIGURATION_HASH: c7e327f805fe049793fa5e7cc1c7d8cc8fa4e048dd0748c73ddd9e93db6ea59e
         run: node scripts/forge-analysis.mjs forge-analysis.json
       - uses: actions/upload-artifact@v4
         with:

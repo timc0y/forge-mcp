@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import ts from 'typescript';
 
 const output = process.argv[2] ?? 'forge-analysis.json';
@@ -7,10 +8,19 @@ const sourceSha = process.env.FORGE_ANALYSIS_SOURCE_SHA;
 const runId = Number(process.env.FORGE_ANALYSIS_RUN_ID);
 const runAttempt = Number(process.env.FORGE_ANALYSIS_RUN_ATTEMPT);
 const workflowPath = process.env.FORGE_ANALYSIS_WORKFLOW_PATH;
-const configurationHash = process.env.FORGE_ANALYSIS_CONFIGURATION_HASH;
-if (!sourceSha || !/^[0-9a-f]{40}$/.test(sourceSha) || !Number.isSafeInteger(runId) || runId < 1 || !Number.isSafeInteger(runAttempt) || runAttempt < 1 || !workflowPath || !configurationHash) {
+if (!sourceSha || !/^[0-9a-f]{40}$/.test(sourceSha) || !Number.isSafeInteger(runId) || runId < 1 || !Number.isSafeInteger(runAttempt) || runAttempt < 1 || !workflowPath) {
   throw new Error('Forge analysis provenance environment is incomplete.');
 }
+const repositoryRoot = path.resolve(process.cwd(), '..');
+const analysisConfig = JSON.parse(fs.readFileSync(path.join(repositoryRoot, '.github/forge-analysis.json'), 'utf8'));
+if (!Array.isArray(analysisConfig.configurationPaths) || !analysisConfig.configurationPaths.length || analysisConfig.workflowPath !== workflowPath) throw new Error('Forge analysis configuration is invalid.');
+const configurationHasher = createHash('sha256');
+for (const relative of [...new Set(analysisConfig.configurationPaths)].sort()) {
+  if (typeof relative !== 'string' || relative.startsWith('/') || relative.split('/').some((part) => !part || part === '.' || part === '..')) throw new Error('Unsafe analysis configuration path.');
+  configurationHasher.update(relative); configurationHasher.update('\0');
+  configurationHasher.update(fs.readFileSync(path.join(repositoryRoot, relative))); configurationHasher.update('\0');
+}
+const configurationHash = configurationHasher.digest('hex');
 
 const configPath = path.resolve('tsconfig.json');
 const loaded = ts.readConfigFile(configPath, ts.sys.readFile);
