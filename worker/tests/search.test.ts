@@ -221,11 +221,21 @@ describe('concept search never reports a search that did not run as absence', ()
 describe('GitHub search query shaping', () => {
   it('adds obvious language and code-noise filters', () => {
     const query = buildSearchQuery('oauth callback in typescript', 'code');
-    expect(query).toContain('oauth callback in typescript');
+    // GitHub ANDs terms, so 'in' and the word that became the language filter
+    // are dropped rather than allowed to make the query match nothing.
+    expect(query.split(' language:')[0]).toBe('oauth callback');
     expect(query).toContain('language:typescript');
     expect(query).toContain('NOT path:test/');
     expect(query).toContain('NOT path:vendor/');
     expect(query).toContain('NOT path:node_modules/');
+  });
+
+  it('leaves a quoted phrase exactly as written', () => {
+    expect(buildSearchQuery('"not implemented"', 'code')).toContain('"not implemented"');
+  });
+
+  it('keeps a word that changes meaning', () => {
+    expect(buildSearchQuery('not deprecated helpers', 'code')).toContain('not deprecated helpers');
   });
 
   it('adds repository noise filters', () => {

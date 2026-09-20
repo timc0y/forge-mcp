@@ -48,6 +48,33 @@ function unavailableSearch(kind: 'repository' | 'code', status: number): SearchR
  * Deterministic query shaping. Native GitHub qualifiers always win; Forge only
  * adds obvious language and noise filters.
  */
+/**
+ * GitHub code search ANDs its terms, so a word that is not in the code kills
+ * the whole query. Articles, prepositions and other filler are therefore not
+ * neutral — they are the reason a natural phrase finds nothing while its two
+ * distinctive words would have. A quoted phrase is left exactly as written.
+ */
+const SEARCH_FILLER = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'can', 'could', 'do', 'does',
+  'for', 'from', 'how', 'i', 'in', 'into', 'is', 'it', 'my', 'of', 'on', 'or',
+  'our', 'should', 'that', 'the', 'their', 'this', 'to', 'was', 'we', 'what',
+  'when', 'where', 'which', 'who', 'why', 'with', 'without', 'would', 'you', 'your'
+]);
+
+const LANGUAGE_WORDS = new Set([
+  'typescript', 'ts', 'javascript', 'js', 'python', 'py', 'rust', 'rs', 'golang', 'go'
+]);
+
+/** The terms of a natural query, minus filler and the word that became a language filter. */
+function searchTerms(query: string): string {
+  if (query.includes('"')) return query;
+  const kept = query.split(/\s+/).filter((word) => {
+    const clean = word.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return clean.length > 0 && !SEARCH_FILLER.has(clean) && !LANGUAGE_WORDS.has(clean);
+  });
+  return kept.length > 0 ? kept.join(' ') : query;
+}
+
 export function buildSearchQuery(rawQuery: string, mode: 'code' | 'repos' = 'code'): string {
   const query = rawQuery.trim();
   if (!query) return mode === 'repos' ? 'stars:>50 fork:false archived:false' : 'path:src/';
@@ -61,7 +88,7 @@ export function buildSearchQuery(rawQuery: string, mode: 'code' | 'repos' = 'cod
   else if (/\b(rust|rs)\b/i.test(query)) language = 'language:rust';
   else if (/\b(golang|go)\b/i.test(query)) language = 'language:go';
 
-  const parts = [query, language].filter(Boolean);
+  const parts = [searchTerms(query), language].filter(Boolean);
   if (mode === 'repos') {
     parts.push('fork:false', 'archived:false');
   } else {

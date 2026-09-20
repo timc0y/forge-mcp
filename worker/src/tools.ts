@@ -417,7 +417,9 @@ async function searchGlobal(ctx: ToolContext, query: string): Promise<ToolOutcom
   return {
     summary: ranked.length
       ? `Found ${total} public GitHub code match${total === 1 ? '' : 'es'} for "${trimmed}".`
-      : `No public GitHub code matched "${trimmed}".`,
+      // The public code index is a separate service that is known to miss code
+      // it holds. A zero from it is what it returned, not proof of absence.
+      : `GitHub's public code index returned no matches for "${trimmed}". It can miss code that exists; try fewer, more specific words, or search a specific repository instead.`,
     structured: {
       files: ranked.map((item) => ({
         path: item.path ? `${item.repo}:${item.path}` : item.title,
