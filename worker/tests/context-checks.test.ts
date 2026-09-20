@@ -26,6 +26,17 @@ describe('exact-revision execution evidence', () => {
       expect(failedChecks(await readChecks(gh, { owner: 'o', name: 'r' }, sha)).map((entry) => entry.conclusion)).toContain(state);
     }
   });
+  it('keeps complete check-state coverage when only annotations are truncated', async () => {
+    const annotated = { ...check('success'), output: { annotations_count: 25 } };
+    const gh: GitHubRequest = async (path) => {
+      if (path.includes('/annotations')) return reply([{ path: 'src/a.ts', start_line: 1, annotation_level: 'failure', message: 'detail' }]);
+      return reply(path.includes('check-runs') ? { total_count: 1, check_runs: [annotated] } : { sha, total_count: 0, statuses: [] });
+    };
+    const report = await readChecks(gh, { owner: 'o', name: 'r' }, sha);
+    expect(report.coverage).toBe('complete');
+    expect(report.limitations.join(' ')).toContain('Annotations for check');
+    expect(requiredChecksSatisfied(report, ['verify'])).toBe(true);
+  });
   it('rejects a check on another SHA including a synthetic merge', async () => {
     const gh: GitHubRequest = async (path) => reply(path.includes('check-runs') ? { check_runs: [check('success', 'b'.repeat(40))] } : { sha, statuses: [] });
     const report = await readChecks(gh, { owner: 'o', name: 'r' }, sha);
