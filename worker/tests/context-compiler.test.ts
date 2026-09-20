@@ -56,11 +56,13 @@ describe('task-shaped context compilation', () => {
     files['src/api.ts'] = 'import { submitInvoiceDelivery } from "./core";\nexport const post = (id: string) => submitInvoiceDelivery(id);\n';
     files['tests/core.test.ts'] = 'import { submitInvoiceDelivery } from "../src/core";\nit("rejects duplicate invoice delivery", () => expect(() => submitInvoiceDelivery("")).toThrow());\n';
     const archive = tar(files);
-    const tree = Object.entries(files).map(([path, content]) => ({ path, type: 'blob', size: encoder.encode(content).length }));
+    // Simulate GitHub's recursive-tree cap: the relevant implementation and test
+    // exist in the immutable archive but are absent from the tree response.
+    const tree = Object.entries(files).filter(([path]) => path.startsWith('src/filler-')).slice(0, 40).map(([path, content]) => ({ path, type: 'blob', size: encoder.encode(content).length }));
     const gh: GitHubRequest = async (path, init) => {
       if (path === '/repos/o/r') return { status: 200, json: { default_branch: 'main', private: false }, text: '', headers: new Headers() };
       if (path === '/repos/o/r/commits/main') return { status: 200, json: { sha: SHA }, text: '', headers: new Headers() };
-      if (path.startsWith('/repos/o/r/git/trees/')) return { status: 200, json: { truncated: false, tree }, text: '', headers: new Headers() };
+      if (path.startsWith('/repos/o/r/git/trees/')) return { status: 200, json: { truncated: true, tree }, text: '', headers: new Headers() };
       if (path.startsWith('/repos/o/r/tarball/')) return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([archive]).stream() };
       const match = /^\/repos\/o\/r\/contents\/(.+)\?ref=/.exec(path);
       if (match) {
@@ -103,6 +105,7 @@ describe('task-shaped context compilation', () => {
     expect(packet.evidence.some((item: any) => item.selector === 'src/core.ts::symbol:submitInvoiceDelivery')).toBe(true);
     expect(packet.evidence.some((item: any) => item.path === 'tests/core.test.ts')).toBe(true);
     expect(packet.relationships.some((edge: any) => edge.from === 'tests/core.test.ts' && edge.to === 'src/core.ts')).toBe(true);
+    expect(packet.limitations.join(' ')).toContain('GitHub tree coverage is incomplete');
     expect(packet.limitations.join(' ')).toContain('structurally summarized candidates');
   });
 });

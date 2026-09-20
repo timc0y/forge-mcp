@@ -86,7 +86,11 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
   const known = new Set(tree.entries.filter((entry) => entry.type === 'file').map((entry) => entry.path));
   const words = tokens(goal);
   const sketches: Sketch[] = [];
-  const archive = await scanArchive(snapshot.gh, snapshot.repo, snapshot.identity.sha, snapshot.budget, (path) => known.has(path) && !EXCLUDED.test(path), (path, text) => {
+  const archive = await scanArchive(snapshot.gh, snapshot.repo, snapshot.identity.sha, snapshot.budget, (path) => !EXCLUDED.test(path), (path, text) => {
+    // The committed archive is authoritative when GitHub's recursive tree is truncated.
+    // Add every readable archive member before building structure so imports and
+    // instruction discovery are not limited by an incomplete tree response.
+    known.add(path);
     let symbols: string[] = [];
     let imports: string[] = [];
     let supported = false;
