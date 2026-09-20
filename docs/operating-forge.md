@@ -121,7 +121,8 @@ schema.
 ```sh
 pnpm check                  # types and invariants
 pnpm --dir worker dev
-pnpm deploy                 # re-runs worker types/tests, then Wrangler deploys
+pnpm run deploy             # re-runs worker types/tests, then Wrangler deploys
+                            # (bare `pnpm deploy` is pnpm's own command, not this script)
 worker/scripts/smoke.sh     # post-deploy HTTP/OAuth/version smoke
 ```
 
@@ -152,3 +153,11 @@ pnpm exec wrangler d1 migrations apply forge-v1-production --remote
 - **Historical deployments may still have executor-era containers.** The current
   worker creates none, but check `wrangler containers list` before assuming an
   old deployment was fully removed.
+- **A reinstall replaces the installation id.** Uninstalling and installing the
+  App again gives GitHub a new installation id, and nothing tells Forge. The
+  stored id then names an installation that no longer exists, so the first token
+  mint is a 404 and the session used to register no tools at all. Session startup
+  now re-derives the current installation from the App's own list and remembers
+  it. If tools still do not appear after a reinstall, check
+  `SELECT installation_id FROM users` against `GET /app/installations` for the
+  App.

@@ -15,7 +15,7 @@
 import { SignJWT, importPKCS8 } from 'jose';
 import type { GitHubRequest, RepoRef } from './contracts';
 import type { Env } from './env';
-import { ForgeError } from './errors';
+import { ForgeError, isForgeError } from './errors';
 
 const API_BASE = 'https://api.github.com';
 const API_VERSION = '2026-03-10';
@@ -175,6 +175,80 @@ export async function githubRequest(
     if (first.status !== 401) return first;
     return requester(await tokenProvider(env, installationId, true))(path, init);
   };
+}
+
+/**
+ * The installation this App currently has for an account.
+ *
+ * A stored installation id is a snapshot. GitHub never tells Forge when someone
+ * uninstalls and installs the App again, so the row can name an installation
+ * that no longer exists, every token mint is a 404, and the session has nothing
+ * to work with. The App's own installation list is the one answer that is
+ * current by construction.
+ *
+ * Returns null when the App is not installed for that login, or when GitHub
+ * cannot be asked — the caller treats both as "no installation to heal from".
+ */
+export async function installationForLogin(env: Env, login: string): Promise<string | null> {
+  let response: Response;
+  try {
+    const jwt = await appJwt(env);
+    response = await fetch(`${API_BASE}/app/installations?per_page=100`, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        'user-agent': USER_AGENT,
+        'x-github-api-version': API_VERSION,
+        authorization: `Bearer ${jwt}`
+      }
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+
+  const installations = parseJson(await response.text());
+  if (!Array.isArray(installations)) return null;
+
+  const wanted = login.toLowerCase();
+  // ponytail: first 100 installations only; paginate if this App ever exceeds
+  // that, which an open preview installing per person could eventually reach.
+  const match = installations.find(
+    (entry) =>
+      isRecord(entry) &&
+      isRecord(entry.account) &&
+      typeof entry.account.login === 'string' &&
+      entry.account.login.toLowerCase() === wanted
+  );
+  return isRecord(match) && typeof match.id === 'number' ? String(match.id) : null;
+}
+
+/**
+ * Repository access for one account, repairing a stored installation id that
+ * GitHub has since replaced.
+ *
+ * A missing installation surfaces as FORGE_AUTH_REQUIRED on the first mint. Any
+ * other failure — a 5xx, a network error — is a real upstream problem and is
+ * thrown as-is rather than mistaken for a reinstall. When the account does have
+ * a current installation, it is remembered and the mint is retried once.
+ */
+export async function installationRequestFor(
+  env: Env,
+  storedInstallationId: string,
+  login: string,
+  remember: (installationId: string) => Promise<void>,
+  tokenProvider?: InstallationTokenProvider
+): Promise<GitHubRequest> {
+  try {
+    return await githubRequest(env, storedInstallationId, tokenProvider);
+  } catch (error) {
+    if (!isForgeError(error) || error.code !== 'FORGE_AUTH_REQUIRED') throw error;
+
+    const live = await installationForLogin(env, login);
+    if (!live || live === storedInstallationId) throw error;
+
+    await remember(live);
+    return githubRequest(env, live, tokenProvider);
+  }
 }
 
 /**

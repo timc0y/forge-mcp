@@ -507,8 +507,13 @@ async function discoverInstallation(env: Env, userToken: string): Promise<string
   if (response.status !== 200) return null;
   const body = response.json as { installations?: Array<{ id?: number; app_id?: number }> } | null;
   const appId = Number.parseInt(env.GITHUB_APP_ID, 10);
-  const match = body?.installations?.find((installation) => installation.app_id === appId);
-  return typeof match?.id === 'number' ? String(match.id) : null;
+  // Newest wins. Installing the App again produces a newer installation id and
+  // GitHub can still list the one it replaced, whose token mint is a 404; the
+  // older id must not be written back over the live one.
+  const matches = (body?.installations ?? [])
+    .filter((installation) => installation.app_id === appId && typeof installation.id === 'number')
+    .sort((left, right) => (right.id ?? 0) - (left.id ?? 0));
+  return matches[0] ? String(matches[0].id) : null;
 }
 
 // ---------------------------------------------------------------------------

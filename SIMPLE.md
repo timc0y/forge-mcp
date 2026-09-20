@@ -87,6 +87,11 @@ Forge hosts nothing.
   the work. Do not add path classification, intent-based branch names, change
   IDs or session state. Reconsider when users need two independent proposals
   open in one repository.
+- A GitHub installation id is a snapshot GitHub replaces without telling Forge:
+  reinstalling the App mints a new id and every token request against the old one
+  is a 404. Session startup re-derives the live installation for the account from
+  the App's own list, remembers it, and only then registers tools. A stale id must
+  never empty the catalog.
 - Fast semantic decisions need no server-side index. Vector databases, periodic
   repo indexing, and background embeddings workers add infrastructure that drifts
   out of sync with GitHub. TypeSafe Jev evaluates trees, paths, diffs, repository

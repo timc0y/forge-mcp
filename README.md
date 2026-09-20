@@ -62,7 +62,7 @@ records what is documented and what still needs testing.
 ```sh
 pnpm check                # types and invariants
 pnpm dev
-pnpm deploy               # checks again before publishing
+pnpm run deploy           # checks again before publishing (bare `pnpm deploy` is pnpm's own command)
 worker/scripts/smoke.sh   # post-deploy HTTP/OAuth/version smoke
 ```
 

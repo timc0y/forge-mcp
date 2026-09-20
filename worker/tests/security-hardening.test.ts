@@ -1,10 +1,11 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../src/env';
 import { capture } from '../src/capture';
 import { approvalPage } from '../src/approve';
 import { toForgeError } from '../src/errors';
 import { registerClient, token } from '../src/oauth';
-import { githubRequest } from '../src/github';
+import { githubRequest, installationForLogin, installationRequestFor } from '../src/github';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -54,6 +55,58 @@ describe('GitHub installation token lifetime', () => {
 
     expect(response.status).toBe(404);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('stale installation repair', () => {
+  function appKeyEnv(): Env {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    return {
+      GITHUB_APP_ID: '4658328',
+      GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+    } as unknown as Env;
+  }
+
+  it('re-derives a replaced installation and remembers it', async () => {
+    const env = appKeyEnv();
+    const remembered: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/app/installations?per_page=100')) {
+        return Response.json([{ id: 163206430, account: { login: 'timc0y' } }]);
+      }
+      if (url.endsWith('/app/installations/155142960/access_tokens')) {
+        return new Response('{"message":"Not Found"}', { status: 404 });
+      }
+      if (url.endsWith('/app/installations/163206430/access_tokens')) {
+        return Response.json({ token: 'ghs_live', expires_at: '2099-01-01T00:00:00Z' });
+      }
+      return new Response('{}', { status: 200 });
+    }));
+
+    const request = await installationRequestFor(env, '155142960', 'timc0y', async (installationId) => {
+      remembered.push(installationId);
+    });
+
+    expect(remembered).toEqual(['163206430']);
+    expect(typeof request).toBe('function');
+  });
+
+  it('finds no installation when the App is not installed for that login', async () => {
+    const env = appKeyEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json([{ id: 1, account: { login: 'someone-else' } }])));
+    expect(await installationForLogin(env, 'timc0y')).toBeNull();
+  });
+
+  it('leaves a genuine upstream failure alone instead of treating it as a reinstall', async () => {
+    const env = appKeyEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"message":"oops"}', { status: 500 })));
+
+    await expect(
+      installationRequestFor(env, '155142960', 'timc0y', async () => {
+        throw new Error('must never remember on a non-auth failure');
+      })
+    ).rejects.toMatchObject({ code: 'FORGE_UPSTREAM_UNAVAILABLE' });
   });
 });
 

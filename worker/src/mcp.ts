@@ -12,7 +12,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { McpAgent } from 'agents/mcp';
 import type { Identity } from './contracts';
 import type { Env } from './env';
-import { githubRequest } from './github';
+import { installationRequestFor } from './github';
 import { userRequestFor } from './user-token';
 import { ForgeError } from './errors';
 import { registerTools } from './tools';
@@ -54,10 +54,23 @@ export class ForgeMcpSession extends McpAgent<Env, never, { identity: Identity }
       env: this.env,
       identity,
       track,
-      // Bound to the user's installation. githubRequest reuses a fresh token,
+      // Bound to the user's installation. The request reuses a fresh token,
       // refreshes before expiry and retries one 401, so long-lived MCP sessions
-      // do not inherit a one-hour credential lifetime.
-      gh: await githubRequest(this.env, identity.installationId),
+      // do not inherit a one-hour credential lifetime. A stored installation id
+      // that GitHub has replaced is repaired and remembered here rather than
+      // thrown, which is what keeps a reinstall from emptying the tool catalog.
+      gh: await installationRequestFor(
+        this.env,
+        identity.installationId,
+        identity.githubLogin,
+        async (installationId) => {
+          await this.env.METADATA.prepare(
+            'UPDATE users SET installation_id = ?2, updated_at = ?3 WHERE id = ?1'
+          )
+            .bind(identity.userId, installationId, new Date().toISOString())
+            .run();
+        }
+      ),
       // Resolved on use, not on connect. Only new-repository creation and
       // explicit public GitHub search need to run as the human, so the stored
       // credential is decrypted/refreshed only when one of those paths is used.
