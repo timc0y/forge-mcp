@@ -45,6 +45,22 @@ describe('GitHub installation token lifetime', () => {
     expect(tokenProvider).toHaveBeenCalledWith({} as Env, 'installation-1', true);
   });
 
+  it('never lets a GitHub read be answered from a cache', async () => {
+    const inits: RequestInit[] = [];
+    const tokenProvider = vi.fn(async () => 'token');
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      inits.push(init ?? {});
+      return new Response('{"ok":true}', { status: 200 });
+    }));
+
+    const request = await githubRequest({} as Env, 'installation-1', tokenProvider);
+    await request('/repos/o/r/git/ref/heads/forge');
+
+    // GitHub serves reads with s-maxage=60 and a Workers subrequest will use
+    // it, so a ref read can return a value from before a delete/recreate.
+    expect(inits[0]?.cache).toBe('no-store');
+  });
+
   it('does not retry ordinary GitHub refusals', async () => {
     const tokenProvider = vi.fn(async () => 'token');
     const fetchMock = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 }));
