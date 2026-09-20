@@ -28,7 +28,7 @@ if (loaded.error) throw new Error(ts.flattenDiagnosticMessageText(loaded.error.m
 const parsed = ts.parseJsonConfigFileContent(loaded.config, ts.sys, process.cwd(), undefined, configPath);
 const program = ts.createProgram({ rootNames: parsed.fileNames, options: parsed.options });
 const diagnostics = ts.getPreEmitDiagnostics(program);
-const findings = diagnostics.flatMap((diagnostic) => {
+const allFindings = diagnostics.flatMap((diagnostic) => {
   if (!diagnostic.file || diagnostic.start === undefined) return [];
   const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
   const relative = path.relative(process.cwd(), diagnostic.file.fileName).replaceAll(path.sep, '/');
@@ -40,6 +40,7 @@ const findings = diagnostics.flatMap((diagnostic) => {
     tool: 'typescript'
   }];
 });
+const findings = allFindings.slice(0, 1000);
 
 const result = {
   schemaVersion: 1,
@@ -52,6 +53,9 @@ const result = {
   tools: [{ name: 'typescript', version: ts.version }],
   findings,
   relationships: [],
-  limitations: ['TypeScript diagnostics only. This artifact does not claim runtime, test, unused-code or cross-language coverage.']
+  limitations: [
+    'TypeScript diagnostics only. This artifact does not claim runtime, test, unused-code or cross-language coverage.',
+    ...(allFindings.length > findings.length ? [`TypeScript diagnostics were bounded to the first ${findings.length} of ${allFindings.length} findings.`] : [])
+  ]
 };
 fs.writeFileSync(output, JSON.stringify(result));
