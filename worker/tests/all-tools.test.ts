@@ -457,6 +457,54 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.commit.sha).toBe("newcommitsha99999");
   });
 
+  it("reports history as unknown, not zero, when GitHub will not list commits", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/commits": { status: 500, json: { message: "boom" } }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "history" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("unknown, not zero");
+  });
+
+  it("reports churn as unknown, not zero, when history is unreadable", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/commits": { status: 500, json: { message: "boom" } }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "churn" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("unknown, not zero");
+  });
+
+  it("reports languages as unknown, not zero, when GitHub will not list them", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/languages": { status: 403, json: { message: "forbidden" } }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "languages" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("unknown, not zero");
+  });
+
+  it("reports branch policy as unknown, not empty, when the lookup is refused", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/rules/branches/main": { status: 403, json: { message: "forbidden" } }
+    });
+    const readTool = (server as any)._registeredTools["forge_read"];
+
+    const res = await readTool.handler({ repo: "test-repo", query: "policy" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("unknown rather than empty");
+  });
+
   it("uses a repository that a concurrent first write created first", async () => {
     let exists = false;
     const { server, calls } = createMockToolContext({

@@ -533,7 +533,9 @@ async function readTreeLevel(
       ...changesLimits(changes)
     ];
     return {
-      summary: `${formatRepo(repo)} ${base}: ${history.commits.length} recent commit${history.commits.length === 1 ? '' : 's'}${where}.${changesSentence(names)}`,
+      summary: history.unavailable
+        ? `${history.unavailable} Recent commits for ${formatRepo(repo)} ${base}${where} are unknown, not zero.${changesSentence(names)}`
+        : `${formatRepo(repo)} ${base}: ${history.commits.length} recent commit${history.commits.length === 1 ? '' : 's'}${where}.${changesSentence(names)}`,
       structured: withLimits(
         {
           tree: history.commits.map((commit) => {
@@ -565,7 +567,9 @@ async function readTreeLevel(
       ...changesLimits(changes)
     ];
     return {
-      summary: `${formatRepo(repo)} ${base}: hottest tracked paths across ${churn.commitsSampled} recent commit${churn.commitsSampled === 1 ? '' : 's'}.${changesSentence(names)}`,
+      summary: churn.unavailable
+        ? `${churn.unavailable} Recent churn for ${formatRepo(repo)} ${base} is unknown, not zero.${changesSentence(names)}`
+        : `${formatRepo(repo)} ${base}: hottest tracked paths across ${churn.commitsSampled} recent commit${churn.commitsSampled === 1 ? '' : 's'}.${changesSentence(names)}`,
       structured: withLimits(
         {
           tree: churn.entries.slice(0, 20).map((entry) =>
@@ -594,7 +598,9 @@ async function readTreeLevel(
       ...changesLimits(changes)
     ];
     return {
-      summary: `${formatRepo(repo)}: ${languages.languages.length} language${languages.languages.length === 1 ? '' : 's'} reported by GitHub, ${humanBytes(total)} classified.${changesSentence(names)}`,
+      summary: languages.unavailable
+        ? `${languages.unavailable} Languages for ${formatRepo(repo)} are unknown, not zero.${changesSentence(names)}`
+        : `${formatRepo(repo)}: ${languages.languages.length} language${languages.languages.length === 1 ? '' : 's'} reported by GitHub, ${humanBytes(total)} classified.${changesSentence(names)}`,
       structured: withLimits(
         {
           tree: languages.languages.slice(0, 20).map((language) => {
