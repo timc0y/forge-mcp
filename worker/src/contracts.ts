@@ -150,6 +150,8 @@ export interface ApprovalRequest {
   headSha: string;
   /** The default-branch destination shown to the human when approval was minted. */
   baseBranch?: string;
+  /** Exact destination revision the frozen comparison was made against. */
+  baseSha?: string;
   impactSummary?: string;
 }
 

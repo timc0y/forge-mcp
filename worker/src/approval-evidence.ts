@@ -20,7 +20,7 @@ export async function prepareApproval(ctx: ToolContext, act: 'merge' | 'discard'
   const evidence = act === 'merge'
     ? `Merge ${comparison.aheadBy} commits (${size}) into ${snapshot.branch}. Source ${snapshot.identity.sha}; base ${baseSha}.`
     : `Discard ${size}. ${comparison.aheadBy ? `${comparison.aheadBy} unmerged commits would stop being reachable from this branch.` : 'No unmerged commits would be lost.'}`;
-  const prepared = await requestApproval(ctx.env, ctx.identity, { act, repo, change, comparison, headSha: snapshot.identity.sha, baseBranch: snapshot.branch });
+  const prepared = await requestApproval(ctx.env, ctx.identity, { act, repo, change, comparison, headSha: snapshot.identity.sha, baseBranch: snapshot.branch, baseSha });
   ctx.track('approval_requested', { act, files: comparison.files.length, commits: comparison.aheadBy, truncated: comparison.truncated });
   const limits = [...(report?.limitations ?? []), ...(comparison.truncated ? ['Comparison coverage is incomplete.'] : [])];
   let names: string[] | undefined;

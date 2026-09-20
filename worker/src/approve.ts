@@ -72,6 +72,8 @@ interface Evidence {
   comparison: Comparison;
   /** Destination shown when the approval was created. Optional for legacy rows. */
   baseBranch?: string;
+  /** Exact base commit used for the frozen comparison. Optional for legacy rows. */
+  baseSha?: string;
   impactSummary?: string;
 }
 
@@ -129,6 +131,7 @@ export async function requestApproval(
     change: req.change,
     comparison: req.comparison,
     baseBranch: req.baseBranch,
+    baseSha: req.baseSha,
     ...(req.impactSummary ? { impactSummary: req.impactSummary } : {})
   };
 
@@ -333,6 +336,27 @@ async function performMerge(
         ok: false,
         detail: `Refused: this pull request now targets ${currentBase}, not ${evidence.baseBranch} as shown when you approved it. Nothing was merged. Ask for a fresh approval.`
       };
+    }
+    if (evidence.baseSha) {
+      const base = await request(`/repos/${row.repo_owner}/${row.repo_name}/git/ref/heads/${encodePath(evidence.baseBranch)}`);
+      if (base.status !== 200) {
+        return {
+          decision: 'approve',
+          ok: false,
+          detail: `Could not re-check the reviewed base revision (status ${base.status}). Nothing was merged. Ask for a fresh approval.`
+        };
+      }
+      const currentBaseSha = (base.json as { object?: { sha?: unknown } } | null)?.object?.sha;
+      if (typeof currentBaseSha !== 'string') {
+        return { decision: 'approve', ok: false, detail: 'GitHub returned the base branch without a readable commit. Nothing was merged. Ask for a fresh approval.' };
+      }
+      if (currentBaseSha !== evidence.baseSha) {
+        return {
+          decision: 'approve',
+          ok: false,
+          detail: `Refused: ${evidence.baseBranch} moved from ${short(evidence.baseSha)} to ${short(currentBaseSha)} after this approval was created. The reviewed diff is stale, so nothing was merged. Ask for a fresh approval.`
+        };
+      }
     }
     if (pullRequest?.draft === true) {
       if (typeof pullRequest.node_id !== 'string') {
@@ -762,7 +786,7 @@ function details(row: ApprovalRow, evidence: Evidence): string {
     ['Change', change.name],
     ['Branch', row.branch],
     ['Head', short(row.head_sha)],
-    ['Base', evidence.baseBranch ?? 'default branch at request time'],
+    ['Base', evidence.baseBranch ? `${evidence.baseBranch}${evidence.baseSha ? ` @ ${short(evidence.baseSha)}` : ''}` : 'default branch at request time'],
     ['Size', comparisonTotals(evidence.comparison)],
     ['Commits', `${evidence.comparison.aheadBy} ahead, ${evidence.comparison.behindBy} behind`]
   ];
