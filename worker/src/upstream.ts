@@ -1,3 +1,4 @@
+import type { GitHubRequest } from './contracts';
 import type { Snapshot as SnapshotType } from './snapshot';
 import { Snapshot } from './snapshot';
 import { parseRepo } from './github';
@@ -16,7 +17,7 @@ const UPSTREAM: Readonly<Record<string, string>> = Object.freeze({
   zod: 'colinhacks/zod',
   '@modelcontextprotocol/sdk': 'modelcontextprotocol/typescript-sdk'
 });
-export async function upstreamEvidence(snapshot: SnapshotType, publicPackage: string): Promise<Record<string, unknown>> {
+export async function upstreamEvidence(snapshot: SnapshotType, publicGh: GitHubRequest, publicPackage: string): Promise<Record<string, unknown>> {
   const repoName = UPSTREAM[publicPackage];
   if (!repoName) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'This public package has no reviewed upstream mapping. No private package name or identifier was sent to public discovery.' });
   const tree = await snapshot.tree();
@@ -45,7 +46,7 @@ export async function upstreamEvidence(snapshot: SnapshotType, publicPackage: st
     }
   });
   // Only a reviewed public repository identity crosses this join. No private query, path or source is sent.
-  const upstream = await Snapshot.open(snapshot.gh, parseRepo(repoName), undefined, snapshot.budget);
+  const upstream = await Snapshot.open(publicGh, parseRepo(repoName), undefined, snapshot.budget);
   if (upstream.identity.private) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'The reviewed upstream is no longer public. The join was refused.' });
   const upstreamTree = await upstream.tree();
   const references = upstreamTree.entries.filter((entry) => entry.type === 'file' && /(?:^|\/)(?:README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt)?|package\.json)$/.test(entry.path)).map((entry) => entry.path).slice(0, 12);

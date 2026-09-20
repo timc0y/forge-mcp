@@ -70,7 +70,7 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
   if (/^(?:checks|check results|test results)$/i.test(query)) return finish('GitHub execution evidence for the selected commit.', { checks: await readChecks(snapshot.gh, repo, snapshot.identity.sha) });
   if (/^(?:analysis|analysis artifact)$/i.test(query)) return finish('Repository-produced analysis for the exact workflow run.', { analysis: await readAnalysisArtifact(snapshot) });
   const upstream = /^upstream\s+(.+)$/i.exec(query);
-  if (upstream) return finish('Public upstream references joined with private source locations.', { upstream: await upstreamEvidence(snapshot, upstream[1]!) });
+  if (upstream) return finish('Public upstream references joined with private source locations.', { upstream: await upstreamEvidence(snapshot, ctx.ghUser, upstream[1]!) });
   const symbols = /^(?:outline|symbols)\s+(.+)$/i.exec(query);
   if (symbols) {
     const path = requirePath(symbols[1]!);
