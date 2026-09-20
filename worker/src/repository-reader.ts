@@ -30,6 +30,7 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
   const urlAddress = input.repo.startsWith('https://') ? await githubAddress(ctx.gh, input.repo) : null;
   if (urlAddress && (input.at || input.change || (urlAddress.paths && input.paths))) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'The GitHub URL already selects a source. Do not supply conflicting revision, change or path selectors.' });
   const repo = urlAddress?.repo ?? await resolveRepositoryName(ctx.gh, input.repo, ctx.identity.githubLogin);
+  if (input.change && input.at && input.at !== 'proposal') throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'change and an explicit commit SHA are different source selectors. Use one source identity per read.' });
   if (input.at && input.at !== 'proposal') requireSha(input.at);
   const change = input.change || input.at === 'proposal' ? await findChange(ctx.gh, repo, input.change ?? 'forge') : null;
   const ref = urlAddress?.at ?? (input.at === 'proposal' ? change!.branch : input.at) ?? change?.branch;

@@ -4,7 +4,7 @@ import type { Env } from './env';
 export type ForgeEvent =
   | 'tool_called' | 'user_signed_up' | 'user_connected' | 'change_committed'
   | 'approval_requested' | 'approval_resolved' | 'capture_taken' | 'quota_refused'
-  | 'context_compiled' | 'semantic_evaluated';
+  | 'context_compiled';
 export interface Analytics {
   (event: ForgeEvent, properties?: Record<string, string | number | boolean>): void;
 }
