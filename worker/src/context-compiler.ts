@@ -196,8 +196,17 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
     if (choice(follow, 'gap').choice !== 'none' && target !== 'none') {
       if (!neighbors.has(target)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Expansion target was outside the authorized source graph.' });
       const expanded = await snapshot.file(target);
-      included.push({ ...makeEvidence(snapshot, target, expanded.text, 'EXPANSION'), mandatory: true });
-      limitations.push('One same-snapshot dependency/caller expansion was read in full; no unbounded follow-up loop ran.');
+      const shape = utf8Bytes(expanded.text) <= CONTEXT_LIMITS.parseBytes ? inspectStructure(target, expanded.text) : null;
+      const block = shape?.supported && !shape.diagnostics.length
+        ? [...shape.blocks].sort((a, b) => relevance(`${b.name}\n${b.text}`, words) - relevance(`${a.name}\n${a.text}`, words) || (a.range.end - a.range.start) - (b.range.end - b.range.start))[0]
+        : undefined;
+      if (block) {
+        included.push({ ...makeEvidence(snapshot, target, expanded.text, 'EXPANSION'), text: block.text, range: block.range, selector: `${target}::symbol:${block.name}`, provenance: shape!.parser, mandatory: true });
+        limitations.push('One same-snapshot dependency/caller expansion was narrowed to one complete parser-backed block; no unbounded follow-up loop ran.');
+      } else {
+        included.push({ ...makeEvidence(snapshot, target, expanded.text, 'EXPANSION'), mandatory: true });
+        limitations.push('One same-snapshot dependency/caller expansion required exact full source because no admitted structural block was available; no unbounded follow-up loop ran.');
+      }
     }
   }
   const packed = packEvidence(included, CONTEXT_LIMITS.outputBytes - 4096);
