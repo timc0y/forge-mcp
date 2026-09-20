@@ -1,9 +1,8 @@
 name: Forge analysis
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches: [main, forge]
 
 permissions:
   contents: read
