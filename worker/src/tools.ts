@@ -630,7 +630,9 @@ async function readTreeLevel(
       ...changesLimits(changes)
     ];
     return {
-      summary: `${formatRepo(repo)} ${base}: ${policy.rules.length} active branch rule${policy.rules.length === 1 ? '' : 's'}${checks.length ? `; required checks: ${checks.join(', ')}` : ''}.${changesSentence(names)}`,
+      summary: policy.unavailable
+        ? `Branch policy for ${formatRepo(repo)} ${base} could not be read, so it is unknown rather than empty. ${policy.unavailable}${changesSentence(names)}`
+        : `${formatRepo(repo)} ${base}: ${policy.rules.length} active branch rule${policy.rules.length === 1 ? '' : 's'}${checks.length ? `; required checks: ${checks.join(', ')}` : ''}.${changesSentence(names)}`,
       structured: withLimits(
         {
           tree: lines,
@@ -1606,8 +1608,11 @@ async function readChangeLevel(
       ...(review.snapshotWarning ? [`GitHub dependency snapshot warning: ${review.snapshotWarning}`] : []),
       ...(review.truncated ? ['Showing dependency changes from the first 300 results only.'] : [])
     ];
+    const dependencyChanges = changeNames(await openChanges(ctx.gh, repo));
     return {
-      summary: `"${change.name}" dependency review: ${added} added, ${removed} removed${vulnerabilities.length ? `; ${vulnerabilities.length} vulnerability finding${vulnerabilities.length === 1 ? '' : 's'}` : ''}.${changesSentence(changeNames(await openChanges(ctx.gh, repo)))}`,
+      summary: review.unavailable
+        ? `Dependency review for "${change.name}" could not be completed, so this is not a report of zero changes. ${review.unavailable}${changesSentence(dependencyChanges)}`
+        : `"${change.name}" dependency review: ${added} added, ${removed} removed${vulnerabilities.length ? `; ${vulnerabilities.length} vulnerability finding${vulnerabilities.length === 1 ? '' : 's'}` : ''}.${changesSentence(dependencyChanges)}`,
       structured: withLimits(
         {
           diff: {
@@ -1623,7 +1628,7 @@ async function readChangeLevel(
               `${dependency.license ? ` · ${dependency.license}` : ''}` +
               `${dependency.vulnerabilities.length ? ` · ${dependency.vulnerabilities.map((vulnerability) => `${vulnerability.severity} ${vulnerability.advisoryId}: ${vulnerability.summary}`).join('; ')}` : ''}`
           })),
-          changes: changeNames(await openChanges(ctx.gh, repo)),
+          changes: dependencyChanges,
           next: vulnerabilities.length > 0
             ? 'Inspect the vulnerable dependency changes before merging.'
             : 'Use stats or a semantic query to inspect the rest of the change.'
@@ -1642,7 +1647,9 @@ async function readChangeLevel(
       ...(policy.truncated ? ['GitHub returned more than 100 active branch rules; this list is incomplete.'] : [])
     ];
     return {
-      summary: `"${change.name}" targets ${base}, which has ${policy.rules.length} active branch rule${policy.rules.length === 1 ? '' : 's'}${checks.length ? ` and requires: ${checks.join(', ')}` : ''}.${changesSentence(changeNames(await openChanges(ctx.gh, repo)))}`,
+      summary: policy.unavailable
+        ? `Branch policy for ${base}, which this change targets, could not be read, so it is unknown rather than empty. ${policy.unavailable}${changesSentence(changeNames(await openChanges(ctx.gh, repo)))}`
+        : `"${change.name}" targets ${base}, which has ${policy.rules.length} active branch rule${policy.rules.length === 1 ? '' : 's'}${checks.length ? ` and requires: ${checks.join(', ')}` : ''}.${changesSentence(changeNames(await openChanges(ctx.gh, repo)))}`,
       structured: withLimits(
         {
           diff: {
