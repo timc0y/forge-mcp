@@ -7,6 +7,7 @@ import { defaultBranch, assertNotNearExisting, createRepo } from './repo';
 import { compare, listRepos } from './read';
 import { CHANGE_BRANCH, openChanges, ensureDraftPullRequest } from './change';
 import { commitFiles } from './write';
+import { readCodeownersErrors } from './github-intelligence';
 
 export interface EditInput { repo: string; change?: string; intent?: string; message: string; files: FileWrite[]; private?: boolean }
 async function target(ctx: ToolContext, repo: RepoRef, description: string, privateRepo: boolean): Promise<{ base: string; created: boolean }> {
@@ -43,6 +44,15 @@ export async function author(ctx: ToolContext, input: EditInput): Promise<ToolOu
   if (commit.outcome === 'committed') ctx.track('change_committed', { files: commit.paths.length, created_repo: destination.created });
   // Every failure after this point is decoration on a write that is already durable.
   const limits = [...(commit.notes ?? [])];
+  if (commit.outcome === 'committed' && input.files.some((file) => ['CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS'].includes(file.path))) {
+    const ownership = await readCodeownersErrors(ctx.gh, repo, commit.sha);
+    if (ownership.unavailable) limits.push(ownership.unavailable);
+    for (const error of ownership.errors.slice(0, 10)) {
+      const where = error.line ? ` line ${error.line}${error.column ? `:${error.column}` : ''}` : '';
+      limits.push(`CODEOWNERS notice${where}: ${error.message}${error.suggestion ? ` ${error.suggestion}` : ''}`);
+    }
+    if (ownership.errors.length > 10) limits.push(`GitHub reported ${ownership.errors.length} CODEOWNERS errors; showing the first 10.`);
+  }
   let number: number | null = null;
   if (proposed) {
     try { number = await ensureDraftPullRequest(ctx.gh, repo, branch, input.change!, destination.base); }
