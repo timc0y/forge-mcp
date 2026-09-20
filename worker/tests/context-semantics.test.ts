@@ -43,6 +43,14 @@ describe('strict JEV contract', () => {
       expect(request).not.toHaveBeenCalled();
     } finally { request.mockRestore(); }
   });
+  it('refuses recognized high-severity secrets before JEV egress', async () => {
+    const request = vi.spyOn(globalThis, 'fetch');
+    const synthetic = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP';
+    try {
+      await expect(evaluate({ TYPESAFE_API_KEY: 'key', TYPESAFE_BASE_URL: 'https://api.cloudflare.com/client/v4/accounts/' + 'a'.repeat(32) + '/ai/run' } as Env, { source: 'const key = "' + synthetic + '";' }, questions, 'test', new RequestBudget())).rejects.toThrow(/high-severity secret/);
+      expect(request).not.toHaveBeenCalled();
+    } finally { request.mockRestore(); }
+  });
   it('keeps repository data separate from semantic instructions in the wire request', async () => {
     const original = globalThis.fetch;
     let body: any;

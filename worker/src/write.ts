@@ -20,6 +20,7 @@ import { formatRepo } from './contracts';
 import type { CommitReceipt, FileWrite, GitHubRequest, RepoRef } from './contracts';
 import { CHANGE_BRANCH } from './change';
 import { ForgeError } from './errors';
+import { containsHighSeveritySecret } from './content-safety';
 import { parseSelector, selectSource } from './selectors';
 import { validateSource } from './structure';
 import { requireSha } from './evidence';
@@ -32,15 +33,6 @@ import { requireSha } from './evidence';
  */
 const MAX_FILES = 10;
 const MAX_CONTENT_BYTES = 200 * 1024;
-
-const HIGH_SEVERITY_SECRET_PATTERNS = [
-  /-----BEGIN [A-Z]+ PRIVATE KEY-----/,
-  /\bghp_[A-Za-z0-9_]{36,}\b/,
-  /\bgithub_pat_[A-Za-z0-9_]{82}\b/,
-  /\bsk_live_[0-9a-zA-Z]{24,}\b/,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*\b/
-];
 
 /** Three attempts is enough for a branch that is moving; more just hides that. */
 const MAX_ATTEMPTS = 3;
@@ -367,7 +359,7 @@ function assertNoHighSeveritySecrets(files: ResolvedFile[]): void {
   for (const file of files) {
     const text = file.content;
     if (!text) continue;
-    if (!HIGH_SEVERITY_SECRET_PATTERNS.some((pattern) => pattern.test(text))) continue;
+    if (!containsHighSeveritySecret(text)) continue;
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',
       message: `Commit rejected: ${file.path} contains what appears to be an unredacted secret token or private key.`,
