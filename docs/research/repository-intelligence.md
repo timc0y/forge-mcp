@@ -1,5 +1,11 @@
 # Repository intelligence
 
+> Implementation authority, 20 September 2026: [the context engine plan](../plans/context-engine.md)
+> now owns the next engineering work. The sections below record earlier research and
+> current implementation, including behavior selected for removal. They do not
+> authorize provider federation, fallback chains, silent JEV substitution or a
+> competing backlog. Retain the evidence; follow the selected plan for changes.
+
 ## 2026-09-19 — Jev Sift reference
 
 Reviewed `kbhuw/jev-sift` as an architecture reference. The useful pattern is a small,

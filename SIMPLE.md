@@ -13,11 +13,12 @@
   research, code, content — and look at rendered pages with real eyes.
 - Durable plane: GitHub. Forge holds no copy of repository state. Outside GitHub,
   Forge stores only identity/OAuth state, approval evidence and capture quota counts.
-- Cost: GitHub work is metered per user by GitHub itself and costs Forge nothing.
-  Page capture is the only user action that spends Forge's money, so it is the
-  only action with a number on it. What keeps an open preview affordable is a
-  daily ceiling per person, not a gate at the door: a limit degrades for one
-  person on one day, where a gate refuses everyone who does not know somebody.
+- Cost: GitHub API limits are scoped through the user's authorization; Forge's
+  hosting, capture and existing JEV inference still consume resources. Do not
+  describe a semantic request as cost-free merely because GitHub charges no
+  per-read API fee. Capture retains its existing per-person daily ceiling;
+  the selected context plan adds measured semantic request budgets, not another
+  paid intelligence service.
 - Compatibility: only the tools currently advertised to ChatGPT. The published
   catalog is a frozen snapshot until re-scanned, so a tool/schema/instruction
   change is a release event, not an edit. Bump the MCP server version and
@@ -48,6 +49,24 @@ Work that needs review uses the repository's one fixed `forge` branch.
 
 Forge does not run, build, test, serve, or deploy code. T3 Code owns that.
 Forge hosts nothing.
+
+## Selected next engineering contract — 20 September 2026
+
+[The context engine plan](./docs/plans/context-engine.md) owns the next engineering
+work. Retain GitHub, existing Cloudflare infrastructure and the explicitly requested
+JEV integration through one configured route. Add no hosted indexing, documentation,
+security, reranking or alternative inference service. Use bundled open-source parsers,
+request-local evidence and exact-commit GitHub checks instead.
+
+Each operation must have one authoritative implementation. No source/model/parser
+fallback chains or silent substitution of heuristics for failed semantics. A required
+stage failure is explicit; durable commits and valid partial evidence remain accurately
+reported. Preserve protocol handling, authorization, conflict checks and human approval.
+
+This is selected work, not implemented behavior. The fallback/degradation precedents
+below describe the current implementation; the plan supersedes them as the future
+contract. Replace and delete each old path with its tested successor. Keep five tools,
+no repository executor and no persistent code index.
 
 ## Ordinary paths
 

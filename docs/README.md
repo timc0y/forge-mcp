@@ -1,5 +1,10 @@
 # Documentation
 
+**[Context engine plan](./plans/context-engine.md)** — the selected next engineering
+change: GitHub source, parser-backed structure, JEV evidence selection and compact
+context packets, without fallback chains or additional hosted context services.
+This is a plan, not a description of implemented capabilities.
+
 **[Using Forge](./using-forge.md)** — the product vocabulary, current client
 availability, setup, examples, tools and limits.
 

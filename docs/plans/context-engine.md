@@ -255,7 +255,7 @@ Reference evidence can include upstream tests, type declarations, documentation,
 
 The only model egress is the selected JEV route. Relevant private snippets already sent for JEV decisions remain external processing and must be disclosed; minimize/redact them and apply an explicit deployment policy. Do not repeat the earlier inaccurate implication that private source never leaves Forge while hosted JEV evaluates it. No secrets/customer messages in inference or telemetry.
 
-New metrics use existing Cloudflare observations and CI artifacts, not another analytics service. Do not expand the optional PostHog integration. Reconcile its removal with the existing analytics owner if the no-extra-services policy is applied to all Forge telemetry, rather than silently changing unrelated live reporting.
+New metrics use existing Cloudflare observations and CI artifacts, not another analytics service. The target architecture removes optional PostHog emission: first preserve the required shape-only operational measurements in Cloudflare, then delete the external emitter and unused configuration in the same accepted replacement. Do not run dual telemetry paths. This planning commit changes no deployed reporting.
 
 ## 11. Better editing without custom chat scripts
 
@@ -275,7 +275,7 @@ Each stage is a focused reviewable change. Deploy each accepted replacement with
 
 | Stage | Deliverable | Remove | Completion gate |
 | --- | --- | --- | --- |
-| 0 | Baseline replay tasks, budgets and typed evidence contract | Ambiguous signature/quality wording | No new capability claims; current failures reproduced |
+| 0 | Baseline replay tasks, budgets, typed evidence contract and Cloudflare-only operational metrics | Ambiguous signature/quality wording and optional external analytics emission | No new capability claims; current failures reproduced; essential metrics retained |
 | 1 | SHA-consistent reads, GitHub URL addressing, authoritative selectors and single-path scoped search | Moving-ref reads within one operation; private-to-public widening; index-to-archive cascade; duplicate payloads | Concurrent-head, no-match, oversized and private-scope tests |
 | 2 | One JEV wire contract with model/usage evidence and typed failure | Provider sniffing, alternative endpoint, guessed probabilities, swallowed semantic failure | Sanitized real contract fixture plus missing/malformed/timeout tests |
 | 3 | Source outlines, exact bodies, Markdown/JSON record selection and bounded graph | Fixed-window semantic slicing for supported formats | Worker-native parser/bundle/span tests, including Astro/Liquid |
