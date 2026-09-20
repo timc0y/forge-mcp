@@ -37,8 +37,8 @@ export function formatRepo(repo: RepoRef): string {
  */
 export type GitHubRequest = (
   path: string,
-  init?: { method?: string; body?: unknown; accept?: string; raw?: boolean; maxBytes?: number }
-) => Promise<{ status: number; json: unknown; text: string; bytes?: ArrayBuffer; headers: Headers }>;
+  init?: { method?: string; body?: unknown; accept?: string; raw?: boolean; stream?: boolean; maxBytes?: number; signal?: AbortSignal }
+) => Promise<{ status: number; json: unknown; text: string; bytes?: ArrayBuffer; stream?: ReadableStream<Uint8Array>; headers: Headers }>;
 
 // ---------------------------------------------------------------------------
 // Changes

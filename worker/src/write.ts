@@ -407,78 +407,6 @@ async function resolveContents(
  * caller never meant, and there is no receipt that would show it.
  */
 
-/**
- * Normalizes text for indentation- and whitespace-insensitive matching.
- */
-function normalizeLine(line: string): string {
-  return line.trim().replace(/\s+/g, ' ');
-}
-
-/**
- * Attempts to find a target snippet within a source string even if:
- * 1. Line endings differ (\r\n vs \n).
- * 2. Trailing spaces exist on lines.
- * 3. Indentation drifted across lines.
- *
- * Returns the exact substring in `source` to replace, or null if no unique match exists.
- */
-export function findResilientMatch(source: string, targetOld: string): { original: string; index: number } | null {
-  // 1. Direct match
-  const directIndex = source.indexOf(targetOld);
-  if (directIndex !== -1) {
-    const second = source.indexOf(targetOld, directIndex + targetOld.length);
-    if (second === -1) {
-      return { original: targetOld, index: directIndex };
-    }
-    return null;
-  }
-
-  // 2. Normalize CRLF
-  const normalizedTarget = targetOld.replace(/\r\n/g, '\n');
-  const normalizedSource = source.replace(/\r\n/g, '\n');
-  const crlfIndex = normalizedSource.indexOf(normalizedTarget);
-  if (crlfIndex !== -1) {
-    const second = normalizedSource.indexOf(normalizedTarget, crlfIndex + normalizedTarget.length);
-    if (second === -1) {
-      return { original: source.slice(crlfIndex, crlfIndex + normalizedTarget.length), index: crlfIndex };
-    }
-  }
-
-  // 3. Line-by-line normalized match (handles indentation and trailing whitespace drift)
-  const sourceLines = normalizedSource.split('\n');
-  const targetLines = normalizedTarget.split('\n');
-
-  if (targetLines.length === 0) return null;
-
-  const normalizedTargetLines = targetLines.map(normalizeLine);
-  const matches: Array<{ startLine: number; endLine: number }> = [];
-
-  for (let i = 0; i <= sourceLines.length - targetLines.length; i += 1) {
-    let matched = true;
-    for (let j = 0; j < targetLines.length; j += 1) {
-      if (normalizeLine(sourceLines[i + j]!) !== normalizedTargetLines[j]!) {
-        matched = false;
-        break;
-      }
-    }
-    if (matched) {
-      matches.push({ startLine: i, endLine: i + targetLines.length });
-    }
-  }
-
-  if (matches.length === 1) {
-    const match = matches[0]!;
-    const matchedLines = sourceLines.slice(match.startLine, match.endLine);
-    const originalText = matchedLines.join('\n');
-    const index = normalizedSource.indexOf(originalText);
-    if (index !== -1) {
-      return { original: originalText, index };
-    }
-  }
-
-  return null;
-}
-
 function applyReplacements(
   path: string,
   current: string,
@@ -512,13 +440,6 @@ function applyReplacements(
         });
       }
       next = `${next.slice(0, first)}${replacement.new}${next.slice(first + replacement.old.length)}`;
-      continue;
-    }
-
-    // Exact match failed: attempt resilient match ignoring whitespace/indentation drift
-    const resilient = findResilientMatch(next, replacement.old);
-    if (resilient) {
-      next = `${next.slice(0, resilient.index)}${replacement.new}${next.slice(resilient.index + resilient.original.length)}`;
       continue;
     }
 
