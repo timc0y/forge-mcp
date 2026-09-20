@@ -1,4 +1,5 @@
 import ts from 'typescript';
+import { NodeTypes, toLiquidHtmlAST, type LiquidHtmlNode } from '@shopify/liquid-html-parser';
 import { parseDocument } from 'yaml';
 import { ForgeError } from './errors';
 import { CONTEXT_LIMITS, sourceRange, utf8Bytes, type SourceRange } from './evidence';
@@ -17,6 +18,7 @@ export const STRUCTURE_VERSION = `typescript/${ts.version}:parse-only-v1`;
 const scriptExtensions = /\.(?:[cm]?[jt]sx?)$/i;
 const markdownExtensions = /\.(?:md|mdx)$/i;
 const yamlExtensions = /\.ya?ml$/i;
+const liquidExtensions = /\.liquid$/i;
 export const isJsonSource = (path: string): boolean => /\.jsonc?$/i.test(path);
 export const allowsJsonComments = (path: string): boolean => /\.jsonc$/i.test(path) || /(?:^|\/)(?:tsconfig(?:\.[^.]+)?|jsconfig|knip)\.json$/i.test(path) || /(?:^|\/)\.vscode\/(?:settings|extensions|launch|tasks)\.json$/i.test(path);
 
@@ -99,9 +101,42 @@ function yamlStructure(text: string): Structure {
   const document = parseDocument(text, { prettyErrors: false, uniqueKeys: true });
   return { supported: true, parser: 'yaml/2.9.0:document-v1', blocks: [], imports: [], diagnostics: document.errors.map((error) => ({ line: 1, message: error.message })), limitation: 'YAML validation only; no runtime schema is inferred.' };
 }
+function liquidLabel(node: LiquidHtmlNode, sibling: number): string {
+  const value = node as LiquidHtmlNode & { name?: unknown };
+  const name = typeof value.name === 'string' ? value.name : '';
+  return `${node.type}${name ? `:${name}` : ''}[${sibling}]`;
+}
+function liquidStructure(text: string): Structure {
+  assertParseSize(text);
+  let root: LiquidHtmlNode;
+  try { root = toLiquidHtmlAST(text); }
+  catch (error) { return { supported: true, parser: '@shopify/liquid-html-parser/2.10.0:strict-v1', blocks: [], imports: [], diagnostics: [{ line: 1, message: error instanceof Error ? error.message : 'Liquid parse failed.' }] }; }
+  const blocks: SourceBlock[] = [];
+  const interesting = new Set<string>([
+    NodeTypes.LiquidTag, NodeTypes.LiquidRawTag, NodeTypes.HtmlElement,
+    NodeTypes.HtmlSelfClosingElement, NodeTypes.HtmlVoidElement, NodeTypes.YAMLFrontmatter
+  ]);
+  const walk = (node: LiquidHtmlNode, parent = '', sibling = 0): void => {
+    const anyNode = node as LiquidHtmlNode & { position?: { start: number; end: number }; children?: LiquidHtmlNode[] };
+    const label = liquidLabel(node, sibling);
+    const name = parent ? `${parent}/${label}` : label;
+    const position = anyNode.position;
+    if (interesting.has(node.type) && position && Number.isSafeInteger(position.start) && Number.isSafeInteger(position.end) && position.start >= 0 && position.end >= position.start && position.end <= text.length) {
+      const range = sourceRange(text, position.start, position.end);
+      const body = text.slice(range.start, range.end);
+      const opening = body.split(/\r?\n/, 1)[0]!.slice(0, 300);
+      blocks.push({ name, kind: node.type, range, signature: opening, text: body });
+    }
+    const children = Array.isArray(anyNode.children) ? anyNode.children : [];
+    children.forEach((child, index) => walk(child, name, index));
+  };
+  walk(root);
+  return { supported: true, parser: '@shopify/liquid-html-parser/2.10.0:strict-v1', blocks, imports: [], diagnostics: [], limitation: 'Liquid/HTML syntax tree only; Shopify render/section relationships are not resolved as module imports.' };
+}
 export function inspectStructure(path: string, text: string): Structure {
   if (markdownExtensions.test(path)) return markdownStructure(path, text);
   if (yamlExtensions.test(path)) return yamlStructure(text);
+  if (liquidExtensions.test(path)) return liquidStructure(text);
   if (!scriptExtensions.test(path) && !isJsonSource(path)) {
     return { supported: false, parser: 'none', blocks: [], imports: [], diagnostics: [], limitation: 'No admitted parser for this format; no regex structure was substituted.' };
   }

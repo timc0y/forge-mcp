@@ -31,4 +31,14 @@ describe('compact structural representations', () => {
     expect(validateSource('config.yml', 'enabled: true\n').supported).toBe(true);
     expect(() => validateSource('config.yml', 'a: [\n')).toThrow(/parser errors/);
   });
+
+  it('uses Shopify\'s strict parser for Liquid and exposes exact nested blocks', () => {
+    const source = '{% if product %}<div>{{ product.title }}</div>{% endif %}';
+    const shape = inspectStructure('section.liquid', source);
+    expect(shape.supported).toBe(true);
+    expect(shape.parser).toContain('@shopify/liquid-html-parser/2.10.0');
+    const tag = shape.blocks.find((block) => block.name.includes('LiquidTag:if'))!;
+    expect(tag.text).toBe(source);
+    expect(shape.blocks.some((block) => block.name.includes('HtmlElement'))).toBe(true);
+  });
 });
