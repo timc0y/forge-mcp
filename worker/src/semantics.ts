@@ -82,6 +82,7 @@ export function semanticEndpoint(configured: string | undefined): string {
   return url.href;
 }
 export function redactSemanticText(text: string): string {
+  assertNoHighSeveritySecretText(text, 'JEV semantic processing');
   return text
     .replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/g, '[REDACTED PRIVATE KEY]')
     .replace(/\b(?:ghp_|github_pat_|sk_live_|xox[baprs]-)[A-Za-z0-9_-]{12,}\b/g, '[REDACTED TOKEN]')

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { evaluate, parseEvaluation, semanticEndpoint, validateQuestions, type Question } from '../src/semantics';
+import { evaluate, parseEvaluation, redactSemanticText, semanticEndpoint, validateQuestions, type Question } from '../src/semantics';
 import { RequestBudget } from '../src/evidence';
 import type { Env } from '../src/env';
 
@@ -43,10 +43,11 @@ describe('strict JEV contract', () => {
       expect(request).not.toHaveBeenCalled();
     } finally { request.mockRestore(); }
   });
-  it('refuses recognized high-severity secrets before JEV egress', async () => {
+  it('refuses recognized high-severity secrets before redaction or JEV egress', async () => {
     const request = vi.spyOn(globalThis, 'fetch');
     const synthetic = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP';
     try {
+      expect(() => redactSemanticText('const key = "' + synthetic + '";')).toThrow(/high-severity secret/);
       await expect(evaluate({ TYPESAFE_API_KEY: 'key', TYPESAFE_BASE_URL: 'https://api.cloudflare.com/client/v4/accounts/' + 'a'.repeat(32) + '/ai/run' } as Env, { source: 'const key = "' + synthetic + '";' }, questions, 'test', new RequestBudget())).rejects.toThrow(/high-severity secret/);
       expect(request).not.toHaveBeenCalled();
     } finally { request.mockRestore(); }
