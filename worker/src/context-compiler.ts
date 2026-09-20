@@ -89,7 +89,7 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
       relationships.push({ kind: 'literal-import', from: path, to: target ?? imported.specifier, witness: `${path}:${imported.range.startLine}-${imported.range.endLine}`, resolved: target !== null });
     }
     if (!structure.supported) limitations.push(`${path}: exact source only; structured analysis is unsupported for this format.`);
-    const blocks = structure.blocks.length ? structure.blocks.filter((block) => !structure.blocks.some((other) => other !== block && other.range.start <= block.range.start && other.range.end >= block.range.end)).sort((a, b) => relevance(b.text, words) - relevance(a.text, words)).slice(0, 6) : [];
+    const blocks = structure.blocks.length ? [...structure.blocks].sort((a, b) => relevance(`${b.name}\n${b.text}`, words) - relevance(`${a.name}\n${a.text}`, words) || (a.range.end - a.range.start) - (b.range.end - b.range.start)).slice(0, 8) : [];
     if (!blocks.length) evidence.push(makeEvidence(snapshot, path, text, `E${evidence.length}`));
     for (const block of blocks) evidence.push({ ...makeEvidence(snapshot, path, text, `E${evidence.length}`), text: block.text, range: block.range, selector: `${path}::symbol:${block.name}`, provenance: STRUCTURE_VERSION });
   }

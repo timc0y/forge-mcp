@@ -1,4 +1,5 @@
 import ts from 'typescript';
+import { parseDocument } from 'yaml';
 import { ForgeError } from './errors';
 import { CONTEXT_LIMITS, sourceRange, utf8Bytes, type SourceRange } from './evidence';
 
@@ -14,6 +15,8 @@ export interface Structure {
 }
 export const STRUCTURE_VERSION = `typescript/${ts.version}:parse-only-v1`;
 const scriptExtensions = /\.(?:[cm]?[jt]sx?)$/i;
+const markdownExtensions = /\.(?:md|mdx)$/i;
+const yamlExtensions = /\.ya?ml$/i;
 export const isJsonSource = (path: string): boolean => /\.jsonc?$/i.test(path);
 export const allowsJsonComments = (path: string): boolean => /\.jsonc$/i.test(path) || /(?:^|\/)(?:tsconfig(?:\.[^.]+)?|jsconfig|knip)\.json$/i.test(path) || /(?:^|\/)\.vscode\/(?:settings|extensions|launch|tasks)\.json$/i.test(path);
 
@@ -40,7 +43,65 @@ function assertParseSize(text: string): void {
     throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: 'This source exceeds the parse-only size limit. Exact reads remain a separate capability.' });
   }
 }
+function compactSignature(node: ts.Node, file: ts.SourceFile, text: string, start: number, end: number): string {
+  if (ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node) || ts.isEnumDeclaration(node)) {
+    const open = text.indexOf('{', start);
+    return open >= start && open < end ? `${text.slice(start, open).trimEnd()} { … }` : text.slice(start, end).trim();
+  }
+  if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
+    return node.body ? text.slice(start, node.body.getStart(file)).trimEnd() : text.slice(start, end).trim();
+  }
+  if (ts.isVariableStatement(node) && node.declarationList.declarations.length === 1) {
+    const initializer = node.declarationList.declarations[0]!.initializer;
+    if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
+      return `${text.slice(start, initializer.body.getStart(file)).trimEnd()} …;`;
+    }
+  }
+  return text.slice(start, end).trim();
+}
+function markdownStructure(path: string, text: string): Structure {
+  assertParseSize(text);
+  const lines = text.split(/(?<=\n)/);
+  const offsets: number[] = [];
+  let offset = 0;
+  for (const line of lines) { offsets.push(offset); offset += line.length; }
+  const headings: Array<{ level: number; title: string; start: number }> = [];
+  let fence: string | null = null;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!.replace(/\r?\n$/, '');
+    const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]![0]!;
+      if (fence === marker) fence = null; else if (fence === null) fence = marker;
+      continue;
+    }
+    if (fence) continue;
+    const heading = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
+    if (heading) headings.push({ level: heading[1]!.length, title: heading[2]!.trim(), start: offsets[index]! });
+  }
+  const blocks: SourceBlock[] = [];
+  const stack: Array<{ level: number; title: string }> = [];
+  for (let index = 0; index < headings.length; index++) {
+    const heading = headings[index]!;
+    while (stack.length && stack.at(-1)!.level >= heading.level) stack.pop();
+    const name = [...stack.map((entry) => entry.title), heading.title].join('/');
+    let end = text.length;
+    for (let next = index + 1; next < headings.length; next++) { if (headings[next]!.level <= heading.level) { end = headings[next]!.start; break; } }
+    const range = sourceRange(text, heading.start, end);
+    blocks.push({ name, kind: 'MarkdownSection', range, signature: `${'#'.repeat(heading.level)} ${heading.title}`, text: text.slice(range.start, range.end) });
+    stack.push({ level: heading.level, title: heading.title });
+  }
+  if (!blocks.length && text.trim()) blocks.push({ name: '(document)', kind: 'MarkdownDocument', range: sourceRange(text, 0, text.length), signature: '(document)', text });
+  return { supported: true, parser: 'forge-markdown-sections/v1', blocks, imports: [], diagnostics: [], limitation: 'Heading-delimited Markdown sections only; inline Markdown semantics are not interpreted.' };
+}
+function yamlStructure(text: string): Structure {
+  assertParseSize(text);
+  const document = parseDocument(text, { prettyErrors: false, uniqueKeys: true });
+  return { supported: true, parser: 'yaml/2.9.0:document-v1', blocks: [], imports: [], diagnostics: document.errors.map((error) => ({ line: 1, message: error.message })), limitation: 'YAML validation only; no runtime schema is inferred.' };
+}
 export function inspectStructure(path: string, text: string): Structure {
+  if (markdownExtensions.test(path)) return markdownStructure(path, text);
+  if (yamlExtensions.test(path)) return yamlStructure(text);
   if (!scriptExtensions.test(path) && !isJsonSource(path)) {
     return { supported: false, parser: 'none', blocks: [], imports: [], diagnostics: [], limitation: 'No admitted parser for this format; no regex structure was substituted.' };
   }
@@ -61,9 +122,7 @@ export function inspectStructure(path: string, text: string): Structure {
   const add = (node: ts.Node, name: string): void => {
     const start = node.getStart(file, true);
     const end = node.getEnd();
-    const body = (node as ts.FunctionLikeDeclaration).body;
-    const signatureEnd = body && ts.isBlock(body) ? body.getStart(file) : end;
-    blocks.push({ name, kind: ts.SyntaxKind[node.kind]!, range: sourceRange(text, start, end), text: text.slice(start, end), signature: text.slice(start, signatureEnd).trimEnd() });
+    blocks.push({ name, kind: ts.SyntaxKind[node.kind]!, range: sourceRange(text, start, end), text: text.slice(start, end), signature: compactSignature(node, file, text, start, end) });
   };
   const walk = (node: ts.Node, parent = ''): void => {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
@@ -121,7 +180,7 @@ export function validateSource(path: string, text: string): Structure {
 }
 export function selectSymbol(path: string, text: string, name: string): SourceBlock {
   const structure = validateSource(path, text);
-  if (!structure.supported || isJsonSource(path)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Symbol selection is unsupported for this format.' });
+  if (!structure.supported || isJsonSource(path) || yamlExtensions.test(path)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Symbol selection is unsupported for this format.' });
   const matches = structure.blocks.filter((block) => block.name === name);
   if (matches.length !== 1) throw new ForgeError({ code: matches.length ? 'FORGE_AMBIGUOUS' : 'FORGE_NOT_FOUND', message: `Symbol selector matched ${matches.length} declarations. Use an exact name from the outline; no first match was chosen.` });
   return matches[0]!;
