@@ -13,7 +13,7 @@ import { readChecks } from './checks';
 import { readAnalysisArtifact } from './analysis-artifact';
 import { upstreamEvidence } from './upstream';
 import { readBranchPolicy, readRecentChurn, readRecentHistory, readRepositoryLanguages } from './github-intelligence';
-import { extractDeclaredQualityScripts, migrationHistoryEvidence, qualityCandidatePaths, repositoryMap, repositoryStats } from './repository-intelligence';
+import { extractDeclaredQualityScripts, migrationHistoryEvidence, qualityCandidatePaths, repositoryMap, repositoryStats } from './repository-facts';
 
 export async function readRepository(ctx: ToolContext, input: ReadInput): Promise<ToolOutcome> {
   const query = input.query?.trim() ?? '';

@@ -8,7 +8,7 @@ import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 import { authorizationServerMetadata } from '../src/oauth';
 import { issueRefreshToken, rotateRefreshToken } from '../src/identity';
-import { exactOccurrenceContexts, extractDeclaredQualityScripts, historyScope, isChurnQuery, isCodeownersPath, isDependencyManifestPath, isLanguagesQuery, isMigrationQuery, isQualityQuery, isReviewQuery, lintCommittedFiles, migrationHistoryEvidence, patchIdentifierCandidates, qualityCandidatePaths, representativePatchHunks, repositoryStats, splitPatchHunks } from '../src/repository-intelligence';
+import { extractDeclaredQualityScripts, migrationHistoryEvidence, qualityCandidatePaths, repositoryStats } from '../src/repository-facts';
 
 /**
  * These are the rules that, if they break, break the product rather than a
@@ -252,17 +252,7 @@ describe('guidance integrity', () => {
   });
 });
 
-describe('repository intelligence query parsing', () => {
-  it('parses bounded history scopes and language queries', () => {
-    expect(historyScope('history')).toBeNull();
-    expect(historyScope('history worker/src/write.ts')).toBe('worker/src/write.ts');
-    expect(historyScope('authentication')).toBeUndefined();
-    expect(isLanguagesQuery('languages')).toBe(true);
-    expect(isChurnQuery('hot files')).toBe(true);
-    expect(isReviewQuery('review packet')).toBe(true);
-    expect(isMigrationQuery('migration safety')).toBe(true);
-  });
-
+describe('repository facts', () => {
   it('reports duplicate and missing numbered SQL migration prefixes without calling them deployment failures', () => {
     const evidence = migrationHistoryEvidence([
       { path: 'apps/site/migrations/0001_init.sql', type: 'file', size: 1 },
@@ -304,123 +294,6 @@ describe('repository intelligence query parsing', () => {
     expect(stats.lines.some((line) => line.startsWith('SHAPE widest'))).toBe(true);
   });
 });
-
-describe('patch hunk extraction', () => {
-  it('splits multi-hunk patches and samples across oversized hunk sets', () => {
-    const hunks = splitPatchHunks([
-      {
-        path: 'src/a.ts', status: 'modified', additions: 2, deletions: 2,
-        patch: '@@ -1 +1 @@\n-oldAuth()\n+newAuth()\n@@ -100 +100 @@\n-oldUi()\n+newUi()'
-      }
-    ]);
-    expect(hunks).toHaveLength(2);
-    expect(hunks[1]?.header).toContain('@@ -100');
-    expect(representativePatchHunks(hunks, 'auth', 1)[0]?.text).toContain('Auth');
-  });
-});
-
-describe('patch impact candidate extraction', () => {
-  it('extracts removed identifier candidates while ignoring language noise', () => {
-    const candidates = patchIdentifierCandidates([
-      {
-        path: 'src/api.ts', status: 'modified', additions: 1, deletions: 1,
-        patch: '@@ -1 +1 @@\n-export function legacyEndpoint() { return oldToken; }\n+export function newEndpoint() { return newToken; }'
-      }
-    ]);
-    expect(candidates.map((candidate) => candidate.identifier)).toContain('legacyEndpoint');
-    expect(candidates.map((candidate) => candidate.identifier)).toContain('oldToken');
-    expect(candidates.map((candidate) => candidate.identifier)).not.toContain('function');
-  });
-});
-
-describe('exact occurrence context extraction', () => {
-  it('returns bounded line-local contexts without pretending they are symbols', () => {
-    const result = exactOccurrenceContexts(
-      [{ path: 'src/a.ts', content: 'const token = 1;\nuse(token);\n// token docs' }],
-      'token',
-      2
-    );
-    expect(result.contexts.map((context) => context.line)).toEqual([1, 2]);
-    expect(result.truncated).toBe(true);
-  });
-});
-
-describe('special committed-file detection', () => {
-  it('recognizes GitHub CODEOWNERS locations', () => {
-    expect(isCodeownersPath('CODEOWNERS')).toBe(true);
-    expect(isCodeownersPath('.github/CODEOWNERS')).toBe(true);
-    expect(isCodeownersPath('docs/CODEOWNERS')).toBe(true);
-    expect(isCodeownersPath('src/CODEOWNERS')).toBe(false);
-  });
-});
-
-describe('dependency manifest detection', () => {
-  it('recognizes common dependency manifests without treating ordinary source as one', () => {
-    expect(isDependencyManifestPath('package.json')).toBe(true);
-    expect(isDependencyManifestPath('apps/web/pnpm-lock.yaml')).toBe(true);
-    expect(isDependencyManifestPath('backend/requirements-prod.txt')).toBe(true);
-    expect(isDependencyManifestPath('src/package.ts')).toBe(false);
-  });
-});
-
-describe('post-commit advisory lint', () => {
-  it('spots a missing relative import from committed content and tree state', async () => {
-    const warnings = await lintCommittedFiles(
-      [{ path: 'src/index.ts', content: "import { x } from './missing';\nexport const y = x;" }],
-      ['src/index.ts', 'src/existing.ts']
-    );
-
-    expect(warnings).toEqual([
-      'Post-commit notice: src/index.ts imports "./missing", but no matching committed file was found.'
-    ]);
-  });
-
-  it('accepts extensionless imports when the committed target exists', async () => {
-    const warnings = await lintCommittedFiles(
-      [{ path: 'src/index.ts', content: "import { x } from './existing';\nexport const y = x;" }],
-      ['src/index.ts', 'src/existing.ts']
-    );
-
-    expect(warnings).toEqual([]);
-  });
-
-  it('spots committed merge-conflict markers in source files', async () => {
-    const warnings = await lintCommittedFiles(
-      [{ path: 'src/index.ts', content: '<<<<<<< ours\nconst x = 1;\n=======\nconst x = 2;\n>>>>>>> theirs' }],
-      ['src/index.ts']
-    );
-
-    expect(warnings).toContain('Post-commit notice: src/index.ts contains merge-conflict markers.');
-  });
-
-  it('spots invalid committed JSON', async () => {
-    const warnings = await lintCommittedFiles([{ path: 'package.json', content: '{"name":}' }], ['package.json']);
-
-    expect(warnings).toContain('Post-commit notice: package.json is not valid JSON.');
-  });
-
-  it('checks CommonJS relative requires against committed paths', async () => {
-    const warnings = await lintCommittedFiles(
-      [{ path: 'src/index.cjs', content: "const helper = require('./missing-helper');" }],
-      ['src/index.cjs']
-    );
-
-    expect(warnings[0]).toContain('imports "./missing-helper"');
-  });
-
-  it('does not treat import examples inside strings as real module dependencies', async () => {
-    const warnings = await lintCommittedFiles(
-      [{
-        path: 'src/search.test.ts',
-        content: `const fixture = "import { Context } from './context';";\nexport const result = fixture;`
-      }],
-      ['src/search.test.ts']
-    );
-
-    expect(warnings).toEqual([]);
-  });
-});
-
 describe('server instructions', () => {
   it('keeps the user OAuth credential out of installed-repository work', async () => {
     const { readFileSync } = await import('node:fs');
