@@ -82,7 +82,7 @@ export async function readChecks(gh: GitHubRequest, repo: RepoRef, sha: string):
   return report;
 }
 export function failedChecks(report: ChecksReport): CheckEvidence[] {
-  return report.checks.filter((check) => ['failure', 'error', 'timed_out', 'action_required', 'startup_failure'].includes(check.conclusion ?? ''));
+  return report.checks.filter((check) => ['failure', 'error', 'timed_out', 'action_required', 'startup_failure', 'cancelled', 'stale'].includes(check.conclusion ?? ''));
 }
 export function requiredChecksSatisfied(report: ChecksReport, required: readonly string[]): boolean {
   if (report.coverage !== 'complete') return false;

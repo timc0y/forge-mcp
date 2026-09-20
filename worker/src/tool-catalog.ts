@@ -26,7 +26,8 @@ async function run(tool: string, ctx: ToolContext, work: () => Promise<ToolOutco
     ctx.track('tool_called', { tool, ok: false, code: error.code, ms: Date.now() - started });
     if (error.code === 'FORGE_QUOTA_EXCEEDED') ctx.track('quota_refused', { tool });
     console.error('forge_tool_failed', { tool, code: error.code });
-    return { isError: true, content: [{ type: 'text' as const, text: `${error.code}: ${error.message}` }] };
+    const retryAfter = typeof error.details?.retryAfter === 'string' && error.details.retryAfter ? ` Retry-After: ${error.details.retryAfter}.` : '';
+    return { isError: true, content: [{ type: 'text' as const, text: `${error.code}: ${error.message}${retryAfter}` }] };
   }
 }
 const fileInput = z.object({
