@@ -12,7 +12,7 @@ const SHAPE_KEYS = new Set([
   'tool', 'ok', 'code', 'ms', 'files', 'created_repo', 'viewports', 'images',
   'action', 'act', 'outcome', 'decision', 'success', 'bytes', 'output_bytes',
   'input_bytes', 'github_calls', 'candidates', 'selected', 'jev_stages',
-  'input_tokens', 'output_tokens', 'truncated', 'coverage'
+  'input_tokens', 'output_tokens', 'truncated', 'coverage', 'commits', 'requested', 'captured', 'failures'
 ]);
 const SAFE_LABEL = /^[a-zA-Z0-9_-]{1,64}$/;
 export function safeMetricProperties(properties: Record<string, string | number | boolean>): Record<string, string | number | boolean> {
