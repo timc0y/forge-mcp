@@ -326,7 +326,7 @@ Measure total JEV input/output usage and request cost, GitHub calls, bytes downl
 - [ ] MCP version, schema, annotations, examples and connection-refresh instructions agree; old incompatible inputs fail explicitly rather than silently taking another path.
 - [ ] Authorized deployment smoke and a fresh phone/ChatGPT conversation prove read, context, edit, review and human approval. Documentation alone is not release evidence.
 
-This planning commit does not implement the engine, change GitHub App permissions, invoke new services, dispatch CI, run production failure injection or authorize deployment.
+The V2 source implementation lives on Forge PR #83. Source completion is not release proof: GitHub must still execute the final typecheck/tests/bundle/startup gates, the GitHub App installation must approve the required read permissions, the context evaluation targets must be measured rather than assumed, and an authorized deployment/fresh-client smoke must pass before V2 is described as deployed.
 
 ## 15. Research basis
 
