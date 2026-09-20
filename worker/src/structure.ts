@@ -44,7 +44,6 @@ export function inspectStructure(path: string, text: string): Structure {
   if (!scriptExtensions.test(path) && !isJsonSource(path)) {
     return { supported: false, parser: 'none', blocks: [], imports: [], diagnostics: [], limitation: 'No admitted parser for this format; no regex structure was substituted.' };
   }
-  assertParseSize(text);
   if (isJsonSource(path)) {
     const file = jsonTree(path, text);
     const errors = diagnostics(file);
@@ -53,6 +52,7 @@ export function inspectStructure(path: string, text: string): Structure {
     duplicateKeys(file, errors);
     return { supported: true, parser: STRUCTURE_VERSION, blocks: [], imports: [], diagnostics: errors };
   }
+  assertParseSize(text);
   const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, sourceKind(path));
   const errors = diagnostics(file);
   const blocks: SourceBlock[] = [];
@@ -93,7 +93,7 @@ export function inspectStructure(path: string, text: string): Structure {
   return { supported: true, parser: STRUCTURE_VERSION, blocks, imports, diagnostics: errors, limitation: 'Syntax declarations and literal imports only; not type-resolved references or runtime reachability.' };
 }
 function jsonTree(path: string, text: string): ts.JsonSourceFile {
-  assertParseSize(text);
+  if (utf8Bytes(text) > CONTEXT_LIMITS.sourceBytes) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: 'JSON source exceeds its parser byte limit.' });
   return ts.parseJsonText(path, text);
 }
 function duplicateKeys(file: ts.JsonSourceFile, errors: Structure['diagnostics']): void {

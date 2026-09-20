@@ -109,6 +109,8 @@ export interface FileWrite {
   path: string;
   content?: string | null;
   replace?: Array<{ old: string; new: string; all?: boolean }>;
+  /** A source-addressed replacement tied to the exact revision previously read. */
+  edit?: { expectedCommit: string; selector: string; replacement: string };
 }
 
 /**

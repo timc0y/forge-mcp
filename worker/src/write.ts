@@ -20,6 +20,9 @@ import { formatRepo } from './contracts';
 import type { CommitReceipt, FileWrite, GitHubRequest, RepoRef } from './contracts';
 import { CHANGE_BRANCH } from './change';
 import { ForgeError } from './errors';
+import { parseSelector, selectSource } from './selectors';
+import { validateSource } from './structure';
+import { requireSha } from './evidence';
 
 /**
  * Chat-facing bounds, deliberately small. The client is a phone conversation,
@@ -143,6 +146,13 @@ export async function commitFiles(
   // current GitHub head. This catches secrets introduced by fragment edits
   // without putting an optional semantic service on the durable write path.
   assertNoHighSeveritySecrets(resolved);
+  const unsupported: string[] = [];
+  for (const file of resolved) {
+    if (file.content === null) continue;
+    const validation = validateSource(file.path, file.content);
+    if (!validation.supported) unsupported.push(file.path);
+  }
+  if (unsupported.length) notes.push(`Syntax validation is unsupported for: ${unsupported.join(', ')}. No parser substitute was used; this is not test or typecheck evidence.`);
   if (outOfTime()) giveUp('checking the resolved content');
 
   // Blobs are content-addressed, so they are identical however many times the
@@ -281,14 +291,15 @@ function validate(message: string, files: FileWrite[]): void {
 
     const replacements = file.replace ?? [];
     const writesContent = file.content !== undefined;
-    if (writesContent && replacements.length > 0) {
+    const operations = Number(writesContent) + Number(replacements.length > 0) + Number(file.edit !== undefined);
+    if (operations > 1) {
       throw new ForgeError({
         code: 'FORGE_VALIDATION_FAILED',
         message: `${file.path} has both whole-file content and fragment replacements. Send one or the other.`,
         details: { path: file.path }
       });
     }
-    if (!writesContent && replacements.length === 0) {
+    if (operations === 0) {
       throw new ForgeError({
         code: 'FORGE_VALIDATION_FAILED',
         message: `${file.path} has nothing to write: send content (or null to delete it), or replacements.`,
@@ -296,6 +307,11 @@ function validate(message: string, files: FileWrite[]): void {
       });
     }
 
+    if (file.edit) {
+      requireSha(file.edit.expectedCommit);
+      if (parseSelector(file.edit.selector).path !== file.path) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'The edit selector must identify the same file as its write entry.' });
+      bytes += byteLength(file.edit.replacement);
+    }
     if (typeof file.content === 'string') bytes += byteLength(file.content);
     for (const replacement of replacements) {
       // An empty `old` matches at every position, so "unambiguous" is
@@ -368,6 +384,14 @@ async function resolveContents(
 ): Promise<ResolvedFile[]> {
   return Promise.all(
     files.map(async (file): Promise<ResolvedFile> => {
+      if (file.edit) {
+        if (file.edit.expectedCommit !== head) throw new ForgeError({ code: 'FORGE_CONFLICT', message: `${file.path} was selected at a different revision. Read the current proposal source before editing; no range was guessed.` });
+        const selector = parseSelector(file.edit.selector);
+        if (!selector.selection && !selector.lines) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Source-addressed edits require an explicit symbol, record or line range, not a whole-file selector.' });
+        const current = await readTextFile(request, api, file.path, head);
+        const selected = selectSource(selector, current);
+        return { path: file.path, content: current.slice(0, selected.range.start) + file.edit.replacement + current.slice(selected.range.end) };
+      }
       if (file.content !== undefined) {
         // Whole-file writes are for new or small files. Enforced here, not
         // advised in a prompt, because a tool the model can reach is one it
@@ -407,7 +431,7 @@ async function resolveContents(
  * caller never meant, and there is no receipt that would show it.
  */
 
-function applyReplacements(
+export function applyReplacements(
   path: string,
   current: string,
   replacements: Array<{ old: string; new: string; all?: boolean }>
