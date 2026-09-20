@@ -1,6 +1,6 @@
 # Forge context engine
 
-Status: selected implementation plan, not implemented.
+Status: active V2 architecture; source implementation is complete on the Forge review change, with deployment evidence still required.
 Owner instruction: Tim, 20 September 2026.
 Source baseline: `main` at abbreviated commit `9b6c2c6`, inspected through Forge.
 

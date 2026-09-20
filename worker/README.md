@@ -2,9 +2,10 @@
 
 The production implementation of Forge: a hosted handoff between a conversation
 and GitHub. See [`../SIMPLE.md`](../SIMPLE.md) for the design profile,
-[`../docs/plans/forge-v1.md`](../docs/plans/forge-v1.md) for the architecture and
-[`../docs/plans/product-route.md`](../docs/plans/product-route.md) for the active
-product plan.
+[`../docs/plans/context-engine.md`](../docs/plans/context-engine.md) for the active
+V2 architecture, [`../docs/plans/forge-v1.md`](../docs/plans/forge-v1.md) for the
+historical reset record, and [`../docs/plans/product-route.md`](../docs/plans/product-route.md)
+for the active product plan.
 
 This directory is deliberately self-contained. It has no workspace dependencies
 and can install, type-check, test and deploy on its own.
@@ -15,7 +16,7 @@ Five MCP tools:
 
 | Tool | Gate |
 |---|---|
-| `forge_read` — repositories → tree → change → file contents or patches | free |
+| `forge_read` — immutable source/evidence, changes, checks and task context | free |
 | `forge_edit` — durable GitHub writes, direct or on the fixed `forge` change | free |
 | `forge_merge` — returns a link a human opens | **approved** |
 | `forge_discard` — returns a link a human opens | **approved** |

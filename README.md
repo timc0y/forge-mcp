@@ -25,7 +25,7 @@ GitHub writes, so repository automation may react to them.
 
 | Tool | Gate |
 |---|---|
-| `forge_read` — repos → tree → a change → file contents or patches | free |
+| `forge_read` — immutable source, diffs, checks, analysis and task-shaped context | free |
 | `forge_edit` — write files directly or on Forge's one change | free |
 | `forge_merge` — returns one link a human opens | **approved** |
 | `forge_discard` — returns one link a human opens | **approved** |
@@ -49,9 +49,9 @@ records what is documented and what still needs testing.
 - [`assets/`](./assets) — the mark, and the app icon in both tones.
 - [`SIMPLE.md`](./SIMPLE.md) — the design profile: what is real, what is
   preserved, and the precedents that must not be re-litigated.
-- [`docs/plans/context-engine.md`](./docs/plans/context-engine.md) — the selected next
-  engineering plan: a single-path GitHub/JEV context engine, not yet implemented.
-- [`docs/plans/forge-v1.md`](./docs/plans/forge-v1.md) — the architecture this was built to.
+- [`docs/plans/context-engine.md`](./docs/plans/context-engine.md) — the active V2
+  architecture: a single-path GitHub/JEV context engine.
+- [`docs/plans/forge-v1.md`](./docs/plans/forge-v1.md) — the historical five-tool reset record.
 - [`docs/plans/product-route.md`](./docs/plans/product-route.md) — the active adoption,
   measurement and revenue plan.
 - [`docs/research/`](./docs/research) — the record. Read

@@ -50,10 +50,9 @@ Work that needs review uses the repository's one fixed `forge` branch.
 Forge does not run, build, test, serve, or deploy code. T3 Code owns that.
 Forge hosts nothing.
 
-## Selected next engineering contract — 20 September 2026
+## Context engine contract — 20 September 2026
 
-[The context engine plan](./docs/plans/context-engine.md) owns the next engineering
-work. Retain GitHub, existing Cloudflare infrastructure and the explicitly requested
+[The context engine plan](./docs/plans/context-engine.md) owns the active repository-intelligence architecture. Retain GitHub, existing Cloudflare infrastructure and the explicitly requested
 JEV integration through one configured route. Add no hosted indexing, documentation,
 security, reranking or alternative inference service. Use bundled open-source parsers,
 request-local evidence and exact-commit GitHub checks instead.
@@ -63,10 +62,11 @@ fallback chains or silent substitution of heuristics for failed semantics. A req
 stage failure is explicit; durable commits and valid partial evidence remain accurately
 reported. Preserve protocol handling, authorization, conflict checks and human approval.
 
-This is selected work, not implemented behavior. The fallback/degradation precedents
-below describe the current implementation; the plan supersedes them as the future
-contract. Replace and delete each old path with its tested successor. Keep five tools,
-no repository executor and no persistent code index.
+The V2 source implementation follows this contract: immutable snapshot reads,
+parser-backed structure, exact-commit GitHub execution evidence, one JEV route,
+and no persistent semantic index or repository executor. Release evidence still
+matters separately: new GitHub App permissions, MCP catalog refresh and
+post-deploy smoke must be proven before describing V2 as deployed.
 
 ## Ordinary paths
 
