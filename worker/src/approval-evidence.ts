@@ -14,13 +14,24 @@ export async function prepareApproval(ctx: ToolContext, act: 'merge' | 'discard'
   const comparison = await compare(snapshot.gh, repo, baseSha, snapshot.identity.sha);
   const report = act === 'merge' ? await mergeEvidence(snapshot, comparison, change.number) : null;
   if (report) requireMergeEvidence(report);
+  const verificationSummary = report ? (() => {
+    const conclusions = new Map<string, number>();
+    for (const check of report.checks.checks) {
+      const state = check.conclusion ?? check.status;
+      conclusions.set(state, (conclusions.get(state) ?? 0) + 1);
+    }
+    const checkText = [...conclusions.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([state, count]) => `${count} ${state}`).join(', ') || 'no check/status records';
+    const reviewText = report.reviews ? `${report.reviews.approvals} approvals, ${report.reviews.changesRequested} changes-requested` : 'review state unavailable';
+    const parsed = report.structural.filter((entry) => entry.coverage === 'complete').length;
+    return `Exact-head execution: ${checkText}. Reviews: ${reviewText}. Branch rules observed: ${report.policy.rules.length}. Parser coverage: ${parsed}/${report.structural.length} inspected changed source files.`;
+  })() : undefined;
   const additions = comparison.files.reduce((n, file) => n + file.additions, 0);
   const deletions = comparison.files.reduce((n, file) => n + file.deletions, 0);
   const size = `${comparison.files.length} files, +${additions}/-${deletions}`;
   const evidence = act === 'merge'
     ? `Merge ${comparison.aheadBy} commits (${size}) into ${snapshot.branch}. Source ${snapshot.identity.sha}; base ${baseSha}.`
     : `Discard ${size}. ${comparison.aheadBy ? `${comparison.aheadBy} unmerged commits would stop being reachable from this branch.` : 'No unmerged commits would be lost.'}`;
-  const prepared = await requestApproval(ctx.env, ctx.identity, { act, repo, change, comparison, headSha: snapshot.identity.sha, baseBranch: snapshot.branch, baseSha });
+  const prepared = await requestApproval(ctx.env, ctx.identity, { act, repo, change, comparison, headSha: snapshot.identity.sha, baseBranch: snapshot.branch, baseSha, ...(verificationSummary ? { impactSummary: verificationSummary } : {}) });
   ctx.track('approval_requested', { act, files: comparison.files.length, commits: comparison.aheadBy, truncated: comparison.truncated });
   const limits = [...(report?.limitations ?? []), ...(comparison.truncated ? ['Comparison coverage is incomplete.'] : [])];
   let names: string[] | undefined;
@@ -28,6 +39,6 @@ export async function prepareApproval(ctx: ToolContext, act: 'merge' | 'discard'
   catch { limits.push('The latest open-change list could not be read. Approval creation is still durable.'); }
   return {
     summary: `${evidence} Nothing has been ${act === 'merge' ? 'merged' : 'discarded'}.`,
-    structured: { approval: { url: prepared.url, expires: prepared.expiresAt }, evidence, ...(names ? { changes: names } : {}), limits, next: 'Open the approval link to review and decide. A changed head invalidates this approval.' }
+    structured: { approval: { url: prepared.url, expires: prepared.expiresAt }, evidence, ...(verificationSummary ? { verification: verificationSummary } : {}), ...(names ? { changes: names } : {}), limits, next: 'Open the approval link to review and decide. A changed head or reviewed base invalidates this approval.' }
   };
 }

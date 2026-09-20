@@ -714,7 +714,7 @@ function renderDecision(row: ApprovalRow, evidence: Evidence, _id: string, token
     `<h1>${escapeHtml(heading)}</h1>` +
       `<p class="lead">${escapeHtml(evidence.change.name)} · ${escapeHtml(formatRepoRow(row))}</p>` +
       `<div class="box">${consequence}</div>` +
-      (evidence.impactSummary ? `<div class="box"><strong>Assessment:</strong> ${escapeHtml(evidence.impactSummary)}</div>` : "") +
+      (evidence.impactSummary ? `<div class="box"><strong>Verification evidence:</strong> ${escapeHtml(evidence.impactSummary)}</div>` : "") +
       details(row, evidence) +
       fileList(evidence.comparison) +
       `<form method="post" action="${escapeHtml(action)}">` +
