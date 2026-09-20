@@ -23,6 +23,7 @@ describe('compact structural representations', () => {
   it('sections Markdown without treating fenced headings as structure', () => {
     const source = '# Root\nkeep\n\n## Safety\nimportant\n\n\`\`\`md\n# fake\n\`\`\`\n\n## Operations\nrun\n';
     const shape = inspectStructure('AGENTS.md', source);
+    expect(shape.parser).toContain('@lezer/markdown/1.6.3');
     expect(shape.blocks.map((block) => block.name)).toEqual(['Root', 'Root/Safety', 'Root/Operations']);
     expect(selectSymbol('AGENTS.md', source, 'Root/Safety').text).toContain('important');
   });
@@ -36,8 +37,8 @@ describe('compact structural representations', () => {
     const code = 'function f() {}\nfunction f() {}\n';
     expect(inspectStructure('a.ts', code).blocks.map((block) => block.name)).toEqual(['f[0]', 'f[1]']);
     expect(selectSymbol('a.ts', code, 'f[1]').text).toBe('function f() {}');
-    const markdown = '# Root\n## Same\none\n## Same\ntwo\n';
-    expect(inspectStructure('a.md', markdown).blocks.map((block) => block.name)).toEqual(['Root', 'Root/Same', 'Root/Same[2]']);
+    const markdown = '# Root\n## Same\none\n## Same\ntwo\nSetext\n------\n';
+    expect(inspectStructure('a.md', markdown).blocks.map((block) => block.name)).toEqual(['Root', 'Root/Same', 'Root/Same[2]', 'Root/Setext']);
     expect(selectSymbol('a.md', markdown, 'Root/Same[2]').text).toContain('two');
   });
 

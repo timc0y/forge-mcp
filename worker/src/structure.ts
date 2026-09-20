@@ -1,4 +1,5 @@
 import ts from 'typescript';
+import { parser as markdownParser } from '@lezer/markdown';
 import { NodeTypes, toLiquidHtmlAST, type LiquidHtmlNode } from '@shopify/liquid-html-parser';
 import { parseDocument } from 'yaml';
 import { ForgeError } from './errors';
@@ -62,26 +63,24 @@ function compactSignature(node: ts.Node, file: ts.SourceFile, text: string, star
   }
   return text.slice(start, end).trim();
 }
-function markdownStructure(path: string, text: string): Structure {
+function markdownHeadingTitle(raw: string, type: string): string {
+  if (type.startsWith('ATXHeading')) return raw.replace(/^#{1,6}[ \t]+/, '').replace(/[ \t]+#+[ \t]*(?:\r?\n)?$/, '').trim();
+  const lines = raw.trimEnd().split(/\r?\n/);
+  return lines.slice(0, -1).join(' ').trim();
+}
+function markdownStructure(_path: string, text: string): Structure {
   assertParseSize(text);
-  const lines = text.split(/(?<=\n)/);
-  const offsets: number[] = [];
-  let offset = 0;
-  for (const line of lines) { offsets.push(offset); offset += line.length; }
+  const tree = markdownParser.parse(text);
   const headings: Array<{ level: number; title: string; start: number }> = [];
-  let fence: string | null = null;
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index]!.replace(/\r?\n$/, '');
-    const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
-    if (fenceMatch) {
-      const marker = fenceMatch[1]![0]!;
-      if (fence === marker) fence = null; else if (fence === null) fence = marker;
-      continue;
-    }
-    if (fence) continue;
-    const heading = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
-    if (heading) headings.push({ level: heading[1]!.length, title: heading[2]!.trim(), start: offsets[index]! });
-  }
+  const cursor = tree.cursor();
+  const visit = (): void => {
+    const name = cursor.type.name;
+    const match = /^(?:ATX|Setext)Heading([1-6])$/.exec(name);
+    if (match) headings.push({ level: Number(match[1]), title: markdownHeadingTitle(text.slice(cursor.from, cursor.to), name), start: cursor.from });
+    if (cursor.firstChild()) { do visit(); while (cursor.nextSibling()); cursor.parent(); }
+  };
+  visit();
+  headings.sort((a, b) => a.start - b.start);
   const blocks: SourceBlock[] = [];
   const stack: Array<{ level: number; segment: string }> = [];
   const siblings = new Map<string, number>();
@@ -95,13 +94,13 @@ function markdownStructure(path: string, text: string): Structure {
     const segment = occurrence === 1 ? heading.title : `${heading.title}[${occurrence}]`;
     const name = [parent, segment].filter(Boolean).join('/');
     let end = text.length;
-    for (let next = index + 1; next < headings.length; next++) { if (headings[next]!.level <= heading.level) { end = headings[next]!.start; break; } }
+    for (let next = index + 1; next < headings.length; next++) if (headings[next]!.level <= heading.level) { end = headings[next]!.start; break; }
     const range = sourceRange(text, heading.start, end);
     blocks.push({ name, kind: 'MarkdownSection', range, signature: `${'#'.repeat(heading.level)} ${heading.title}`, text: text.slice(range.start, range.end) });
     stack.push({ level: heading.level, segment });
   }
   if (!blocks.length && text.trim()) blocks.push({ name: '(document)', kind: 'MarkdownDocument', range: sourceRange(text, 0, text.length), signature: '(document)', text });
-  return { supported: true, parser: 'forge-markdown-sections/v1', blocks, imports: [], diagnostics: [], limitation: 'Heading-delimited Markdown sections only; inline Markdown semantics are not interpreted.' };
+  return { supported: true, parser: '@lezer/markdown/1.6.3:sections-v1', blocks, imports: [], diagnostics: [], limitation: 'CommonMark syntax tree with heading-delimited section ranges; inline Markdown is parsed but only section structure is returned.' };
 }
 function yamlStructure(text: string): Structure {
   assertParseSize(text);
