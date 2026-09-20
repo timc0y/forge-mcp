@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../src/env';
 import { capture } from '../src/capture';
 import { approvalPage } from '../src/approve';
-import { toForgeError } from '../src/errors';
+import { ForgeError, toForgeError } from '../src/errors';
 import { registerClient, token } from '../src/oauth';
 import { githubRequest, installationForLogin, installationRequestFor } from '../src/github';
 
@@ -43,6 +43,41 @@ describe('GitHub installation token lifetime', () => {
     expect(response.status).toBe(200);
     expect(requestedTokens).toEqual(['Bearer stale-token', 'Bearer fresh-token']);
     expect(tokenProvider).toHaveBeenCalledWith({} as Env, 'installation-1', true);
+  });
+
+  it('retries one retryable mint failure at connection setup', async () => {
+    let attempts = 0;
+    const tokenProvider = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new ForgeError({
+          code: 'FORGE_UPSTREAM_UNAVAILABLE',
+          message: 'GitHub declined to issue an installation token (HTTP 503).',
+          retryable: true
+        });
+      }
+      return 'token';
+    });
+
+    await expect(githubRequest({} as Env, 'installation-1', tokenProvider)).resolves.toBeTypeOf('function');
+    expect(attempts).toBe(2);
+  });
+
+  it('does not retry a refused installation', async () => {
+    let attempts = 0;
+    const tokenProvider = vi.fn(async () => {
+      attempts += 1;
+      throw new ForgeError({
+        code: 'FORGE_AUTH_REQUIRED',
+        message: 'The Forge GitHub App is not installed for this account.',
+        retryable: false
+      });
+    });
+
+    await expect(githubRequest({} as Env, 'installation-1', tokenProvider)).rejects.toMatchObject({
+      code: 'FORGE_AUTH_REQUIRED'
+    });
+    expect(attempts).toBe(1);
   });
 
   it('never lets a GitHub read be answered from a cache', async () => {

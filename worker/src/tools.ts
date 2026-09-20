@@ -737,25 +737,21 @@ async function readTreeLevel(
   if (trimmedQuery && (isHygieneQuery(trimmedQuery) || routed?.mode === 'hygiene')) {
     const sourcePaths = allFilePaths.filter(isHygieneSourcePath);
     const pathCandidates = hygienePathCandidates(tree.entries, 24);
-    const markerTerms = ['legacy', 'deprecated', 'retired', 'fallback', 'compatibility', 'unused', '"not implemented"'];
-    const markerSearches = await Promise.all(
-      markerTerms.map(async (marker) => ({
-        marker,
-        result: await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${marker}`, 8)
-      }))
-    );
+    const markerTerms = ['legacy', 'deprecated', 'retired', 'fallback', 'compatibility', 'unused', 'not implemented'];
+    // One read of the committed files answers every marker at once. Seven calls
+    // to a separate, rate-limited, sometimes-absent search index was the most
+    // breakable way to look for plain words in one repository.
+    const markerScan = await searchCommittedText(gh, repo, base, markerTerms);
 
     const markerSignals = new Map<string, string[]>();
     const markerPaths: string[] = [];
-    for (const search of markerSearches) {
-      for (const item of search.result.items) {
-        if (!item.path || !isHygieneSourcePath(item.path)) continue;
-        markerPaths.push(item.path);
-        const current = markerSignals.get(item.path) ?? [];
-        const signal = `content marker ${search.marker.replaceAll('"', '')}`;
-        if (!current.includes(signal)) current.push(signal);
-        markerSignals.set(item.path, current);
-      }
+    for (const hit of markerScan.hits) {
+      if (!isHygieneSourcePath(hit.path)) continue;
+      markerPaths.push(hit.path);
+      markerSignals.set(
+        hit.path,
+        hit.matchedNeedles.map((needle) => `content marker ${needle}`)
+      );
     }
 
     const discoveredBeforeSemantic = [...new Set([
@@ -809,23 +805,33 @@ async function readTreeLevel(
     );
 
     const evidenceTargets = suspicious.slice(0, 4);
+    const evidenceFiles = evidenceTargets.map((candidate) => preparedByPath.get(candidate.path));
+    const evidenceTerms = evidenceFiles.map((file) =>
+      file ? hygieneReferenceTerm(file.path, file.content) : null
+    );
+    const uniqueReferenceTerms = [
+      ...new Set(evidenceTerms.filter((term): term is string => Boolean(term)))
+    ];
+    // One committed-content read for every reference term, rather than one
+    // index call per candidate against a service that may not answer.
+    const referenceScan = uniqueReferenceTerms.length > 0
+      ? await searchCommittedText(gh, repo, base, uniqueReferenceTerms)
+      : null;
+    const referenceUsable = referenceScan !== null && referenceScan.unavailable === undefined;
+
     const evidence = await Promise.all(
-      evidenceTargets.map(async (candidate) => {
-        const file = preparedByPath.get(candidate.path);
-        const term = file ? hygieneReferenceTerm(file.path, file.content) : null;
-        const [references, history] = await Promise.all([
-          term
-            ? searchGitHubCode(gh, `repo:${formatRepo(repo)} "${term.replaceAll('"', ' ')}"`, 10)
-            : Promise.resolve({ total: 0, items: [], unavailable: undefined }),
-          readRecentHistory(gh, repo, base, candidate.path, 1)
-        ]);
-        const outside = references.items.filter((item) => item.path && item.path !== candidate.path);
+      evidenceTargets.map(async (candidate, index) => {
+        const term = evidenceTerms[index] ?? null;
+        const history = await readRecentHistory(gh, repo, base, candidate.path, 1);
+        const referenceHits = term && referenceScan && referenceUsable
+          ? referenceScan.hits.filter((hit) => hit.matchedNeedles.includes(term))
+          : [];
         return {
           path: candidate.path,
           term,
-          totalReferences: term && !references.unavailable ? references.total : null,
-          referenceUnavailable: references.unavailable ?? null,
-          outsideShown: outside.length,
+          totalReferences: term && referenceUsable ? referenceHits.length : null,
+          referenceUnavailable: term && referenceScan?.unavailable ? referenceScan.unavailable : null,
+          outsideShown: referenceHits.filter((hit) => hit.path !== candidate.path).length,
           recent: history.commits[0]
         };
       })
@@ -845,7 +851,7 @@ async function readTreeLevel(
       const reference = evidenceItem?.term
         ? evidenceItem.referenceUnavailable
           ? ` · ref "${evidenceItem.term}" unavailable`
-          : ` · ref "${evidenceItem.term}" ${evidenceItem.totalReferences} GitHub result${evidenceItem.totalReferences === 1 ? '' : 's'}, ${evidenceItem.outsideShown} outside shown`
+          : ` · ref "${evidenceItem.term}" ${evidenceItem.totalReferences} committed file${evidenceItem.totalReferences === 1 ? '' : 's'}, ${evidenceItem.outsideShown} outside shown`
         : '';
       const history = evidenceItem?.recent
         ? ` · last ${evidenceItem.recent.date?.slice(0, 10) ?? 'unknown date'} ${evidenceItem.recent.sha.slice(0, 7)} ${evidenceItem.recent.message || '(no message)'}`
@@ -856,23 +862,17 @@ async function readTreeLevel(
       lines.push(...prepared.map((file) => `CANDIDATE? ${file.path} · ${file.signals.join(', ') || 'bounded semantic candidate'}`));
     }
 
-    const markerTotal = markerSearches.reduce((sum, search) => sum + search.result.total, 0);
-    const markerUnavailable = [...new Set(
-      markerSearches
-        .map((search) => search.result.unavailable)
-        .filter((value): value is string => Boolean(value))
-    )];
     const limits = [
       ...(routeNote ? [routeNote] : []),
       ...(tree.truncated ? ['GitHub truncated the repository tree, so hygiene discovery is incomplete.'] : []),
       ...(semantic?.truncated ? [`Jev hygiene path triage considered ${semantic.considered} representative paths from ${semantic.total} source files.`] : []),
       ...(candidatePaths.length >= 20 ? ['Hygiene content inspection is capped at 20 candidate paths and Jev classification at 12 complete files.'] : []),
-      ...(markerTotal > markerPaths.length ? ['GitHub marker searches are bounded; additional lexical matches may exist beyond the returned candidate paths.'] : []),
-      ...markerUnavailable,
+      ...(markerScan.truncated ? ['Committed-content marker search was bounded; additional lexical matches may exist beyond the returned candidate paths.'] : []),
+      ...(markerScan.unavailable ? [markerScan.unavailable] : []),
       ...(classifications.length === 0 && prepared.length > 0 ? ['Jev returned no hygiene classification; CANDIDATE? lines are deterministic discovery evidence only.'] : []),
       ...read.skipped.map((skip) => `${skip.path} ${skip.reason}.`),
       'LEGACY?, FALLBACK?, DEAD? and BROKEN? are investigation labels from bounded semantic evidence, not proof that code is unreachable, defective, or safe to delete.',
-      'Reference evidence is bounded GitHub text search, not a compiler-backed call/reference graph.',
+      'Reference evidence is a bounded committed-content text search, not a compiler-backed call/reference graph.',
       ...changesLimits(changes)
     ];
     const resultSummary = classifications.length > 0
@@ -1815,7 +1815,21 @@ async function resolveWriteTarget(
 
     assertNotNearExisting(repo.name, [...new Set(reachable.map((entry) => entry.repo.split('/')[1] ?? entry.repo))]);
 
-    const created = await createRepo(ctx.ghUser, repo.name, { private: wantPrivate, description });
+    let created: RepoRef;
+    try {
+      created = await createRepo(ctx.ghUser, repo.name, { private: wantPrivate, description });
+    } catch (thrown) {
+      // A concurrent first write can create the repository between the listing
+      // above and this call. That is not a refusal to act on: if the repository
+      // is there now, it is the one this call meant, so use it rather than
+      // reporting "already exists" for work that just landed.
+      if (!isForgeError(thrown) || thrown.code !== 'FORGE_VALIDATION_FAILED') throw thrown;
+      try {
+        return { base: await defaultBranch(ctx.gh, repo), created: false };
+      } catch {
+        throw thrown;
+      }
+    }
     try {
       return { base: await defaultBranch(ctx.gh, created), created: true };
     } catch {

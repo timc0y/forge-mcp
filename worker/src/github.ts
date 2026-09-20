@@ -224,8 +224,17 @@ export async function githubRequest(
   installationId: string,
   tokenProvider: InstallationTokenProvider = installationToken
 ): Promise<GitHubRequest> {
-  // Fail connection setup immediately when the installation cannot mint at all.
-  await tokenProvider(env, installationId, false);
+  // Connection setup is where a transient GitHub blip would otherwise empty the
+  // whole tool catalog, because a session that cannot mint registers no tools.
+  // A failure GitHub itself calls retryable is therefore tried once more; a
+  // refusal (no such installation, bad credentials) is not.
+  try {
+    await tokenProvider(env, installationId, false);
+  } catch (error) {
+    if (!isForgeError(error) || !error.retryable) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await tokenProvider(env, installationId, false);
+  }
 
   return async (path, init) => {
     const first = await requester(await tokenProvider(env, installationId, false))(path, init);

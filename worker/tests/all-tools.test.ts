@@ -457,6 +457,44 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.commit.sha).toBe("newcommitsha99999");
   });
 
+  it("uses a repository that a concurrent first write created first", async () => {
+    let exists = false;
+    const { server, calls } = createMockToolContext({
+      // The repository is absent when the write resolves it, then present the
+      // moment the create is refused — the concurrent-writer race.
+      "GET /repos/testuser/brand-new": () =>
+        exists ? { status: 200, json: { default_branch: "main" } } : { status: 404, json: null },
+      "POST /user/repos": () => {
+        exists = true;
+        return { status: 422, json: { message: "name already exists on this account" } };
+      },
+      "GET /repos/testuser/brand-new/git/ref/heads/main": { status: 200, json: { object: { sha: "basecommit000001" } } },
+      "GET /repos/testuser/brand-new/contents/README.md": { status: 404, json: null },
+      "POST /repos/testuser/brand-new/git/blobs": { status: 201, json: { sha: "blobsha00001" } },
+      "GET /repos/testuser/brand-new/git/commits/basecommit000001": { status: 200, json: { tree: { sha: "basetree00001" } } },
+      "POST /repos/testuser/brand-new/git/trees": { status: 201, json: { sha: "newtree00001" } },
+      "POST /repos/testuser/brand-new/git/commits": { status: 201, json: { sha: "newcommit0001" } },
+      "PATCH /repos/testuser/brand-new/git/refs/heads/main": { status: 200, json: { object: { sha: "newcommit0001" } } },
+      "GET /repos/testuser/brand-new/git/trees/newcommit0001": {
+        status: 200,
+        json: { truncated: false, tree: [{ path: "README.md", type: "blob", size: 10 }] }
+      },
+      "GET /repos/testuser/brand-new/pulls": { status: 200, json: [] }
+    });
+    const editTool = (server as any)._registeredTools["forge_edit"];
+
+    const res = await editTool.handler({
+      repo: "testuser/brand-new",
+      message: "docs: first write",
+      files: [{ path: "README.md", content: "# Brand new\n" }]
+    });
+
+    expect(res.isError).toBeFalsy();
+    expect(calls).toContain("POST /user/repos");
+    expect(res.content[0].text).toContain("testuser/brand-new");
+    expect(res.content[0].text).not.toContain("already exists");
+  });
+
   it("preserves cached legacy intent as review work instead of direct-committing", async () => {
     const { server } = createMockToolContext();
     const editTool = (server as any)._registeredTools["forge_edit"];
