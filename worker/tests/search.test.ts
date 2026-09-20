@@ -74,7 +74,7 @@ describe('committed-content search', () => {
 
     expect(result.unavailable).toBeUndefined();
     expect(result.truncated).toBe(false);
-    expect(result.hits).toEqual([{ path: 'worker/src/symbol.ts', count: 2, lines: [1, 2] }]);
+    expect(result.hits).toEqual([{ path: 'worker/src/symbol.ts', count: 2, matched: 1, lines: [1, 2] }]);
   });
 
   it('reports unavailable rather than absence when the archive cannot be read', async () => {
@@ -89,6 +89,69 @@ describe('committed-content search', () => {
     const result = await searchCommittedText(request, { owner: 'o', name: 'r' }, 'main', ['knownSymbol']);
     expect(result.hits).toHaveLength(0);
     expect(result.unavailable).toContain('No absence conclusion');
+  });
+});
+
+describe('concept search never reports a search that did not run as absence', () => {
+  function conceptServer(archive?: ArrayBuffer) {
+    const server = new McpServer({ name: 'forge-test', version: '1.0.0' });
+    const gh: GitHubRequest = async (path, init) => {
+      if (init?.raw) {
+        return archive
+          ? { status: 200, headers: new Headers(), text: '', bytes: archive, json: null }
+          : { status: 404, headers: new Headers(), text: '', bytes: undefined, json: null };
+      }
+      if (path.includes('/search/code')) {
+        return { status: 200, headers: new Headers(), text: '', json: { total_count: 0, incomplete_results: true, items: [] } };
+      }
+      if (path.includes('/installation/repositories')) {
+        return {
+          status: 200,
+          headers: new Headers(),
+          text: '',
+          json: { total_count: 1, repositories: [{ name: 'test-repo', owner: { login: 'testuser' }, description: '', private: true, pushed_at: '2026-09-18T12:00:00Z', default_branch: 'main' }] }
+        };
+      }
+      if (path.includes('/pulls')) return { status: 200, headers: new Headers(), text: '', json: [] };
+      if (path.includes('/git/trees/')) {
+        return { status: 200, headers: new Headers(), text: '', json: { truncated: false, tree: [{ path: 'worker/src/credential.ts', type: 'blob', size: 60 }] } };
+      }
+      if (/\/repos\/testuser\/test-repo$/.test(path)) {
+        return { status: 200, headers: new Headers(), text: '', json: { default_branch: 'main' } };
+      }
+      return { status: 404, headers: new Headers(), text: '', json: null };
+    };
+    const ctx: ToolContext = {
+      env: {} as Env,
+      identity: { userId: 'u1', githubLogin: 'testuser', installationId: 'inst-1' },
+      track: () => {},
+      gh,
+      ghUser: gh
+    };
+    registerTools(server, ctx);
+    return (server as any)._registeredTools['forge_read'];
+  }
+
+  it('says the search did not complete rather than "0 files matching"', async () => {
+    const readTool = conceptServer();
+    const res = await readTool.handler({ repo: 'test-repo', query: 'quantum entanglement' });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('No files could be matched');
+    expect(res.content[0].text).not.toContain('0 files matching');
+    expect(res.structuredContent.limits.join(' ')).toContain('no absence conclusion');
+  });
+
+  it('answers from committed content when the index does not', async () => {
+    const archive = buildTarball({
+      'testuser-test-repo-main/worker/src/credential.ts': 'export function rotateCredential() {}\n'
+    });
+    const readTool = conceptServer(archive);
+    const res = await readTool.handler({ repo: 'test-repo', query: 'credential rotation' });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain('1 file');
+    expect(res.structuredContent.tree).toEqual(['worker/src/credential.ts']);
   });
 });
 

@@ -241,7 +241,10 @@ const MAX_CONTEXT_LINES = 5;
 
 export interface CommittedTextHit {
   path: string;
+  /** Total occurrences of every needle in this file. */
   count: number;
+  /** How many of the distinct needles appear — how well a multi-word concept fits. */
+  matched: number;
   lines: number[];
 }
 
@@ -257,7 +260,8 @@ export async function searchCommittedText(
   request: GitHubRequest,
   repo: RepoRef,
   ref: string,
-  needles: string[]
+  needles: string[],
+  options: { caseSensitive?: boolean } = {}
 ): Promise<CommittedTextSearch> {
   const wanted = [...new Set(needles.map((needle) => needle.trim()).filter((needle) => needle.length > 0))];
   if (wanted.length === 0) return { hits: [], scanned: 0, truncated: false };
@@ -360,16 +364,23 @@ export async function searchCommittedText(
     const text = decoder.decode(body);
     const lines: number[] = [];
     let count = 0;
+    let matched = 0;
     for (const needle of wanted) {
-      let index = text.indexOf(needle);
-      while (index !== -1) {
+      // A literal match, not a pattern: the needle is escaped, so a `.` or a
+      // `(` in searched text is itself. Case-insensitive by default because a
+      // concept search is a word search, not a case-sensitive identity check.
+      const pattern = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), options.caseSensitive ? 'g' : 'gi');
+      let present = false;
+      for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
         count += 1;
-        if (lines.length < MAX_CONTEXT_LINES) lines.push(lineNumberAt(text, index));
-        index = text.indexOf(needle, index + needle.length);
+        present = true;
+        if (lines.length < MAX_CONTEXT_LINES) lines.push(lineNumberAt(text, match.index));
+        if (match.index === pattern.lastIndex) pattern.lastIndex += 1;
       }
+      if (present) matched += 1;
     }
     if (count > 0) {
-      hits.push({ path: stripArchiveRoot(name), count, lines });
+      hits.push({ path: stripArchiveRoot(name), count, matched, lines });
       if (hits.length >= MAX_MATCH_FILES) {
         truncated = true;
         break;

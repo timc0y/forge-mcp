@@ -84,7 +84,7 @@ import {
 } from './github-intelligence';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
-import { buildPublicSearchQuery, buildSearchQuery, rankSearchResultsWithJev, searchCommittedText, searchGitHubCode, searchGitHubRepos, type SearchResultSet } from './search';
+import { buildPublicSearchQuery, buildSearchQuery, rankSearchResultsWithJev, searchCommittedText, searchGitHubCode, searchGitHubRepos, type SearchItem, type SearchResultSet } from './search';
 import { capture } from './capture';
 import { releaseCaptureQuota, reserveCaptureQuota } from './quota';
 import { requestApproval } from './approve';
@@ -989,7 +989,7 @@ async function readTreeLevel(
     // The index can answer with nothing for code that is there. When it comes
     // back empty or incomplete, read the committed files themselves and answer
     // from them — the repository is the truth, the index is only a shortcut.
-    const committed = await fallbackToCommittedText(ctx, repo, base, [safeNeedle], searched);
+    const committed = await fallbackToCommittedText(ctx, repo, base, [safeNeedle], searched, true);
     const found = committed.found;
     if (found.unavailable) {
       return {
@@ -1012,7 +1012,7 @@ async function readTreeLevel(
     const uniquePaths = [...new Set(shown.map((item) => item.path).filter((path): path is string => Boolean(path)))];
     const limits = [
       ...(committed.used ? [committed.note] : []),
-      ...(found.incomplete ? ['GitHub code search returned a partial answer, so matches may be missing.'] : []),
+      ...(!committed.used && found.incomplete ? ['GitHub code search returned a partial answer, so matches may be missing.'] : []),
       ...(found.total > shown.length ? [`Showing ${shown.length} of ${found.total} code results.`] : []),
       ...changesLimits(changes)
     ];
@@ -1108,7 +1108,7 @@ async function readTreeLevel(
     const uniquePaths = [...new Set(shown.map((item) => item.path).filter((path): path is string => Boolean(path)))];
     const limits = [
       ...(committed.used ? [committed.note] : []),
-      ...(found.incomplete ? ['GitHub code search returned a partial answer, so matches may be missing.'] : []),
+      ...(!committed.used && found.incomplete ? ['GitHub code search returned a partial answer, so matches may be missing.'] : []),
       ...(found.total > shown.length ? [`Showing ${shown.length} of ${found.total} committed-code results.`] : []),
       ...changesLimits(changes)
     ];
@@ -1129,6 +1129,8 @@ async function readTreeLevel(
   let paths = allFilePaths;
   let isSemanticSearch = false;
   let semanticCoverageNote: string | undefined;
+  let semanticUnavailable: string | undefined;
+  let committedFallbackNote: string | undefined;
   let isContentFallback = false;
   let contentFallbackExcerpts: Array<{ path: string; text: string }> = [];
 
@@ -1146,17 +1148,30 @@ async function readTreeLevel(
       paths = allFilePaths.filter((path) => path.toLowerCase().includes(needle));
 
       // A natural concept can be absent from every filename while still being
-      // plainly present in committed code. Only pay for code search when the
-      // cheap path answers produced nothing; GitHub remains the index.
+      // plainly present in committed code. Only pay for a search when the cheap
+      // path answers produced nothing. GitHub is the index; the committed files
+      // are the fallback when the index does not answer, and a search that did
+      // not complete is never allowed to read as "no files match".
       if (paths.length === 0 && trimmed.length >= 3) {
         try {
           const built = buildSearchQuery(trimmed, 'code');
           const withoutRepo = built.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
-          const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 10);
-          if (found.unavailable) semanticCoverageNote = found.unavailable;
-          const ranked = found.unavailable
-            ? []
-            : await rankSearchResultsWithJev(ctx.env, trimmed, found.items);
+          const searched = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 10);
+          const committed = await fallbackToCommittedText(ctx, repo, base, conceptTokens(trimmed), searched);
+
+          let ranked: SearchItem[] = [];
+          if (committed.used) {
+            committedFallbackNote = committed.note;
+            ranked = committed.found.items;
+            if (ranked.length === 0 && committed.found.incomplete) {
+              semanticUnavailable = 'The committed-content search reached its bound without finding a match, so no absence conclusion was made.';
+            }
+          } else if (searched.items.length > 0) {
+            ranked = await rankSearchResultsWithJev(ctx.env, trimmed, searched.items);
+          } else if (searched.unavailable) {
+            semanticUnavailable = searched.unavailable;
+          }
+
           const contentPaths = [...new Set(ranked.map((item) => item.path).filter((path): path is string => Boolean(path)))];
           if (contentPaths.length > 0) {
             paths = contentPaths;
@@ -1220,10 +1235,23 @@ async function readTreeLevel(
     }
   }
 
+  // A query that could not be searched is not a query with no matches. Saying
+  // "0 files" here would be the same false absence the index itself produces.
+  if (paths.length === 0 && semanticUnavailable) {
+    return {
+      summary: `${semanticUnavailable} No files could be matched for "${query?.trim()}" in ${formatRepo(repo)}.${changesSentence(names)}`,
+      structured: withLimits(
+        { tree: [], files: [], changes: names, next: 'Read a known path directly, or try a filename or "find:<exact text>" query.' },
+        [semanticUnavailable, ...changesLimits(changes)]
+      )
+    };
+  }
+
   const shown = paths.slice(0, MAX_TREE_ENTRIES);
 
   const limits: string[] = [];
   if (semanticCoverageNote) limits.push(semanticCoverageNote);
+  if (committedFallbackNote) limits.push(committedFallbackNote);
   if (contentScreened) {
     limits.push('Jev independently screened up to eight committed candidate files; only selected excerpts are returned, not the screened file contents.');
   }
@@ -1279,7 +1307,8 @@ async function fallbackToCommittedText(
   repo: RepoRef,
   base: string,
   needles: string[],
-  searched: SearchResultSet
+  searched: SearchResultSet,
+  caseSensitive = false
 ): Promise<{ found: SearchResultSet; used: boolean; note: string }> {
   const notUsed = { found: searched, used: false, note: '' };
   if (!searched.unavailable && !searched.incomplete && searched.total > 0) return notUsed;
@@ -1287,7 +1316,7 @@ async function fallbackToCommittedText(
   const wanted = needles.map((needle) => needle.trim()).filter((needle) => needle.length > 0);
   if (wanted.length === 0) return notUsed;
 
-  const local = await searchCommittedText(ctx.gh, repo, base, wanted);
+  const local = await searchCommittedText(ctx.gh, repo, base, wanted, { caseSensitive });
   if (local.unavailable) {
     // GitHub's own reason wins when it had one; otherwise the archive is why
     // the search could not complete, and neither may read as absence.
@@ -1296,14 +1325,19 @@ async function fallbackToCommittedText(
       : { found: { total: 0, items: [], unavailable: local.unavailable }, used: false, note: '' };
   }
 
+  // Files matching more of a multi-word concept first, then by raw occurrence
+  // count, so a concept search is not flooded by a file that merely repeats one
+  // common word.
   const items = [...local.hits]
-    .sort((left, right) => right.count - left.count)
+    .sort((left, right) => right.matched - left.matched || right.count - left.count)
     .map((hit) => ({
       id: `${formatRepo(repo)}/${hit.path}`,
       title: `${formatRepo(repo)}:${hit.path}`,
       repo: formatRepo(repo),
       path: hit.path,
-      snippet: `${hit.count} exact occurrence${hit.count === 1 ? '' : 's'}${hit.lines.length > 0 ? ` · lines ${hit.lines.join(', ')}` : ''}`
+      snippet:
+        `${wanted.length > 1 ? `${hit.matched} of ${wanted.length} terms · ` : ''}` +
+        `${hit.count} exact occurrence${hit.count === 1 ? '' : 's'}${hit.lines.length > 0 ? ` · lines ${hit.lines.join(', ')}` : ''}`
     }));
 
   return {
