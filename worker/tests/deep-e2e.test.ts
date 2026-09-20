@@ -57,6 +57,8 @@ function createInMemoryForgeEnvironment() {
           owner: { login: owner ?? "" },
           full_name: fullName,
           default_branch: "main",
+          private: false,
+          description: "Demo project",
           pushed_at: "2026-09-18T12:00:00Z"
         };
       });

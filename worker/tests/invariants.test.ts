@@ -434,7 +434,9 @@ describe('server instructions', () => {
 
   it('keeps deployment smoke aligned with the MCP release version and retired routes removed', async () => {
     const { readFileSync } = await import('node:fs');
-    const { SERVER_VERSION } = await import('../src/mcp');
+    const mcpSource = readFileSync('src/mcp.ts', 'utf8');
+    const serverVersionMatch = /export const SERVER_VERSION = ['"]([^'"]+)['"]/.exec(mcpSource);
+    const SERVER_VERSION = serverVersionMatch ? serverVersionMatch[1] : '';
     const smoke = readFileSync('scripts/smoke.sh', 'utf8');
     expect(smoke).toContain(`"version":"${SERVER_VERSION}"`);
     expect(smoke).not.toContain('/see/');
