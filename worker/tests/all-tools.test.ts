@@ -538,6 +538,61 @@ describe("End-to-End Test for all 5 Forge tools", () => {
     expect(res.structuredContent.limits.some((line: string) => line.includes('Post-commit dependency notice: high GHSA-demo-demo-demo'))).toBe(true);
   });
 
+  it("removes an inert legacy forge/* ref so the fixed forge branch can be created", async () => {
+    const { server, calls } = createMockToolContext({
+      "GET /repos/testuser/test-repo/git/ref/heads/forge": { status: 404, json: null },
+      "GET /repos/testuser/test-repo/git/matching-refs/heads/forge": {
+        status: 200,
+        json: [{ ref: "refs/heads/forge/duplicate-fragment-smoke", object: { sha: "oldlegacysha0001", type: "commit" } }]
+      },
+      "GET /repos/testuser/test-repo/compare/headcommit12345678...forge/duplicate-fragment-smoke": {
+        status: 200,
+        json: { ahead_by: 0, behind_by: 5 }
+      },
+      "DELETE /repos/testuser/test-repo/git/refs/heads/forge/duplicate-fragment-smoke": { status: 204, json: null },
+      "POST /repos/testuser/test-repo/git/refs": { status: 201, json: { object: { sha: "headcommit12345678" } } }
+    });
+    const editTool = (server as any)._registeredTools["forge_edit"];
+
+    const res = await editTool.handler({
+      repo: "test-repo",
+      change: "Add new feature",
+      message: "feat: new helper",
+      files: [{ path: "src/helper.ts", content: "export const help = true;" }]
+    });
+
+    expect(res.isError).toBeFalsy();
+    expect(calls).toContain("DELETE /repos/testuser/test-repo/git/refs/heads/forge/duplicate-fragment-smoke");
+    expect(res.structuredContent.change).toBe("forge");
+    expect(res.structuredContent.limits.join(" ")).toContain("Removed the older unused Forge branch");
+  });
+
+  it("refuses when a legacy forge/* branch holds commits not on the default branch", async () => {
+    const { server } = createMockToolContext({
+      "GET /repos/testuser/test-repo/git/ref/heads/forge": { status: 404, json: null },
+      "GET /repos/testuser/test-repo/git/matching-refs/heads/forge": {
+        status: 200,
+        json: [{ ref: "refs/heads/forge/duplicate-fragment-smoke", object: { sha: "oldlegacysha0001", type: "commit" } }]
+      },
+      "GET /repos/testuser/test-repo/compare/headcommit12345678...forge/duplicate-fragment-smoke": {
+        status: 200,
+        json: { ahead_by: 2, behind_by: 5 }
+      }
+    });
+    const editTool = (server as any)._registeredTools["forge_edit"];
+
+    const res = await editTool.handler({
+      repo: "test-repo",
+      change: "Add new feature",
+      message: "feat: new helper",
+      files: [{ path: "src/helper.ts", content: "export const help = true;" }]
+    });
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("older Forge branch forge/duplicate-fragment-smoke");
+    expect(res.content[0].text).toContain("a git ref cannot be both a branch and a directory");
+  });
+
   it("executes forge_edit proposing work to the Forge change branch", async () => {
     const { server } = createMockToolContext();
     const editTool = (server as any)._registeredTools["forge_edit"];

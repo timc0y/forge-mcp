@@ -18,6 +18,7 @@
 
 import { formatRepo } from './contracts';
 import type { CommitReceipt, FileWrite, GitHubRequest, RepoRef } from './contracts';
+import { CHANGE_BRANCH } from './change';
 import { ForgeError } from './errors';
 
 /**
@@ -123,7 +124,15 @@ export async function commitFiles(
   // The head we resolve every fragment edit against. Reading content at this
   // exact SHA — not at the branch name — means a branch that moves mid-write
   // cannot make us apply a fragment to a file we never saw.
-  const original = await resolveHead(request, api, branch, baseBranch);
+  const { sha: original, removedLegacy } = await resolveHead(request, repo, api, branch, baseBranch);
+  const notes =
+    removedLegacy.length > 0
+      ? [
+          `Removed the older unused Forge branch${removedLegacy.length === 1 ? '' : 'es'} ${removedLegacy.join(', ')} ` +
+            `so the fixed ${branch} branch could be created. Nothing on ${baseBranch} was lost — that branch held no ` +
+            'commit this repository did not already have.'
+        ]
+      : [];
 
   if (outOfTime()) giveUp('resolving the branch');
   const resolved = await resolveContents(request, api, original, files);
@@ -170,7 +179,7 @@ export async function commitFiles(
 
     // Identical tree: the content already matched. No commit, and say so.
     if (tree === baseTree) {
-      return receipt(repo, branch, head, 'unchanged', paths);
+      return receipt(repo, branch, head, 'unchanged', paths, notes);
     }
 
     const commit = await createCommit(request, api, message, tree, head);
@@ -196,7 +205,7 @@ export async function commitFiles(
           retryable: true
         });
       }
-      return receipt(repo, branch, commit, 'committed', paths);
+      return receipt(repo, branch, commit, 'committed', paths, notes);
     }
 
     // 422 is GitHub's non-fast-forward: the branch moved between our read and
@@ -745,12 +754,13 @@ async function createCommit(
  */
 async function resolveHead(
   request: GitHubRequest,
+  repo: RepoRef,
   api: string,
   branch: string,
   baseBranch: string
-): Promise<string> {
+): Promise<{ sha: string; removedLegacy: string[] }> {
   const existing = await readRef(request, api, branch);
-  if (existing !== null) return existing;
+  if (existing !== null) return { sha: existing, removedLegacy: [] };
 
   const base = await readRef(request, api, baseBranch);
   if (base === null) {
@@ -760,6 +770,8 @@ async function resolveHead(
       details: { branch, baseBranch }
     });
   }
+
+  const removedLegacy = await clearLegacyChangeRefs(request, repo, api, branch, baseBranch, base);
 
   const created = await request(`${api}/git/refs`, {
     method: 'POST',
@@ -774,15 +786,91 @@ async function resolveHead(
         retryable: true
       });
     }
-    return sha;
+    return { sha, removedLegacy };
   }
   // 422 usually means a concurrent caller created it first. Read what they made
   // rather than assuming it is what we asked for.
   if (created.status === 422) {
     const raced = await readRef(request, api, branch);
-    if (raced !== null) return raced;
+    if (raced !== null) return { sha: raced, removedLegacy };
   }
   throw githubError(created, `creation of ${branch}`);
+}
+
+/** Branches under this prefix are the old Forge naming scheme. */
+const LEGACY_BRANCH_PREFIX = 'forge/';
+
+/**
+ * A git ref cannot be both a branch and a directory, so while any legacy
+ * `forge/<name>` ref exists GitHub refuses to create the fixed `forge` branch —
+ * with a bare 422 "Reference update failed" that reads like a validation
+ * problem rather than a name clash, and leaves the whole review workflow dead.
+ *
+ * `forge/` is Forge's own namespace. A leftover that carries no commit the base
+ * does not already have is inert, and is removed exactly as an unused review
+ * branch is after a no-op write. One that does carry commits is real proposed
+ * work: it is reported, never deleted, and a git ref cannot be both names, so
+ * the caller has to resolve it before a new change can start.
+ */
+async function clearLegacyChangeRefs(
+  request: GitHubRequest,
+  repo: RepoRef,
+  api: string,
+  branch: string,
+  baseBranch: string,
+  base: string
+): Promise<string[]> {
+  if (branch !== CHANGE_BRANCH) return [];
+
+  const listed = await request(`${api}/git/matching-refs/heads/${encodePath(CHANGE_BRANCH)}`);
+  if (listed.status === 404) return [];
+  if (listed.status !== 200) throw githubError(listed, `check for older ${CHANGE_BRANCH}/ branches`);
+  if (!Array.isArray(listed.json)) {
+    throw new ForgeError({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE',
+      message: `GitHub returned an unreadable list of ${LEGACY_BRANCH_PREFIX} branches.`,
+      retryable: true
+    });
+  }
+
+  const names = listed.json
+    .map((entry) => (isRecord(entry) && typeof entry.ref === 'string' ? entry.ref : ''))
+    .filter((ref) => ref.startsWith(`refs/heads/${LEGACY_BRANCH_PREFIX}`))
+    .map((ref) => ref.slice('refs/heads/'.length));
+
+  const holding: string[] = [];
+  const removed: string[] = [];
+  for (const name of names) {
+    const compared = await request(`${api}/compare/${base}...${encodePath(name)}`);
+    const aheadBy = isRecord(compared.json) ? compared.json.ahead_by : undefined;
+    // Anything Forge cannot prove inert is treated as work: a guard that
+    // degrades open would delete a branch it cannot account for.
+    if (compared.status !== 200 || typeof aheadBy !== 'number' || aheadBy > 0) {
+      holding.push(name);
+      continue;
+    }
+    const deleted = await request(`${api}/git/refs/heads/${encodePath(name)}`, { method: 'DELETE' });
+    if (deleted.status === 204 || deleted.status === 200) removed.push(name);
+    else holding.push(name);
+  }
+
+  if (holding.length > 0) {
+    throw new ForgeError({
+      code: 'FORGE_CONFLICT',
+      message:
+        `${formatRepo(repo)} has an older Forge branch ${holding.join(', ')} that holds commits not on ` +
+        `${baseBranch}. A branch named ${CHANGE_BRANCH}/… prevents the fixed ${CHANGE_BRANCH} branch from ` +
+        `existing, because a git ref cannot be both a branch and a directory. Merge or discard that work ` +
+        `first, then write this change again.`,
+      details: { branches: holding, baseBranch }
+    });
+  }
+
+  return removed;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 async function readRef(request: GitHubRequest, api: string, branch: string): Promise<string | null> {
@@ -878,7 +966,8 @@ function receipt(
   branch: string,
   sha: string,
   outcome: 'committed' | 'unchanged',
-  paths: string[]
+  paths: string[],
+  notes: string[] = []
 ): CommitReceipt {
   return {
     repo: formatRepo(repo),
@@ -886,7 +975,8 @@ function receipt(
     sha,
     url: `https://github.com/${repo.owner}/${repo.name}/commit/${sha}`,
     outcome,
-    paths
+    paths,
+    ...(notes.length > 0 ? { notes } : {})
   };
 }
 

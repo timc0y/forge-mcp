@@ -148,6 +148,18 @@ pnpm exec wrangler d1 migrations apply forge-v1-production --remote
 - **The published MCP catalogue is a frozen snapshot.** Changing a tool's name
   or schema needs a re-scan and a republished version in the client. It is a
   release event, not an edit.
+- **A legacy `forge/<name>` branch blocks the fixed `forge` branch.** A git ref
+  cannot be both a branch and a directory, so while any `forge/…` ref exists
+  GitHub refuses to create `forge` with a bare 422. Writing a change removes a
+  legacy ref that holds no commit the default branch does not already have, and
+  says so in the result; one that holds commits is refused by name rather than
+  deleted.
+- **GitHub code search is an index, not the truth.** It can answer 200 with
+  `incomplete_results: true` and no matches for code that exists. Forge never
+  reads that as absence; a repository-scoped exact or concept search falls back
+  to reading the committed files (the repository archive, one request, bounded).
+  A `limits` line always says when a result came from committed content rather
+  than the index.
 - **`FORGE_PUBLIC_ORIGIN` is three things at once** — mount path, approval-link
   origin, and OAuth issuer. Changing it invalidates outstanding approval links.
 - **Historical deployments may still have executor-era containers.** The current

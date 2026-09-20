@@ -132,10 +132,12 @@ function requester(token: string): GitHubRequest {
     if (body !== undefined) headers.set('content-type', 'application/json');
 
     let response: Response;
-    let text: string;
+    let text = '';
+    let bytes: ArrayBuffer | undefined;
     try {
       response = await fetch(`${API_BASE}${path}`, { method: init?.method ?? 'GET', headers, body });
-      text = await response.text();
+      if (init?.raw) bytes = await response.arrayBuffer();
+      else text = await response.text();
     } catch {
       throw new ForgeError({
         code: 'FORGE_UPSTREAM_UNAVAILABLE',
@@ -143,7 +145,7 @@ function requester(token: string): GitHubRequest {
         retryable: true
       });
     }
-    return { status: response.status, json: parseJson(text), text, headers: response.headers };
+    return { status: response.status, json: parseJson(text), text, bytes, headers: response.headers };
   };
 }
 

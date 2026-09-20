@@ -1,8 +1,10 @@
+import { gzipSync } from 'node:zlib';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   buildPublicSearchQuery,
   buildSearchQuery,
   rankSearchResultsWithJev,
+  searchCommittedText,
   searchGitHubCode,
   searchGitHubRepos,
   type SearchItem
@@ -11,6 +13,84 @@ import { registerTools, type ToolContext } from '../src/tools';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
+
+function tarEntry(path: string, content: string): Uint8Array {
+  const name = new TextEncoder().encode(path);
+  const data = new TextEncoder().encode(content);
+  const block = new Uint8Array(512 + Math.ceil(data.length / 512) * 512);
+  block.set(name.subarray(0, 100), 0);
+  block.set(new TextEncoder().encode(data.length.toString(8).padStart(11, '0')), 124);
+  block[156] = '0'.charCodeAt(0);
+  block.set(data, 512);
+  return block;
+}
+
+function buildTarball(files: Record<string, string>): ArrayBuffer {
+  const blocks = Object.entries(files).map(([path, content]) => tarEntry(path, content));
+  blocks.push(new Uint8Array(1024));
+  const tar = new Uint8Array(blocks.reduce((total, block) => total + block.length, 0));
+  let offset = 0;
+  for (const block of blocks) {
+    tar.set(block, offset);
+    offset += block.length;
+  }
+  const gz = gzipSync(tar);
+  return gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength) as ArrayBuffer;
+}
+
+describe('GitHub search completeness', () => {
+  const incompleteRequest: GitHubRequest = async () => ({
+    status: 200,
+    headers: new Headers(),
+    text: '',
+    json: { total_count: 0, incomplete_results: true, items: [] }
+  });
+
+  it('never turns an incomplete empty code search into zero matches', async () => {
+    const result = await searchGitHubCode(incompleteRequest, 'repo:o/r thing', 10);
+    expect(result.total).toBe(0);
+    expect(result.items).toHaveLength(0);
+    expect(result.unavailable).toContain('incomplete');
+  });
+
+  it('never turns an incomplete empty repository search into zero matches', async () => {
+    const result = await searchGitHubRepos(incompleteRequest, 'thing', 10);
+    expect(result.unavailable).toContain('incomplete');
+  });
+});
+
+describe('committed-content search', () => {
+  it('finds literal matches with counts and line numbers', async () => {
+    const archive = buildTarball({
+      'o-r-sh/worker/src/symbol.ts': 'export const knownSymbol = 1;\nconst other = knownSymbol;\n',
+      'o-r-sh/README.md': 'unrelated\n'
+    });
+    const request: GitHubRequest = async (_path, init) => {
+      expect(init?.raw).toBe(true);
+      return { status: 200, headers: new Headers(), text: '', bytes: archive, json: null };
+    };
+
+    const result = await searchCommittedText(request, { owner: 'o', name: 'r' }, 'main', ['knownSymbol']);
+
+    expect(result.unavailable).toBeUndefined();
+    expect(result.truncated).toBe(false);
+    expect(result.hits).toEqual([{ path: 'worker/src/symbol.ts', count: 2, lines: [1, 2] }]);
+  });
+
+  it('reports unavailable rather than absence when the archive cannot be read', async () => {
+    const request: GitHubRequest = async () => ({
+      status: 404,
+      headers: new Headers(),
+      text: '',
+      bytes: undefined,
+      json: null
+    });
+
+    const result = await searchCommittedText(request, { owner: 'o', name: 'r' }, 'main', ['knownSymbol']);
+    expect(result.hits).toHaveLength(0);
+    expect(result.unavailable).toContain('No absence conclusion');
+  });
+});
 
 describe('GitHub search query shaping', () => {
   it('adds obvious language and code-noise filters', () => {

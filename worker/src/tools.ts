@@ -84,7 +84,7 @@ import {
 } from './github-intelligence';
 import { commitFiles } from './write';
 import { assertNotNearExisting, createRepo, defaultBranch } from './repo';
-import { buildPublicSearchQuery, buildSearchQuery, rankSearchResultsWithJev, searchGitHubCode, searchGitHubRepos } from './search';
+import { buildPublicSearchQuery, buildSearchQuery, rankSearchResultsWithJev, searchCommittedText, searchGitHubCode, searchGitHubRepos, type SearchResultSet } from './search';
 import { capture } from './capture';
 import { releaseCaptureQuota, reserveCaptureQuota } from './quota';
 import { requestApproval } from './approve';
@@ -985,7 +985,12 @@ async function readTreeLevel(
   const findNeedle = trimmedQuery ? exactFindNeedle(trimmedQuery) : null;
   if (findNeedle) {
     const safeNeedle = findNeedle.replaceAll('"', ' ');
-    const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} "${safeNeedle}"`, 25);
+    const searched = await searchGitHubCode(gh, `repo:${formatRepo(repo)} "${safeNeedle}"`, 25);
+    // The index can answer with nothing for code that is there. When it comes
+    // back empty or incomplete, read the committed files themselves and answer
+    // from them — the repository is the truth, the index is only a shortcut.
+    const committed = await fallbackToCommittedText(ctx, repo, base, [safeNeedle], searched);
+    const found = committed.found;
     if (found.unavailable) {
       return {
         summary: `${found.unavailable} Exact search for "${findNeedle}" in ${formatRepo(repo)} was not completed.`,
@@ -1000,10 +1005,14 @@ async function readTreeLevel(
         )
       };
     }
-    const ranked = await rankSearchResultsWithJev(ctx.env, findNeedle, found.items);
+    const ranked = committed.used
+      ? found.items
+      : await rankSearchResultsWithJev(ctx.env, findNeedle, found.items);
     const shown = ranked.slice(0, 25);
     const uniquePaths = [...new Set(shown.map((item) => item.path).filter((path): path is string => Boolean(path)))];
     const limits = [
+      ...(committed.used ? [committed.note] : []),
+      ...(found.incomplete ? ['GitHub code search returned a partial answer, so matches may be missing.'] : []),
       ...(found.total > shown.length ? [`Showing ${shown.length} of ${found.total} code results.`] : []),
       ...changesLimits(changes)
     ];
@@ -1073,7 +1082,11 @@ async function readTreeLevel(
   if (codeNeedle) {
     const built = buildSearchQuery(codeNeedle, 'code');
     const withoutRepo = built.replace(/(?:^|\s)repo:[^\s]+/gi, ' ').trim();
-    const found = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 15);
+    const searched = await searchGitHubCode(gh, `repo:${formatRepo(repo)} ${withoutRepo}`, 15);
+    // Same fallback as exact search: a degraded index must not read as absence,
+    // and the committed files are the answer the index was standing in for.
+    const committed = await fallbackToCommittedText(ctx, repo, base, conceptTokens(codeNeedle), searched);
+    const found = committed.found;
     if (found.unavailable) {
       return {
         summary: `${found.unavailable} Semantic code search for "${codeNeedle}" in ${formatRepo(repo)} was not completed.`,
@@ -1088,15 +1101,19 @@ async function readTreeLevel(
         )
       };
     }
-    const ranked = await rankSearchResultsWithJev(ctx.env, codeNeedle, found.items);
+    const ranked = committed.used
+      ? found.items
+      : await rankSearchResultsWithJev(ctx.env, codeNeedle, found.items);
     const shown = ranked.slice(0, 15);
     const uniquePaths = [...new Set(shown.map((item) => item.path).filter((path): path is string => Boolean(path)))];
     const limits = [
+      ...(committed.used ? [committed.note] : []),
+      ...(found.incomplete ? ['GitHub code search returned a partial answer, so matches may be missing.'] : []),
       ...(found.total > shown.length ? [`Showing ${shown.length} of ${found.total} committed-code results.`] : []),
       ...changesLimits(changes)
     ];
     return {
-      summary: `Found ${found.total} committed-code result${found.total === 1 ? '' : 's'} for "${codeNeedle}" in ${formatRepo(repo)}; semantically ranked.${changesSentence(names)}`,
+      summary: `Found ${found.total} committed-code result${found.total === 1 ? '' : 's'} for "${codeNeedle}" in ${formatRepo(repo)}; ${committed.used ? 'from the committed files' : 'semantically ranked'}.${changesSentence(names)}`,
       structured: withLimits(
         {
           tree: uniquePaths,
@@ -1246,6 +1263,68 @@ async function readTreeLevel(
       limits
     )
   };
+}
+
+/**
+ * Answers a repository-scoped search from the repository's own committed files
+ * when GitHub's code-search index comes back empty or incomplete.
+ *
+ * The index is a shortcut, not the truth: a 200 with `incomplete_results: true`
+ * and no matches means "the index did not answer", not "this code is absent".
+ * The archive answers the same question exactly, within a stated bound, so a
+ * degraded index stops being an absence and stops being a dead end.
+ */
+async function fallbackToCommittedText(
+  ctx: ToolContext,
+  repo: RepoRef,
+  base: string,
+  needles: string[],
+  searched: SearchResultSet
+): Promise<{ found: SearchResultSet; used: boolean; note: string }> {
+  const notUsed = { found: searched, used: false, note: '' };
+  if (!searched.unavailable && !searched.incomplete && searched.total > 0) return notUsed;
+
+  const wanted = needles.map((needle) => needle.trim()).filter((needle) => needle.length > 0);
+  if (wanted.length === 0) return notUsed;
+
+  const local = await searchCommittedText(ctx.gh, repo, base, wanted);
+  if (local.unavailable) {
+    // GitHub's own reason wins when it had one; otherwise the archive is why
+    // the search could not complete, and neither may read as absence.
+    return searched.unavailable
+      ? notUsed
+      : { found: { total: 0, items: [], unavailable: local.unavailable }, used: false, note: '' };
+  }
+
+  const items = [...local.hits]
+    .sort((left, right) => right.count - left.count)
+    .map((hit) => ({
+      id: `${formatRepo(repo)}/${hit.path}`,
+      title: `${formatRepo(repo)}:${hit.path}`,
+      repo: formatRepo(repo),
+      path: hit.path,
+      snippet: `${hit.count} exact occurrence${hit.count === 1 ? '' : 's'}${hit.lines.length > 0 ? ` · lines ${hit.lines.join(', ')}` : ''}`
+    }));
+
+  return {
+    found: { total: items.length, items, ...(local.truncated ? { incomplete: true } : {}) },
+    used: true,
+    note: local.truncated
+      ? 'GitHub code search did not answer; these matches were read from the committed files under a size bound, so more may exist.'
+      : "GitHub code search did not answer; these matches were read directly from the repository's committed files."
+  };
+}
+
+/** Words worth looking up verbatim when a concept falls back to committed content. */
+function conceptTokens(concept: string): string[] {
+  return [
+    ...new Set(
+      concept
+        .split(/[^A-Za-z0-9_]+/)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 3)
+    )
+  ].slice(0, 5);
 }
 
 async function readFilesLevel(
@@ -1940,7 +2019,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         // only sane response is to write again. A durable commit reported as a
         // terminal failure is the worst result this product can produce, so the
         // pull request and the change list degrade to limitations instead.
-        const limits: string[] = [];
+        const limits: string[] = [...(commit.notes ?? [])];
         if (usedLegacyCatalog) {
           limits.push(
             'This edit used the deprecated intent input from cached MCP metadata. Forge preserved the old safe behavior by keeping the work on the review branch. Refresh the Forge connection and start a new conversation before further edits.'

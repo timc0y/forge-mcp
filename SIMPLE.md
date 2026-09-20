@@ -87,6 +87,15 @@ Forge hosts nothing.
   the work. Do not add path classification, intent-based branch names, change
   IDs or session state. Reconsider when users need two independent proposals
   open in one repository.
+- A git ref cannot be both a branch and a directory, so old `forge/<name>`
+  branches make the fixed `forge` branch impossible to create. Forge's namespace
+  is cleaned of inert leftovers (no commit the base does not already have) and
+  says so; a leftover holding real commits is refused by name, never deleted.
+  The fixed branch stays fixed rather than falling back to a variable name.
+- GitHub's code-search index can report `incomplete_results` with no matches for
+  code that exists. A partial answer is never an absence: repository-scoped
+  search falls back to the committed files themselves, bounded, and names the
+  source of every result. The index is a shortcut, GitHub is still the truth.
 - A GitHub installation id is a snapshot GitHub replaces without telling Forge:
   reinstalling the App mints a new id and every token request against the old one
   is a 404. Session startup re-derives the live installation for the account from

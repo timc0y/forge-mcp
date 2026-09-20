@@ -2,7 +2,7 @@
  * Small GitHub search helpers. GitHub is the index; Jev only ranks the bounded
  * results GitHub returns.
  */
-import type { GitHubRequest } from './contracts';
+import type { GitHubRequest, RepoRef } from './contracts';
 import type { Env } from './env';
 import { typesafeSystemOne } from './jev';
 
@@ -23,6 +23,11 @@ export interface SearchResultSet {
   items: SearchItem[];
   /** Present when GitHub did not answer successfully; never means zero matches. */
   unavailable?: string;
+  /**
+   * GitHub answered with `incomplete_results`, so what is here is a partial
+   * answer. Never reported as a complete result count.
+   */
+  incomplete?: boolean;
 }
 
 function unavailableSearch(kind: 'repository' | 'code', status: number): SearchResultSet {
@@ -94,9 +99,25 @@ export async function searchGitHubRepos(
     return unavailableSearch('repository', response.status);
   }
 
-  const body = response.json as { total_count?: number; items?: Array<Record<string, unknown>> };
+  const body = response.json as {
+    total_count?: number;
+    items?: Array<Record<string, unknown>>;
+    incomplete_results?: unknown;
+  };
   const total = body?.total_count ?? 0;
   const rawItems = body?.items ?? [];
+  const incomplete = body?.incomplete_results === true;
+
+  // GitHub's own partial-answer flag. An empty partial answer is not a zero:
+  // reporting it as one is the false absence this product must never produce.
+  if (incomplete && rawItems.length === 0) {
+    return {
+      total: 0,
+      items: [],
+      unavailable:
+        'GitHub repository search returned an incomplete index result and no matches, so no absence conclusion was made.'
+    };
+  }
 
   const items: SearchItem[] = rawItems.map((r) => {
     const repoFullName = String(r.full_name ?? '');
@@ -113,7 +134,7 @@ export async function searchGitHubRepos(
     };
   });
 
-  return { total, items };
+  return { total, items, ...(incomplete ? { incomplete: true } : {}) };
 }
 
 /**
@@ -159,10 +180,24 @@ export async function searchGitHubCode(
       repository?: { full_name?: string; description?: string };
       text_matches?: Array<{ fragment?: string }>;
     }>;
+    incomplete_results?: unknown;
   };
 
   const total = body?.total_count ?? 0;
   const rawItems = body?.items ?? [];
+  const incomplete = body?.incomplete_results === true;
+
+  // An empty partial answer is not a zero. GitHub's code-search index can
+  // answer 200 with `incomplete_results: true` and no items for code that
+  // plainly exists, so it must never be read as "this code is not there".
+  if (incomplete && rawItems.length === 0) {
+    return {
+      total: 0,
+      items: [],
+      unavailable:
+        'GitHub code search returned an incomplete index result and no matches, so no absence conclusion was made.'
+    };
+  }
 
   const items: SearchItem[] = rawItems.map((item) => {
     const repo = String(item.repository?.full_name ?? '');
@@ -182,7 +217,194 @@ export async function searchGitHubCode(
     };
   });
 
-  return { total, items };
+  return { total, items, ...(incomplete ? { incomplete: true } : {}) };
+}
+
+// ---------------------------------------------------------------------------
+// Committed content, read from the repository itself
+// ---------------------------------------------------------------------------
+
+/**
+ * The one request that returns a repository's committed files is its archive.
+ * GitHub's code-search index is a separate service that can answer 200 with
+ * `incomplete_results: true` and no matches for code that is plainly there, so
+ * repository-scoped search cannot depend on it alone. The archive is bounded
+ * and read directly, which makes a literal search exact and complete up to the
+ * stated limits — and honest when those limits are reached.
+ */
+const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
+const MAX_UNPACKED_BYTES = 64 * 1024 * 1024;
+const MAX_CONTENT_FILE_BYTES = 512 * 1024;
+const MAX_SCANNED_FILES = 5000;
+const MAX_MATCH_FILES = 50;
+const MAX_CONTEXT_LINES = 5;
+
+export interface CommittedTextHit {
+  path: string;
+  count: number;
+  lines: number[];
+}
+
+export interface CommittedTextSearch {
+  hits: CommittedTextHit[];
+  scanned: number;
+  /** A bound was reached, so the search is not exhaustive and must not read as absence. */
+  truncated: boolean;
+  unavailable?: string;
+}
+
+export async function searchCommittedText(
+  request: GitHubRequest,
+  repo: RepoRef,
+  ref: string,
+  needles: string[]
+): Promise<CommittedTextSearch> {
+  const wanted = [...new Set(needles.map((needle) => needle.trim()).filter((needle) => needle.length > 0))];
+  if (wanted.length === 0) return { hits: [], scanned: 0, truncated: false };
+
+  let response: Awaited<ReturnType<GitHubRequest>>;
+  try {
+    response = await request(
+      `/repos/${repo.owner}/${repo.name}/tarball/${ref.split('/').map(encodeURIComponent).join('/')}`,
+      { raw: true, accept: 'application/vnd.github+json' }
+    );
+  } catch {
+    return {
+      hits: [],
+      scanned: 0,
+      truncated: false,
+      unavailable: 'The committed-content archive could not be read, so no absence conclusion was made.'
+    };
+  }
+
+  if (response.status !== 200 || !response.bytes) {
+    return {
+      hits: [],
+      scanned: 0,
+      truncated: false,
+      unavailable: `Committed-content search is unavailable (GitHub archive HTTP ${response.status}). No absence conclusion was made.`
+    };
+  }
+  if (response.bytes.byteLength > MAX_ARCHIVE_BYTES) {
+    return {
+      hits: [],
+      scanned: 0,
+      truncated: true,
+      unavailable: 'This repository is too large for a bounded committed-content search. No absence conclusion was made.'
+    };
+  }
+
+  let tar: Uint8Array;
+  try {
+    const stream = new Blob([response.bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    tar = new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return {
+      hits: [],
+      scanned: 0,
+      truncated: false,
+      unavailable: 'GitHub returned an unreadable repository archive. No absence conclusion was made.'
+    };
+  }
+  if (tar.byteLength > MAX_UNPACKED_BYTES) {
+    return {
+      hits: [],
+      scanned: 0,
+      truncated: true,
+      unavailable: 'This repository unpacks beyond the committed-content search bound. No absence conclusion was made.'
+    };
+  }
+
+  const decoder = new TextDecoder('utf-8');
+  const hits: CommittedTextHit[] = [];
+  let scanned = 0;
+  let truncated = false;
+  let longName: string | null = null;
+
+  for (let offset = 0; offset + 512 <= tar.byteLength; ) {
+    const header = tar.subarray(offset, offset + 512);
+    const size = readOctal(header, 124, 12);
+    const type = String.fromCharCode(header[156] ?? 0);
+    const content = tar.subarray(offset + 512, offset + 512 + size);
+    offset += 512 + Math.ceil(size / 512) * 512;
+
+    let name = readCString(header, 0, 100);
+    const prefix = readCString(header, 345, 155);
+    if (prefix) name = `${prefix}/${name}`;
+
+    if (type === 'L') {
+      longName = readCString(content, 0, size);
+      continue;
+    }
+    if (longName !== null) {
+      name = longName;
+      longName = null;
+    }
+    if (!name || name.endsWith('/')) continue;
+
+    scanned += 1;
+    if (scanned > MAX_SCANNED_FILES) {
+      truncated = true;
+      break;
+    }
+    // A file too large to read might contain a match, so skipping it makes the
+    // result partial rather than empty.
+    if (size === 0 || size > MAX_CONTENT_FILE_BYTES) {
+      if (size > MAX_CONTENT_FILE_BYTES) truncated = true;
+      continue;
+    }
+
+    const body = content.subarray(0, size);
+    if (body.includes(0)) continue;
+
+    const text = decoder.decode(body);
+    const lines: number[] = [];
+    let count = 0;
+    for (const needle of wanted) {
+      let index = text.indexOf(needle);
+      while (index !== -1) {
+        count += 1;
+        if (lines.length < MAX_CONTEXT_LINES) lines.push(lineNumberAt(text, index));
+        index = text.indexOf(needle, index + needle.length);
+      }
+    }
+    if (count > 0) {
+      hits.push({ path: stripArchiveRoot(name), count, lines });
+      if (hits.length >= MAX_MATCH_FILES) {
+        truncated = true;
+        break;
+      }
+    }
+  }
+
+  return { hits, scanned, truncated };
+}
+
+function readOctal(bytes: Uint8Array, start: number, length: number): number {
+  const raw = readCString(bytes, start, length).trim();
+  const value = Number.parseInt(raw, 8);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function readCString(bytes: Uint8Array, start: number, length: number): string {
+  const slice = bytes.subarray(start, start + length);
+  const end = slice.indexOf(0);
+  const body = end === -1 ? slice : slice.subarray(0, end);
+  let out = '';
+  for (const byte of body) out += String.fromCharCode(byte);
+  return out.trim();
+}
+
+/** GitHub archives every file under `owner-repo-sha/`; a result is repo-relative. */
+function stripArchiveRoot(name: string): string {
+  const slash = name.indexOf('/');
+  return slash === -1 ? name : name.slice(slash + 1);
+}
+
+function lineNumberAt(text: string, index: number): number {
+  let line = 1;
+  for (let i = 0; i < index; i += 1) if (text.charCodeAt(i) === 10) line += 1;
+  return line;
 }
 
 /**

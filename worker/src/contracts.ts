@@ -28,11 +28,15 @@ export function formatRepo(repo: RepoRef): string {
  * One shape for every GitHub call, so no module builds its own client.
  * `accept` selects a media type — `application/vnd.github.diff` returns a
  * unified diff in `text` with `json` left null.
+ *
+ * `raw` asks for the body as bytes instead of text. Only the repository archive
+ * needs it: a tarball is gzip, and decoding it as UTF-8 would corrupt it before
+ * anyone could decompress it.
  */
 export type GitHubRequest = (
   path: string,
-  init?: { method?: string; body?: unknown; accept?: string }
-) => Promise<{ status: number; json: unknown; text: string; headers: Headers }>;
+  init?: { method?: string; body?: unknown; accept?: string; raw?: boolean }
+) => Promise<{ status: number; json: unknown; text: string; bytes?: ArrayBuffer; headers: Headers }>;
 
 // ---------------------------------------------------------------------------
 // Changes
@@ -118,6 +122,8 @@ export interface CommitReceipt {
   /** An identical tree makes no commit and says so, rather than faking one. */
   outcome: 'committed' | 'unchanged';
   paths: string[];
+  /** Housekeeping the write performed that a caller should be told about. */
+  notes?: string[];
 }
 
 // ---------------------------------------------------------------------------
