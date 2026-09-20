@@ -1,0 +1,40 @@
+name: Forge analysis
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pnpm install --ignore-workspace --frozen-lockfile
+      - name: Build exact-commit Forge analysis
+        env:
+          FORGE_ANALYSIS_SOURCE_SHA: ${{ github.sha }}
+          FORGE_ANALYSIS_RUN_ID: ${{ github.run_id }}
+          FORGE_ANALYSIS_RUN_ATTEMPT: ${{ github.run_attempt }}
+          FORGE_ANALYSIS_WORKFLOW_PATH: .github/workflows/forge-analysis.yml
+          FORGE_ANALYSIS_CONFIGURATION_HASH: c7e327f805fe049793fa5e7cc1c7d8cc8fa4e048dd0748c73ddd9e93db6ea59e
+        run: node scripts/forge-analysis.mjs forge-analysis.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-analysis-${{ github.sha }}-${{ github.run_attempt }}
+          path: worker/forge-analysis.json
+          if-no-files-found: error
+          retention-days: 7
