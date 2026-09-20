@@ -48,3 +48,6 @@ jobs:
       # does not exist) and the 512-character budget on server instructions.
       - name: Invariants
         run: pnpm test
+
+      - name: Worker bundle dry run
+        run: pnpm exec wrangler deploy --dry-run --config wrangler.jsonc --env="" --outdir /tmp/forge-worker
