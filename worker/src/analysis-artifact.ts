@@ -106,7 +106,11 @@ export async function readAnalysisArtifact(snapshot: Snapshot): Promise<Record<s
   if (runs.status !== 200) githubFailure(runs.status, 'exact-commit Actions evidence (Actions read permission required)');
   const listed = object(runs.json)?.workflow_runs;
   if (!Array.isArray(listed)) refused('malformed workflow list');
-  const matches = listed.map(object).filter((run) => run?.head_sha === snapshot.identity.sha && run.path === config.workflowPath);
+  const matches = listed.map(object).filter((run) => {
+    const runPath = run?.path;
+    const sameWorkflow = typeof runPath === 'string' && (runPath === config.workflowPath || runPath.startsWith(`${config.workflowPath}@`));
+    return run?.head_sha === snapshot.identity.sha && sameWorkflow;
+  });
   matches.sort((a, b) => Number(b!.run_number) - Number(a!.run_number));
   const latest = matches[0];
   if (!latest || !Number.isSafeInteger(latest.id) || !Number.isSafeInteger(latest.run_attempt)) refused('no matching workflow run identity');
