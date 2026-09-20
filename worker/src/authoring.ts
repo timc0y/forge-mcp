@@ -33,7 +33,7 @@ async function target(ctx: ToolContext, repo: RepoRef, description: string, priv
 export async function author(ctx: ToolContext, input: EditInput): Promise<ToolOutcome> {
   if (input.intent !== undefined) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'The retired intent input is rejected. Refresh Forge’s catalog and use change for review work; nothing was written.' });
   if (!input.message?.trim()) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'A commit message is required.' });
-  if (input.change && /^(?:forge|main|master)$/i.test(input.change)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'change is the review reason, not a branch name.' });
+  if (input.change && /^(?:forge|main|master|branch|review|proposal)$/i.test(input.change.trim())) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'change is the human review reason, not a branch/mode name. Say what needs review.' });
   const repo = await resolveRepositoryName(ctx.gh, input.repo, ctx.identity.githubLogin, true);
   const destination = await target(ctx, repo, input.message, input.private ?? true);
   const proposed = input.change !== undefined;

@@ -60,7 +60,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     outputSchema: { commit: z.object({ repo: z.string(), branch: z.string(), sha: z.string(), url: z.string(), outcome: z.enum(['committed', 'unchanged']) }), change: z.string().optional(), review: z.string().optional(), ...receipt },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
   }, async (input) => run('forge_edit', ctx, () => author(ctx, input)));
-  const approvalOutput = { approval: z.object({ url: z.string(), expires: z.string() }).optional(), evidence: z.string().optional(), ...receipt };
+  const approvalOutput = { approval: z.object({ url: z.string(), expires: z.string() }).optional(), evidence: z.string().optional(), verification: z.string().optional(), ...receipt };
   server.registerTool('forge_merge', {
     title: 'Merge', description: 'Prepare a SHA-fenced human merge approval after checking current evidence. Returns one approval link; does not itself merge.',
     inputSchema: { repo: z.string(), change: z.string() }, outputSchema: approvalOutput,

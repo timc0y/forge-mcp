@@ -99,8 +99,10 @@ describe('V2 public tool contract', () => {
     const edit = (server as any)._registeredTools.forge_edit;
     const retired = await edit.handler({ repo: 'test-repo', intent: 'old', message: 'x', files: [{ path: 'a.txt', content: 'x' }] });
     expect(retired.isError).toBe(true);
-    const branch = await edit.handler({ repo: 'test-repo', change: 'forge', message: 'x', files: [{ path: 'a.txt', content: 'x' }] });
-    expect(branch.isError).toBe(true);
+    for (const reason of ['forge', 'main', 'branch', 'review', 'proposal']) {
+      const branch = await edit.handler({ repo: 'test-repo', change: reason, message: 'x', files: [{ path: 'a.txt', content: 'x' }] });
+      expect(branch.isError, reason).toBe(true);
+    }
     expect(calls.some((call) => call.startsWith('POST /repos/testuser/test-repo/git/blobs'))).toBe(false);
   });
 });

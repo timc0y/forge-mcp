@@ -53,14 +53,14 @@ function makeEvidence(snapshot: Snapshot, path: string, text: string, id: string
   return { id, kind: 'source', source: snapshot.identity, path, range: sourceRange(text, 0, text.length), selector: path, text, representation: 'body', category: category(path), coverage: 'complete', provenance: 'GitHub immutable source', limitations: [] };
 }
 interface Sketch { path: string; category: Evidence['category']; lexical: number; symbols: string[]; imports: string[]; supported: boolean; diagnostics: number }
-function candidateSketches(sketches: Sketch[], limit = 96): Sketch[] {
+function candidateSketches(sketches: Sketch[], limit = 64): Sketch[] {
   const ranked = [...sketches].sort((a, b) => b.lexical - a.lexical || Number(b.supported) - Number(a.supported) || a.path.localeCompare(b.path));
   if (ranked.length <= limit) return ranked;
   const picked = new Map<string, Sketch>();
-  for (const entry of ranked.slice(0, 64)) picked.set(entry.path, entry);
+  for (const entry of ranked.slice(0, 44)) picked.set(entry.path, entry);
   for (const kind of ['implementation', 'test', 'configuration', 'documentation', 'instruction'] as const) {
     const pool = ranked.filter((entry) => entry.category === kind && !picked.has(entry.path));
-    const slots = Math.min(6, Math.max(0, limit - picked.size));
+    const slots = Math.min(4, Math.max(0, limit - picked.size));
     for (let index = 0; index < slots && pool.length; index++) picked.set(pool[Math.min(pool.length - 1, Math.floor(index * pool.length / slots))]!.path, pool[Math.min(pool.length - 1, Math.floor(index * pool.length / slots))]!);
   }
   for (const entry of ranked) { if (picked.size >= limit) break; picked.set(entry.path, entry); }
@@ -99,8 +99,8 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
       const structure = inspectStructure(path, text);
       supported = structure.supported;
       diagnostics = structure.diagnostics.length;
-      symbols = structure.blocks.slice(0, 8).map((block) => `${block.name}: ${redactSemanticText(block.signature.slice(0, 100))}`);
-      imports = structure.imports.slice(0, 12).map((entry) => entry.specifier);
+      symbols = structure.blocks.slice(0, 4).map((block) => `${block.name.slice(0, 120)}: ${redactSemanticText(block.signature.slice(0, 80))}`);
+      imports = structure.imports.slice(0, 6).map((entry) => entry.specifier.slice(0, 160));
     }
     sketches.push({ path, category: category(path), lexical: relevance(`${path}\n${symbols.join('\n')}\n${text}`, words), symbols, imports, supported, diagnostics });
   });
