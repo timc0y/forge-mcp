@@ -109,4 +109,57 @@ describe('task-shaped context compilation', () => {
     expect(packet.limitations.join(' ')).toContain('GitHub tree coverage is incomplete');
     expect(packet.limitations.join(' ')).toContain('structurally summarized candidates');
   });
+
+  it('promotes a generic dependency through request-local graph relevance despite lexical decoys', async () => {
+    const files: Record<string, string> = {};
+    for (let index = 0; index < 70; index++) {
+      files['src/decoy-' + String(index).padStart(2, '0') + '.ts'] = '// invoice reconciliation invoice reconciliation\nexport const value' + index + ' = ' + index + ';\n';
+    }
+    files['src/invoice-route.ts'] = '// invoice reconciliation invoice reconciliation invoice reconciliation invoice reconciliation\nimport { persist } from "./helper";\nexport function route(value: string) { return persist(value); }\n';
+    files['src/helper.ts'] = 'export function persist(value: string) { if (!value) throw new Error("required"); return value; }\n';
+    const zipped = tar(files);
+    const tree = Object.entries(files).map(([path, content]) => ({ path, type: 'blob', size: encoder.encode(content).length }));
+    const gh: GitHubRequest = async (path) => {
+      if (path === '/repos/o/r') return { status: 200, json: { default_branch: 'main', private: false }, text: '', headers: new Headers() };
+      if (path === '/repos/o/r/commits/main') return { status: 200, json: { sha: SHA }, text: '', headers: new Headers() };
+      if (path.startsWith('/repos/o/r/git/trees/')) return { status: 200, json: { truncated: false, tree }, text: '', headers: new Headers() };
+      if (path.startsWith('/repos/o/r/tarball/')) return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([zipped]).stream() };
+      const match = /^\/repos\/o\/r\/contents\/(.+)\?ref=/.exec(path);
+      if (match) {
+        const file = files[decodeURIComponent(match[1]!)];
+        if (file !== undefined) return { status: 200, json: { type: 'file', encoding: 'base64', content: btoa(file), sha: BLOB, size: encoder.encode(file).length }, text: '', headers: new Headers() };
+      }
+      return { status: 404, json: null, text: '', headers: new Headers() };
+    };
+
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      const request = JSON.parse(String(init?.body ?? '{}'));
+      const state = request.input.state as Record<string, any>;
+      const questions = request.input.questions as Record<string, any>;
+      const answers: Record<string, unknown> = {};
+      if (state.candidates?.[0]?.symbols !== undefined) {
+        for (const id of Object.keys(questions)) {
+          const index = Number(id.split('_')[1]);
+          answers[id] = { type: 'noul', noul: state.candidates[index]?.path === 'src/helper.ts' ? 0.99 : 0.01 };
+        }
+      } else if (questions.gap) {
+        answers.gap = { type: 'choice', choice: 'none', confidence: 0.9, probabilities: distribution(Object.keys(questions.gap.criteria), 'none') };
+        answers.target = { type: 'choice', choice: 'none', confidence: 0.9, probabilities: distribution(Object.keys(questions.target.criteria), 'none') };
+      } else {
+        for (const [id] of Object.entries(questions)) {
+          if (id.startsWith('relevant_')) answers[id] = { type: 'noul', noul: 0.99 };
+          else if (id.startsWith('counter_')) answers[id] = { type: 'noul', noul: 0.1 };
+          else answers[id] = { type: 'choice', choice: 'body', confidence: 0.9, probabilities: { body: 0.9, outline: 0.1 } };
+        }
+      }
+      return new Response(JSON.stringify({ model: 'jev-1.13.0', answers, usage: { input_tokens: 10, output_tokens: 5 } }), { status: 200 });
+    }) as typeof fetch;
+
+    const snapshot = await Snapshot.open(gh, { owner: 'o', name: 'r' });
+    const packet = await compileContext(snapshot, {
+      TYPESAFE_API_KEY: 'key',
+      TYPESAFE_BASE_URL: 'https://api.cloudflare.com/client/v4/accounts/' + 'a'.repeat(32) + '/ai/run'
+    } as Env, 'investigate invoice reconciliation') as any;
+    expect(packet.evidence.some((item: any) => item.selector === 'src/helper.ts::symbol:persist')).toBe(true);
+  });
 });
