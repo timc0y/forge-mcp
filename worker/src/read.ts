@@ -13,7 +13,7 @@ import { ForgeError } from './errors';
 // ---------------------------------------------------------------------------
 
 /** The smallest share of a multi-file read budget that is worth returning. */
-const MIN_FILE_SHARE_BYTES = 4 * 1024;
+const MIN_FILE_SHARE_BYTES = 4 * 1024; // review proof marker
 /** A windowed file never returns more than this many lines, however large its share. */
 const MAX_WINDOW_LINES = 400;
 
