@@ -76,8 +76,9 @@ Required secrets:
 
 The GitHub App needs **Contents: write**, **Pull requests: write** and
 **Metadata: read** for the core repository surface. Forge V2 also needs
-**Checks: read** for exact-commit execution evidence and **Actions: read** for
-the versioned `forge-analysis.json` artifact. Missing permission is reported as
+**Checks: read** plus **Commit statuses: read** for complete exact-commit
+execution evidence, and **Actions: read** for the versioned
+`forge-analysis.json` artifact. Missing permission is reported as
 unavailable evidence; Forge never substitutes an older run. Expiring user
 tokens should be enabled so the encrypted credential used for repository
 creation and explicit public GitHub discovery can rotate.

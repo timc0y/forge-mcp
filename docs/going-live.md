@@ -80,8 +80,9 @@ processing. The privacy page must remain accurate for that processing boundary.
 Forge V2 changes MCP schemas and server instructions. Deploying Worker code is
 not enough for clients that cached the old catalog: refresh/re-scan the Forge
 connection and start a new conversation before evaluating V2. The production
-GitHub App must also have **Checks: read** and **Actions: read** approved before
-`checks` and `analysis` can return execution evidence.
+GitHub App must also have **Checks: read**, **Commit statuses: read** and
+**Actions: read** approved before `checks` and `analysis` can return complete
+execution evidence.
 
 ## Stage 2 — Prove it once
 

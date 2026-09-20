@@ -68,9 +68,9 @@ requests, Metadata and Workflows, and one `forge_edit` call created
 `timc0y/forge-self-test` from a document — the headline promise, proven end to
 end.
 
-Forge V2 additionally reads exact-commit check runs and repository-produced
-analysis artifacts. Those capabilities require **Checks: read** and **Actions:
-read** on the GitHub App. They are capability requirements, not optional
+Forge V2 additionally reads exact-commit Check Runs, legacy Commit Statuses and
+repository-produced analysis artifacts. Those capabilities require **Checks:
+read**, **Commit statuses: read** and **Actions: read** on the GitHub App. They are capability requirements, not optional
 fallbacks: until an installation grants them, Forge reports the evidence as
 unavailable and does not substitute older checks or inferred test state.
 
