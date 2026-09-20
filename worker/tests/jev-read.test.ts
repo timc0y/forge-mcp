@@ -80,6 +80,24 @@ describe('readFiles line-range and pagination', () => {
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]?.reason).toContain('Pass \'big.js:401-600\' for next window');
   });
+
+  it('gives every requested path a share instead of starving the later ones', async () => {
+    const longContent = Array.from({ length: 600 }, (_, i) => `statement_${i + 1}();`).join('\n');
+    const file = {
+      status: 200,
+      json: { type: 'file', encoding: 'base64', content: btoa(longContent), size: longContent.length }
+    };
+    const request = fakeGitHub({
+      'GET /repos/o/r/contents/big-a.js': file,
+      'GET /repos/o/r/contents/big-b.js': file
+    });
+
+    const result = await readFiles(request, { owner: 'o', name: 'r' }, 'main', ['big-a.js', 'big-b.js'], 8000);
+
+    expect(result.files.map((entry) => entry.path)).toEqual(['big-a.js', 'big-b.js']);
+    expect(result.files.every((entry) => entry.truncated)).toBe(true);
+    expect(result.skipped).toHaveLength(2);
+  });
 });
 
 describe('TypeSafe Jev System One client', () => {

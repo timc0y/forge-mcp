@@ -12,6 +12,26 @@ import { ForgeError } from './errors';
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/** The smallest share of a multi-file read budget that is worth returning. */
+const MIN_FILE_SHARE_BYTES = 4 * 1024;
+/** A windowed file never returns more than this many lines, however large its share. */
+const MAX_WINDOW_LINES = 400;
+
+/** The first lines of `lines` that fit `budgetBytes`, and always at least one. */
+function windowToBytes(lines: string[], budgetBytes: number, maxLines: number): string[] {
+  const encoder = new TextEncoder();
+  const out: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    const cost = encoder.encode(line).length + 1;
+    if (out.length > 0 && (used + cost > budgetBytes || out.length >= maxLines)) break;
+    out.push(line);
+    used += cost;
+    if (out.length >= maxLines) break;
+  }
+  return out;
+}
+
 /** Git refs may contain slashes ("feature/x"); each segment needs its own encoding. */
 function encodeRefSegments(ref: string): string {
   return ref.split('/').map(encodeURIComponent).join('/');
@@ -273,7 +293,17 @@ export async function readFiles(
 
   const files: Array<{ path: string; content: string; bytes: number; truncated: boolean }> = [];
   const skipped: Array<{ path: string; reason: string }> = [];
-  let spent = 0;
+
+  // For several paths, `maxBytes` is the budget for the whole call, so it is
+  // shared between them rather than spent first-come-first-served: one large
+  // file used to exhaust it and starve every later path, so twenty requested
+  // files came back as one. Each path now gets its fair share and every one the
+  // caller asked for is represented. A single-path read keeps its own shape —
+  // one window of lines, not a byte-sliced fragment.
+  const multiPath = specs.length > 1;
+  const perFileBudget = multiPath
+    ? Math.max(MIN_FILE_SHARE_BYTES, Math.floor(maxBytes / specs.length))
+    : maxBytes;
 
   for (const { spec, response } of fetched) {
     const displayPath = spec.raw;
@@ -318,29 +348,28 @@ export async function readFiles(
     let isTruncated = false;
 
     if (spec.startLine !== undefined) {
-      // Explicit line window requested (e.g. :1-200 or :50)
+      // Explicit line window requested (e.g., :1-200 or :50). The caller named
+      // the lines, so their own request is the bound, not the shared budget.
       const start = Math.max(1, spec.startLine);
       const end = spec.endLine !== undefined ? Math.min(totalLines, Math.max(start, spec.endLine)) : totalLines;
       contentToReturn = allLines.slice(start - 1, end).join('\n');
       isTruncated = start > 1 || end < totalLines;
-    } else if (bytes.length > maxBytes) {
-      // File exceeds byte budget: paginate the first window rather than failing completely
-      const windowLines = Math.min(400, totalLines);
-      contentToReturn = allLines.slice(0, windowLines).join('\n');
+    } else if (bytes.length > perFileBudget) {
+      // Larger than this call's budget: return its first window rather than
+      // dropping the path entirely.
+      const windowed = multiPath
+        ? windowToBytes(allLines, perFileBudget, MAX_WINDOW_LINES)
+        : allLines.slice(0, Math.min(MAX_WINDOW_LINES, totalLines));
+      const shownLines = windowed.length;
+      contentToReturn = windowed.join('\n');
       isTruncated = true;
       skipped.push({
         path: displayPath,
-        reason: `file is ${bytes.length} bytes (${totalLines} lines). Showing lines 1-${windowLines}. Pass '${cleanPath}:${windowLines + 1}-${Math.min(totalLines, windowLines * 2)}' for next window.`
+        reason: `file is ${bytes.length} bytes (${totalLines} lines). Showing lines 1-${shownLines}. Pass '${cleanPath}:${shownLines + 1}-${Math.min(totalLines, shownLines * 2)}' for next window.`
       });
     }
 
     const contentBytes = new TextEncoder().encode(contentToReturn).length;
-    if (spent + contentBytes > maxBytes && files.length > 0) {
-      skipped.push({ path: displayPath, reason: `the ${maxBytes} byte budget was already spent by earlier files` });
-      continue;
-    }
-
-    spent += contentBytes;
     files.push({
       path: displayPath,
       content: contentToReturn,
