@@ -245,6 +245,8 @@ export interface CommittedTextHit {
   count: number;
   /** How many of the distinct needles appear — how well a multi-word concept fits. */
   matched: number;
+  /** Which needles appear, so a caller searching several can attribute each hit. */
+  matchedNeedles: string[];
   lines: number[];
 }
 
@@ -363,8 +365,8 @@ export async function searchCommittedText(
 
     const text = decoder.decode(body);
     const lines: number[] = [];
+    const matchedNeedles: string[] = [];
     let count = 0;
-    let matched = 0;
     for (const needle of wanted) {
       // A literal match, not a pattern: the needle is escaped, so a `.` or a
       // `(` in searched text is itself. Case-insensitive by default because a
@@ -377,10 +379,16 @@ export async function searchCommittedText(
         if (lines.length < MAX_CONTEXT_LINES) lines.push(lineNumberAt(text, match.index));
         if (match.index === pattern.lastIndex) pattern.lastIndex += 1;
       }
-      if (present) matched += 1;
+      if (present) matchedNeedles.push(needle);
     }
     if (count > 0) {
-      hits.push({ path: stripArchiveRoot(name), count, matched, lines });
+      hits.push({
+        path: stripArchiveRoot(name),
+        count,
+        matched: matchedNeedles.length,
+        matchedNeedles,
+        lines
+      });
       if (hits.length >= MAX_MATCH_FILES) {
         truncated = true;
         break;

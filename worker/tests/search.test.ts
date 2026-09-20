@@ -74,7 +74,7 @@ describe('committed-content search', () => {
 
     expect(result.unavailable).toBeUndefined();
     expect(result.truncated).toBe(false);
-    expect(result.hits).toEqual([{ path: 'worker/src/symbol.ts', count: 2, matched: 1, lines: [1, 2] }]);
+    expect(result.hits).toEqual([{ path: 'worker/src/symbol.ts', count: 2, matched: 1, matchedNeedles: ['knownSymbol'], lines: [1, 2] }]);
   });
 
   it('reports unavailable rather than absence when the archive cannot be read', async () => {

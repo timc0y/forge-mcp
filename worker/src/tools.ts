@@ -1504,17 +1504,46 @@ async function readChangeLevel(
     const rankedIdentifiers = await rankImpactIdentifiersWithJev(ctx.env, change.name, candidates);
     const selected = rankedIdentifiers.slice(0, 3);
     const changedPaths = new Set(comparison.files.map((file) => file.path));
-    const searched = await Promise.all(
+    let searched: Array<{ identifier: string; result: SearchResultSet; outside: SearchItem[] }> = await Promise.all(
       selected.map(async (identifier) => {
         const result = await searchGitHubCode(gh, `repo:${formatRepo(repo)} "${identifier.replaceAll('"', ' ')}"`, 10);
         const outside = result.items.filter((item) => item.path && !changedPaths.has(item.path));
         return { identifier, result, outside };
       })
     );
+    // The index answering with nothing is not the same as the identifiers being
+    // gone. When no identifier got an answer, read the committed files once for
+    // all of them rather than reporting an impact of zero.
+    let impactNote: string | undefined;
+    if (searched.length > 0 && searched.every(({ result }) => result.unavailable || result.total === 0)) {
+      const local = await searchCommittedText(gh, repo, base, selected);
+      if (!local.unavailable) {
+        searched = selected.map((identifier) => {
+          const items: SearchItem[] = local.hits
+            .filter((hit) => hit.matchedNeedles.includes(identifier))
+            .map((hit) => ({
+              id: `${formatRepo(repo)}/${hit.path}`,
+              title: `${formatRepo(repo)}:${hit.path}`,
+              repo: formatRepo(repo),
+              path: hit.path
+            }));
+          return {
+            identifier,
+            result: { total: items.length, items, ...(local.truncated ? { incomplete: true } : {}) },
+            outside: items.filter((item) => item.path && !changedPaths.has(item.path))
+          };
+        });
+        impactNote = local.truncated
+          ? 'GitHub code search did not answer; impact candidates were read from the committed files under a size bound, so more may exist.'
+          : 'GitHub code search did not answer; impact candidates were read directly from the committed files.';
+      }
+    }
     const changes = await openChanges(ctx.gh, repo);
     const names = changeNames(changes);
     const evidenceLines = searched.map(({ identifier, result, outside }) =>
-      `IMPACT? ${identifier} · ${result.total} matching file${result.total === 1 ? '' : 's'} on ${base} · ${outside.length} shown outside this change`
+      result.unavailable
+        ? `IMPACT? ${identifier} · ${result.unavailable}`
+        : `IMPACT? ${identifier} · ${result.total} matching file${result.total === 1 ? '' : 's'} on ${base} · ${outside.length} shown outside this change`
     );
     const resultFiles = searched.flatMap(({ identifier, outside }) =>
       outside.slice(0, 5).map((item) => ({
@@ -1524,6 +1553,8 @@ async function readChangeLevel(
     );
     const impactLimits = [
       ...limits,
+      ...(impactNote ? [impactNote] : []),
+      ...[...new Set(searched.map(({ result }) => result.unavailable).filter((value): value is string => Boolean(value)))],
       'Impact candidates are exact GitHub text-search evidence selected from removed patch identifiers; they are not compiler-backed references or proof of breakage.',
       ...(comparison.files.length > 20 ? [`Identifier extraction used patches from the first 20 of ${comparison.files.length} changed files.`] : []),
       ...(candidates.length >= 100 ? ['Identifier triage was capped at 100 removed patch candidates.'] : [])
