@@ -117,6 +117,8 @@ const MAX_DIFF_FILES = 200;
 const MAX_FILE_BYTES = 64 * 1024;
 /** Internal-only budget: enough to lint a large changed source file without returning it to chat. */
 const POST_COMMIT_FILE_BYTES = 256 * 1024;
+/** Hygiene reads to classify, not to display, so it may read further than a context-returning read. */
+const HYGIENE_READ_BYTES = 256 * 1024;
 
 const DEFAULT_VIEWPORTS: Viewport[] = ['phone', 'desktop'];
 
@@ -770,13 +772,16 @@ async function readTreeLevel(
       ...discoveredBeforeSemantic,
       ...semanticPaths
     ])].slice(0, 20);
+    // A larger budget than a context-returning read, because these contents are
+    // classified, not shown: the caller sees previews and verdicts, not files.
     const read = candidatePaths.length > 0
-      ? await readFiles(gh, repo, base, candidatePaths, MAX_FILE_BYTES)
+      ? await readFiles(gh, repo, base, candidatePaths, HYGIENE_READ_BYTES)
       : { files: [], skipped: [] };
     const pathSignals = new Map(pathCandidates.map((candidate) => [candidate.path, candidate.signals]));
     const semanticSet = new Set(semanticPaths);
+    // A windowed file is still worth classifying from its first lines; dropping
+    // it entirely is how the largest — often the messiest — files went unseen.
     const prepared = read.files
-      .filter((file) => !file.truncated)
       .slice(0, 12)
       .map((file) => ({
         path: file.path,
@@ -866,7 +871,7 @@ async function readTreeLevel(
       ...(routeNote ? [routeNote] : []),
       ...(tree.truncated ? ['GitHub truncated the repository tree, so hygiene discovery is incomplete.'] : []),
       ...(semantic?.truncated ? [`Jev hygiene path triage considered ${semantic.considered} representative paths from ${semantic.total} source files.`] : []),
-      ...(candidatePaths.length >= 20 ? ['Hygiene content inspection is capped at 20 candidate paths and Jev classification at 12 complete files.'] : []),
+      ...(candidatePaths.length >= 20 ? ['Hygiene content inspection is capped at 20 candidate paths and Jev classification at 12 files; a file shown as windowed was classified from its first lines only.'] : []),
       ...(markerScan.truncated ? ['Committed-content marker search was bounded; additional lexical matches may exist beyond the returned candidate paths.'] : []),
       ...(markerScan.unavailable ? [markerScan.unavailable] : []),
       ...(classifications.length === 0 && prepared.length > 0 ? ['Jev returned no hygiene classification; CANDIDATE? lines are deterministic discovery evidence only.'] : []),
