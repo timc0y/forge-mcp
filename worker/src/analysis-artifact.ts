@@ -96,6 +96,9 @@ export async function configurationHashForSnapshot(snapshot: Snapshot, paths: re
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', input));
   return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
+export function matchesWorkflowRunPath(runPath: unknown, workflowPath: string): boolean {
+  return typeof runPath === 'string' && (runPath === workflowPath || runPath.startsWith(`${workflowPath}@`));
+}
 export async function readAnalysisArtifact(snapshot: Snapshot): Promise<Record<string, unknown>> {
   const configuration = await snapshot.file('.github/forge-analysis.json');
   const config = analysisConfigSchema.parse(JSON.parse(configuration.text));
@@ -107,9 +110,7 @@ export async function readAnalysisArtifact(snapshot: Snapshot): Promise<Record<s
   const listed = object(runs.json)?.workflow_runs;
   if (!Array.isArray(listed)) refused('malformed workflow list');
   const matches = listed.map(object).filter((run) => {
-    const runPath = run?.path;
-    const sameWorkflow = typeof runPath === 'string' && (runPath === config.workflowPath || runPath.startsWith(`${config.workflowPath}@`));
-    return run?.head_sha === snapshot.identity.sha && sameWorkflow;
+    return run?.head_sha === snapshot.identity.sha && matchesWorkflowRunPath(run?.path, config.workflowPath);
   });
   matches.sort((a, b) => Number(b!.run_number) - Number(a!.run_number));
   const latest = matches[0];

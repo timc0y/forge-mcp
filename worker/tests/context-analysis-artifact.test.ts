@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { configurationHashForSnapshot, readAnalysisZip } from '../src/analysis-artifact';
+import { configurationHashForSnapshot, matchesWorkflowRunPath, readAnalysisZip } from '../src/analysis-artifact';
 import { Snapshot } from '../src/snapshot';
 import type { GitHubRequest } from '../src/contracts';
 
@@ -61,6 +61,17 @@ function zip(name: string, text: string): Uint8Array {
   view.setUint16(end + 20, 0, true);
   return out;
 }
+
+describe('analysis artifact workflow identity', () => {
+  it('accepts GitHub bare and ref-qualified workflow paths only for the configured file', () => {
+    const workflow = '.github/workflows/forge-analysis.yml';
+    expect(matchesWorkflowRunPath(workflow, workflow)).toBe(true);
+    expect(matchesWorkflowRunPath(`${workflow}@forge`, workflow)).toBe(true);
+    expect(matchesWorkflowRunPath(`${workflow}@refs/heads/forge`, workflow)).toBe(true);
+    expect(matchesWorkflowRunPath('.github/workflows/other.yml@forge', workflow)).toBe(false);
+    expect(matchesWorkflowRunPath(42, workflow)).toBe(false);
+  });
+});
 
 describe('analysis artifact ZIP envelope', () => {
   it('accepts exactly one bounded forge-analysis.json member', () => {
