@@ -312,18 +312,18 @@ Measure total JEV input/output usage and request cost, GitHub calls, bytes downl
 
 ## 14. Acceptance and release
 
-- [ ] Current behavior is reproduced on the named baseline; targets are measured rather than assumed.
-- [ ] Exactly five tools remain; first-party operation discovery does not depend on magic query words or custom ChatGPT orchestration code.
-- [ ] One authoritative implementation serves each operation; all replaced cascades and silent substitutions are removed.
-- [ ] One JEV transport is validated; semantic failure cannot look like semantic success.
-- [ ] Context references immutable source; every graph edge and diagnostic has an appropriate evidence type.
-- [ ] Explicit paths, proposal source, symbols, document sections and ledger records are selectable without unnecessary rereading.
-- [ ] Unsupported languages, incomplete scopes, missing permissions and stale tests remain visible.
-- [ ] No additional hosted indexing, docs, security, AI or telemetry service is required.
-- [ ] No repository code/plugin/config executes inside Forge; private data boundaries pass adversarial tests.
-- [ ] Exact source/test coverage is retained while the token/call targets are met on held-out tasks.
+- [ ] Deterministic fixture baselines are executable in CI; named real Forge/HeadteacherChat baselines and hosted-JEV measurements still need final run evidence.
+- [x] Exactly five tools remain; first-party operation discovery does not depend on magic query words or custom ChatGPT orchestration code.
+- [x] One authoritative implementation serves each operation; replaced search/JEV/review cascades are removed from runtime source.
+- [x] One JEV transport and one documented Cloudflare output contract are enforced; missing/malformed/timeout evidence cannot become semantic success.
+- [x] Context references immutable source; syntax/import/check/artifact relationships retain explicit provenance and limitations.
+- [x] Explicit paths, proposal source, symbols, Markdown sections and JSON ledger records are selectable without semantic rereading.
+- [x] Unsupported formats, incomplete scopes, missing permissions and stale-revision evidence remain visible rather than substituted.
+- [x] No additional hosted indexing, docs, security, AI or telemetry service is required.
+- [x] No repository code/plugin/config executes inside Forge; secret egress, prompt/data separation, archive, URL and artifact boundaries have adversarial regression tests.
+- [ ] The 30-case deterministic plumbing benchmark enforces the token/round/evidence budgets; real hosted-JEV held-out repository tasks must still measure relevance quality and confirm the targets outside the synthetic selector oracle.
 - [ ] `pnpm check` and Worker-native integration tests pass for the final source SHA.
-- [ ] MCP version, schema, annotations, examples and connection-refresh instructions agree; old incompatible inputs fail explicitly rather than silently taking another path.
+- [x] MCP version, schema, annotations, examples and connection-refresh instructions agree in source; old incompatible inputs fail explicitly rather than silently taking another path.
 - [ ] Authorized deployment smoke and a fresh phone/ChatGPT conversation prove read, context, edit, review and human approval. Documentation alone is not release evidence.
 
 The V2 source implementation lives on Forge PR #83. Source completion is not release proof: GitHub must still execute the final typecheck/tests/bundle/startup gates, the GitHub App installation must approve the required read permissions, the context evaluation targets must be measured rather than assumed, and an authorized deployment/fresh-client smoke must pass before V2 is described as deployed.
