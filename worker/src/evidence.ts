@@ -50,7 +50,6 @@ export const CONTEXT_LIMITS = Object.freeze({
   maxOutputBytes: 32 * 1024,
   compressedBytes: 20 * 1024 * 1024,
   unpackedBytes: 40 * 1024 * 1024,
-  candidateFiles: 24,
   jevStages: 3
 });
 export const utf8Bytes = (text: string): number => new TextEncoder().encode(text).byteLength;
