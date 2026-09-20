@@ -46,7 +46,8 @@ function relativeTarget(path: string, specifier: string, known: Set<string>): st
     else if (part && part !== '.') parts.push(part);
   }
   const target = parts.join('/');
-  const candidates = [target, ...['.ts', '.tsx', '.js', '.jsx', '.mjs', '/index.ts', '/index.js'].map((suffix) => target + suffix)].filter((candidate) => known.has(candidate));
+  const extensions = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json'];
+  const candidates = [target, ...extensions.map((suffix) => target + suffix), ...extensions.map((suffix) => `${target}/index${suffix}`)].filter((candidate) => known.has(candidate));
   return candidates.length === 1 ? candidates[0]! : null;
 }
 function makeEvidence(snapshot: Snapshot, path: string, text: string, id: string): Evidence {
