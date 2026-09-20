@@ -169,7 +169,18 @@ function requester(token: string): GitHubRequest {
     let text = '';
     let bytes: ArrayBuffer | undefined;
     try {
-      response = await fetch(`${API_BASE}${path}`, { method: init?.method ?? 'GET', headers, body });
+      // `cache: 'no-store'` is load-bearing, not defensive noise. GitHub sends
+      // `Cache-Control: private, max-age=60, s-maxage=60` on reads, and a
+      // Workers subrequest can be answered from the edge cache under it: a ref
+      // that was deleted and recreated was served at its pre-deletion value,
+      // which made an approval refuse itself as "moved". Forge reads GitHub to
+      // decide what is true now, so it must never read a cached answer.
+      response = await fetch(`${API_BASE}${path}`, {
+        method: init?.method ?? 'GET',
+        headers,
+        body,
+        cache: 'no-store'
+      });
       if (init?.raw) {
         const read = await readBounded(response, init.maxBytes);
         if (read === null) {
