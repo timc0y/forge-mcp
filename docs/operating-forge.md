@@ -54,13 +54,18 @@ credential used for new-repo creation and explicit public GitHub search can neve
 It additionally needs **Administration: read and write** if `forge_edit` is to
 create a repository that does not exist yet. `POST /user/repos` answers 403
 ("Resource not accessible by integration") without it, and no amount of retrying
-changes that. Adding the permission changes the App's consent, so every user
-must reconnect afterwards. Without the permission, Forge still commits to any
-repository that already exists; only creation is refused, with a message naming
-this permission and the one-click alternative at `https://github.com/new`.
+changes that. Without the permission, Forge still commits to any repository that
+already exists; only creation is refused, with a message naming this permission
+and the one-click alternative at `https://github.com/new`.
 
-Verified 2026-09-20: the production App holds contents, pull_requests, workflows
-and metadata only, so creation is currently refused.
+Enabling the permission changes the App's installation, so the owner of the
+account it is installed on approves it once. Existing user authorizations keep
+working; a user only reconnects if creation still returns 403.
+
+Verified 2026-09-20: the production App holds Administration, Contents, Pull
+requests, Metadata and Workflows, and one `forge_edit` call created
+`timc0y/forge-self-test` from a document — the headline promise, proven end to
+end.
 
 ## Analytics
 
