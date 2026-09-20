@@ -1301,6 +1301,10 @@ async function readTreeLevel(
  * and no matches means "the index did not answer", not "this code is absent".
  * The archive answers the same question exactly, within a stated bound, so a
  * degraded index stops being an absence and stops being a dead end.
+ *
+ * A plain zero is also re-checked against the archive, because GitHub has
+ * answered "no matches" for code that exists; one extra bounded read is the
+ * price of never turning a search index's blind spot into a fact.
  */
 async function fallbackToCommittedText(
   ctx: ToolContext,

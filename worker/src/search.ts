@@ -232,8 +232,11 @@ export async function searchGitHubCode(
  * and read directly, which makes a literal search exact and complete up to the
  * stated limits — and honest when those limits are reached.
  */
-const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
-const MAX_UNPACKED_BYTES = 64 * 1024 * 1024;
+// Deliberately well inside the isolate's memory: the compressed archive and
+// its unpacked form are both resident while the scan runs, so the two caps are
+// sized to leave room rather than to read the largest repository possible.
+const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024;
+const MAX_UNPACKED_BYTES = 40 * 1024 * 1024;
 const MAX_CONTENT_FILE_BYTES = 512 * 1024;
 const MAX_SCANNED_FILES = 5000;
 const MAX_MATCH_FILES = 50;
@@ -272,7 +275,7 @@ export async function searchCommittedText(
   try {
     response = await request(
       `/repos/${repo.owner}/${repo.name}/tarball/${ref.split('/').map(encodeURIComponent).join('/')}`,
-      { raw: true, accept: 'application/vnd.github+json' }
+      { raw: true, accept: 'application/vnd.github+json', maxBytes: MAX_ARCHIVE_BYTES }
     );
   } catch {
     return {
@@ -283,20 +286,22 @@ export async function searchCommittedText(
     };
   }
 
+  // 413 is the request layer refusing a body past the bound, not GitHub; both
+  // mean the same thing here — too large to answer from, so not an absence.
+  if (response.status === 413) {
+    return {
+      hits: [],
+      scanned: 0,
+      truncated: true,
+      unavailable: 'This repository is too large for a bounded committed-content search. No absence conclusion was made.'
+    };
+  }
   if (response.status !== 200 || !response.bytes) {
     return {
       hits: [],
       scanned: 0,
       truncated: false,
       unavailable: `Committed-content search is unavailable (GitHub archive HTTP ${response.status}). No absence conclusion was made.`
-    };
-  }
-  if (response.bytes.byteLength > MAX_ARCHIVE_BYTES) {
-    return {
-      hits: [],
-      scanned: 0,
-      truncated: true,
-      unavailable: 'This repository is too large for a bounded committed-content search. No absence conclusion was made.'
     };
   }
 
@@ -325,28 +330,57 @@ export async function searchCommittedText(
   const hits: CommittedTextHit[] = [];
   let scanned = 0;
   let truncated = false;
-  let longName: string | null = null;
+  let offset = 0;
+  let pendingName: string | null = null;
+  let terminated = false;
 
-  for (let offset = 0; offset + 512 <= tar.byteLength; ) {
+  while (offset + 512 <= tar.byteLength) {
     const header = tar.subarray(offset, offset + 512);
+
+    // An archive ends with two zero blocks. A single zero block is padding and
+    // is skipped rather than treated as the end.
+    if (isZeroBlock(header)) {
+      if (offset + 1024 <= tar.byteLength && isZeroBlock(tar.subarray(offset + 512, offset + 1024))) {
+        terminated = true;
+        break;
+      }
+      offset += 512;
+      continue;
+    }
+
+    // A size Forge cannot read means the stream is no longer being walked from
+    // a known point. Stop here rather than continue on a guessed offset, which
+    // is how a parser starts reporting files that are not there.
     const size = readOctal(header, 124, 12);
-    const type = String.fromCharCode(header[156] ?? 0);
+    if (size === null || offset + 512 + size > tar.byteLength) {
+      truncated = true;
+      break;
+    }
+
+    const type = String.fromCharCode(header[156] ?? 48);
     const content = tar.subarray(offset + 512, offset + 512 + size);
     offset += 512 + Math.ceil(size / 512) * 512;
 
     let name = readCString(header, 0, 100);
     const prefix = readCString(header, 345, 155);
-    if (prefix) name = `${prefix}/${name}`;
+    if (prefix && name) name = `${prefix}/${name}`;
 
     if (type === 'L') {
-      longName = readCString(content, 0, size);
+      // GNU long name: the next entry's name is this block's content.
+      pendingName = readCString(content, 0, size);
       continue;
     }
-    if (longName !== null) {
-      name = longName;
-      longName = null;
+    if (type === 'x' || type === 'g') {
+      // PAX extended header: `path=` overrides the name of the next entry.
+      const pax = paxPath(content, size);
+      if (pax) pendingName = pax;
+      continue;
     }
-    if (!name || name.endsWith('/')) continue;
+    if (pendingName !== null) {
+      name = pendingName;
+      pendingName = null;
+    }
+    if (!name || name.endsWith('/') || type === '5') continue;
 
     scanned += 1;
     if (scanned > MAX_SCANNED_FILES) {
@@ -355,13 +389,13 @@ export async function searchCommittedText(
     }
     // A file too large to read might contain a match, so skipping it makes the
     // result partial rather than empty.
-    if (size === 0 || size > MAX_CONTENT_FILE_BYTES) {
-      if (size > MAX_CONTENT_FILE_BYTES) truncated = true;
+    if (size > MAX_CONTENT_FILE_BYTES) {
+      truncated = true;
       continue;
     }
 
     const body = content.subarray(0, size);
-    if (body.includes(0)) continue;
+    if (size === 0 || body.includes(0)) continue;
 
     const text = decoder.decode(body);
     const lines: number[] = [];
@@ -396,13 +430,32 @@ export async function searchCommittedText(
     }
   }
 
+  // A body that stopped before the terminator is a truncated archive. Hits
+  // found above it are real; calling the whole scan complete would not be.
+  if (!terminated) truncated = true;
+  if (!terminated && hits.length === 0) {
+    return {
+      hits: [],
+      scanned,
+      truncated: false,
+      unavailable: 'GitHub returned a truncated repository archive. No absence conclusion was made.'
+    };
+  }
+
   return { hits, scanned, truncated };
 }
 
-function readOctal(bytes: Uint8Array, start: number, length: number): number {
+function isZeroBlock(bytes: Uint8Array): boolean {
+  for (const byte of bytes) if (byte !== 0) return false;
+  return true;
+}
+
+/** `null` when the field is not octal, which means the walk can no longer be trusted. */
+function readOctal(bytes: Uint8Array, start: number, length: number): number | null {
   const raw = readCString(bytes, start, length).trim();
-  const value = Number.parseInt(raw, 8);
-  return Number.isFinite(value) && value >= 0 ? value : 0;
+  if (!/^[0-7]*$/.test(raw)) return null;
+  const value = Number.parseInt(raw || '0', 8);
+  return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function readCString(bytes: Uint8Array, start: number, length: number): string {
@@ -412,6 +465,18 @@ function readCString(bytes: Uint8Array, start: number, length: number): string {
   let out = '';
   for (const byte of body) out += String.fromCharCode(byte);
   return out.trim();
+}
+
+/** The `path=` record of a PAX extended header, if it carries one. */
+function paxPath(content: Uint8Array, size: number): string | null {
+  const text = new TextDecoder('utf-8').decode(content.subarray(0, size));
+  for (const line of text.split('\n')) {
+    const space = line.indexOf(' ');
+    if (space === -1) continue;
+    const record = line.slice(space + 1);
+    if (record.startsWith('path=')) return record.slice('path='.length);
+  }
+  return null;
 }
 
 /** GitHub archives every file under `owner-repo-sha/`; a result is repo-relative. */

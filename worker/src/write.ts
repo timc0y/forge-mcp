@@ -771,30 +771,41 @@ async function resolveHead(
     });
   }
 
-  const removedLegacy = await clearLegacyChangeRefs(request, repo, api, branch, baseBranch, base);
+  const create = () =>
+    request(`${api}/git/refs`, {
+      method: 'POST',
+      body: { ref: `refs/heads/${branch}`, sha: base }
+    });
 
-  const created = await request(`${api}/git/refs`, {
-    method: 'POST',
-    body: { ref: `refs/heads/${branch}`, sha: base }
-  });
-  if (created.status === 201) {
-    const sha = readSha(created.json);
-    if (sha === null) {
-      throw new ForgeError({
-        code: 'FORGE_UPSTREAM_UNAVAILABLE',
-        message: `GitHub created ${branch} without returning the commit it points at.`,
-        retryable: true
-      });
-    }
-    return { sha, removedLegacy };
+  const created = await create();
+  if (created.status === 201) return { sha: createdSha(created, branch), removedLegacy: [] };
+  if (created.status !== 422) throw githubError(created, `creation of ${branch}`);
+
+  // A 422 is either a concurrent caller that created this branch first, or a
+  // legacy `forge/<name>` ref making this exact name impossible — a ref cannot
+  // be both a branch and a directory. Only now, on the refusal, is it worth
+  // asking which; the ordinary create above stays a single request and does not
+  // depend on a cleanup lookup succeeding.
+  const raced = await readRef(request, api, branch);
+  if (raced !== null) return { sha: raced, removedLegacy: [] };
+
+  const removedLegacy = await clearLegacyChangeRefs(request, repo, api, branch, baseBranch, base);
+  const retried = await create();
+  if (retried.status === 201) return { sha: createdSha(retried, branch), removedLegacy };
+
+  throw githubError(retried, `creation of ${branch}`);
+}
+
+function createdSha(response: GitHubResponse, branch: string): string {
+  const sha = readSha(response.json);
+  if (sha === null) {
+    throw new ForgeError({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE',
+      message: `GitHub created ${branch} without returning the commit it points at.`,
+      retryable: true
+    });
   }
-  // 422 usually means a concurrent caller created it first. Read what they made
-  // rather than assuming it is what we asked for.
-  if (created.status === 422) {
-    const raced = await readRef(request, api, branch);
-    if (raced !== null) return { sha: raced, removedLegacy };
-  }
-  throw githubError(created, `creation of ${branch}`);
+  return sha;
 }
 
 /** Branches under this prefix are the old Forge naming scheme. */

@@ -135,10 +135,13 @@ function createMockToolContext(customRoutes: Record<string, any> = {}, envOverri
   const gh: GitHubRequest = async (path, init) => {
     const key = `${init?.method ?? "GET"} ${path.split("?")[0]}`;
     calls.push(key);
-    const hit = routes[key] ?? routes[path.split("?")[0] ?? ""];
-    if (!hit) {
+    const route = routes[key] ?? routes[path.split("?")[0] ?? ""];
+    if (!route) {
       return { status: 404, json: null, text: "", headers: new Headers() };
     }
+    // A route may be a function when a test needs the response to change
+    // between calls — a refusal that a retry then succeeds past.
+    const hit = typeof route === "function" ? route() : route;
     return {
       status: hit.status,
       json: hit.json ?? null,
@@ -539,6 +542,7 @@ describe("End-to-End Test for all 5 Forge tools", () => {
   });
 
   it("removes an inert legacy forge/* ref so the fixed forge branch can be created", async () => {
+    let createAttempts = 0;
     const { server, calls } = createMockToolContext({
       "GET /repos/testuser/test-repo/git/ref/heads/forge": { status: 404, json: null },
       "GET /repos/testuser/test-repo/git/matching-refs/heads/forge": {
@@ -550,7 +554,12 @@ describe("End-to-End Test for all 5 Forge tools", () => {
         json: { ahead_by: 0, behind_by: 5 }
       },
       "DELETE /repos/testuser/test-repo/git/refs/heads/forge/duplicate-fragment-smoke": { status: 204, json: null },
-      "POST /repos/testuser/test-repo/git/refs": { status: 201, json: { object: { sha: "headcommit12345678" } } }
+      // GitHub refuses the fixed name while the legacy ref exists, and accepts
+      // it once the cleanup removed it.
+      "POST /repos/testuser/test-repo/git/refs": () =>
+        (++createAttempts === 1
+          ? { status: 422, json: { message: "Reference update failed" } }
+          : { status: 201, json: { object: { sha: "headcommit12345678" } } })
     });
     const editTool = (server as any)._registeredTools["forge_edit"];
 
@@ -577,7 +586,8 @@ describe("End-to-End Test for all 5 Forge tools", () => {
       "GET /repos/testuser/test-repo/compare/headcommit12345678...forge/duplicate-fragment-smoke": {
         status: 200,
         json: { ahead_by: 2, behind_by: 5 }
-      }
+      },
+      "POST /repos/testuser/test-repo/git/refs": { status: 422, json: { message: "Reference update failed" } }
     });
     const editTool = (server as any)._registeredTools["forge_edit"];
 

@@ -31,11 +31,13 @@ export function formatRepo(repo: RepoRef): string {
  *
  * `raw` asks for the body as bytes instead of text. Only the repository archive
  * needs it: a tarball is gzip, and decoding it as UTF-8 would corrupt it before
- * anyone could decompress it.
+ * anyone could decompress it. `maxBytes` bounds that read: a body past it is
+ * abandoned rather than buffered, so one huge repository cannot take the
+ * isolate down to answer a search.
  */
 export type GitHubRequest = (
   path: string,
-  init?: { method?: string; body?: unknown; accept?: string; raw?: boolean }
+  init?: { method?: string; body?: unknown; accept?: string; raw?: boolean; maxBytes?: number }
 ) => Promise<{ status: number; json: unknown; text: string; bytes?: ArrayBuffer; headers: Headers }>;
 
 // ---------------------------------------------------------------------------

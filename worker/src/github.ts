@@ -120,6 +120,40 @@ async function installationToken(
   return token;
 }
 
+/**
+ * Read a body, stopping the moment it passes `maxBytes` rather than after. The
+ * whole point of the bound is that a repository too large to read must cost a
+ * cancelled stream, not the memory to hold it first.
+ *
+ * Returns null when the body is refused for size.
+ */
+async function readBounded(response: Response, maxBytes?: number): Promise<ArrayBuffer | null> {
+  if (!maxBytes || !response.body) return response.arrayBuffer();
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body.buffer;
+}
+
 function requester(token: string): GitHubRequest {
   return async (path, init) => {
     const headers = new Headers({
@@ -136,9 +170,19 @@ function requester(token: string): GitHubRequest {
     let bytes: ArrayBuffer | undefined;
     try {
       response = await fetch(`${API_BASE}${path}`, { method: init?.method ?? 'GET', headers, body });
-      if (init?.raw) bytes = await response.arrayBuffer();
-      else text = await response.text();
-    } catch {
+      if (init?.raw) {
+        const read = await readBounded(response, init.maxBytes);
+        if (read === null) {
+          // Refused, not failed: the caller asked for a bound and this body is
+          // past it. 413 keeps that distinct from an unreadable body.
+          return { status: 413, json: null, text: '', bytes: undefined, headers: response.headers };
+        }
+        bytes = read;
+      } else {
+        text = await response.text();
+      }
+    } catch (error) {
+      if (isForgeError(error)) throw error;
       throw new ForgeError({
         code: 'FORGE_UPSTREAM_UNAVAILABLE',
         message: `GitHub could not be reached (${init?.method ?? 'GET'} ${path}).`,
@@ -192,28 +236,47 @@ export async function githubRequest(
  * cannot be asked — the caller treats both as "no installation to heal from".
  */
 export async function installationForLogin(env: Env, login: string): Promise<string | null> {
-  let response: Response;
+  let jwt: string;
   try {
-    const jwt = await appJwt(env);
-    response = await fetch(`${API_BASE}/app/installations?per_page=100`, {
-      headers: {
-        accept: 'application/vnd.github+json',
-        'user-agent': USER_AGENT,
-        'x-github-api-version': API_VERSION,
-        authorization: `Bearer ${jwt}`
-      }
-    });
+    jwt = await appJwt(env);
   } catch {
     return null;
   }
-  if (!response.ok) return null;
+  const headers = {
+    accept: 'application/vnd.github+json',
+    'user-agent': USER_AGENT,
+    'x-github-api-version': API_VERSION,
+    authorization: `Bearer ${jwt}`
+  };
 
-  const installations = parseJson(await response.text());
+  // Ask the exact question first. "The installation this account has" is one
+  // GitHub answers directly, so nothing has to be searched through or capped —
+  // which is what a list-based lookup gets wrong the moment it outgrows a page.
+  for (const owner of ['users', 'orgs'] as const) {
+    let exact: Response | null = null;
+    try {
+      exact = await fetch(`${API_BASE}/${owner}/${encodeURIComponent(login)}/installation`, { headers });
+    } catch {
+      exact = null;
+    }
+    if (!exact?.ok) continue;
+    const body = parseJson(await exact.text());
+    if (isRecord(body) && typeof body.id === 'number') return String(body.id);
+  }
+
+  // Fall back to the App's own list for anything the exact lookups do not name.
+  let listed: Response | null = null;
+  try {
+    listed = await fetch(`${API_BASE}/app/installations?per_page=100`, { headers });
+  } catch {
+    return null;
+  }
+  if (!listed?.ok) return null;
+
+  const installations = parseJson(await listed.text());
   if (!Array.isArray(installations)) return null;
 
   const wanted = login.toLowerCase();
-  // ponytail: first 100 installations only; paginate if this App ever exceeds
-  // that, which an open preview installing per person could eventually reach.
   const match = installations.find(
     (entry) =>
       isRecord(entry) &&

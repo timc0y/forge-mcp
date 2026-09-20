@@ -14,28 +14,32 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GitHubRequest } from '../src/contracts';
 import type { Env } from '../src/env';
 
-function tarEntry(path: string, content: string): Uint8Array {
-  const name = new TextEncoder().encode(path);
-  const data = new TextEncoder().encode(content);
+function tarFile(name: string, content: string, type = '0', prefix = '', sizeOverride?: string): Uint8Array {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(content);
   const block = new Uint8Array(512 + Math.ceil(data.length / 512) * 512);
-  block.set(name.subarray(0, 100), 0);
-  block.set(new TextEncoder().encode(data.length.toString(8).padStart(11, '0')), 124);
-  block[156] = '0'.charCodeAt(0);
+  block.set(encoder.encode(name).subarray(0, 100), 0);
+  block.set(encoder.encode((sizeOverride ?? data.length.toString(8)).padStart(11, '0')), 124);
+  block[156] = type.charCodeAt(0);
+  if (prefix) block.set(encoder.encode(prefix).subarray(0, 155), 345);
   block.set(data, 512);
   return block;
 }
 
-function buildTarball(files: Record<string, string>): ArrayBuffer {
-  const blocks = Object.entries(files).map(([path, content]) => tarEntry(path, content));
-  blocks.push(new Uint8Array(1024));
-  const tar = new Uint8Array(blocks.reduce((total, block) => total + block.length, 0));
+function gzipBlocks(blocks: Uint8Array[], terminate = true): ArrayBuffer {
+  const all = terminate ? [...blocks, new Uint8Array(1024)] : blocks;
+  const tar = new Uint8Array(all.reduce((total, block) => total + block.length, 0));
   let offset = 0;
-  for (const block of blocks) {
+  for (const block of all) {
     tar.set(block, offset);
     offset += block.length;
   }
   const gz = gzipSync(tar);
   return gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength) as ArrayBuffer;
+}
+
+function buildTarball(files: Record<string, string>): ArrayBuffer {
+  return gzipBlocks(Object.entries(files).map(([path, content]) => tarFile(path, content)));
 }
 
 describe('GitHub search completeness', () => {
@@ -60,6 +64,14 @@ describe('GitHub search completeness', () => {
 });
 
 describe('committed-content search', () => {
+  const rawRequest = (bytes: ArrayBuffer | undefined): GitHubRequest => async () => ({
+    status: bytes ? 200 : 404,
+    headers: new Headers(),
+    text: '',
+    bytes,
+    json: null
+  });
+
   it('finds literal matches with counts and line numbers', async () => {
     const archive = buildTarball({
       'o-r-sh/worker/src/symbol.ts': 'export const knownSymbol = 1;\nconst other = knownSymbol;\n',
@@ -75,6 +87,57 @@ describe('committed-content search', () => {
     expect(result.unavailable).toBeUndefined();
     expect(result.truncated).toBe(false);
     expect(result.hits).toEqual([{ path: 'worker/src/symbol.ts', count: 2, matched: 1, matchedNeedles: ['knownSymbol'], lines: [1, 2] }]);
+  });
+
+  it('reads a long path stored in the ustar prefix field', async () => {
+    const archive = gzipBlocks([
+      tarFile('deep-file.ts', 'const needleHere = 1;\n', '0', 'owner-repo-sh/a/very/long')
+    ]);
+    const result = await searchCommittedText(rawRequest(archive), { owner: 'o', name: 'r' }, 'main', ['needleHere']);
+    expect(result.hits).toEqual([
+      { path: 'a/very/long/deep-file.ts', count: 1, matched: 1, matchedNeedles: ['needleHere'], lines: [1] }
+    ]);
+  });
+
+  it('reads a GNU long name and a PAX path header', async () => {
+    const gnu = gzipBlocks([
+      tarFile('././@LongLink', 'owner-repo-sh/gnu/long-name.ts', 'L'),
+      tarFile('placeholder', 'const gnuNeedle = 1;\n')
+    ]);
+    const gnuResult = await searchCommittedText(rawRequest(gnu), { owner: 'o', name: 'r' }, 'main', ['gnuNeedle']);
+    expect(gnuResult.hits[0]?.path).toBe('gnu/long-name.ts');
+
+    const pax = gzipBlocks([
+      tarFile('PaxHeader', '30 path=owner-repo-sh/pax/here.ts\n', 'x'),
+      tarFile('placeholder', 'const paxNeedle = 1;\n')
+    ]);
+    const paxResult = await searchCommittedText(rawRequest(pax), { owner: 'o', name: 'r' }, 'main', ['paxNeedle']);
+    expect(paxResult.hits[0]?.path).toBe('pax/here.ts');
+  });
+
+  it('treats a truncated archive as partial, never as a complete absence', async () => {
+    const archive = gzipBlocks([tarFile('owner-repo-sh/a.ts', 'const needleHere = 1;\n')], false);
+    const result = await searchCommittedText(rawRequest(archive), { owner: 'o', name: 'r' }, 'main', ['needleHere']);
+    expect(result.truncated).toBe(true);
+    expect(result.hits).toHaveLength(1);
+
+    const empty = gzipBlocks([tarFile('owner-repo-sh/a.ts', 'nothing here\n')], false);
+    const emptyResult = await searchCommittedText(rawRequest(empty), { owner: 'o', name: 'r' }, 'main', ['absent']);
+    expect(emptyResult.unavailable).toContain('No absence conclusion');
+  });
+
+  it('stops on a malformed size rather than guessing offsets', async () => {
+    const archive = gzipBlocks([tarFile('owner-repo-sh/a.ts', 'const needleHere = 1;\n', '0', '', 'not-octal')]);
+    const result = await searchCommittedText(rawRequest(archive), { owner: 'o', name: 'r' }, 'main', ['needleHere']);
+    expect(result.hits).toHaveLength(0);
+    expect(result.unavailable ?? '').toContain('No absence conclusion');
+  });
+
+  it('skips binary files', async () => {
+    const binary = '\u0000\u0001needleHere\u0000';
+    const archive = gzipBlocks([tarFile('owner-repo-sh/bin.dat', binary), tarFile('owner-repo-sh/a.ts', 'needleHere\n')]);
+    const result = await searchCommittedText(rawRequest(archive), { owner: 'o', name: 'r' }, 'main', ['needleHere']);
+    expect(result.hits.map((hit) => hit.path)).toEqual(['a.ts']);
   });
 
   it('reports unavailable rather than absence when the archive cannot be read', async () => {

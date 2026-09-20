@@ -92,6 +92,34 @@ describe('stale installation repair', () => {
     expect(typeof request).toBe('function');
   });
 
+  it('asks for the exact installation before walking the App list', async () => {
+    const env = appKeyEnv();
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith('/users/timc0y/installation')) return Response.json({ id: 163206430 });
+      return new Response('{}', { status: 404 });
+    }));
+
+    expect(await installationForLogin(env, 'timc0y')).toBe('163206430');
+    expect(seen[0]).toContain('/users/timc0y/installation');
+    expect(seen.some((url) => url.includes('/app/installations'))).toBe(false);
+  });
+
+  it('falls back to the App list when the exact lookup names nothing', async () => {
+    const env = appKeyEnv();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/app/installations?per_page=100')) {
+        return Response.json([{ id: 163206430, account: { login: 'timc0y' } }]);
+      }
+      return new Response('{}', { status: 404 });
+    }));
+
+    expect(await installationForLogin(env, 'timc0y')).toBe('163206430');
+  });
+
   it('finds no installation when the App is not installed for that login', async () => {
     const env = appKeyEnv();
     vi.stubGlobal('fetch', vi.fn(async () => Response.json([{ id: 1, account: { login: 'someone-else' } }])));
