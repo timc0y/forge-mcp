@@ -53,16 +53,13 @@
     // The operator's own escape hatch from the daily limit. Not a tier: there
     // is no path inside the product that grants it.
     "FORGE_UNLIMITED_LOGINS": "timc0y",
-    // Analytics is optional by construction. With no POSTHOG_API_KEY secret
-    // set, tracking is a no-op rather than an error, so the worker runs
-    // identically with or without it.
-    "POSTHOG_HOST": "https://eu.i.posthog.com",
+    "FORGE_JEV_PRIVATE_SOURCE": "deny",
     "TYPESAFE_BASE_URL": "https://api.cloudflare.com/client/v4/accounts/d6784b5908746881ddb313d17efd5cc2/ai/run"
   },
 
   // Secrets, set with `wrangler secret put`, never in this file:
   //   GITHUB_APP_PRIVATE_KEY, GITHUB_APP_CLIENT_SECRET,
-  //   FORGE_SIGNING_KEY, CLOUDFLARE_API_TOKEN, POSTHOG_API_KEY, TYPESAFE_API_KEY
+  //   FORGE_SIGNING_KEY, CLOUDFLARE_API_TOKEN, TYPESAFE_API_KEY
   //
   // CLOUDFLARE_API_TOKEN is scoped to Browser Rendering only. Capture goes
   // through the REST Quick Action rather than a `browser` binding: Quick
@@ -98,7 +95,7 @@
         "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
         "FORGE_CAPTURE_DAILY_LIMIT": "30",
         "FORGE_UNLIMITED_LOGINS": "timc0y",
-        "POSTHOG_HOST": "https://eu.i.posthog.com"
+        "FORGE_JEV_PRIVATE_SOURCE": "deny"
       },
       "d1_databases": [
         {

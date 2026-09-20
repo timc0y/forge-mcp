@@ -15,7 +15,7 @@ export function privacyPage(env: Env): Response {
 <h1>Privacy</h1>
 <p class="lead">Forge stores the minimum state needed to connect your GitHub account,
   prepare reviewable changes and carry out decisions you approve.</p>
-<p class="note">Last updated 19 September 2026.</p>
+<p class="note">Last updated 20 September 2026.</p>
 
 <h2>What Forge stores</h2>
 <div class="section">
@@ -44,10 +44,9 @@ export function privacyPage(env: Env): Response {
     persistent copy of captured pages.</p>
 
   <h3>Usage and analytics</h3>
-  <p>Forge stores one daily capture count per user. When PostHog analytics is enabled,
-    it receives only product shape: tool name, success or failure, duration, file or
-    viewport counts, action and outcome. It never receives repository names, file
-    contents, patches, intents, captured URLs or tokens.</p>
+  <p>Forge stores one daily capture count per user. Shape-only operational measurements
+    are written to the existing Cloudflare logs. These measurements contain no repository
+    names, source, queries, captured URLs, user identifiers or tokens.</p>
 </div>
 
 <h2>What Forge does not keep</h2>
@@ -60,8 +59,11 @@ export function privacyPage(env: Env): Response {
 
 <h2>Who processes data</h2>
 <p>GitHub provides identity and repository operations. Cloudflare hosts the Worker,
-  database and Browser Rendering. PostHog receives the limited analytics described above
-  only when its optional key is configured. Forge does not sell personal data.</p>
+  database and Browser Rendering. Semantic operations use the configured JEV inference
+  route through Cloudflare. Relevant source sent to that route is external processing,
+  not local-only analysis. Private source inference is disabled unless the deployment
+  explicitly permits it. Exact source reads do not require inference. Forge keeps no
+  persistent source index and does not sell personal data.</p>
 
 <h2>Your controls</h2>
 <ul>
