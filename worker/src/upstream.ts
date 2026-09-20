@@ -104,8 +104,10 @@ async function pinnedUpstream(
   const repo = parseRepo(mapping.repo);
   const found: string[] = [];
   for (const tag of [...new Set(mapping.tags(version))]) {
+    budget.assert();
+    budget.github();
     const encoded = tag.split('/').map(encodeURIComponent).join('/');
-    const response = await publicGh(`/repos/${mapping.repo}/git/ref/tags/${encoded}`);
+    const response = await publicGh(`/repos/${mapping.repo}/git/ref/tags/${encoded}`, { signal: AbortSignal.timeout(budget.remaining()) });
     if (response.status === 404) continue;
     if (response.status !== 200) githubFailure(response.status, `the reviewed upstream tag ${tag}`);
     const ref = object(response.json)?.ref;

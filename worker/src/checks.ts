@@ -29,29 +29,31 @@ export async function readChecks(gh: GitHubRequest, repo: RepoRef, sha: string):
   const report: ChecksReport = { testedSha: sha, observedAt: new Date().toISOString(), coverage: 'complete', checks: [], limitations: [] };
   const api = `/repos/${formatRepo(repo)}`;
   let annotationReads = 0;
+  let stateIncomplete = false;
   for (const kind of ['check-run', 'commit-status'] as const) {
     const path = kind === 'check-run' ? `/commits/${sha}/check-runs?filter=latest&per_page=100` : `/commits/${sha}/status?per_page=100`;
     let response: Awaited<ReturnType<GitHubRequest>>;
     try { response = await gh(api + path); }
-    catch { report.limitations.push(`${kind} evidence could not be read; execution state is unknown.`); continue; }
+    catch { stateIncomplete = true; report.limitations.push(`${kind} evidence could not be read; execution state is unknown.`); continue; }
     if (response.status !== 200) {
+      stateIncomplete = true;
       report.limitations.push(`${kind} evidence unavailable: GitHub HTTP ${response.status}; this capability requires ${kind === 'check-run' ? 'Checks' : 'Commit statuses'} read permission. No older revision was queried.`);
       continue;
     }
     const body = object(response.json);
     const rows = kind === 'check-run' ? body?.check_runs : body?.statuses;
-    if (!Array.isArray(rows)) { report.limitations.push(`${kind} response was malformed.`); continue; }
-    if (kind === 'commit-status' && body?.sha !== sha) { report.limitations.push('Combined status belongs to a different revision; it was rejected.'); continue; }
+    if (!Array.isArray(rows)) { stateIncomplete = true; report.limitations.push(`${kind} response was malformed.`); continue; }
+    if (kind === 'commit-status' && body?.sha !== sha) { stateIncomplete = true; report.limitations.push('Combined status belongs to a different revision; it was rejected.'); continue; }
     const total = kind === 'check-run' ? body?.total_count : body?.total_count;
-    if (/rel="next"/.test(response.headers.get('link') ?? '') || (numeric(total) && total > rows.length)) report.limitations.push(`${kind} list is bounded to its first 100 results.`);
+    if (/rel="next"/.test(response.headers.get('link') ?? '') || (numeric(total) && total > rows.length)) { stateIncomplete = true; report.limitations.push(`${kind} list is bounded to its first 100 results.`); }
     const statusNames = new Set<string>();
     for (const raw of rows) {
       const row = object(raw);
-      if (!row || !numeric(row.id)) { report.limitations.push(`Malformed ${kind} record omitted.`); continue; }
-      if (kind === 'check-run' && row.head_sha !== sha) { report.limitations.push('Check tested another revision; it was rejected.'); continue; }
+      if (!row || !numeric(row.id)) { stateIncomplete = true; report.limitations.push(`Malformed ${kind} record omitted.`); continue; }
+      if (kind === 'check-run' && row.head_sha !== sha) { stateIncomplete = true; report.limitations.push('Check tested another revision; it was rejected.'); continue; }
       const name = text(kind === 'check-run' ? row.name : row.context, 160);
       const state = text(kind === 'check-run' ? row.status : row.state, 40);
-      if (!name || !state) { report.limitations.push(`Incomplete ${kind} record omitted.`); continue; }
+      if (!name || !state) { stateIncomplete = true; report.limitations.push(`Incomplete ${kind} record omitted.`); continue; }
       // Combined statuses are newest first; repeated contexts must not resurrect an earlier result.
       if (kind === 'commit-status' && statusNames.has(name)) continue;
       statusNames.add(name);
@@ -77,8 +79,8 @@ export async function readChecks(gh: GitHubRequest, repo: RepoRef, sha: string):
     }
   }
   report.limitations = [...new Set(report.limitations)];
-  if (report.limitations.length) report.coverage = report.checks.length ? 'bounded' : 'unavailable';
-  if (!report.checks.length && !report.limitations.length) report.limitations.push('GitHub returned no checks or statuses for this revision. This does not mean tests passed.');
+  if (stateIncomplete) report.coverage = report.checks.length ? 'bounded' : 'unavailable';
+  if (!report.checks.length && !stateIncomplete) report.limitations.push('GitHub returned no checks or statuses for this revision. This does not mean tests passed.');
   return report;
 }
 export function failedChecks(report: ChecksReport): CheckEvidence[] {

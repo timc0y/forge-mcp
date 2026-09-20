@@ -48,7 +48,7 @@ const result = {
   runAttempt,
   workflowPath,
   configurationHash,
-  coverage: 'complete',
+  coverage: 'bounded',
   tools: [{ name: 'typescript', version: ts.version }],
   findings,
   relationships: [],
