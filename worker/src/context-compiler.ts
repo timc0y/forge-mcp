@@ -99,7 +99,7 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
       const structure = inspectStructure(path, text);
       supported = structure.supported;
       diagnostics = structure.diagnostics.length;
-      symbols = structure.blocks.slice(0, 8).map((block) => `${block.name}: ${block.signature.slice(0, 100)}`);
+      symbols = structure.blocks.slice(0, 8).map((block) => `${block.name}: ${redactSemanticText(block.signature.slice(0, 100))}`);
       imports = structure.imports.slice(0, 12).map((entry) => entry.specifier);
     }
     sketches.push({ path, category: category(path), lexical: relevance(`${path}\n${symbols.join('\n')}\n${text}`, words), symbols, imports, supported, diagnostics });

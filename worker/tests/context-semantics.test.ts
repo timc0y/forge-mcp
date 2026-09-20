@@ -52,6 +52,9 @@ describe('strict JEV contract', () => {
       expect(request).not.toHaveBeenCalled();
     } finally { request.mockRestore(); }
   });
+  it('redacts email-shaped text that is permitted to reach semantic inference', () => {
+    expect(redactSemanticText('owner: person@example.com')).toBe('owner: [REDACTED EMAIL]');
+  });
   it('keeps repository data separate from semantic instructions in the wire request', async () => {
     const original = globalThis.fetch;
     let body: any;
