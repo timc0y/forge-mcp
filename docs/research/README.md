@@ -16,11 +16,11 @@ worker.
 
 ## Current architecture context
 
-- [Context engine plan](../plans/context-engine.md) — selected next engineering
-  authority. Earlier fallback/provider suggestions are not the current direction;
-  implemented behavior and planned replacement remain explicitly separate.
-- [Repository intelligence](./repository-intelligence.md) — current and historical
-  analysis behind that plan, not a second implementation queue.
+- [Context engine](../plans/context-engine.md) — active V2 architecture.
+  Earlier fallback/provider suggestions are not the current direction; deployment
+  proof remains separate from source implementation.
+- [Repository intelligence](./repository-intelligence.md) — historical research
+  behind V2, retained as evidence rather than a second implementation queue.
 - [Executor alternatives](./executor-alternatives-2026-07.md) — why execution
   was ultimately removed rather than moved.
 - [Adoption register](./adoption-register.md) — a dated dependency snapshot;
