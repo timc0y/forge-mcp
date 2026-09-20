@@ -91,7 +91,7 @@ describe('task-shaped context compilation', () => {
           else answers[id] = { type: 'choice', choice: 'body', confidence: 0.9, probabilities: { body: 0.9, outline: 0.1 } };
         }
       }
-      return new Response(JSON.stringify({ success: true, errors: [], result: { model: 'typesafe/jev', answers, usage: { input_tokens: 10, output_tokens: 5 } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ model: 'jev-1.13.0', answers, usage: { input_tokens: 10, output_tokens: 5 } }), { status: 200, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
 
     const snapshot = await Snapshot.open(gh, { owner: 'o', name: 'r' });

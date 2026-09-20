@@ -16,7 +16,7 @@ export interface Evaluation {
   requestedModel: 'typesafe/jev';
   returnedModel: string | null;
   usage: { inputTokens: number; outputTokens: number } | null;
-  contract: 'cloudflare-result-v1';
+  contract: 'cloudflare-jev-output-v1';
   template: string;
   modelPinned: false;
 }
@@ -41,14 +41,12 @@ export function validateQuestions(questions: Record<string, Question>): void {
     if (question.type === 'score' && (question.criteria.length < 2 || question.criteria.length > 10)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Score requires 2–10 ordered levels.' });
   }
 }
-/** One selected Cloudflare envelope. This validator never probes alternative response shapes. */
+/** The documented JEV model output from Cloudflare's universal /ai/run endpoint. No alternate envelope is accepted. */
 export function parseEvaluation(raw: unknown, questions: Record<string, Question>, template: string): Evaluation {
   validateQuestions(questions);
-  const envelope = object(raw);
-  if (envelope?.success !== true || !Array.isArray(envelope.errors) || envelope.errors.length !== 0) invalid('the selected Cloudflare response did not report success');
-  const result = object(envelope.result);
+  const result = object(raw);
   const answers = object(result?.answers);
-  if (!answers) invalid('the selected response has no answers object');
+  if (!result || typeof result.model !== 'string' || !answers) invalid('the selected JEV response is missing model or answers');
   const parsed: Record<string, Answer> = {};
   for (const [id, question] of Object.entries(questions)) {
     const answer = object(answers[id]);
@@ -73,7 +71,7 @@ export function parseEvaluation(raw: unknown, questions: Record<string, Question
   const input = rawUsage?.input_tokens;
   const output = rawUsage?.output_tokens;
   const usage = Number.isSafeInteger(input) && Number.isSafeInteger(output) && (input as number) >= 0 && (output as number) >= 0 ? { inputTokens: input as number, outputTokens: output as number } : null;
-  return { answers: parsed, requestedModel: 'typesafe/jev', returnedModel: typeof result?.model === 'string' ? result.model : null, usage, template, contract: 'cloudflare-result-v1', modelPinned: false };
+  return { answers: parsed, requestedModel: 'typesafe/jev', returnedModel: result.model as string, usage, template, contract: 'cloudflare-jev-output-v1', modelPinned: false };
 }
 export function semanticEndpoint(configured: string | undefined): string {
   if (!configured) invalid('no Cloudflare route is configured');
