@@ -13,6 +13,11 @@ describe('extractive context packing', () => {
     expect(result.items.some((entry) => entry.id === 'large')).toBe(false);
     expect(result.omitted[0]?.reason).toContain('Complete block');
   });
+  it('preserves mandatory instruction order', () => {
+    const root = item('root', 'Root rule.', true);
+    const leaf = item('leaf', 'Leaf rule.', true);
+    expect(packEvidence([root, leaf, item('code', 'implementation')], 4000).items.slice(0, 2).map((entry) => entry.id)).toEqual(['root', 'leaf']);
+  });
   it('reports mandatory evidence that does not fit', () => {
     const result = packEvidence([item('constraint', 'x'.repeat(3000), true)], 1000);
     expect(result.missingMandatory).toBe(true);

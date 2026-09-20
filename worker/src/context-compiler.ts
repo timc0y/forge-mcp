@@ -18,6 +18,12 @@ function category(path: string): Evidence['category'] {
 }
 function tokens(query: string): string[] { return [...new Set(query.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? [])].slice(0, 30); }
 function relevance(text: string, words: string[]): number { const lower = text.toLowerCase(); return words.reduce((score, word) => score + (lower.includes(word) ? 1 : 0), 0); }
+function semanticPreview(text: string, limit = 2500): string {
+  const redacted = redactSemanticText(text);
+  if (redacted.length <= limit) return redacted;
+  const half = Math.floor((limit - 40) / 2);
+  return `${redacted.slice(0, half)}\n… [middle omitted from JEV preview] …\n${redacted.slice(-half)}`;
+}
 function instructionsFor(paths: string[], known: Set<string>): string[] {
   const selected = new Set<string>();
   for (const path of paths) {
@@ -89,10 +95,10 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
       const structure = inspectStructure(path, text);
       supported = structure.supported;
       diagnostics = structure.diagnostics.length;
-      symbols = structure.blocks.slice(0, 24).map((block) => `${block.name}: ${block.signature.slice(0, 220)}`);
-      imports = structure.imports.slice(0, 24).map((entry) => entry.specifier);
+      symbols = structure.blocks.slice(0, 8).map((block) => `${block.name}: ${block.signature.slice(0, 100)}`);
+      imports = structure.imports.slice(0, 12).map((entry) => entry.specifier);
     }
-    sketches.push({ path, category: category(path), lexical: relevance(`${path}\n${symbols.join('\n')}\n${text.slice(0, 12_000)}`, words), symbols, imports, supported, diagnostics });
+    sketches.push({ path, category: category(path), lexical: relevance(`${path}\n${symbols.join('\n')}\n${text}`, words), symbols, imports, supported, diagnostics });
   });
   if (!sketches.length) return { source: snapshot.identity, status: 'insufficient', limitations: ['No readable source candidates in the selected snapshot.'] };
   const shortlist = candidateSketches(sketches);
@@ -157,7 +163,7 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
     questions[`counter_${index}`] = { type: 'noul', instructions: `Does evidence candidate ${item.id} contain a failure path, mandatory constraint, retained consumer or counter-evidence that could invalidate a tempting simplification?` };
     questions[`detail_${index}`] = { type: 'choice', instructions: `For evidence candidate ${item.id}, is full source logic required? Keep guards, exception handling, persistence, cleanup and target implementations complete.`, criteria: { body: 'Complete source block is required', outline: 'Only an off-path API signature is required' } };
   });
-  const ranked = await evaluate(env, { goal: redactSemanticText(goal), candidates: candidates.map((item) => ({ id: item.id, path: item.path, category: item.category, text: redactSemanticText(item.text).slice(0, 2500), previewOnly: item.text.length > 2500 })) }, questions, `${TEMPLATE}/evidence`, snapshot.budget, snapshot.identity.private);
+  const ranked = await evaluate(env, { goal: redactSemanticText(goal), candidates: candidates.map((item) => ({ id: item.id, path: item.path, category: item.category, text: semanticPreview(item.text), previewOnly: item.text.length > 2500 })) }, questions, `${TEMPLATE}/evidence`, snapshot.budget, snapshot.identity.private);
   judgments.push(ranked);
   const included: Evidence[] = [...instructions];
   candidates.forEach((item, index) => {

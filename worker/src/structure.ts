@@ -47,7 +47,8 @@ function assertParseSize(text: string): void {
 }
 function compactSignature(node: ts.Node, file: ts.SourceFile, text: string, start: number, end: number): string {
   if (ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node) || ts.isEnumDeclaration(node)) {
-    const open = text.indexOf('{', start);
+    const brace = node.getChildren(file).find((child) => child.kind === ts.SyntaxKind.OpenBraceToken);
+    const open = brace?.getStart(file) ?? -1;
     return open >= start && open < end ? `${text.slice(start, open).trimEnd()} { … }` : text.slice(start, end).trim();
   }
   if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
@@ -82,16 +83,22 @@ function markdownStructure(path: string, text: string): Structure {
     if (heading) headings.push({ level: heading[1]!.length, title: heading[2]!.trim(), start: offsets[index]! });
   }
   const blocks: SourceBlock[] = [];
-  const stack: Array<{ level: number; title: string }> = [];
+  const stack: Array<{ level: number; segment: string }> = [];
+  const siblings = new Map<string, number>();
   for (let index = 0; index < headings.length; index++) {
     const heading = headings[index]!;
     while (stack.length && stack.at(-1)!.level >= heading.level) stack.pop();
-    const name = [...stack.map((entry) => entry.title), heading.title].join('/');
+    const parent = stack.map((entry) => entry.segment).join('/');
+    const siblingKey = `${parent}\0${heading.title}`;
+    const occurrence = (siblings.get(siblingKey) ?? 0) + 1;
+    siblings.set(siblingKey, occurrence);
+    const segment = occurrence === 1 ? heading.title : `${heading.title}[${occurrence}]`;
+    const name = [parent, segment].filter(Boolean).join('/');
     let end = text.length;
     for (let next = index + 1; next < headings.length; next++) { if (headings[next]!.level <= heading.level) { end = headings[next]!.start; break; } }
     const range = sourceRange(text, heading.start, end);
     blocks.push({ name, kind: 'MarkdownSection', range, signature: `${'#'.repeat(heading.level)} ${heading.title}`, text: text.slice(range.start, range.end) });
-    stack.push({ level: heading.level, title: heading.title });
+    stack.push({ level: heading.level, segment });
   }
   if (!blocks.length && text.trim()) blocks.push({ name: '(document)', kind: 'MarkdownDocument', range: sourceRange(text, 0, text.length), signature: '(document)', text });
   return { supported: true, parser: 'forge-markdown-sections/v1', blocks, imports: [], diagnostics: [], limitation: 'Heading-delimited Markdown sections only; inline Markdown semantics are not interpreted.' };
@@ -184,6 +191,15 @@ export function inspectStructure(path: string, text: string): Structure {
     ts.forEachChild(node, (child) => walk(child, scope));
   };
   walk(file);
+  const totals = new Map<string, number>();
+  for (const block of blocks) totals.set(block.name, (totals.get(block.name) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  for (const block of blocks) {
+    if ((totals.get(block.name) ?? 0) < 2) continue;
+    const index = seen.get(block.name) ?? 0;
+    seen.set(block.name, index + 1);
+    block.name = `${block.name}[${index}]`;
+  }
   return { supported: true, parser: STRUCTURE_VERSION, blocks, imports, diagnostics: errors, limitation: 'Syntax declarations and literal imports only; not type-resolved references or runtime reachability.' };
 }
 function jsonTree(path: string, text: string): ts.JsonSourceFile {

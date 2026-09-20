@@ -23,9 +23,9 @@ export function packEvidence(candidates: readonly Evidence[], byteBudget: number
     bytes += size;
     categories.add(item.category);
   };
-  for (let index = remaining.length - 1; index >= 0; index--) {
-    if (remaining[index]!.mandatory) append(remaining.splice(index, 1)[0]!);
-  }
+  const mandatory = remaining.filter((item) => item.mandatory);
+  for (let index = remaining.length - 1; index >= 0; index--) if (remaining[index]!.mandatory) remaining.splice(index, 1);
+  for (const item of mandatory) append(item);
   while (remaining.length) {
     remaining.sort((a, b) => {
       const utility = (item: Evidence): number => ((item.relevance ?? 0) + (categories.has(item.category) ? 0 : 0.3) + (item.counterEvidence ?? 0)) / Math.max(1, cost(item));
