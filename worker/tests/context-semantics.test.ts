@@ -22,6 +22,8 @@ describe('strict JEV contract', () => {
     Reflect.deleteProperty(missing.answers, 'relevant');
     expect(() => parseEvaluation(missing, questions, 'test')).toThrow(/missing/);
     expect(() => parseEvaluation({ success: true, errors: [], result: valid() }, questions, 'test')).toThrow(/missing model or answers/);
+    expect(() => parseEvaluation({ ...valid(), model: 'other/model' }, questions, 'test')).toThrow(/non-JEV model/);
+    expect(() => parseEvaluation({ ...valid(), answers: { ...valid().answers, extra: { type: 'noul', noul: 0.5 } } }, questions, 'test')).toThrow(/unexpected answer set/);
     const wrong = valid();
     wrong.answers.detail.probabilities.body = 0.3;
     expect(() => parseEvaluation(wrong, questions, 'test')).toThrow(/sum/);

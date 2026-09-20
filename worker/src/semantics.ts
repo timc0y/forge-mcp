@@ -48,6 +48,10 @@ export function parseEvaluation(raw: unknown, questions: Record<string, Question
   const result = object(raw);
   const answers = object(result?.answers);
   if (!result || typeof result.model !== 'string' || !answers) invalid('the selected JEV response is missing model or answers');
+  if (!/^(?:typesafe\/jev|jev(?:[-/]|$))/i.test(result.model)) invalid('the selected route returned a non-JEV model identity');
+  const expectedIds = Object.keys(questions).sort();
+  const returnedIds = Object.keys(answers).sort();
+  if (expectedIds.length !== returnedIds.length || expectedIds.some((id, index) => id !== returnedIds[index])) invalid('the selected response returned an unexpected answer set');
   const parsed: Record<string, Answer> = {};
   for (const [id, question] of Object.entries(questions)) {
     const answer = object(answers[id]);
