@@ -4,7 +4,7 @@ import { formatRepo } from './contracts';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { resolveRepositoryName } from './addresses';
 import { defaultBranch, assertNotNearExisting, createRepo } from './repo';
-import { compare, listRepos } from './read';
+import { listRepos } from './read';
 import { CHANGE_BRANCH, openChanges, ensureDraftPullRequest } from './change';
 import { commitFiles } from './write';
 import { readCodeownersErrors } from './github-intelligence';
@@ -61,16 +61,7 @@ export async function author(ctx: ToolContext, input: EditInput): Promise<ToolOu
   if (proposed) {
     try { number = await ensureDraftPullRequest(ctx.gh, repo, branch, input.change!, destination.base); }
     catch (error) { limits.push(`Committed on ${branch}, but its draft PR could not be opened: ${toForgeError(error).message}`); }
-    if (commit.outcome === 'unchanged' && number === null) {
-      try {
-        const comparison = await compare(ctx.gh, repo, destination.base, branch);
-        if (comparison.aheadBy === 0) {
-          const removed = await ctx.gh(`/repos/${repo.owner}/${repo.name}/git/refs/heads/${encodeURIComponent(branch)}`, { method: 'DELETE' });
-          if (removed.status >= 200 && removed.status < 300) limits.push('Removed the unused review branch because it contained no commit absent from the default branch.');
-          else limits.push(`No content changed, but GitHub refused cleanup of the unused review branch (HTTP ${removed.status}).`);
-        }
-      } catch (error) { limits.push(`No content changed; unused review-branch cleanup could not be proven safe: ${toForgeError(error).message}`); }
-    }
+    if (commit.outcome === 'unchanged' && number === null) limits.push('No content changed and no pull request was opened. Forge leaves any existing proposal ref untouched; automatic ref deletion would race concurrent pushes because GitHub offers no compare-and-delete primitive.');
   }
   let names: string[] | undefined;
   try { names = (await openChanges(ctx.gh, repo)).map((entry) => entry.name); }
