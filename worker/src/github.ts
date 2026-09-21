@@ -179,8 +179,21 @@ function requester(token: string): GitHubRequest {
         method: init?.method ?? 'GET',
         headers,
         body,
-        cache: 'no-store'
+        cache: 'no-store',
+        signal: init?.signal
       });
+      if (init?.stream && response.ok && response.body) {
+        const limit = init.maxBytes ?? 20 * 1024 * 1024;
+        let seen = 0;
+        const stream = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            seen += chunk.byteLength;
+            if (seen > limit) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: 'GitHub response exceeded its streaming byte limit.' });
+            controller.enqueue(chunk);
+          }
+        }));
+        return { status: response.status, json: null, text: '', stream, headers: response.headers };
+      }
       if (init?.raw) {
         const read = await readBounded(response, init.maxBytes);
         if (read === null) {
@@ -190,7 +203,9 @@ function requester(token: string): GitHubRequest {
         }
         bytes = read;
       } else {
-        text = await response.text();
+        const buffer = await readBounded(response, init?.maxBytes ?? 8 * 1024 * 1024);
+        if (buffer === null) return { status: 413, json: null, text: '', headers: response.headers };
+        text = new TextDecoder().decode(buffer);
       }
     } catch (error) {
       if (isForgeError(error)) throw error;

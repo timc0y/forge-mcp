@@ -96,6 +96,21 @@ describe('GitHub installation token lifetime', () => {
     expect(inits[0]?.cache).toBe('no-store');
   });
 
+  it('treats the 2026 stateless GitHub App token format as opaque', async () => {
+    const stateless = 'ghs_' + 'APPID_JWT_SEGMENT_'.repeat(12);
+    const tokenProvider = vi.fn(async () => stateless);
+    let authorization = '';
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      authorization = new Headers(init?.headers).get('authorization') ?? '';
+      return new Response('{"ok":true}', { status: 200 });
+    }));
+
+    const request = await githubRequest({} as Env, 'installation-1', tokenProvider);
+    await request('/installation/repositories');
+
+    expect(authorization).toBe(`Bearer ${stateless}`);
+  });
+
   it('does not retry ordinary GitHub refusals', async () => {
     const tokenProvider = vi.fn(async () => 'token');
     const fetchMock = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 }));
@@ -210,6 +225,17 @@ describe('public exposure hardening', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.images).toHaveLength(1);
     expect(calls[0]?.rejectRequestPattern).toEqual(expect.arrayContaining([expect.stringContaining('localhost')]));
+  });
+
+  it('refuses an oversized Browser Rendering response before reading its body', async () => {
+    const fetchMock = vi.fn(async () => new Response('{"success":true}', {
+      status: 200,
+      headers: { 'content-length': String(20 * 1024 * 1024) }
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(capture(captureEnv(), 'https://example.com/', ['desktop'])).rejects.toThrow(/response exceeded the per-viewport byte limit/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('refuses more than three viewport requests before spending browser time', async () => {

@@ -17,9 +17,9 @@ export const LEAD = [
 ].join(' ');
 
 const DETAIL = [
-  'forge_read is the only way to look: no repo lists repositories; repo="global" searches public GitHub code or repos; a repo shows its files and open changes; adding a change shows what it did; query asks about code, history, hygiene, migrations, quality, dependencies or policy; paths accepts line ranges or returns patches for changes.',
-  'forge_edit creates the repository if it does not exist. It commits directly unless change explains why the work needs review. Prefer replace fragments over whole files.',
-  'Forge does not run, build, test, or deploy anything. If a result names limitations, say them. forge_see pointer.next=stop means do not invent a code fix from that capture.'
+  'forge_read is the only way to look: no repo lists repositories; repo="global" discovers public repositories, while public code discovery requires code:<terms> plus explicit repo:owner/name scopes; a repo is pinned to one commit; change reads its diff; at="proposal" reads proposed source; paths are exact selectors; a natural query compiles bounded evidence.',
+  'forge_edit creates the repository if needed. It commits directly unless change explains why review is required. Prefer exact fragments or revision-checked selectors; no whitespace guessing.',
+  'Forge does not run, build, test, or deploy code. checks reports GitHub execution evidence for the exact commit when permission exists. If evidence is unavailable, say so rather than substituting another source.'
 ].join(' ');
 
 export const INSTRUCTIONS = `${LEAD}\n\n${DETAIL}`;

@@ -15,12 +15,12 @@ import type { Env } from './env';
 import { installationRequestFor } from './github';
 import { userRequestFor } from './user-token';
 import { ForgeError } from './errors';
-import { registerTools } from './tools';
+import { registerTools } from './tool-catalog';
 import { analyticsFor } from './analytics';
 import { INSTRUCTIONS } from './instructions';
 
 const SERVER_NAME = 'Forge';
-export const SERVER_VERSION = '1.1.1';
+export const SERVER_VERSION = '2.0.0';
 
 export class ForgeMcpSession extends McpAgent<Env, never, { identity: Identity }> {
   // Replaced in init: props are not hydrated until then, and the tools need

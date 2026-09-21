@@ -12,8 +12,9 @@ sources before acting on the stages that depend on them.
 | | |
 |---|---|
 | Worker deployed at `timcoy.uk/forge` | ✅ |
-| D1, R2, Durable Object, routes | ✅ |
-| GitHub App created, public, installable by any account | ✅ |
+| D1, Durable Object, routes | ✅ |
+| GitHub App created | ✅ |
+| GitHub App public / installable by other accounts | 🟡 **blocked: App currently reports private** |
 | `FORGE_SIGNING_KEY`, `GITHUB_APP_CLIENT_SECRET` | ✅ (secret verified against GitHub) |
 | `GITHUB_APP_PRIVATE_KEY` | ✅ PKCS#8 secret verified by session startup |
 | `CLOUDFLARE_API_TOKEN` | ✅ Browser Rendering request verified |
@@ -71,7 +72,59 @@ but makes authenticated MCP startup fail before any tools are registered.
 pnpm exec wrangler secret put CLOUDFLARE_API_TOKEN --env=""
 ```
 
-**Optional:** `POSTHOG_API_KEY`. Without it analytics is a no-op, by design.
+**JEV:** set `TYPESAFE_API_KEY`. Production configuration names the one admitted
+Cloudflare inference route and explicitly allows bounded private-source JEV
+processing. The privacy page must remain accurate for that processing boundary.
+
+### Current V2 provider blockers — 21 September 2026
+
+Public GitHub API evidence for `timc0y/forge-mcp` currently reports workflow
+`CI` (`.github/workflows/ci.yml`, id `311718244`) as `disabled_manually`, and the
+`forge` branch has no workflow runs/check runs. The V2 workflow definition now
+runs on exact `forge` heads and no longer ignores documentation-only changes;
+the remaining action is to enable GitHub Actions/CI in repository settings.
+Do not merge V2 until a fresh exact-head run is visible and successful.
+
+Forge V2 also diagnoses inactive workflow states when a revision has no checks;
+zero checks never count as passing.
+
+GitHub's public App landing page currently identifies **Forge MCP GitHub App as
+a private GitHub App**. GitHub's visibility rules mean a private App can only be
+installed on its owning account. Before presenting Forge as open to other GitHub
+users, change the App registration to public and complete any permission
+approval prompted by that change.
+
+Owner actions, in this order:
+
+1. In GitHub repository Actions settings, enable workflow **CI** (workflow id
+   `311718244`). Do not merge merely because the workflow is enabled; wait for a
+   run on the latest `forge` SHA.
+2. In the Forge MCP GitHub App registration, change visibility from **private**
+   to **public**.
+3. Ensure the App requests and the installation approves **Checks: read**,
+   **Commit statuses: read** and **Actions: read**, in addition to the already
+   proven repository permissions.
+4. Push or make one harmless commit on `forge` if enabling CI does not replay the
+   previous push. Confirm exact-head CI and `Forge analysis` both run.
+5. Verify Cloudflare Browser Rendering's current production security boundary
+   refuses private-address DNS resolutions for public hostnames, or narrow
+   `forge_see` before release. Forge itself blocks IP literals, localhost/local
+   names and literal private-address redirects, but `rejectRequestPattern` is a
+   URL-pattern control and does not by itself prove DNS-to-private isolation.
+6. Only after those exact-head runs succeed and the Browser Rendering boundary
+   is established should `forge_merge` be asked to prepare the human merge
+   approval.
+
+### Forge V2 catalog release
+
+Forge V2 changes MCP schemas and server instructions. Deploying Worker code is
+not enough for clients that cached the old catalog: refresh/re-scan the Forge
+connection and start a new conversation before evaluating V2. The production
+GitHub App must also have **Checks: read**, **Commit statuses: read** and
+**Actions: read** approved before `checks` and `analysis` can return complete
+execution evidence. CI runs on direct `forge` pushes as well as pull requests so
+the proposal head itself receives execution evidence; a pull-request synthetic
+merge commit is never substituted for the proposal SHA.
 
 ## Stage 2 — Prove it once
 
@@ -133,16 +186,16 @@ advisories and resolved transitive versions before deployment.
 privacy policy.
 
 **Support.** The worker links to the public contact routes on `timcoy.uk`, which
-is enough for design partners but not a durable product support channel. Add a
-dedicated email or public support repository before directory or Marketplace
-submission. The source repository is currently private, so linking strangers to
-its Issues page would only produce a 404.
+is enough for design partners but not a durable product support channel. The
+source repository is now public, so its Issues page is reachable, but do not
+silently turn a code issue tracker into the support contract: either publish a
+support/issue policy there or add a dedicated support address before directory
+or Marketplace submission.
 
-**Deletion.** Capture ownership is recorded from migration 0002 onward, and the
-manual procedure is in [`account-deletion.md`](./account-deletion.md). Apply the
-migration before deploying the worker change. Legacy captures are not mapped to
-a user and must expire through the bucket lifecycle unless the requester supplies
-their capture link.
+**Deletion.** Forge V2 stores no captured-page objects. The manual procedure in
+[`account-deletion.md`](./account-deletion.md) deletes the user row, OAuth state,
+approval evidence and daily capture-usage counter from D1. Revoking the GitHub
+App installation remains a separate GitHub action the user controls.
 
 ## Stage 4 — The ChatGPT plugin directory
 
@@ -234,21 +287,23 @@ Required by both processes and the one piece of work with no code in it. It has
 to be true, which means writing it from what the system does:
 
 - **Collected:** GitHub user id and login; a GitHub credential, encrypted, used
-  only to create repositories; pending approvals with the diff evidence shown;
-  captures; a daily capture count.
-- **Not collected:** repository contents at rest, chat transcripts, email.
-  Analytics carries tool name, outcome and duration — never file contents,
-  patches, intents, captured URLs or repository names.
-- **Recipients:** GitHub, Cloudflare (hosting, browser rendering), PostHog
-  (analytics) if enabled.
-- **Retention:** captures expire after 30 days. Approval links expire after seven
-  days, but approval records currently remain until account deletion; do not
-  describe link expiry as record deletion.
+  only to create repositories and explicit public GitHub discovery; pending
+  approvals with the frozen diff/evidence shown; a daily capture-usage count.
+- **Not collected at rest:** repository contents, chat transcripts, email.
+  Shape-only Cloudflare logs exclude repository names, source, queries, patches,
+  captured URLs and user identifiers.
+- **Recipients:** GitHub provides identity/repository operations. Cloudflare
+  hosts Forge, Browser Rendering and the configured JEV inference route. When
+  private semantic context is enabled, bounded relevant private source may be
+  processed by that JEV route; exact reads and writes do not require inference.
+- **Retention:** Forge keeps no captured-page object or gallery. Approval links
+  expire after seven days, but approval records currently remain until account
+  deletion; do not describe link expiry as record deletion.
 - **Controls:** revoke the App from GitHub at any time; disconnect the client;
   request deletion through the documented operator procedure.
 
 The worker serves this notice at `/forge/privacy`, and the production route is
-verified. Verify the R2 lifecycle before treating retention as complete.
+verified. Forge V2 keeps no capture gallery or R2 repository/capture store.
 
 ---
 

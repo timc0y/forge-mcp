@@ -37,8 +37,8 @@ export function formatRepo(repo: RepoRef): string {
  */
 export type GitHubRequest = (
   path: string,
-  init?: { method?: string; body?: unknown; accept?: string; raw?: boolean; maxBytes?: number }
-) => Promise<{ status: number; json: unknown; text: string; bytes?: ArrayBuffer; headers: Headers }>;
+  init?: { method?: string; body?: unknown; accept?: string; raw?: boolean; stream?: boolean; maxBytes?: number; signal?: AbortSignal }
+) => Promise<{ status: number; json: unknown; text: string; bytes?: ArrayBuffer; stream?: ReadableStream<Uint8Array>; headers: Headers }>;
 
 // ---------------------------------------------------------------------------
 // Changes
@@ -109,6 +109,8 @@ export interface FileWrite {
   path: string;
   content?: string | null;
   replace?: Array<{ old: string; new: string; all?: boolean }>;
+  /** A source-addressed replacement tied to the exact revision previously read. */
+  edit?: { expectedCommit: string; selector: string; replacement: string };
 }
 
 /**
@@ -148,6 +150,8 @@ export interface ApprovalRequest {
   headSha: string;
   /** The default-branch destination shown to the human when approval was minted. */
   baseBranch?: string;
+  /** Exact destination revision the frozen comparison was made against. */
+  baseSha?: string;
   impactSummary?: string;
 }
 

@@ -1,6 +1,6 @@
 # Forge context engine
 
-Status: selected implementation plan, not implemented.
+Status: active V2 architecture; source implementation is complete on the Forge review change, with deployment evidence still required.
 Owner instruction: Tim, 20 September 2026.
 Source baseline: `main` at abbreviated commit `9b6c2c6`, inspected through Forge.
 
@@ -105,23 +105,21 @@ Permissions and scope are deterministic. A failed private-repository lookup must
 
 Use the existing TypeScript package's parse-only API for JS/TS/JSX/TSX. Do not execute source, load repository plugins or create a compiler program that resolves arbitrary filesystem/network inputs inside Forge. Extract declarations, signatures, literal imports/exports, source spans and syntactic call sites. Cross-file binding and reachability claims require the matching project/tool evidence described below.
 
-Use the upstream Astro compiler for Astro structure, and the upstream Shopify Liquid parser for Liquid structure, after their request-runtime and source-span tests pass. These are format owners, not interchangeable fallbacks. Astro's current README explicitly warns about imperfect position data; reconstruct and verify every exposed source span against the original bytes. Until validated, do not offer range-based Astro edits. Report unsupported coverage instead of treating Astro as TypeScript.
+Use format-owner parsers only after Worker/runtime and exact-span admission. Shopify Liquid is admitted through `@shopify/liquid-html-parser` with source-range tests. Astro remains deliberately unsupported for structural selection: the current official compiler's browser path requires asynchronous Wasm initialization and its synchronous path loads `astro.wasm` relative to `import.meta.url`; that bundling contract has not yet been proven inside the deployed Worker. Exact Astro source reads remain available. No delimiter or TypeScript approximation substitutes for an Astro AST.
 
-Use a Markdown AST for headings, paragraphs, links and task lists. Use a maintained JSONC parser for configurations that actually allow comments, and a maintained YAML parser in safe data-only mode. Strict JSON remains strict where its format requires it. Reject duplicate/ambiguous configuration keys and bound YAML aliases. Do not label valid JSONC invalid merely because a filename ends in `.json`.
+Markdown sections use Lezer's CommonMark parser so fenced content and Setext/ATX headings are syntax facts, not heading regexes. JSON/JSONC structure uses the already-bundled TypeScript parser with filename-specific comment policy and duplicate-key rejection; strict JSON stays strict. YAML uses the maintained `yaml` package in data-only parse/validation mode. Unsupported formats remain exact-source only.
 
-Selected implementation candidates:
+Admitted V2 implementations:
 
-| Library | Responsibility | Admission test |
+| Library | Responsibility | Evidence in this change |
 | --- | --- | --- |
-| `typescript` (already in repo) | JS/TS parse-only outline and spans | Worker bundle, parse-time and Unicode-span tests |
-| `@astrojs/compiler` | Astro AST and embedded-source boundaries | Precompiled Wasm/runtime compatibility and exact span round trips |
-| `@shopify/liquid-html-parser` | Liquid/HTML AST | Supported syntax and exact span tests against theme fixtures |
-| `mdast-util-from-markdown` | Markdown section/obligation selection | Exact section offsets, fenced code and nested-heading tests |
-| `jsonc-parser` | JSONC AST/locations and surgical data edits | Error reporting, duplicate-key policy and comment-preserving edits |
-| `yaml` | YAML data/config parsing | Safe schemas, bounded aliases and original range preservation |
-| `fast-check` (development only) | Property-based regression generation | Material coverage of selector, parser and edit invariants |
+| `typescript@5.9.3` | JS/TS/JSX/TSX declarations/imports/spans and JSON/JSONC syntax | Unicode/span, duplicate-key, selector and Worker bundle gates |
+| `@shopify/liquid-html-parser@2.10.0` | Strict Liquid/HTML AST and exact source spans | Nested Liquid/HTML source-range regression plus frozen lock metadata |
+| `@lezer/markdown@1.6.3` | CommonMark heading/section structure | Fenced-heading, Setext, nested and duplicate-heading selector tests |
+| `yaml@2.9.0` | YAML syntax/data validation | Valid/invalid document regressions; no runtime schema inference |
+| Astro compiler | **Not admitted yet** | Must prove official Wasm/runtime initialization and exact span round trips in the Worker before structural Astro selectors are exposed |
 
-Pin approved versions, review licenses and lockfiles, and record bundle costs before installation. This table selects responsibilities; it does not claim the packages are already installed or compatible. Do not add Babel, Oxc, SWC and Tree-sitter as alternative JS parsers. Tree-sitter is reserved for a later, explicitly supported additional language, not runtime rescue when another parser fails. No general LSP server inside Forge.
+Versions are pinned and Worker CI now performs a frozen install, typecheck/tests, a real Wrangler dry-run bundle, a 48 MiB internal bundle budget and startup profiling. Do not add Babel, Oxc, SWC, Tree-sitter, mdast or another JSON parser as alternative implementations for formats already owned above. No general LSP server runs inside Forge.
 
 ### Useful first-class selections
 
@@ -277,7 +275,7 @@ Each stage is a focused reviewable change. Deploy each accepted replacement with
 | --- | --- | --- | --- |
 | 0 | Baseline replay tasks, budgets, typed evidence contract and Cloudflare-only operational metrics | Ambiguous signature/quality wording and optional external analytics emission | No new capability claims; current failures reproduced; essential metrics retained |
 | 1 | SHA-consistent reads, GitHub URL addressing, authoritative selectors and single-path scoped search | Moving-ref reads within one operation; private-to-public widening; index-to-archive cascade; duplicate payloads | Concurrent-head, no-match, oversized and private-scope tests |
-| 2 | One JEV wire contract with model/usage evidence and typed failure | Provider sniffing, alternative endpoint, guessed probabilities, swallowed semantic failure | Sanitized real contract fixture plus missing/malformed/timeout tests |
+| 2 | One JEV wire contract with model/usage evidence and typed failure | Provider sniffing, alternative endpoint, guessed probabilities, swallowed semantic failure | Current documented Cloudflare JEV output shape plus missing/malformed/timeout tests; production smoke remains a release gate |
 | 3 | Source outlines, exact bodies, Markdown/JSON record selection and bounded graph | Fixed-window semantic slicing for supported formats | Worker-native parser/bundle/span tests, including Astro/Liquid |
 | 4 | JEV evidence selection, counter-evidence, one-round gap closure and budgeted packet packing | Agent-side gathering loop and redundant semantic passes | Held-out context recall, task quality, cost and latency gates |
 | 5 | Exact-commit checks/annotations and one analysis-artifact reader | Manual log copying and inferred test status | App-permission failure, rerun, merge-ref, stale-artifact and malicious-archive tests |
@@ -308,27 +306,27 @@ Initial targets below are acceptance goals, not measurements:
 | Sequential JEV stages | At most 3 normally; at most one bounded expansion |
 | Full-file/source/CI operations | No unnecessary JEV call |
 | Runtime resilience | Explicit outcome for every injected upstream/parse/schema failure; no substitute provider/result |
-| Runtime memory, bundle size and latency | Within deployed Worker limits under tested concurrency, with measured headroom |
+| Runtime memory, bundle size and latency | Within deployed Worker limits under tested concurrency; CI enforces ≤48 MiB dry-run bundle against Cloudflare’s 64 MiB limit and runs Wrangler startup profiling |
 
 Measure total JEV input/output usage and request cost, GitHub calls, bytes downloaded/retained, parser CPU, response bytes and end-to-end latency. Do not assert a 50–70% saving because another project reported it. Do not move cost from ChatGPT into repeated JEV requests or whole-archive downloads and call that success. Do not upload source, queries, repo names or private identifiers to analytics.
 
 ## 14. Acceptance and release
 
-- [ ] Current behavior is reproduced on the named baseline; targets are measured rather than assumed.
-- [ ] Exactly five tools remain; first-party operation discovery does not depend on magic query words or custom ChatGPT orchestration code.
-- [ ] One authoritative implementation serves each operation; all replaced cascades and silent substitutions are removed.
-- [ ] One JEV transport is validated; semantic failure cannot look like semantic success.
-- [ ] Context references immutable source; every graph edge and diagnostic has an appropriate evidence type.
-- [ ] Explicit paths, proposal source, symbols, document sections and ledger records are selectable without unnecessary rereading.
-- [ ] Unsupported languages, incomplete scopes, missing permissions and stale tests remain visible.
-- [ ] No additional hosted indexing, docs, security, AI or telemetry service is required.
-- [ ] No repository code/plugin/config executes inside Forge; private data boundaries pass adversarial tests.
-- [ ] Exact source/test coverage is retained while the token/call targets are met on held-out tasks.
-- [ ] `pnpm check` and Worker-native integration tests pass for the final source SHA.
-- [ ] MCP version, schema, annotations, examples and connection-refresh instructions agree; old incompatible inputs fail explicitly rather than silently taking another path.
+- [ ] Deterministic fixture baselines are executable in CI; named real Forge/HeadteacherChat baselines and hosted-JEV measurements still need final run evidence.
+- [x] Exactly five tools remain; first-party operation discovery does not depend on magic query words or custom ChatGPT orchestration code.
+- [x] One authoritative implementation serves each operation; replaced search/JEV/review cascades are removed from runtime source.
+- [x] One JEV transport and one documented Cloudflare output contract are enforced; missing/malformed/timeout evidence cannot become semantic success.
+- [x] Context references immutable source; syntax/import/check/artifact relationships retain explicit provenance and limitations.
+- [x] Explicit paths, proposal source, symbols, Markdown sections and JSON ledger records are selectable without semantic rereading.
+- [x] Unsupported formats, incomplete scopes, missing permissions and stale-revision evidence remain visible rather than substituted.
+- [x] No additional hosted indexing, docs, security, AI or telemetry service is required.
+- [x] No repository code/plugin/config executes inside Forge; secret egress, prompt/data separation, archive, URL and artifact boundaries have adversarial regression tests.
+- [ ] The 30-case deterministic plumbing benchmark enforces the token/round/evidence budgets; real hosted-JEV held-out repository tasks must still measure relevance quality and confirm the targets outside the synthetic selector oracle.
+- [ ] CI now runs on every pull request and direct `forge`/`main` push, including documentation-only changes. Merge approval requires at least one exact-head check/status and all observed exact-head execution states to be completed success; zero, pending, skipped or neutral evidence is never treated as passing. Final run evidence must still be observed before merge.
+- [x] MCP version, schema, annotations, examples and connection-refresh instructions agree in source; old incompatible inputs fail explicitly rather than silently taking another path.
 - [ ] Authorized deployment smoke and a fresh phone/ChatGPT conversation prove read, context, edit, review and human approval. Documentation alone is not release evidence.
 
-This planning commit does not implement the engine, change GitHub App permissions, invoke new services, dispatch CI, run production failure injection or authorize deployment.
+The V2 source implementation lives on Forge PR #83. Source completion is not release proof: GitHub must still execute the final typecheck/tests/bundle/startup gates, the GitHub App installation must approve the required read permissions, the context evaluation targets must be measured rather than assumed, and an authorized deployment/fresh-client smoke must pass before V2 is described as deployed.
 
 ## 15. Research basis
 

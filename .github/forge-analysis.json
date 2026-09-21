@@ -1,0 +1,11 @@
+{
+  "workflowPath": ".github/workflows/forge-analysis.yml",
+  "configurationPaths": [
+    ".github/forge-analysis.json",
+    ".github/workflows/forge-analysis.yml",
+    "worker/scripts/forge-analysis.mjs",
+    "worker/tsconfig.json",
+    "worker/package.json",
+    "worker/pnpm-lock.yaml"
+  ]
+}
