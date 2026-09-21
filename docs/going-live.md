@@ -82,7 +82,9 @@ not enough for clients that cached the old catalog: refresh/re-scan the Forge
 connection and start a new conversation before evaluating V2. The production
 GitHub App must also have **Checks: read**, **Commit statuses: read** and
 **Actions: read** approved before `checks` and `analysis` can return complete
-execution evidence.
+execution evidence. CI runs on direct `forge` pushes as well as pull requests so
+the proposal head itself receives execution evidence; a pull-request synthetic
+merge commit is never substituted for the proposal SHA.
 
 ## Stage 2 — Prove it once
 

@@ -322,7 +322,7 @@ Measure total JEV input/output usage and request cost, GitHub calls, bytes downl
 - [x] No additional hosted indexing, docs, security, AI or telemetry service is required.
 - [x] No repository code/plugin/config executes inside Forge; secret egress, prompt/data separation, archive, URL and artifact boundaries have adversarial regression tests.
 - [ ] The 30-case deterministic plumbing benchmark enforces the token/round/evidence budgets; real hosted-JEV held-out repository tasks must still measure relevance quality and confirm the targets outside the synthetic selector oracle.
-- [ ] `pnpm check` and Worker-native integration tests pass for the final source SHA.
+- [ ] CI now runs on direct `forge` pushes as well as pull requests/main so checks can be attached to the exact proposal head SHA; final exact-head typecheck/tests/bundle/startup evidence must still be observed before merge.
 - [x] MCP version, schema, annotations, examples and connection-refresh instructions agree in source; old incompatible inputs fail explicitly rather than silently taking another path.
 - [ ] Authorized deployment smoke and a fresh phone/ChatGPT conversation prove read, context, edit, review and human approval. Documentation alone is not release evidence.
 
