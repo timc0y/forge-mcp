@@ -101,27 +101,33 @@ export function matchesWorkflowRunPath(runPath: unknown, workflowPath: string): 
 }
 export async function readAnalysisArtifact(snapshot: Snapshot): Promise<Record<string, unknown>> {
   const configuration = await snapshot.file('.github/forge-analysis.json');
-  const config = analysisConfigSchema.parse(JSON.parse(configuration.text));
+  let config: z.infer<typeof analysisConfigSchema>;
+  try { config = analysisConfigSchema.parse(JSON.parse(configuration.text)); }
+  catch { refused('the committed analysis configuration is malformed'); }
   const expectedConfigurationHash = await configurationHashForSnapshot(snapshot, config.configurationPaths);
   const api = `/repos/${snapshot.identity.repo}`;
   const workflow = config.workflowPath.split('/').at(-1)!;
   const runs = await snapshot.gh(`${api}/actions/workflows/${encodeURIComponent(workflow)}/runs?head_sha=${snapshot.identity.sha}&per_page=10`);
   if (runs.status !== 200) githubFailure(runs.status, 'exact-commit Actions evidence (Actions read permission required)');
-  const listed = object(runs.json)?.workflow_runs;
+  const runBody = object(runs.json);
+  const listed = runBody?.workflow_runs;
   if (!Array.isArray(listed)) refused('malformed workflow list');
+  if (/rel="next"/.test(runs.headers.get('link') ?? '') || (typeof runBody?.total_count === 'number' && runBody.total_count > listed.length)) refused('workflow run listing is incomplete');
   const matches = listed.map(object).filter((run) => {
     return run?.head_sha === snapshot.identity.sha && matchesWorkflowRunPath(run?.path, config.workflowPath);
   });
   matches.sort((a, b) => Number(b!.run_number) - Number(a!.run_number));
   const latest = matches[0];
-  if (!latest || !Number.isSafeInteger(latest.id) || !Number.isSafeInteger(latest.run_attempt)) refused('no matching workflow run identity');
+  if (!latest || !Number.isSafeInteger(latest.id) || !Number.isSafeInteger(latest.run_attempt) || !Number.isSafeInteger(latest.run_number)) refused('no matching workflow run identity');
   if (latest.status !== 'completed') refused('the latest matching run is not completed');
+  if (latest.conclusion !== 'success') refused('the latest matching producer run did not succeed');
   const runId = latest.id as number;
   const attempt = latest.run_attempt as number;
   const artifacts = await snapshot.gh(`${api}/actions/runs/${runId}/artifacts?per_page=100`);
   if (artifacts.status !== 200) githubFailure(artifacts.status, 'the current run’s analysis artifact');
-  const rows = object(artifacts.json)?.artifacts;
-  if (!Array.isArray(rows) || /rel="next"/.test(artifacts.headers.get('link') ?? '')) refused('artifact listing is incomplete');
+  const artifactBody = object(artifacts.json);
+  const rows = artifactBody?.artifacts;
+  if (!Array.isArray(rows) || /rel="next"/.test(artifacts.headers.get('link') ?? '') || (typeof artifactBody?.total_count === 'number' && artifactBody.total_count > rows.length)) refused('artifact listing is incomplete');
   const named = rows.map(object).filter((artifact) => artifact?.name === `forge-analysis-${snapshot.identity.sha}-${attempt}`);
   if (named.length !== 1) refused('the exact run attempt has no unique analysis artifact');
   const artifact = named[0]!;
@@ -130,7 +136,9 @@ export async function readAnalysisArtifact(snapshot: Snapshot): Promise<Record<s
   if (archive.status !== 200 || !archive.bytes) githubFailure(archive.status, 'the bounded artifact archive');
   const text = readAnalysisZip(new Uint8Array(archive.bytes));
   if (utf8Bytes(text) > MAX_JSON) refused('JSON exceeds its bound');
-  const result = analysisSchema.parse(JSON.parse(text));
+  let result: z.infer<typeof analysisSchema>;
+  try { result = analysisSchema.parse(JSON.parse(text)); }
+  catch { refused('artifact JSON does not match the admitted schema'); }
   if (result.sourceSha !== snapshot.identity.sha || result.runId !== runId || result.runAttempt !== attempt || result.workflowPath !== config.workflowPath || result.configurationHash !== expectedConfigurationHash) refused('provenance does not match the requested source, run, attempt and committed configuration');
   for (const finding of result.findings) requirePath(finding.location.path);
   for (const edge of result.relationships) { requirePath(edge.from.path); requirePath(edge.to.path); }
