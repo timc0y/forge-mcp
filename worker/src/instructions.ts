@@ -17,7 +17,7 @@ export const LEAD = [
 ].join(' ');
 
 const DETAIL = [
-  'forge_read is the only way to look: no repo lists repositories; repo="global" discovers public GitHub; a repo is pinned to one commit; change reads its diff; at="proposal" reads proposed source; paths are exact selectors; a natural query compiles bounded evidence.',
+  'forge_read is the only way to look: no repo lists repositories; repo="global" discovers public repositories, while public code discovery requires code:<terms> plus explicit repo:owner/name scopes; a repo is pinned to one commit; change reads its diff; at="proposal" reads proposed source; paths are exact selectors; a natural query compiles bounded evidence.',
   'forge_edit creates the repository if needed. It commits directly unless change explains why review is required. Prefer exact fragments or revision-checked selectors; no whitespace guessing.',
   'Forge does not run, build, test, or deploy code. checks reports GitHub execution evidence for the exact commit when permission exists. If evidence is unavailable, say so rather than substituting another source.'
 ].join(' ');

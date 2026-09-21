@@ -44,7 +44,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       change: z.string().optional().describe('An open change, by its title or forge.'),
       at: z.string().optional().describe('Full commit SHA, or proposal for actual proposed source.'),
       paths: z.array(z.string()).max(20).optional().describe('Paths/ranges, path::symbol:Name, path::id:ID or path::pointer:/key.'),
-      query: z.string().optional().describe('Task or checks, analysis, quality, history, stats, map, instructions, symbols <path>, find:<literal>, upstream <public package>. Global bare names discover repositories; code: finds public occurrences.')
+      query: z.string().optional().describe('Task or checks, analysis, quality, history, stats, map, instructions, symbols <path>, find:<literal>, upstream <public package>. With repo="global", bare names find public repositories; code:<terms> repo:owner/name searches only verified-public scopes.')
     },
     outputSchema: readOutput,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }

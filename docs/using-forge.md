@@ -151,8 +151,12 @@ Repository queries include `migrations`, `quality`, `policy`, `history`,
 `churn`, `languages`, `stats`, `map`, `instructions`, `checks`, `analysis`,
 `symbols <path>`, exact `find:<text>` and `upstream <reviewed-public-package>`.
 Other natural questions compile a bounded context packet from the immutable
-snapshot using parser-backed structure and JEV. If semantic evidence cannot be
-produced, Forge says so; it does not silently switch to another search mode.
+snapshot using parser-backed structure and JEV. `repo="global"` may discover
+public repositories by name. Public code discovery must use an explicit form such
+as `code:needle repo:owner/repository`; Forge verifies every named repository is
+public before issuing the code search, because GitHub code search has no public-
+visibility qualifier. If semantic or public-scope evidence cannot be established,
+Forge says so; it does not silently widen the search or switch modes.
 
 ### forge_edit
 
