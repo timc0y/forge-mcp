@@ -75,6 +75,18 @@ pnpm exec wrangler secret put CLOUDFLARE_API_TOKEN --env=""
 Cloudflare inference route and explicitly allows bounded private-source JEV
 processing. The privacy page must remain accurate for that processing boundary.
 
+### Current V2 provider blocker — 21 September 2026
+
+Public GitHub API evidence for `timc0y/forge-mcp` currently reports workflow
+`CI` (`.github/workflows/ci.yml`, id `311718244`) as `disabled_manually`, and the
+`forge` branch has no workflow runs/check runs. The V2 workflow definition now
+runs on exact `forge` heads and no longer ignores documentation-only changes;
+the remaining action is to enable GitHub Actions/CI in repository settings.
+Do not merge V2 until a fresh exact-head run is visible and successful.
+
+Forge V2 also diagnoses inactive workflow states when a revision has no checks;
+zero checks never count as passing.
+
 ### Forge V2 catalog release
 
 Forge V2 changes MCP schemas and server instructions. Deploying Worker code is

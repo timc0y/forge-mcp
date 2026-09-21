@@ -22,8 +22,14 @@ describe('exact-revision execution evidence', () => {
       expect(requiredChecksSatisfied(report, ['verify'])).toBe(false);
       expect(allObservedChecksSuccessful(report)).toBe(false);
     }
-    const none: GitHubRequest = async (path) => reply(path.includes('check-runs') ? { check_runs: [] } : { sha, statuses: [] });
-    expect(allObservedChecksSuccessful(await readChecks(none, { owner: 'o', name: 'r' }, sha))).toBe(false);
+    const none: GitHubRequest = async (path) => {
+      if (path.includes('/actions/workflows')) return reply({ total_count: 1, workflows: [{ name: 'CI', path: '.github/workflows/ci.yml', state: 'disabled_manually' }] });
+      return reply(path.includes('check-runs') ? { check_runs: [] } : { sha, statuses: [] });
+    };
+    const noneReport = await readChecks(none, { owner: 'o', name: 'r' }, sha);
+    expect(allObservedChecksSuccessful(noneReport)).toBe(false);
+    expect(noneReport.workflows).toEqual([{ name: 'CI', path: '.github/workflows/ci.yml', state: 'disabled_manually' }]);
+    expect(noneReport.limitations.join(' ')).toContain('disabled_manually');
   });
   it('classifies cancelled and stale checks as failures rather than successful completion', async () => {
     for (const state of ['cancelled', 'stale']) {

@@ -19,6 +19,7 @@ export interface ChecksReport {
   observedAt: string;
   coverage: Coverage;
   checks: CheckEvidence[];
+  workflows: Array<{ name: string; path: string; state: string }>;
   limitations: string[];
 }
 const text = (value: unknown, limit = 500): string => typeof value === 'string' ? value.slice(0, limit) : '';
@@ -26,7 +27,7 @@ const numeric = (value: unknown): value is number => typeof value === 'number' &
 /** Checks and commit statuses are complementary observations of the same exact SHA. */
 export async function readChecks(gh: GitHubRequest, repo: RepoRef, sha: string): Promise<ChecksReport> {
   requireSha(sha);
-  const report: ChecksReport = { testedSha: sha, observedAt: new Date().toISOString(), coverage: 'complete', checks: [], limitations: [] };
+  const report: ChecksReport = { testedSha: sha, observedAt: new Date().toISOString(), coverage: 'complete', checks: [], workflows: [], limitations: [] };
   const api = `/repos/${formatRepo(repo)}`;
   let annotationReads = 0;
   let stateIncomplete = false;
@@ -76,6 +77,30 @@ export async function readChecks(gh: GitHubRequest, repo: RepoRef, sha: string):
         else report.limitations.push('Malformed annotation omitted.');
       }
       if (count > entry.annotations.length) report.limitations.push(`Annotations for check ${row.id} are partial.`);
+    }
+  }
+  if (!report.checks.length) {
+    try {
+      const workflows = await gh(`${api}/actions/workflows?per_page=100`);
+      if (workflows.status === 200) {
+        const body = object(workflows.json);
+        const rows = body?.workflows;
+        if (Array.isArray(rows)) {
+          for (const raw of rows) {
+            const row = object(raw);
+            const name = text(row?.name, 160);
+            const path = text(row?.path, 500);
+            const state = text(row?.state, 80);
+            if (name && path && state) report.workflows.push({ name, path, state });
+          }
+          const total = body?.total_count;
+          if (/rel="next"/.test(workflows.headers.get('link') ?? '') || (numeric(total) && total > rows.length)) report.limitations.push('Workflow-state diagnostics are bounded to the first 100 repository workflows.');
+          const disabled = report.workflows.filter((workflow) => workflow.state !== 'active');
+          if (disabled.length) report.limitations.push(`GitHub Actions workflows are not active: ${disabled.slice(0, 8).map((workflow) => `${workflow.name} (${workflow.state})`).join(', ')}.`);
+        } else report.limitations.push('GitHub Actions workflow-state response was malformed.');
+      } else report.limitations.push(`GitHub Actions workflow-state diagnostics unavailable: HTTP ${workflows.status}. Actions read permission may be missing.`);
+    } catch {
+      report.limitations.push('GitHub Actions workflow-state diagnostics could not be read.');
     }
   }
   report.limitations = [...new Set(report.limitations)];

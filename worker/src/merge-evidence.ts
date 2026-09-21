@@ -22,6 +22,10 @@ export async function mergeEvidence(snapshot: Snapshot, comparison: Comparison, 
   const required = requiredCheckNames(policy);
   const blockers = structural.flatMap((entry) => entry.diagnostics.map((diagnostic) => `${entry.path}:${diagnostic.line}: parser error`));
   blockers.push(...failedChecks(checks).map((check) => `Check ${check.name}: ${check.conclusion}`));
+  if (!checks.checks.length) {
+    const disabled = checks.workflows.filter((workflow) => workflow.state !== 'active');
+    if (disabled.length) blockers.push(`GitHub Actions is not producing execution evidence; inactive workflows: ${disabled.map((workflow) => `${workflow.name} (${workflow.state})`).join(', ')}.`);
+  }
   if (reviews?.changesRequested) blockers.push('GitHub reviews request changes.');
   if (reviews?.mergeable === false) blockers.push('GitHub reports this change is not automatically mergeable.');
   if (comparison.truncated) blockers.push('GitHub did not return the complete changed-file comparison.');
