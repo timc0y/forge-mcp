@@ -312,6 +312,9 @@ async function performMerge(
   if (number === null) {
     return { decision: 'approve', ok: false, detail: 'This change no longer has a pull request to merge.' };
   }
+  if (!evidence.baseBranch || !evidence.baseSha) {
+    return { decision: 'approve', ok: false, detail: 'This merge approval predates Forge’s two-sided revision fence. Nothing was merged or changed. Ask for a fresh approval so both the proposal head and reviewed base commit are frozen.' };
+  }
   if (evidence.baseBranch) {
     const pull = await request(`/repos/${row.repo_owner}/${row.repo_name}/pulls/${number}`);
     if (pull.status !== 200) {
@@ -321,7 +324,7 @@ async function performMerge(
         detail: `Could not re-check the pull request destination (status ${pull.status}). Nothing was merged. Ask for a fresh approval.`
       };
     }
-    const pullRequest = pull.json as { base?: { ref?: unknown }; draft?: unknown; node_id?: unknown } | null;
+    const pullRequest = pull.json as { base?: { ref?: unknown }; head?: { sha?: unknown }; draft?: unknown; node_id?: unknown } | null;
     const currentBase = pullRequest?.base?.ref;
     if (typeof currentBase !== 'string') {
       return {
@@ -337,7 +340,10 @@ async function performMerge(
         detail: `Refused: this pull request now targets ${currentBase}, not ${evidence.baseBranch} as shown when you approved it. Nothing was merged. Ask for a fresh approval.`
       };
     }
-    if (evidence.baseSha) {
+    const currentHeadSha = pullRequest?.head?.sha;
+    if (typeof currentHeadSha !== 'string') return { decision: 'approve', ok: false, detail: 'GitHub returned the pull request without a readable head commit. Nothing was merged or changed. Ask for a fresh approval.' };
+    if (currentHeadSha !== row.head_sha) return { decision: 'approve', ok: false, detail: `Refused: the proposal head moved from ${short(row.head_sha)} to ${short(currentHeadSha)} after this approval was created. Nothing was merged or changed. Ask for a fresh approval.` };
+    {
       const base = await request(`/repos/${row.repo_owner}/${row.repo_name}/git/ref/heads/${encodePath(evidence.baseBranch)}`);
       if (base.status !== 200) {
         return {

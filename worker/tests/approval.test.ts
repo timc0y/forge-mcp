@@ -54,7 +54,7 @@ it('marks a draft pull request ready only after the reviewed base SHA is unchang
   const calls: string[] = [];
   const request = async (path: string, init?: { method?: string; body?: unknown }) => {
     calls.push(`${init?.method ?? 'GET'} ${path}`);
-    if (path.endsWith('/pulls/1')) return { status: 200, json: { base: { ref: 'main' }, draft: true, node_id: 'PR_node' }, text: '', headers: new Headers() };
+    if (path.endsWith('/pulls/1')) return { status: 200, json: { base: { ref: 'main' }, head: { sha: '0123456789abcdef' }, draft: true, node_id: 'PR_node' }, text: '', headers: new Headers() };
     if (path.endsWith('/git/ref/heads/main')) return { status: 200, json: { object: { sha: baseSha } }, text: '', headers: new Headers() };
     if (path === '/graphql') return { status: 200, json: { data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } }, text: '', headers: new Headers() } };
     return { status: 200, json: { sha: 'merge-sha' }, text: '', headers: new Headers() };
@@ -78,6 +78,30 @@ it('marks a draft pull request ready only after the reviewed base SHA is unchang
   expect(await response.text()).toContain('Merged');
 });
 
+it('refuses a stale proposal head before marking a draft ready', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const signingKey = 'test-signing-key-that-is-at-least-32-bytes';
+  const baseSha = 'b'.repeat(40);
+  const token = await approvalToken(id, signingKey);
+  const calls: string[] = [];
+  const request = async (path: string, init?: { method?: string; body?: unknown }) => {
+    calls.push(`${init?.method ?? 'GET'} ${path}`);
+    if (path.endsWith('/pulls/1')) return { status: 200, json: { base: { ref: 'main' }, head: { sha: 'moved-head' }, draft: true, node_id: 'PR_node' }, text: '', headers: new Headers() };
+    throw new Error('no mutation or base read should occur after a stale head is observed');
+  };
+
+  const response = await resolveApproval(
+    { METADATA: metadata(metadataRow(baseSha)), FORGE_SIGNING_KEY: signingKey } as unknown as Env,
+    id,
+    token,
+    'approve',
+    request
+  );
+
+  expect(calls).toEqual(['GET /repos/octocat/hello-world/pulls/1']);
+  expect(await response.text()).toContain('proposal head moved');
+});
+
 it('refuses a stale approval when the reviewed base branch moved', async () => {
   const id = '11111111-1111-4111-8111-111111111111';
   const signingKey = 'test-signing-key-that-is-at-least-32-bytes';
@@ -87,7 +111,7 @@ it('refuses a stale approval when the reviewed base branch moved', async () => {
   const calls: string[] = [];
   const request = async (path: string, init?: { method?: string; body?: unknown }) => {
     calls.push(`${init?.method ?? 'GET'} ${path}`);
-    if (path.endsWith('/pulls/1')) return { status: 200, json: { base: { ref: 'main' }, draft: true, node_id: 'PR_node' }, text: '', headers: new Headers() };
+    if (path.endsWith('/pulls/1')) return { status: 200, json: { base: { ref: 'main' }, head: { sha: '0123456789abcdef' }, draft: true, node_id: 'PR_node' }, text: '', headers: new Headers() };
     if (path.endsWith('/git/ref/heads/main')) return { status: 200, json: { object: { sha: movedBase } }, text: '', headers: new Headers() };
     throw new Error('merge path must not be reached');
   };
