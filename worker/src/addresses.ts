@@ -23,7 +23,7 @@ export async function githubAddress(gh: GitHubRequest, value: string): Promise<R
   if (url.origin !== 'https://github.com' || url.username || url.password || url.search || /(?:^|\/)\.\.?(?:\/|$)/.test(value)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Use a canonical HTTPS GitHub repository, blob, commit or pull-request URL.' });
   let parts: string[];
   try { parts = url.pathname.replace(/^\//, '').replace(/\/$/, '').split('/').map(decodeURIComponent); } catch { throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Invalid URL encoding.' }); }
-  if (parts.some((part) => !part || part === '.' || part === '..' || part.includes('\\') || /[\u0000-\u001f]/.test(part))) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Unsafe GitHub URL path.' });
+  if (parts.length < 2 || parts.some((part) => !part || part === '.' || part === '..' || part.includes('\\') || /[\u0000-\u001f]/.test(part))) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Unsafe or incomplete GitHub URL path.' });
   const repo = parseRepo(`${parts[0]}/${parts[1]}`);
   const kind = parts[2];
   if (!kind) {
@@ -33,10 +33,12 @@ export async function githubAddress(gh: GitHubRequest, value: string): Promise<R
   if (kind === 'commit' && parts.length === 4 && !url.hash) return { repo, at: requireSha(parts[3]!) };
   if (kind === 'pull' && parts.length === 4 && /^\d+$/.test(parts[3]!) && !url.hash) {
     const pull = Number(parts[3]);
+    if (!Number.isSafeInteger(pull) || pull < 1) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Pull-request number is outside the supported integer range.' });
     const response = await gh(`/repos/${formatRepo(repo)}/pulls/${pull}`);
     if (response.status !== 200) githubFailure(response.status, 'the requested pull request');
     const head = object(object(response.json)?.head);
-    if (object(head?.repo)?.full_name !== formatRepo(repo)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Fork pull-request source requires an explicit authorized fork repository URL; no scope was widened.' });
+    const headRepo = object(head?.repo)?.full_name;
+    if (typeof headRepo !== 'string' || headRepo.toLowerCase() !== formatRepo(repo).toLowerCase()) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Fork pull-request source requires an explicit authorized fork repository URL; no scope was widened.' });
     if (typeof head?.sha !== 'string') githubFailure(502, 'pull-request head identity');
     return { repo, at: requireSha(head.sha), pull };
   }

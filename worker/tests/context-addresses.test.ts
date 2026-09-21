@@ -33,8 +33,14 @@ describe('canonical GitHub source addresses', () => {
     await expect(githubAddress(gh, 'https://github.com/o/r/blob/release/v1/src/a.ts')).rejects.toMatchObject({ code: 'FORGE_AMBIGUOUS' });
   });
 
-  it('accepts same-repository pull heads and refuses fork widening', async () => {
-    const same: GitHubRequest = async () => reply({ head: { sha: SHA, repo: { full_name: 'o/r' } } });
+  it('rejects incomplete repository URLs and unsafe pull numbers before GitHub lookup', async () => {
+    const gh: GitHubRequest = async () => { throw new Error('GitHub must not be called'); };
+    await expect(githubAddress(gh, 'https://github.com/owner')).rejects.toMatchObject({ code: 'FORGE_VALIDATION_FAILED' });
+    await expect(githubAddress(gh, 'https://github.com/o/r/pull/999999999999999999999999')).rejects.toMatchObject({ code: 'FORGE_VALIDATION_FAILED' });
+  });
+
+  it('accepts same-repository pull heads case-insensitively and refuses fork widening', async () => {
+    const same: GitHubRequest = async () => reply({ head: { sha: SHA, repo: { full_name: 'O/R' } } });
     await expect(githubAddress(same, 'https://github.com/o/r/pull/12')).resolves.toEqual({ repo: { owner: 'o', name: 'r' }, at: SHA, pull: 12 });
     const fork: GitHubRequest = async () => reply({ head: { sha: SHA, repo: { full_name: 'someone/fork' } } });
     await expect(githubAddress(fork, 'https://github.com/o/r/pull/12')).rejects.toMatchObject({ code: 'FORGE_VALIDATION_FAILED' });
