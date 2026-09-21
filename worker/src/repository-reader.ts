@@ -35,10 +35,16 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
   const change = input.change || input.at === 'proposal' ? await findChange(ctx.gh, repo, input.change ?? 'forge') : null;
   const ref = urlAddress?.at ?? (input.at === 'proposal' ? change!.branch : input.at) ?? change?.branch;
   const snapshot = await Snapshot.open(ctx.gh, repo, ref);
-  const changes = await openChanges(snapshot.gh, repo);
-  const names = changes.map((entry) => entry.name);
-  const changesLimits = openChangesTruncated(changes) ? ['The open-change list is bounded; additional changes may exist.'] : [];
-  const finish = (summary: string, evidence: Record<string, unknown>, limits: string[] = []): ToolOutcome => ({ summary, structured: { source: snapshot.identity, ...evidence, changes: names, limits: [...changesLimits, ...limits] } });
+  let names: string[] | undefined;
+  const changesLimits: string[] = [];
+  try {
+    const changes = await openChanges(snapshot.gh, repo);
+    names = changes.map((entry) => entry.name);
+    if (openChangesTruncated(changes)) changesLimits.push('The open-change list is bounded; additional changes may exist.');
+  } catch (error) {
+    changesLimits.push(`Open changes could not be listed: ${toForgeError(error).message}. Repository source/evidence remains pinned and authoritative.`);
+  }
+  const finish = (summary: string, evidence: Record<string, unknown>, limits: string[] = []): ToolOutcome => ({ summary, structured: { source: snapshot.identity, ...evidence, ...(names ? { changes: names } : {}), limits: [...changesLimits, ...limits] } });
   const paths = urlAddress?.paths ?? input.paths;
 
   // Change + paths is a patch read. at="proposal" is explicitly a source read.
@@ -119,9 +125,12 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
       return finish('Applicable instruction files in root-to-leaf order, preserved verbatim.', { files }, limits);
     }
     if (/^migration/i.test(query)) return finish('Numbered migration history only; deployment compatibility is not established.', { migrations: migrationHistoryEvidence(entries) }, [...limits, 'SQL effect analysis has not been admitted. Filename ordering does not prove rollback safety.']);
-    const targets = query.toLowerCase() === 'dependencies' ? knownPaths.filter((path) => /(?:^|\/)package\.json$/.test(path)).slice(0, 12) : qualityCandidatePaths(knownPaths, 12);
+    const dependencyPaths = knownPaths.filter((path) => /(?:^|\/)package\.json$/.test(path));
+    const qualityPaths = qualityCandidatePaths(knownPaths, 13);
+    const dependencies = query.toLowerCase() === 'dependencies';
+    const targets = dependencies ? dependencyPaths.slice(0, 12) : qualityPaths.slice(0, 12);
     const files = await mapBounded(targets, async (path) => ({ path, content: (await snapshot.file(path)).text }));
-    if (query.toLowerCase() === 'dependencies') {
+    if (dependencies) {
       const declarations = files.map((file) => {
         let parsed: Record<string, unknown>;
         try {
@@ -133,9 +142,9 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
         }
         return { path: file.path, dependencies: parsed.dependencies, devDependencies: parsed.devDependencies, peerDependencies: parsed.peerDependencies };
       });
-      return finish('Declared package constraints, not resolved dependency or vulnerability evidence.', { declarations }, [...limits, 'Dependency declarations are bounded to 12 manifests. No hosted security or package service was contacted.']);
+      return finish('Declared package constraints, not resolved dependency or vulnerability evidence.', { declarations }, [...limits, ...(dependencyPaths.length > 12 ? [`Dependency declaration coverage is bounded to 12 of ${dependencyPaths.length} package manifests.`] : [`All ${dependencyPaths.length} visible package manifests were inspected.`]), 'No hosted security or package service was contacted.']);
     }
-    return finish('Committed quality configuration; nothing was executed by Forge.', { scripts: extractDeclaredQualityScripts(files), configurations: files.map((file) => file.path) }, limits);
+    return finish('Committed quality configuration; nothing was executed by Forge.', { scripts: extractDeclaredQualityScripts(files), configurations: files.map((file) => file.path) }, [...limits, ...(qualityPaths.length > 12 ? ['Quality configuration discovery found more than 12 candidate paths; only the highest-priority 12 were read.'] : [])]);
   }
   const context = await compileContext(snapshot, ctx.env, query.replace(/^context:\s*/i, ''));
   ctx.track('context_compiled', { github_calls: snapshot.budget.calls, jev_stages: snapshot.budget.jevStages, output_bytes: utf8Bytes(JSON.stringify(context)), ms: Date.now() - snapshot.budget.started });
