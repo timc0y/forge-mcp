@@ -59,7 +59,7 @@ describe('task-shaped context compilation', () => {
     // Simulate GitHub's recursive-tree cap: the relevant implementation and test
     // exist in the immutable archive but are absent from the tree response.
     const tree = Object.entries(files).filter(([path]) => path.startsWith('src/filler-')).slice(0, 40).map(([path, content]) => ({ path, type: 'blob', size: encoder.encode(content).length }));
-    const gh: GitHubRequest = async (path, init) => {
+    const gh: GitHubRequest = async (path) => {
       if (path === '/repos/o/r') return { status: 200, json: { default_branch: 'main', private: false }, text: '', headers: new Headers() };
       if (path === '/repos/o/r/commits/main') return { status: 200, json: { sha: SHA }, text: '', headers: new Headers() };
       if (path.startsWith('/repos/o/r/git/trees/')) return { status: 200, json: { truncated: true, tree }, text: '', headers: new Headers() };
@@ -88,7 +88,7 @@ describe('task-shaped context compilation', () => {
         answers.gap = { type: 'choice', choice: 'test', confidence: 0.9, probabilities: distribution(Object.keys(questions.gap.criteria), 'test') };
         answers.target = { type: 'choice', choice: testId, confidence: 0.9, probabilities: distribution(targets, testId) };
       } else {
-        for (const [id, question] of Object.entries(questions) as Array<[string, any]>) {
+        for (const id of Object.keys(questions)) {
           if (id.startsWith('relevant_')) answers[id] = { type: 'noul', noul: 0.95 };
           else if (id.startsWith('counter_')) answers[id] = { type: 'noul', noul: 0.2 };
           else answers[id] = { type: 'choice', choice: 'body', confidence: 0.9, probabilities: { body: 0.9, outline: 0.1 } };
