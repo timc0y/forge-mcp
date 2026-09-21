@@ -106,8 +106,14 @@ Owner actions, in this order:
    proven repository permissions.
 4. Push or make one harmless commit on `forge` if enabling CI does not replay the
    previous push. Confirm exact-head CI and `Forge analysis` both run.
-5. Only after those exact-head runs succeed should `forge_merge` be asked to
-   prepare the human merge approval.
+5. Verify Cloudflare Browser Rendering's current production security boundary
+   refuses private-address DNS resolutions for public hostnames, or narrow
+   `forge_see` before release. Forge itself blocks IP literals, localhost/local
+   names and literal private-address redirects, but `rejectRequestPattern` is a
+   URL-pattern control and does not by itself prove DNS-to-private isolation.
+6. Only after those exact-head runs succeed and the Browser Rendering boundary
+   is established should `forge_merge` be asked to prepare the human merge
+   approval.
 
 ### Forge V2 catalog release
 
