@@ -4,7 +4,7 @@ import { requireMergeEvidence } from '../src/merge-evidence';
 function report(overrides: Record<string, unknown> = {}) {
   return {
     blockers: [],
-    checks: { coverage: 'complete' },
+    checks: { coverage: 'complete', checks: [{ kind: 'check-run', status: 'completed', conclusion: 'success' }] },
     policy: { unavailable: undefined, truncated: false },
     reviews: { unavailable: undefined, truncated: false, mergeable: true },
     ...overrides
@@ -12,9 +12,11 @@ function report(overrides: Record<string, unknown> = {}) {
 }
 
 describe('merge evidence gate', () => {
-  it('requires complete exact-head check evidence even without required branch checks', () => {
-    expect(() => requireMergeEvidence(report({ checks: { coverage: 'unavailable' } }))).toThrow(/exact-head check evidence/);
-    expect(() => requireMergeEvidence(report({ checks: { coverage: 'bounded' } }))).toThrow(/exact-head check evidence/);
+  it('requires complete successful exact-head execution even without required branch checks', () => {
+    expect(() => requireMergeEvidence(report({ checks: { coverage: 'unavailable', checks: [] } }))).toThrow(/exact-head check evidence/);
+    expect(() => requireMergeEvidence(report({ checks: { coverage: 'bounded', checks: [] } }))).toThrow(/exact-head check evidence/);
+    expect(() => requireMergeEvidence(report({ checks: { coverage: 'complete', checks: [] } }))).toThrow(/all-success execution evidence/);
+    expect(() => requireMergeEvidence(report({ checks: { coverage: 'complete', checks: [{ kind: 'check-run', status: 'completed', conclusion: 'neutral' }] } }))).toThrow(/all-success execution evidence/);
   });
 
   it('refuses known blockers and unavailable policy', () => {

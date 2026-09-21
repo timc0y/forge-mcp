@@ -93,3 +93,7 @@ export function requiredChecksSatisfied(report: ChecksReport, required: readonly
     return matches.length > 0 && matches.every((check) => check.conclusion === 'success' && (check.kind === 'commit-status' || check.status === 'completed'));
   });
 }
+export function allObservedChecksSuccessful(report: ChecksReport): boolean {
+  if (report.coverage !== 'complete' || report.checks.length === 0) return false;
+  return report.checks.every((check) => check.conclusion === 'success' && (check.kind === 'commit-status' || check.status === 'completed'));
+}

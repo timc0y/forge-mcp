@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubRequest } from '../src/contracts';
-import { failedChecks, readChecks, requiredChecksSatisfied } from '../src/checks';
+import { allObservedChecksSuccessful, failedChecks, readChecks, requiredChecksSatisfied } from '../src/checks';
 const sha = 'a'.repeat(40);
 const reply = (json: unknown, status = 200) => ({ status, json, text: '', headers: new Headers() });
 const check = (conclusion: string | null, tested = sha) => ({ id: 1, name: 'verify', head_sha: tested, status: conclusion ? 'completed' : 'in_progress', conclusion, output: { annotations_count: 0 }, app: { slug: 'github-actions' } });
@@ -13,12 +13,17 @@ describe('exact-revision execution evidence', () => {
     expect(calls).toHaveLength(2);
     expect(calls.every((path) => path.includes(sha))).toBe(true);
     expect(requiredChecksSatisfied(result, ['verify'])).toBe(true);
+    expect(allObservedChecksSuccessful(result)).toBe(true);
   });
-  it('never treats skipped, neutral, cancelled or pending as success', async () => {
+  it('never treats skipped, neutral, cancelled, pending or zero checks as merge-ready success', async () => {
     for (const state of ['skipped', 'neutral', 'cancelled', null]) {
       const gh: GitHubRequest = async (path) => reply(path.includes('check-runs') ? { check_runs: [check(state)] } : { sha, statuses: [] });
-      expect(requiredChecksSatisfied(await readChecks(gh, { owner: 'o', name: 'r' }, sha), ['verify'])).toBe(false);
+      const report = await readChecks(gh, { owner: 'o', name: 'r' }, sha);
+      expect(requiredChecksSatisfied(report, ['verify'])).toBe(false);
+      expect(allObservedChecksSuccessful(report)).toBe(false);
     }
+    const none: GitHubRequest = async (path) => reply(path.includes('check-runs') ? { check_runs: [] } : { sha, statuses: [] });
+    expect(allObservedChecksSuccessful(await readChecks(none, { owner: 'o', name: 'r' }, sha))).toBe(false);
   });
   it('classifies cancelled and stale checks as failures rather than successful completion', async () => {
     for (const state of ['cancelled', 'stale']) {

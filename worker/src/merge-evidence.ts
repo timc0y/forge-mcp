@@ -1,6 +1,6 @@
 import type { Comparison } from './contracts';
 import type { Snapshot } from './snapshot';
-import { readChecks, failedChecks, requiredChecksSatisfied } from './checks';
+import { allObservedChecksSuccessful, readChecks, failedChecks, requiredChecksSatisfied } from './checks';
 import { readBranchPolicy, readPullReviewState, requiredCheckNames, requiredApprovalCount } from './github-intelligence';
 import { inspectStructure } from './structure';
 import { mapBounded } from './evidence';
@@ -44,4 +44,5 @@ export function requireMergeEvidence(report: Awaited<ReturnType<typeof mergeEvid
   if (report.policy.unavailable || report.policy.truncated) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Merge approval was not created because GitHub policy could not be established. No permissive policy was substituted.' });
   if (!report.reviews || report.reviews.unavailable || report.reviews.truncated || report.reviews.mergeable === null) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Merge approval was not created because pull-request review or mergeability evidence is incomplete. Retry after GitHub can provide the current state; no mergeability was inferred.' });
   if (report.checks.coverage !== 'complete') throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Merge approval was not created because exact-head check evidence is incomplete or unavailable. Grant Checks read access or resolve the GitHub evidence gap; no inferred test state was substituted.' });
+  if (!allObservedChecksSuccessful(report.checks)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Merge approval was not created because the exact proposal head has no complete all-success execution evidence. Zero, pending, skipped, neutral or otherwise non-success checks do not count as passing.' });
 }
