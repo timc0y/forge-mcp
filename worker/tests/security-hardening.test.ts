@@ -227,6 +227,17 @@ describe('public exposure hardening', () => {
     expect(calls[0]?.rejectRequestPattern).toEqual(expect.arrayContaining([expect.stringContaining('localhost')]));
   });
 
+  it('refuses an oversized Browser Rendering response before reading its body', async () => {
+    const fetchMock = vi.fn(async () => new Response('{"success":true}', {
+      status: 200,
+      headers: { 'content-length': String(20 * 1024 * 1024) }
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(capture(captureEnv(), 'https://example.com/', ['desktop'])).rejects.toThrow(/response exceeded the per-viewport byte limit/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses more than three viewport requests before spending browser time', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
