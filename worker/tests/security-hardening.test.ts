@@ -96,6 +96,21 @@ describe('GitHub installation token lifetime', () => {
     expect(inits[0]?.cache).toBe('no-store');
   });
 
+  it('treats the 2026 stateless GitHub App token format as opaque', async () => {
+    const stateless = 'ghs_' + 'APPID_JWT_SEGMENT_'.repeat(12);
+    const tokenProvider = vi.fn(async () => stateless);
+    let authorization = '';
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      authorization = new Headers(init?.headers).get('authorization') ?? '';
+      return new Response('{"ok":true}', { status: 200 });
+    }));
+
+    const request = await githubRequest({} as Env, 'installation-1', tokenProvider);
+    await request('/installation/repositories');
+
+    expect(authorization).toBe(`Bearer ${stateless}`);
+  });
+
   it('does not retry ordinary GitHub refusals', async () => {
     const tokenProvider = vi.fn(async () => 'token');
     const fetchMock = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 }));
