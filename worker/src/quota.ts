@@ -31,8 +31,9 @@ function utcDay(date: Date): string {
 function dailyLimit(env: Env): number {
   const raw = env.FORGE_CAPTURE_DAILY_LIMIT;
   if (!raw) return DEFAULT_DAILY_LIMIT;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_LIMIT;
+  if (!/^[1-9]\d*$/.test(raw.trim())) return DEFAULT_DAILY_LIMIT;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_LIMIT;
 }
 
 function resetsAt(now: Date): string {
