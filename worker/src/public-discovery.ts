@@ -24,9 +24,11 @@ export async function discoverPublic(ctx: ToolContext, query: string): Promise<T
   }
   if (/\bis:(?:private|internal)\b/i.test(terms)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Global discovery is public-only. Private repository searches must name the authorized repository.' });
   let shaped: string;
+  let allowedCodeRepos: Set<string> | null = null;
   if (kind === 'code') {
     const repositories = [...terms.matchAll(/(?:^|\s)repo:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?=\s|$)/g)].map((match) => match[1]!);
     const unique = [...new Set(repositories.map((repo) => repo.toLowerCase()))];
+    allowedCodeRepos = new Set(unique);
     if (!unique.length) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Public global code search requires an explicit repo:owner/name scope. GitHub code search has no public-visibility qualifier, so Forge will not run an authenticated unscoped search that could inspect private repositories.' });
     if (unique.length > 5) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Public code discovery accepts at most five explicit repository scopes per request.' });
     for (const named of unique) {
@@ -47,6 +49,7 @@ export async function discoverPublic(ctx: ToolContext, query: string): Promise<T
     const item = object(raw);
     const repository = kind === 'repositories' ? item : object(item?.repository);
     if (typeof repository?.full_name !== 'string' || typeof item?.html_url !== 'string' || repository.private !== false) githubFailure(502, 'a verified public search match');
+    if (kind === 'code' && (!allowedCodeRepos || !allowedCodeRepos.has(repository.full_name.toLowerCase()))) githubFailure(502, 'a code-search result inside the verified public repository scopes');
     const url = new URL(item.html_url);
     if (url.origin !== 'https://github.com') githubFailure(502, 'a canonical GitHub source address');
     const fragments = Array.isArray(item.text_matches) ? item.text_matches.map((match) => object(match)?.fragment).filter((value): value is string => typeof value === 'string') : [];
