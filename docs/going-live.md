@@ -76,7 +76,7 @@ pnpm exec wrangler secret put CLOUDFLARE_API_TOKEN --env=""
 Cloudflare inference route and explicitly allows bounded private-source JEV
 processing. The privacy page must remain accurate for that processing boundary.
 
-### Current V2 provider blocker — 21 September 2026
+### Current V2 provider blockers — 21 September 2026
 
 Public GitHub API evidence for `timc0y/forge-mcp` currently reports workflow
 `CI` (`.github/workflows/ci.yml`, id `311718244`) as `disabled_manually`, and the
@@ -93,6 +93,21 @@ a private GitHub App**. GitHub's visibility rules mean a private App can only be
 installed on its owning account. Before presenting Forge as open to other GitHub
 users, change the App registration to public and complete any permission
 approval prompted by that change.
+
+Owner actions, in this order:
+
+1. In GitHub repository Actions settings, enable workflow **CI** (workflow id
+   `311718244`). Do not merge merely because the workflow is enabled; wait for a
+   run on the latest `forge` SHA.
+2. In the Forge MCP GitHub App registration, change visibility from **private**
+   to **public**.
+3. Ensure the App requests and the installation approves **Checks: read**,
+   **Commit statuses: read** and **Actions: read**, in addition to the already
+   proven repository permissions.
+4. Push or make one harmless commit on `forge` if enabling CI does not replay the
+   previous push. Confirm exact-head CI and `Forge analysis` both run.
+5. Only after those exact-head runs succeed should `forge_merge` be asked to
+   prepare the human merge approval.
 
 ### Forge V2 catalog release
 
