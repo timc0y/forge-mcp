@@ -14,7 +14,7 @@ Start with one of three jobs:
   small correction.
 - Fix copy, CSS or documentation from a conversation without touching `main`.
 
-Free research preview, open to anyone with a GitHub account.
+Free research preview by design. As of 21 September 2026 the GitHub App registration is still private, so unrelated GitHub accounts cannot install it until the owner changes the App visibility to public.
 
 ---
 

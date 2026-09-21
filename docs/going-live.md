@@ -13,7 +13,8 @@ sources before acting on the stages that depend on them.
 |---|---|
 | Worker deployed at `timcoy.uk/forge` | ✅ |
 | D1, Durable Object, routes | ✅ |
-| GitHub App created, public, installable by any account | ✅ |
+| GitHub App created | ✅ |
+| GitHub App public / installable by other accounts | 🟡 **blocked: App currently reports private** |
 | `FORGE_SIGNING_KEY`, `GITHUB_APP_CLIENT_SECRET` | ✅ (secret verified against GitHub) |
 | `GITHUB_APP_PRIVATE_KEY` | ✅ PKCS#8 secret verified by session startup |
 | `CLOUDFLARE_API_TOKEN` | ✅ Browser Rendering request verified |
@@ -86,6 +87,12 @@ Do not merge V2 until a fresh exact-head run is visible and successful.
 
 Forge V2 also diagnoses inactive workflow states when a revision has no checks;
 zero checks never count as passing.
+
+GitHub's public App landing page currently identifies **Forge MCP GitHub App as
+a private GitHub App**. GitHub's visibility rules mean a private App can only be
+installed on its owning account. Before presenting Forge as open to other GitHub
+users, change the App registration to public and complete any permission
+approval prompted by that change.
 
 ### Forge V2 catalog release
 

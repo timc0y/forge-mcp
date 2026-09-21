@@ -35,8 +35,10 @@ You never name a branch. Forge commits plans, research, direction and routine
 content directly. Work that needs review uses the fixed `forge` branch. There
 can be only one open Forge change in a repository.
 
-**Free research preview** — open to anyone with a GitHub account, at
-**<https://timcoy.uk/forge>**. Client support varies by plan and surface; the
+**Free research preview** — designed to be open to anyone with a GitHub account,
+at **<https://timcoy.uk/forge>**. The current GitHub App registration is private,
+so third-party installation is a launch blocker until the owner changes its
+visibility to public. Client support varies by plan and surface; the
 [current ChatGPT availability note](./docs/research/chatgpt-availability-2026-08-20.md)
 records what is documented and what still needs testing.
 

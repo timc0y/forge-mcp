@@ -83,8 +83,10 @@ unavailable evidence; Forge never substitutes an older run. Expiring user
 tokens should be enabled so the encrypted credential used for repository
 creation and explicit public GitHub discovery can rotate.
 
-The preview is open to anyone who completes GitHub OAuth and installs the App.
-There is no invite table or invite code. Cost is bounded by a per-user daily
+The product has no invite table or invite code and is designed to be open to
+anyone who completes GitHub OAuth and installs the App. The current GitHub App
+registration is private, so third-party installation remains a provider-side
+launch gate until the owner makes it public. Cost is bounded by a per-user daily
 capture quota; repository calls use each person's own GitHub installation rate
 limit.
 

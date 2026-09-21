@@ -2,9 +2,12 @@
 
 ## Reality
 
-- Users: anyone with a GitHub account — an open research preview. Each installs
-  the GitHub App themselves, so each brings their own credentials and their own
-  GitHub rate limit. Tenancy is therefore load-bearing, not inert.
+- Intended users: anyone with a GitHub account — an open research preview. Each
+  installs the GitHub App themselves, so each brings their own credentials and
+  their own GitHub rate limit. **Current provider state (21 September 2026):**
+  GitHub identifies the Forge App as private, which restricts installation to
+  its owning account. Making the App public is a launch gate, not an
+  application-code feature. Tenancy is therefore load-bearing, not inert.
 - Client: an ordinary ChatGPT conversation, often on a phone. It is not an agent.
   It cannot loop, poll, retain an identifier across turns, or recover from a
   partial sequence. Codex and Claude may connect to the same surface but must not

@@ -65,8 +65,12 @@ working; a user only reconnects if creation still returns 403.
 
 Verified 2026-09-20: the production App holds Administration, Contents, Pull
 requests, Metadata and Workflows, and one `forge_edit` call created
-`timc0y/forge-self-test` from a document — the headline promise, proven end to
-end.
+`timc0y/forge-self-test` from a document — repository creation is proven end to
+end. Provider evidence on 21 September 2026 shows the App registration itself is
+still **private**, so it cannot yet be installed by unrelated GitHub accounts.
+Making the registration public is a launch gate. V2's additional Checks, Commit
+statuses and Actions read permissions must be approved at the same time or
+before release.
 
 Forge V2 additionally reads exact-commit Check Runs, legacy Commit Statuses and
 repository-produced analysis artifacts. Those capabilities require **Checks:
