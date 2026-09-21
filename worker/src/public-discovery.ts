@@ -23,15 +23,30 @@ export async function discoverPublic(ctx: ToolContext, query: string): Promise<T
     kind = intent.choice as PublicSearchKind;
   }
   if (/\bis:(?:private|internal)\b/i.test(terms)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Global discovery is public-only. Private repository searches must name the authorized repository.' });
-  const shaped = `${terms.replace(/\bis:public\b/gi, '').trim()} is:public`;
+  let shaped: string;
+  if (kind === 'code') {
+    const repositories = [...terms.matchAll(/(?:^|\s)repo:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?=\s|$)/g)].map((match) => match[1]!);
+    const unique = [...new Set(repositories.map((repo) => repo.toLowerCase()))];
+    if (!unique.length) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Public global code search requires an explicit repo:owner/name scope. GitHub code search has no public-visibility qualifier, so Forge will not run an authenticated unscoped search that could inspect private repositories.' });
+    if (unique.length > 5) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Public code discovery accepts at most five explicit repository scopes per request.' });
+    for (const named of unique) {
+      const metadata = await ctx.ghUser(`/repos/${named}`);
+      if (metadata.status !== 200) githubFailure(metadata.status, `public repository scope ${named}`);
+      const privateRepo = object(metadata.json)?.private;
+      if (privateRepo !== false) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `Code discovery refused ${named}: Forge could not establish that every named repository is public. No code search was attempted.` });
+    }
+    shaped = terms.replace(/\bis:public\b/gi, '').trim();
+  } else {
+    shaped = `${terms.replace(/\bis:public\b/gi, '').trim()} is:public`;
+  }
   const response = await ctx.ghUser(`/search/${kind}?q=${encodeURIComponent(shaped)}&per_page=10`, { accept: kind === 'code' ? 'application/vnd.github.text-match+json' : 'application/vnd.github+json', maxBytes: 256 * 1024 });
   if (response.status !== 200) githubFailure(response.status, 'public GitHub discovery');
   const body = object(response.json);
-  if (!Array.isArray(body?.items) || typeof body.total_count !== 'number' || typeof body.incomplete_results !== 'boolean') githubFailure(502, 'public search evidence');
+  if (!Array.isArray(body?.items) || !Number.isSafeInteger(body.total_count) || (body.total_count as number) < 0 || typeof body.incomplete_results !== 'boolean') githubFailure(502, 'public search evidence');
   const matches = body.items.map((raw) => {
     const item = object(raw);
     const repository = kind === 'repositories' ? item : object(item?.repository);
-    if (typeof repository?.full_name !== 'string' || typeof item?.html_url !== 'string') githubFailure(502, 'a public search match');
+    if (typeof repository?.full_name !== 'string' || typeof item?.html_url !== 'string' || repository.private !== false) githubFailure(502, 'a verified public search match');
     const url = new URL(item.html_url);
     if (url.origin !== 'https://github.com') githubFailure(502, 'a canonical GitHub source address');
     const fragments = Array.isArray(item.text_matches) ? item.text_matches.map((match) => object(match)?.fragment).filter((value): value is string => typeof value === 'string') : [];
