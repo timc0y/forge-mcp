@@ -23,8 +23,9 @@ function context(routes: Record<string, { status: number; json?: unknown; text?:
     'GET /repos/testuser/test-repo/pulls': { status: 200, json: [{ number: 4, head: { ref: 'forge' }, base: { ref: 'main' }, title: 'Context engine', draft: true, updated_at: '2026-09-20T10:00:00Z' }] },
     'GET /repos/testuser/test-repo/contents/README.md': { status: 200, json: { type: 'file', encoding: 'base64', content: btoa('# Test Repo\n'), sha: BLOB, size: 12 } },
     [`GET /repos/testuser/test-repo/compare/${MAIN}...${FORGE}`]: { status: 200, json: { status: 'ahead', ahead_by: 1, behind_by: 0, files: [{ filename: 'src/index.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] } },
-    'GET /search/repositories': { status: 200, json: { total_count: 1, incomplete_results: false, items: [{ full_name: 'Aider-AI/aider', html_url: 'https://github.com/Aider-AI/aider', description: 'AI pair programming' }] } },
-    'GET /search/code': { status: 200, json: { total_count: 1, incomplete_results: false, items: [{ path: 'src/x.ts', html_url: 'https://github.com/a/b/blob/main/src/x.ts', repository: { full_name: 'a/b' }, text_matches: [{ fragment: 'needle' }] }] } }
+    'GET /search/repositories': { status: 200, json: { total_count: 1, incomplete_results: false, items: [{ full_name: 'Aider-AI/aider', html_url: 'https://github.com/Aider-AI/aider', description: 'AI pair programming', private: false }] } },
+    'GET /repos/a/b': { status: 200, json: { full_name: 'a/b', private: false, default_branch: 'main' } },
+    'GET /search/code': { status: 200, json: { total_count: 1, incomplete_results: false, items: [{ path: 'src/x.ts', html_url: 'https://github.com/a/b/blob/main/src/x.ts', repository: { full_name: 'a/b', private: false }, text_matches: [{ fragment: 'needle' }] }] } }
   };
   const all = { ...defaults, ...routes };
   const gh: GitHubRequest = async (path, init) => {
@@ -82,15 +83,21 @@ describe('V2 public tool contract', () => {
     expect(result.structuredContent.source.sha).toBe(FORGE);
   });
 
-  it('routes bare public names to repository discovery and code: to code search', async () => {
+  it('keeps global repository discovery public and requires verified public repo scopes for code search', async () => {
     const { server, calls } = context();
     const read = (server as any)._registeredTools.forge_read;
     const repoResult = await read.handler({ repo: 'global', query: 'aider' });
     expect(repoResult.structuredContent.kind).toBe('repositories');
     expect(repoResult.structuredContent.matches[0].repo).toBe('Aider-AI/aider');
-    const codeResult = await read.handler({ repo: 'global', query: 'code:needle' });
+
+    const unscoped = await read.handler({ repo: 'global', query: 'code:needle' });
+    expect(unscoped.isError).toBe(true);
+    expect(calls.some((call) => call.includes('/search/code'))).toBe(false);
+
+    const codeResult = await read.handler({ repo: 'global', query: 'code:needle repo:a/b' });
     expect(codeResult.structuredContent.kind).toBe('code');
-    expect(calls.some((call) => call.includes('/search/repositories'))).toBe(true);
+    expect(codeResult.structuredContent.matches[0].repo).toBe('a/b');
+    expect(calls.some((call) => call.includes('/repos/a/b'))).toBe(true);
     expect(calls.some((call) => call.includes('/search/code'))).toBe(true);
   });
 
