@@ -43,6 +43,16 @@ describe('compact structural representations', () => {
     expect(selectSymbol('a.md', markdown, 'Root/Same[2]').text).toContain('two');
   });
 
+  it('keeps Astro exact-source-only until the official compiler is admitted', () => {
+    const source = '---\nconst title = "Hello";\n---\n<h1>{title}</h1>\n';
+    const shape = inspectStructure('component.astro', source);
+    expect(shape.supported).toBe(false);
+    expect(shape.parser).toBe('none');
+    expect(shape.blocks).toEqual([]);
+    expect(shape.limitation).toContain('No admitted parser');
+    expect(() => selectSymbol('component.astro', source, 'title')).toThrow(/unsupported/);
+  });
+
   it('uses Shopify\'s strict parser for Liquid and exposes exact nested blocks', () => {
     const source = '{% if product %}<div>{{ product.title }}</div>{% endif %}';
     const shape = inspectStructure('section.liquid', source);
