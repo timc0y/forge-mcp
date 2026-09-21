@@ -101,11 +101,12 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
     const scope = structural?.[2] ? requirePath(structural[2]) : '';
     const entries = scope ? tree.entries.filter((entry) => entry.path === scope || entry.path.startsWith(`${scope}/`)) : tree.entries;
     const limits = tree.truncated ? ['GitHub tree coverage is incomplete.'] : [];
-    if (!query) return finish(`${snapshot.identity.repo} at ${snapshot.identity.requested}: ${entries.filter((entry) => entry.type === 'file').length} files.`, { tree: entries.filter((entry) => entry.type === 'file').slice(0, 300).map((entry) => entry.path) }, [...limits, ...(entries.length > 300 ? ['Returned tree is bounded to 300 paths.'] : [])]);
+    if (!query) return finish(`${snapshot.identity.repo} at ${snapshot.identity.requested}: ${entries.filter((entry) => entry.type === 'file').length} visible files${tree.truncated ? ' in an incomplete GitHub tree' : ''}.`, { tree: entries.filter((entry) => entry.type === 'file').slice(0, 300).map((entry) => entry.path) }, [...limits, ...(entries.length > 300 ? ['Returned tree is bounded to 300 paths.'] : [])]);
     if (structural?.[1]?.toLowerCase() === 'stats') return finish('Measurements from the selected Git tree.', { tree: repositoryStats(entries).lines }, limits);
     if (structural?.[1]?.toLowerCase() === 'map') return finish('Repository area map; entrypoints are path-based candidates.', { tree: repositoryMap(entries) }, limits);
     const knownPaths = entries.filter((entry) => entry.type === 'file').map((entry) => entry.path);
     if (structural?.[1]?.toLowerCase() === 'instructions') {
+      if (tree.truncated) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Applicable repository instructions cannot be established from a truncated GitHub tree. No incomplete instruction ancestry was returned.' });
       const all = new Set(tree.entries.map((entry) => entry.path));
       const segments = scope ? scope.split('/') : [];
       const targets: string[] = [];
@@ -122,7 +123,14 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
     const files = await mapBounded(targets, async (path) => ({ path, content: (await snapshot.file(path)).text }));
     if (query.toLowerCase() === 'dependencies') {
       const declarations = files.map((file) => {
-        const parsed = JSON.parse(file.content) as Record<string, unknown>;
+        let parsed: Record<string, unknown>;
+        try {
+          const value = JSON.parse(file.content) as unknown;
+          if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not an object');
+          parsed = value as Record<string, unknown>;
+        } catch {
+          throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `${file.path} is not valid package JSON; dependency declarations are unavailable rather than treated as empty.` });
+        }
         return { path: file.path, dependencies: parsed.dependencies, devDependencies: parsed.devDependencies, peerDependencies: parsed.peerDependencies };
       });
       return finish('Declared package constraints, not resolved dependency or vulnerability evidence.', { declarations }, [...limits, 'Dependency declarations are bounded to 12 manifests. No hosted security or package service was contacted.']);

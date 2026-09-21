@@ -71,7 +71,7 @@ async function installedPnpmVersions(
       const file = await snapshot.file(nearest.lockfile);
       const document = parseDocument(file.text, { prettyErrors: false, uniqueKeys: true });
       if (document.errors.length) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `${nearest.lockfile} is not valid unique-key YAML; installed package identity is unavailable.` });
-      const value = document.toJS();
+      const value = document.toJS({ maxAliasCount: 100 });
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `${nearest.lockfile} has no lockfile object.` });
       lock = value as Record<string, unknown>;
       parsed.set(nearest.lockfile, lock);
