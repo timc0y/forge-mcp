@@ -67,6 +67,15 @@ describe('V2 public tool contract', () => {
     expect(calls.some((call) => call.includes(`contents/README.md?ref=${MAIN}`))).toBe(true);
   });
 
+  it('keeps exact source readable when the optional open-change list is unavailable', async () => {
+    const { server } = context({ 'GET /repos/testuser/test-repo/pulls': { status: 403, json: { message: 'forbidden' } } });
+    const result = await (server as any)._registeredTools.forge_read.handler({ repo: 'test-repo', paths: ['README.md'] });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent.source.sha).toBe(MAIN);
+    expect(result.structuredContent.files[0].text).toBe('# Test Repo\n');
+    expect(result.structuredContent.limits.join(' ')).toContain('Open changes could not be listed');
+  });
+
   it('keeps explicit source exact even when a question is also supplied', async () => {
     const { server } = context();
     const result = await (server as any)._registeredTools.forge_read.handler({ repo: 'test-repo', paths: ['README.md'], query: 'only the title' });
