@@ -127,11 +127,13 @@ export async function upstreamEvidence(snapshot: SnapshotType, publicGh: GitHubR
   const mapping = UPSTREAM[publicPackage];
   if (!mapping) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'This public package has no reviewed upstream mapping. No private package name or identifier was sent to public discovery.' });
   const tree = await snapshot.tree();
+  if (tree.truncated) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Public-upstream version joining is unavailable because GitHub returned an incomplete repository tree. No dependency absence or version uniqueness was inferred.' });
   const manifests = tree.entries
     .filter((entry) => entry.type === 'file' && /(?:^|\/)package\.json$/.test(entry.path) && !/(?:^|\/)(?:node_modules|vendor|dist)\//.test(entry.path))
     .map((entry) => entry.path);
+  if (manifests.length > 12) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: `Public-upstream version joining is bounded to 12 package manifests; this repository has ${manifests.length}. No package absence or single-version claim was made.` });
   const declarations: Array<{ path: string; constraint: string; section: string }> = [];
-  for (const manifest of manifests.slice(0, 12)) {
+  for (const manifest of manifests) {
     const file = await snapshot.file(manifest);
     let data: unknown;
     try { data = JSON.parse(file.text); } catch { throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `${manifest} is not valid package JSON.` }); }
@@ -185,7 +187,7 @@ export async function upstreamEvidence(snapshot: SnapshotType, publicGh: GitHubR
     coverage: coverage.coverage,
     limits: [
       ...coverage.omissions,
-      `Inspected ${Math.min(manifests.length, 12)} of ${manifests.length} manifests; installed-version resolution is pnpm-lock only; code-use coverage is JS/TS syntax only.`,
+      `Inspected all ${manifests.length} package manifests; installed-version resolution is pnpm-lock only; code-use coverage is JS/TS syntax only.`,
       ...(uses.length >= 40 ? ['Private use locations are bounded to the first 40 syntax imports.'] : []),
       'Private source locations were joined inside Forge and were not sent to public search or inference.',
       'The upstream source is pinned to the exact commit resolved from a reviewed tag convention; published package bytes are still a separate artifact.'

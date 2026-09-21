@@ -107,7 +107,7 @@ export async function readAnalysisArtifact(snapshot: Snapshot): Promise<Record<s
   const expectedConfigurationHash = await configurationHashForSnapshot(snapshot, config.configurationPaths);
   const api = `/repos/${snapshot.identity.repo}`;
   const workflow = config.workflowPath.split('/').at(-1)!;
-  const runs = await snapshot.gh(`${api}/actions/workflows/${encodeURIComponent(workflow)}/runs?head_sha=${snapshot.identity.sha}&per_page=10`);
+  const runs = await snapshot.gh(`${api}/actions/workflows/${encodeURIComponent(workflow)}/runs?head_sha=${snapshot.identity.sha}&per_page=100`);
   if (runs.status !== 200) githubFailure(runs.status, 'exact-commit Actions evidence (Actions read permission required)');
   const runBody = object(runs.json);
   const listed = runBody?.workflow_runs;
