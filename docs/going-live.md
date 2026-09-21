@@ -12,7 +12,7 @@ sources before acting on the stages that depend on them.
 | | |
 |---|---|
 | Worker deployed at `timcoy.uk/forge` | ✅ |
-| D1, R2, Durable Object, routes | ✅ |
+| D1, Durable Object, routes | ✅ |
 | GitHub App created, public, installable by any account | ✅ |
 | `FORGE_SIGNING_KEY`, `GITHUB_APP_CLIENT_SECRET` | ✅ (secret verified against GitHub) |
 | `GITHUB_APP_PRIVATE_KEY` | ✅ PKCS#8 secret verified by session startup |
@@ -158,16 +158,16 @@ advisories and resolved transitive versions before deployment.
 privacy policy.
 
 **Support.** The worker links to the public contact routes on `timcoy.uk`, which
-is enough for design partners but not a durable product support channel. Add a
-dedicated email or public support repository before directory or Marketplace
-submission. The source repository is currently private, so linking strangers to
-its Issues page would only produce a 404.
+is enough for design partners but not a durable product support channel. The
+source repository is now public, so its Issues page is reachable, but do not
+silently turn a code issue tracker into the support contract: either publish a
+support/issue policy there or add a dedicated support address before directory
+or Marketplace submission.
 
-**Deletion.** Capture ownership is recorded from migration 0002 onward, and the
-manual procedure is in [`account-deletion.md`](./account-deletion.md). Apply the
-migration before deploying the worker change. Legacy captures are not mapped to
-a user and must expire through the bucket lifecycle unless the requester supplies
-their capture link.
+**Deletion.** Forge V2 stores no captured-page objects. The manual procedure in
+[`account-deletion.md`](./account-deletion.md) deletes the user row, OAuth state,
+approval evidence and daily capture-usage counter from D1. Revoking the GitHub
+App installation remains a separate GitHub action the user controls.
 
 ## Stage 4 — The ChatGPT plugin directory
 
@@ -259,8 +259,8 @@ Required by both processes and the one piece of work with no code in it. It has
 to be true, which means writing it from what the system does:
 
 - **Collected:** GitHub user id and login; a GitHub credential, encrypted, used
-  only to create repositories; pending approvals with the diff evidence shown;
-  captures; a daily capture count.
+  only to create repositories and explicit public GitHub discovery; pending
+  approvals with the frozen diff/evidence shown; a daily capture-usage count.
 - **Not collected at rest:** repository contents, chat transcripts, email.
   Shape-only Cloudflare logs exclude repository names, source, queries, patches,
   captured URLs and user identifiers.
@@ -268,9 +268,9 @@ to be true, which means writing it from what the system does:
   hosts Forge, Browser Rendering and the configured JEV inference route. When
   private semantic context is enabled, bounded relevant private source may be
   processed by that JEV route; exact reads and writes do not require inference.
-- **Retention:** captures expire after 30 days. Approval links expire after seven
-  days, but approval records currently remain until account deletion; do not
-  describe link expiry as record deletion.
+- **Retention:** Forge keeps no captured-page object or gallery. Approval links
+  expire after seven days, but approval records currently remain until account
+  deletion; do not describe link expiry as record deletion.
 - **Controls:** revoke the App from GitHub at any time; disconnect the client;
   request deletion through the documented operator procedure.
 
