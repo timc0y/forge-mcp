@@ -40,22 +40,23 @@ function archive(files: Record<string, string>): Uint8Array {
   return gzipSync(bytes);
 }
 
-function privateGitHub() {
-  const files = {
+function privateGitHub(options: { truncated?: boolean; additionalManifests?: number; lock?: string } = {}) {
+  const files: Record<string, string> = {
     'package.json': JSON.stringify({ devDependencies: { typescript: '^5.9.0' } }),
-    'pnpm-lock.yaml': "lockfileVersion: '9.0'\nimporters:\n  .:\n    devDependencies:\n      typescript:\n        specifier: ^5.9.0\n        version: 5.9.3\n",
+    'pnpm-lock.yaml': options.lock ?? "lockfileVersion: '9.0'\nimporters:\n  .:\n    devDependencies:\n      typescript:\n        specifier: ^5.9.0\n        version: 5.9.3\n",
     'src/index.ts': "import ts from 'typescript';\nexport const version = ts.version;\n"
   };
+  for (let index = 0; index < (options.additionalManifests ?? 0); index++) files[`packages/p${index}/package.json`] = JSON.stringify({ name: `p${index}` });
   const zipped = archive(files);
   const tree = Object.entries(files).map(([path, content]) => ({ path, type: 'blob', size: encoder.encode(content).length }));
   const request: GitHubRequest = async (path) => {
     if (path === '/repos/private/app') return { status: 200, json: { default_branch: 'main', private: true }, text: '', headers: new Headers() };
     if (path === '/repos/private/app/commits/main') return { status: 200, json: { sha: PRIVATE_SHA }, text: '', headers: new Headers() };
-    if (path.startsWith('/repos/private/app/git/trees/')) return { status: 200, json: { truncated: false, tree }, text: '', headers: new Headers() };
+    if (path.startsWith('/repos/private/app/git/trees/')) return { status: 200, json: { truncated: options.truncated ?? false, tree }, text: '', headers: new Headers() };
     if (path.startsWith('/repos/private/app/tarball/')) return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([zipped]).stream() };
     const match = /^\/repos\/private\/app\/contents\/(.+)\?ref=/.exec(path);
     if (match) {
-      const value = files[decodeURIComponent(match[1]!) as keyof typeof files];
+      const value = files[decodeURIComponent(match[1]!)];
       if (value !== undefined) return { status: 200, json: { type: 'file', encoding: 'base64', content: btoa(value), sha: BLOB, size: encoder.encode(value).length }, text: '', headers: new Headers() };
     }
     return { status: 404, json: null, text: '', headers: new Headers() };
@@ -98,5 +99,28 @@ describe('version-pinned public upstream evidence', () => {
     const publicGh = publicGitHub(false);
     await expect(upstreamEvidence(snapshot, publicGh.request, 'typescript')).rejects.toThrow(/HEAD was not substituted/);
     expect(publicGh.calls.some((path) => path.includes('/commits/main'))).toBe(false);
+  });
+
+  it('makes no public request when the private repository tree is truncated', async () => {
+    const snapshot = await Snapshot.open(privateGitHub({ truncated: true }), { owner: 'private', name: 'app' });
+    const publicGh = publicGitHub(true);
+    await expect(upstreamEvidence(snapshot, publicGh.request, 'typescript')).rejects.toThrow(/incomplete repository tree/);
+    expect(publicGh.calls).toEqual([]);
+  });
+
+  it('makes no public request when package-manifest coverage exceeds its bound', async () => {
+    const snapshot = await Snapshot.open(privateGitHub({ additionalManifests: 12 }), { owner: 'private', name: 'app' });
+    const publicGh = publicGitHub(true);
+    await expect(upstreamEvidence(snapshot, publicGh.request, 'typescript')).rejects.toThrow(/bounded to 12 package manifests/);
+    expect(publicGh.calls).toEqual([]);
+  });
+
+  it('turns excessive YAML alias expansion into a typed source validation failure', async () => {
+    const aliases = Array.from({ length: 101 }, () => '  - *shared').join('\n');
+    const lock = "lockfileVersion: '9.0'\nshared: &shared { value: repeated }\naliases:\n" + aliases + "\nimporters:\n  .:\n    devDependencies:\n      typescript:\n        specifier: ^5.9.0\n        version: 5.9.3\n";
+    const snapshot = await Snapshot.open(privateGitHub({ lock }), { owner: 'private', name: 'app' });
+    const publicGh = publicGitHub(true);
+    await expect(upstreamEvidence(snapshot, publicGh.request, 'typescript')).rejects.toMatchObject({ code: 'FORGE_VALIDATION_FAILED' });
+    expect(publicGh.calls).toEqual([]);
   });
 });
