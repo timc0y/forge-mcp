@@ -1,6 +1,7 @@
 name: Forge analysis
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, forge]
 
