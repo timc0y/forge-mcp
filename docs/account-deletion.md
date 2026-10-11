@@ -24,7 +24,7 @@ Verify the numeric GitHub user id with the requester. Use the returned Forge
 
 ## 2. Delete database state
 
-Run the following as one SQL file or transaction after the R2 objects are gone:
+Run the following as one SQL file or transaction. Forge V2 stores no captured-page objects outside D1; `capture_usage` is only the per-user daily quota counter:
 
 ```sql
 BEGIN TRANSACTION;

@@ -72,6 +72,8 @@ interface Evidence {
   comparison: Comparison;
   /** Destination shown when the approval was created. Optional for legacy rows. */
   baseBranch?: string;
+  /** Exact base commit used for the frozen comparison. Optional for legacy rows. */
+  baseSha?: string;
   impactSummary?: string;
 }
 
@@ -129,6 +131,7 @@ export async function requestApproval(
     change: req.change,
     comparison: req.comparison,
     baseBranch: req.baseBranch,
+    baseSha: req.baseSha,
     ...(req.impactSummary ? { impactSummary: req.impactSummary } : {})
   };
 
@@ -309,6 +312,9 @@ async function performMerge(
   if (number === null) {
     return { decision: 'approve', ok: false, detail: 'This change no longer has a pull request to merge.' };
   }
+  if (!evidence.baseBranch || !evidence.baseSha) {
+    return { decision: 'approve', ok: false, detail: 'This merge approval predates Forge’s two-sided revision fence. Nothing was merged or changed. Ask for a fresh approval so both the proposal head and reviewed base commit are frozen.' };
+  }
   if (evidence.baseBranch) {
     const pull = await request(`/repos/${row.repo_owner}/${row.repo_name}/pulls/${number}`);
     if (pull.status !== 200) {
@@ -318,7 +324,7 @@ async function performMerge(
         detail: `Could not re-check the pull request destination (status ${pull.status}). Nothing was merged. Ask for a fresh approval.`
       };
     }
-    const pullRequest = pull.json as { base?: { ref?: unknown }; draft?: unknown; node_id?: unknown } | null;
+    const pullRequest = pull.json as { base?: { ref?: unknown }; head?: { sha?: unknown }; draft?: unknown; node_id?: unknown } | null;
     const currentBase = pullRequest?.base?.ref;
     if (typeof currentBase !== 'string') {
       return {
@@ -333,6 +339,30 @@ async function performMerge(
         ok: false,
         detail: `Refused: this pull request now targets ${currentBase}, not ${evidence.baseBranch} as shown when you approved it. Nothing was merged. Ask for a fresh approval.`
       };
+    }
+    const currentHeadSha = pullRequest?.head?.sha;
+    if (typeof currentHeadSha !== 'string') return { decision: 'approve', ok: false, detail: 'GitHub returned the pull request without a readable head commit. Nothing was merged or changed. Ask for a fresh approval.' };
+    if (currentHeadSha !== row.head_sha) return { decision: 'approve', ok: false, detail: `Refused: the proposal head moved from ${short(row.head_sha)} to ${short(currentHeadSha)} after this approval was created. Nothing was merged or changed. Ask for a fresh approval.` };
+    {
+      const base = await request(`/repos/${row.repo_owner}/${row.repo_name}/git/ref/heads/${encodePath(evidence.baseBranch)}`);
+      if (base.status !== 200) {
+        return {
+          decision: 'approve',
+          ok: false,
+          detail: `Could not re-check the reviewed base revision (status ${base.status}). Nothing was merged. Ask for a fresh approval.`
+        };
+      }
+      const currentBaseSha = (base.json as { object?: { sha?: unknown } } | null)?.object?.sha;
+      if (typeof currentBaseSha !== 'string') {
+        return { decision: 'approve', ok: false, detail: 'GitHub returned the base branch without a readable commit. Nothing was merged. Ask for a fresh approval.' };
+      }
+      if (currentBaseSha !== evidence.baseSha) {
+        return {
+          decision: 'approve',
+          ok: false,
+          detail: `Refused: ${evidence.baseBranch} moved from ${short(evidence.baseSha)} to ${short(currentBaseSha)} after this approval was created. The reviewed diff is stale, so nothing was merged. Ask for a fresh approval.`
+        };
+      }
     }
     if (pullRequest?.draft === true) {
       if (typeof pullRequest.node_id !== 'string') {
@@ -690,7 +720,7 @@ function renderDecision(row: ApprovalRow, evidence: Evidence, _id: string, token
     `<h1>${escapeHtml(heading)}</h1>` +
       `<p class="lead">${escapeHtml(evidence.change.name)} · ${escapeHtml(formatRepoRow(row))}</p>` +
       `<div class="box">${consequence}</div>` +
-      (evidence.impactSummary ? `<div class="box"><strong>Assessment:</strong> ${escapeHtml(evidence.impactSummary)}</div>` : "") +
+      (evidence.impactSummary ? `<div class="box"><strong>Verification evidence:</strong> ${escapeHtml(evidence.impactSummary)}</div>` : "") +
       details(row, evidence) +
       fileList(evidence.comparison) +
       `<form method="post" action="${escapeHtml(action)}">` +
@@ -762,7 +792,7 @@ function details(row: ApprovalRow, evidence: Evidence): string {
     ['Change', change.name],
     ['Branch', row.branch],
     ['Head', short(row.head_sha)],
-    ['Base', evidence.baseBranch ?? 'default branch at request time'],
+    ['Base', evidence.baseBranch ? `${evidence.baseBranch}${evidence.baseSha ? ` @ ${short(evidence.baseSha)}` : ''}` : 'default branch at request time'],
     ['Size', comparisonTotals(evidence.comparison)],
     ['Commits', `${evidence.comparison.aheadBy} ahead, ${evidence.comparison.behindBy} behind`]
   ];

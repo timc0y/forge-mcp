@@ -27,6 +27,8 @@ const NAVIGATION_HEADROOM_MS = 5_000;
 const MAX_OUTLINE_LINES = 80;
 const MAX_OUTLINE_DEPTH = 8;
 const MAX_OUTLINE_LINE_CHARS = 220;
+/** Bound the Browser Rendering JSON/base64 body before it reaches Worker memory. */
+const MAX_SNAPSHOT_RESPONSE_BYTES = 12 * 1024 * 1024;
 
 /** Roles that remain useful landmarks even when the page gives them no name. */
 const OUTLINE_ROLES_WITHOUT_NAMES = new Set([
@@ -53,6 +55,37 @@ function parseJson(text: string): unknown {
   } catch {
     return null;
   }
+}
+
+async function readTextBounded(response: Response, maxBytes: number): Promise<string | null> {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!response.body) {
+    const text = await response.text();
+    return new TextEncoder().encode(text).byteLength <= maxBytes ? text : null;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch { return null; }
 }
 
 /** Cloudflare's error body, when there is one, reads better than a bare status code. */
@@ -236,7 +269,8 @@ async function captureViewport(env: Env, url: URL, viewport: Viewport, remaining
         signal: controller.signal
       }
     );
-    const text = await response.text();
+    const text = await readTextBounded(response, MAX_SNAPSHOT_RESPONSE_BYTES);
+    if (text === null) return { viewport, reason: 'Capture response exceeded the per-viewport byte limit or was not valid UTF-8.' };
     const parsed = parseJson(text);
 
     if (!response.ok) {

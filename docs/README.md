@@ -1,9 +1,9 @@
 # Documentation
 
-**[Context engine plan](./plans/context-engine.md)** — the selected next engineering
-change: GitHub source, parser-backed structure, JEV evidence selection and compact
-context packets, without fallback chains or additional hosted context services.
-This is a plan, not a description of implemented capabilities.
+**[Context engine](./plans/context-engine.md)** — the active V2 architecture:
+GitHub source, parser-backed structure, JEV evidence selection, exact-commit CI
+evidence and compact context packets, without fallback chains or additional
+hosted context services. Deployment proof is tracked separately.
 
 **[Using Forge](./using-forge.md)** — the product vocabulary, current client
 availability, setup, examples, tools and limits.

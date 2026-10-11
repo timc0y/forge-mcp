@@ -2,14 +2,8 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
   push:
-    branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
+    branches: [main, forge]
 
 permissions:
   contents: read
@@ -48,3 +42,12 @@ jobs:
       # does not exist) and the 512-character budget on server instructions.
       - name: Invariants
         run: pnpm test
+
+      - name: Worker bundle dry run
+        run: pnpm exec wrangler deploy --dry-run --config wrangler.jsonc --env="" --outdir /tmp/forge-worker
+
+      - name: Enforce Worker bundle headroom
+        run: node scripts/check-bundle-budget.mjs /tmp/forge-worker
+
+      - name: Profile Worker startup
+        run: pnpm exec wrangler check startup --config wrangler.jsonc --env=""

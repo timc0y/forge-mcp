@@ -20,6 +20,10 @@ import { formatRepo } from './contracts';
 import type { CommitReceipt, FileWrite, GitHubRequest, RepoRef } from './contracts';
 import { CHANGE_BRANCH } from './change';
 import { ForgeError } from './errors';
+import { containsHighSeveritySecret } from './content-safety';
+import { parseSelector, selectSource } from './selectors';
+import { validateSource } from './structure';
+import { requireSha } from './evidence';
 
 /**
  * Chat-facing bounds, deliberately small. The client is a phone conversation,
@@ -29,15 +33,6 @@ import { ForgeError } from './errors';
  */
 const MAX_FILES = 10;
 const MAX_CONTENT_BYTES = 200 * 1024;
-
-const HIGH_SEVERITY_SECRET_PATTERNS = [
-  /-----BEGIN [A-Z]+ PRIVATE KEY-----/,
-  /\bghp_[A-Za-z0-9_]{36,}\b/,
-  /\bgithub_pat_[A-Za-z0-9_]{82}\b/,
-  /\bsk_live_[0-9a-zA-Z]{24,}\b/,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*\b/
-];
 
 /** Three attempts is enough for a branch that is moving; more just hides that. */
 const MAX_ATTEMPTS = 3;
@@ -143,6 +138,13 @@ export async function commitFiles(
   // current GitHub head. This catches secrets introduced by fragment edits
   // without putting an optional semantic service on the durable write path.
   assertNoHighSeveritySecrets(resolved);
+  const unsupported: string[] = [];
+  for (const file of resolved) {
+    if (file.content === null) continue;
+    const validation = validateSource(file.path, file.content);
+    if (!validation.supported) unsupported.push(file.path);
+  }
+  if (unsupported.length) notes.push(`Syntax validation is unsupported for: ${unsupported.join(', ')}. No parser substitute was used; this is not test or typecheck evidence.`);
   if (outOfTime()) giveUp('checking the resolved content');
 
   // Blobs are content-addressed, so they are identical however many times the
@@ -281,14 +283,15 @@ function validate(message: string, files: FileWrite[]): void {
 
     const replacements = file.replace ?? [];
     const writesContent = file.content !== undefined;
-    if (writesContent && replacements.length > 0) {
+    const operations = Number(writesContent) + Number(replacements.length > 0) + Number(file.edit !== undefined);
+    if (operations > 1) {
       throw new ForgeError({
         code: 'FORGE_VALIDATION_FAILED',
         message: `${file.path} has both whole-file content and fragment replacements. Send one or the other.`,
         details: { path: file.path }
       });
     }
-    if (!writesContent && replacements.length === 0) {
+    if (operations === 0) {
       throw new ForgeError({
         code: 'FORGE_VALIDATION_FAILED',
         message: `${file.path} has nothing to write: send content (or null to delete it), or replacements.`,
@@ -296,6 +299,11 @@ function validate(message: string, files: FileWrite[]): void {
       });
     }
 
+    if (file.edit) {
+      requireSha(file.edit.expectedCommit);
+      if (parseSelector(file.edit.selector).path !== file.path) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'The edit selector must identify the same file as its write entry.' });
+      bytes += byteLength(file.edit.replacement);
+    }
     if (typeof file.content === 'string') bytes += byteLength(file.content);
     for (const replacement of replacements) {
       // An empty `old` matches at every position, so "unambiguous" is
@@ -351,7 +359,7 @@ function assertNoHighSeveritySecrets(files: ResolvedFile[]): void {
   for (const file of files) {
     const text = file.content;
     if (!text) continue;
-    if (!HIGH_SEVERITY_SECRET_PATTERNS.some((pattern) => pattern.test(text))) continue;
+    if (!containsHighSeveritySecret(text)) continue;
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',
       message: `Commit rejected: ${file.path} contains what appears to be an unredacted secret token or private key.`,
@@ -368,6 +376,14 @@ async function resolveContents(
 ): Promise<ResolvedFile[]> {
   return Promise.all(
     files.map(async (file): Promise<ResolvedFile> => {
+      if (file.edit) {
+        if (file.edit.expectedCommit !== head) throw new ForgeError({ code: 'FORGE_CONFLICT', message: `${file.path} was selected at a different revision. Read the current proposal source before editing; no range was guessed.` });
+        const selector = parseSelector(file.edit.selector);
+        if (!selector.selection && !selector.lines) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Source-addressed edits require an explicit symbol, record or line range, not a whole-file selector.' });
+        const current = await readTextFile(request, api, file.path, head);
+        const selected = selectSource(selector, current);
+        return { path: file.path, content: current.slice(0, selected.range.start) + file.edit.replacement + current.slice(selected.range.end) };
+      }
       if (file.content !== undefined) {
         // Whole-file writes are for new or small files. Enforced here, not
         // advised in a prompt, because a tool the model can reach is one it
@@ -407,79 +423,7 @@ async function resolveContents(
  * caller never meant, and there is no receipt that would show it.
  */
 
-/**
- * Normalizes text for indentation- and whitespace-insensitive matching.
- */
-function normalizeLine(line: string): string {
-  return line.trim().replace(/\s+/g, ' ');
-}
-
-/**
- * Attempts to find a target snippet within a source string even if:
- * 1. Line endings differ (\r\n vs \n).
- * 2. Trailing spaces exist on lines.
- * 3. Indentation drifted across lines.
- *
- * Returns the exact substring in `source` to replace, or null if no unique match exists.
- */
-export function findResilientMatch(source: string, targetOld: string): { original: string; index: number } | null {
-  // 1. Direct match
-  const directIndex = source.indexOf(targetOld);
-  if (directIndex !== -1) {
-    const second = source.indexOf(targetOld, directIndex + targetOld.length);
-    if (second === -1) {
-      return { original: targetOld, index: directIndex };
-    }
-    return null;
-  }
-
-  // 2. Normalize CRLF
-  const normalizedTarget = targetOld.replace(/\r\n/g, '\n');
-  const normalizedSource = source.replace(/\r\n/g, '\n');
-  const crlfIndex = normalizedSource.indexOf(normalizedTarget);
-  if (crlfIndex !== -1) {
-    const second = normalizedSource.indexOf(normalizedTarget, crlfIndex + normalizedTarget.length);
-    if (second === -1) {
-      return { original: source.slice(crlfIndex, crlfIndex + normalizedTarget.length), index: crlfIndex };
-    }
-  }
-
-  // 3. Line-by-line normalized match (handles indentation and trailing whitespace drift)
-  const sourceLines = normalizedSource.split('\n');
-  const targetLines = normalizedTarget.split('\n');
-
-  if (targetLines.length === 0) return null;
-
-  const normalizedTargetLines = targetLines.map(normalizeLine);
-  const matches: Array<{ startLine: number; endLine: number }> = [];
-
-  for (let i = 0; i <= sourceLines.length - targetLines.length; i += 1) {
-    let matched = true;
-    for (let j = 0; j < targetLines.length; j += 1) {
-      if (normalizeLine(sourceLines[i + j]!) !== normalizedTargetLines[j]!) {
-        matched = false;
-        break;
-      }
-    }
-    if (matched) {
-      matches.push({ startLine: i, endLine: i + targetLines.length });
-    }
-  }
-
-  if (matches.length === 1) {
-    const match = matches[0]!;
-    const matchedLines = sourceLines.slice(match.startLine, match.endLine);
-    const originalText = matchedLines.join('\n');
-    const index = normalizedSource.indexOf(originalText);
-    if (index !== -1) {
-      return { original: originalText, index };
-    }
-  }
-
-  return null;
-}
-
-function applyReplacements(
+export function applyReplacements(
   path: string,
   current: string,
   replacements: Array<{ old: string; new: string; all?: boolean }>
@@ -512,13 +456,6 @@ function applyReplacements(
         });
       }
       next = `${next.slice(0, first)}${replacement.new}${next.slice(first + replacement.old.length)}`;
-      continue;
-    }
-
-    // Exact match failed: attempt resilient match ignoring whitespace/indentation drift
-    const resilient = findResilientMatch(next, replacement.old);
-    if (resilient) {
-      next = `${next.slice(0, resilient.index)}${replacement.new}${next.slice(resilient.index + resilient.original.length)}`;
       continue;
     }
 

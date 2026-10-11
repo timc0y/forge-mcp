@@ -398,7 +398,7 @@ export async function readBranchPolicy(
 ): Promise<BranchPolicy> {
   const encodedBranch = branch.split('/').map(encodeURIComponent).join('%2F');
   const response = await request(`/repos/${repo.owner}/${repo.name}/rules/branches/${encodedBranch}?per_page=100`);
-  if (response.status === 404) return { rules: [], truncated: false };
+  if (response.status === 404) return { rules: [], truncated: false, unavailable: 'GitHub branch rules were unavailable (HTTP 404); absence of enforcement was not established.' };
   if (response.status !== 200) {
     return { rules: [], truncated: false, unavailable: `GitHub branch-rules lookup returned HTTP ${response.status}.` };
   }

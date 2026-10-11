@@ -2,9 +2,10 @@
 
 The production implementation of Forge: a hosted handoff between a conversation
 and GitHub. See [`../SIMPLE.md`](../SIMPLE.md) for the design profile,
-[`../docs/plans/forge-v1.md`](../docs/plans/forge-v1.md) for the architecture and
-[`../docs/plans/product-route.md`](../docs/plans/product-route.md) for the active
-product plan.
+[`../docs/plans/context-engine.md`](../docs/plans/context-engine.md) for the active
+V2 architecture, [`../docs/plans/forge-v1.md`](../docs/plans/forge-v1.md) for the
+historical reset record, and [`../docs/plans/product-route.md`](../docs/plans/product-route.md)
+for the active product plan.
 
 This directory is deliberately self-contained. It has no workspace dependencies
 and can install, type-check, test and deploy on its own.
@@ -15,7 +16,7 @@ Five MCP tools:
 
 | Tool | Gate |
 |---|---|
-| `forge_read` — repositories → tree → change → file contents or patches | free |
+| `forge_read` — immutable source/evidence, changes, checks and task context | free |
 | `forge_edit` — durable GitHub writes, direct or on the fixed `forge` change | free |
 | `forge_merge` — returns a link a human opens | **approved** |
 | `forge_discard` — returns a link a human opens | **approved** |
@@ -71,24 +72,32 @@ Required secrets:
 - `GITHUB_APP_CLIENT_SECRET`
 - `FORGE_SIGNING_KEY` — 32+ random bytes
 - `CLOUDFLARE_API_TOKEN` — Browser Rendering only
-- `POSTHOG_API_KEY` — optional; absence makes analytics a no-op
+- `TYPESAFE_API_KEY` — the single configured JEV inference route
 
 The GitHub App needs **Contents: write**, **Pull requests: write** and
-**Metadata: read**. Expiring user tokens should be enabled so the encrypted
-credential used only for repository creation can rotate.
+**Metadata: read** for the core repository surface. Forge V2 also needs
+**Checks: read** plus **Commit statuses: read** for complete exact-commit
+execution evidence, and **Actions: read** for the versioned
+`forge-analysis.json` artifact. Missing permission is reported as
+unavailable evidence; Forge never substitutes an older run. Expiring user
+tokens should be enabled so the encrypted credential used for repository
+creation and explicit public GitHub discovery can rotate.
 
-The preview is open to anyone who completes GitHub OAuth and installs the App.
-There is no invite table or invite code. Cost is bounded by a per-user daily
+The product has no invite table or invite code and is designed to be open to
+anyone who completes GitHub OAuth and installs the App. The current GitHub App
+registration is private, so third-party installation remains a provider-side
+launch gate until the owner makes it public. Cost is bounded by a per-user daily
 capture quota; repository calls use each person's own GitHub installation rate
 limit.
 
 ## Deliberate boundary
 
-No containers, shell, builds, tests, deployment, preview hosting, private-page
-browsing, site crawl, object storage or capture gallery. One Durable Object, one
-database and one paid action.
+No containers, shell, repository execution, deployment, preview hosting,
+private-page browsing, persistent repository index, site crawl, object storage
+or capture gallery. Repository CI may run normal GitHub Actions independently;
+Forge only reads their exact-commit evidence.
 
-`forge_see` returns images inline with the call that requested them. The same
-Cloudflare snapshot also returns an accessibility tree; Forge reduces it to a
-bounded semantic outline so a model can reason about page structure without
-receiving the raw browser tree.
+`forge_read` pins source to one immutable commit and can return exact files,
+symbols/records, checks, a repository-produced analysis artifact or a bounded
+JEV-selected context packet. `forge_see` returns public-page images inline with
+the call that requested them.

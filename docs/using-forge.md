@@ -14,7 +14,7 @@ Start with one of three jobs:
   small correction.
 - Fix copy, CSS or documentation from a conversation without touching `main`.
 
-Free research preview, open to anyone with a GitHub account.
+Free research preview by design. As of 21 September 2026 the GitHub App registration is still private, so unrelated GitHub accounts cannot install it until the owner changes the App visibility to public.
 
 ---
 
@@ -130,7 +130,7 @@ Until you install it, tools will tell you so and give you this link.
 
 | Tool | What it does | Needs you |
 |---|---|---|
-| `forge_read` | One question at four zoom levels: your repositories, one repository's files, what a change did, or the contents of specific files | no |
+| `forge_read` | Immutable repository source/evidence: repos, diffs, exact selectors, checks, analysis, public discovery and task-shaped context | no |
 | `forge_edit` | Writes files directly, or on the one Forge change when the work needs review | no |
 | `forge_merge` | Returns one link for you to land a change | **yes** |
 | `forge_discard` | Returns one link for you to throw a change away | **yes** |
@@ -142,19 +142,30 @@ Reading a change **is** the diff — there is no separate diff tool, because
 "what does this change contain" and "show me the diff" are the same question.
 Ask about specific paths inside a change and you get their patches.
 
-Repository queries can also ask for `hygiene`, `migrations`, `quality`,
-`policy`, `history`, `churn`, `languages`, `stats` or `map`.
-`migrations` reports deterministic numbered-SQL history evidence such as
-duplicate or missing prefixes and any committed migration-checker scripts; it
-does not claim migrations were executed successfully.
+A normal repository read resolves one commit and reports that SHA. `change`
+reads the proposal diff; `at="proposal"` reads the proposal's actual source.
+Exact selectors include `path::symbol:Name`, `path::id:ID`, JSON pointers and
+line ranges, and stay exact even when a question is supplied.
+
+Repository queries include `migrations`, `quality`, `policy`, `history`,
+`churn`, `languages`, `stats`, `map`, `instructions`, `checks`, `analysis`,
+`symbols <path>`, exact `find:<text>` and `upstream <reviewed-public-package>`.
+Other natural questions compile a bounded context packet from the immutable
+snapshot using parser-backed structure and JEV. `repo="global"` may discover
+public repositories by name. Public code discovery must use an explicit form such
+as `code:needle repo:owner/repository`; Forge verifies every named repository is
+public before issuing the code search, because GitHub code search has no public-
+visibility qualifier. If semantic or public-scope evidence cannot be established,
+Forge says so; it does not silently widen the search or switch modes.
 
 ### forge_edit
 
-Prefers **fragment replacement** over whole files: you say what text to replace,
-Forge reads the authoritative file itself, applies the change and commits the
-whole thing. A fragment that is missing or appears twice is refused rather than
-guessed at, and a large existing file cannot be replaced wholesale — that is how
-a re-sent file silently loses work someone else did.
+Prefers **exact fragment replacement** or a revision-checked selector over
+whole files. A fragment that is missing or appears twice is refused rather than
+guessed; Forge does not normalize whitespace or indentation to make a match.
+Structured edits carry the commit they were selected from, so stale source is
+refused before any blob is written. Large existing files cannot be replaced
+wholesale.
 
 Bounds: 10 files and 200 KB per call. Exceeding either is refused, never
 truncated.

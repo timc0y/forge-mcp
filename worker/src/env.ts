@@ -45,9 +45,8 @@ export interface Env {
   TYPESAFE_API_KEY?: string;
   TYPESAFE_BASE_URL?: string;
 
-  /** Analytics. Unset means no analytics at all, not degraded analytics. */
-  POSTHOG_API_KEY?: string;
-  POSTHOG_HOST?: string;
+  /** Hosted inference is a separate processing boundary. Default: private source is not sent. */
+  FORGE_JEV_PRIVATE_SOURCE?: 'allow' | 'deny';
   /** Development only. Bypasses OAuth with a fixed bearer token. */
   FORGE_DEV_AUTH_TOKEN?: string;
 }
