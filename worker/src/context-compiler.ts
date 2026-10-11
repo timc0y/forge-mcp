@@ -259,6 +259,14 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
     const target = targetId === 'none' ? 'none' : pathIds[targetId];
     if (choice(follow, 'gap').choice !== 'none' && target !== 'none') {
       if (!target || !neighbors.has(target)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Expansion target was outside the authorized source graph.' });
+      for (const path of instructionsFor([target], known)) {
+        if (mandatoryPaths.includes(path)) continue;
+        const file = await snapshot.file(path);
+        const selected = instructionEvidence(snapshot, path, file.text, words, evidence.length + included.length);
+        included.push(...selected.items);
+        mandatoryPaths.push(path);
+        if (selected.limitation) limitations.push(selected.limitation);
+      }
       const expanded = await snapshot.file(target);
       const shape = utf8Bytes(expanded.text) <= CONTEXT_LIMITS.parseBytes ? inspectStructure(target, expanded.text) : null;
       const block = shape?.supported && !shape.diagnostics.length
@@ -277,7 +285,7 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
   const packet = {
     source: snapshot.identity,
     goal,
-    status: packed.missingMandatory ? 'insufficient' : 'bounded',
+    status: packed.missingMandatory || !packed.items.some((item) => item.category !== 'instruction') ? 'insufficient' : 'bounded',
     evidence: packed.items.map(({ source: _source, ...item }) => item),
     relationships: relationships.slice(0, 24),
     omitted: packed.omitted.slice(0, 24),

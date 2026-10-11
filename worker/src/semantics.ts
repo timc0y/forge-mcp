@@ -42,7 +42,7 @@ export function validateQuestions(questions: Record<string, Question>): void {
     if (question.type === 'score' && (question.criteria.length < 2 || question.criteria.length > 10)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Score requires 2–10 ordered levels.' });
   }
 }
-/** The documented JEV model output from Cloudflare's universal /ai/run endpoint. No alternate envelope is accepted. */
+/** The JEV model output inside the completed Cloudflare response. */
 export function parseEvaluation(raw: unknown, questions: Record<string, Question>, template: string): Evaluation {
   validateQuestions(questions);
   const result = object(raw);
@@ -51,7 +51,7 @@ export function parseEvaluation(raw: unknown, questions: Record<string, Question
   if (!/^(?:typesafe\/jev|jev(?:[-/]|$))/i.test(result.model)) invalid('the selected route returned a non-JEV model identity');
   const expectedIds = Object.keys(questions).sort();
   const returnedIds = Object.keys(answers).sort();
-  if (expectedIds.length !== returnedIds.length || expectedIds.some((id, index) => id !== returnedIds[index])) invalid('the selected response returned an unexpected answer set');
+  if (expectedIds.length !== returnedIds.length || expectedIds.some((id, index) => id !== returnedIds[index])) invalid('the selected response returned a missing or unexpected answer set');
   const parsed: Record<string, Answer> = {};
   for (const [id, question] of Object.entries(questions)) {
     const answer = object(answers[id]);
@@ -134,7 +134,12 @@ export async function evaluate(
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   let raw: unknown;
   try { raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { invalid('response is not valid UTF-8 JSON'); }
-  return parseEvaluation(raw, questions, template);
+  const envelope = object(raw);
+  const completed = object(envelope?.result);
+  if (envelope?.success !== true || !Array.isArray(envelope.errors) || envelope.errors.length || completed?.state !== 'Completed' || !object(completed.result)) {
+    invalid('the Cloudflare response did not contain a successful completed JEV result');
+  }
+  return parseEvaluation(completed.result, questions, template);
 }
 export function noul(evaluation: Evaluation, id: string): number {
   const answer = evaluation.answers[id];

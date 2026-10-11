@@ -63,6 +63,9 @@ describe('V2 public tool contract', () => {
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent.source.sha).toBe(MAIN);
     expect(result.structuredContent.files[0].text).toBe('# Test Repo\n');
+    const textResult = JSON.parse(result.content[1].text);
+    expect(textResult).toEqual(result.structuredContent);
+    expect(textResult.files[0].text).toBe('# Test Repo\n');
     expect(calls.some((call) => call.includes(`/commits/main`))).toBe(true);
     expect(calls.some((call) => call.includes(`contents/README.md?ref=${MAIN}`))).toBe(true);
   });

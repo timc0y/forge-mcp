@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { applyReplacements, commitFiles } from '../src/write';
 import type { GitHubRequest } from '../src/contracts';
+import { author } from '../src/authoring';
+import type { ToolContext } from '../src/tool-types';
+import type { Env } from '../src/env';
 const sha = 'a'.repeat(40);
 const repo = { owner: 'o', name: 'r' };
 function github(source: string): { request: GitHubRequest; calls: string[] } {
@@ -15,6 +18,44 @@ function github(source: string): { request: GitHubRequest; calls: string[] } {
   return { request, calls };
 }
 describe('exact candidate editing', () => {
+  it.each([
+    [{ path: '../a.ts', content: 'export const value = 1;' }, 'writable path'],
+    [{ path: 'a.ts', content: 'function run( {' }, 'parser errors'],
+    [{ path: 'a.txt', content: 'ghp_' + 'a'.repeat(36) }, 'secret']
+  ])('refuses invalid authored content before creating a repository', async (file, reason) => {
+    const calls: string[] = [];
+    const request: GitHubRequest = async (path) => { calls.push(path); throw new Error('No GitHub request should occur'); };
+    const ctx: ToolContext = { env: {} as Env, identity: { userId: 'u', githubLogin: 'o', installationId: '1' }, track: () => {}, gh: request, ghUser: request };
+    await expect(author(ctx, { repo: 'o/new', message: 'Create source', files: [file] })).rejects.toThrow(reason);
+    expect(calls).toEqual([]);
+  });
+
+  it('reports durable repository creation when the subsequent file write fails', async () => {
+    const calls: string[] = [];
+    let created = false;
+    const request: GitHubRequest = async (path, init) => {
+      calls.push(`${init?.method ?? 'GET'} ${path}`);
+      const response = (status: number, json: unknown) => ({ status, json, text: '', headers: new Headers() });
+      if (path === '/repos/o/new') return response(created ? 200 : 404, created ? { default_branch: 'main' } : null);
+      if (path.startsWith('/installation/repositories')) return response(200, { repositories: [] });
+      if (path === '/user/repos') { created = true; return response(201, { owner: { login: 'o' }, name: 'new' }); }
+      if (path === '/repos/o/new/git/ref/heads/main') return response(200, { object: { sha } });
+      if (path.includes('/contents/')) return response(404, null);
+      if (path === '/repos/o/new/git/blobs') return response(503, { message: 'Temporary failure' });
+      return response(404, null);
+    };
+    const ctx: ToolContext = { env: {} as Env, identity: { userId: 'u', githubLogin: 'o', installationId: '1' }, track: () => {}, gh: request, ghUser: request };
+    await expect(author(ctx, { repo: 'o/new', message: 'Create source', files: [{ path: 'a.ts', content: 'export const value = 1;' }] })).rejects.toMatchObject({
+      code: 'FORGE_UPSTREAM_UNAVAILABLE',
+      message: expect.stringContaining('Created https://github.com/o/new before the requested write failed'),
+      retryable: false,
+      details: { createdRepository: 'o/new', url: 'https://github.com/o/new' }
+    });
+    expect(calls).toContain('POST /user/repos');
+    expect(calls).toContain('POST /repos/o/new/git/blobs');
+    expect(calls.some((call) => call.startsWith('DELETE '))).toBe(false);
+  });
+
   it('refuses whitespace and CRLF substitutions rather than normalizing offsets', () => {
     for (const old of ['  const x = 1;', 'const x = 1;\r\n']) expect(() => applyReplacements('a.ts', 'const x = 1;\n', [{ old, new: 'const x = 2;' }])).toThrow(/absent/);
   });

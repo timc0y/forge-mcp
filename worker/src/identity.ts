@@ -27,14 +27,15 @@ const TOKEN_CONTEXT = 'forge.access.v1';
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Two claims. Anything else here would be a copy of a column this request is
+ * Identity, expiry and the intended MCP resource. User details would copy a column this request is
  * about to read anyway, and a copy is a thing that can go stale while the
  * token stays valid — a login that changed, an installation that was removed.
- * `sub` is authoritative for one thing only: which row to load.
+ * `sub` selects the row; `aud` prevents a token issued for another resource from being accepted.
  */
 interface Claims {
   sub: string;
   exp: number;
+  aud: string;
 }
 
 interface RefreshTokenRow {
@@ -54,9 +55,21 @@ interface UserRow {
 }
 
 export async function issueToken(env: Env, userId: string, ttlSeconds: number): Promise<string> {
-  const claims: Claims = { sub: userId, exp: Math.floor(Date.now() / 1000) + ttlSeconds };
+  const claims: Claims = { sub: userId, exp: Math.floor(Date.now() / 1000) + ttlSeconds, aud: `${env.FORGE_PUBLIC_ORIGIN}/mcp` };
   const payload = encodeBase64Url(new TextEncoder().encode(JSON.stringify(claims)));
   return `${payload}.${await sign(env, TOKEN_CONTEXT, payload)}`;
+}
+
+/** The transport's session ID alone must never select another user's captured tools. */
+export async function bindSessionId(env: Env, userId: string, sessionId: string): Promise<string> {
+  return `${sessionId}.${await sign(env, 'forge.session.v1', JSON.stringify([env.FORGE_PUBLIC_ORIGIN, userId, sessionId]))}`;
+}
+
+export async function sessionIdFor(env: Env, userId: string, value: string): Promise<string | null> {
+  const split = value.lastIndexOf('.');
+  if (split < 1 || value.length > 256) return null;
+  const id = value.slice(0, split);
+  return constantTimeEqual(value, await bindSessionId(env, userId, id)) ? id : null;
 }
 
 export async function issueRefreshToken(
@@ -258,6 +271,7 @@ async function seededUser(env: Env): Promise<UserRow> {
 async function verify(env: Env, token: string): Promise<string | null> {
   const claims = await verifiedPayload(env, token, TOKEN_CONTEXT);
   if (!claims || typeof claims.sub !== 'string' || !claims.sub) return null;
+  if (claims.aud !== `${env.FORGE_PUBLIC_ORIGIN}/mcp`) return null;
   if (typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)) return null;
   if (claims.exp * 1000 <= Date.now()) return null;
   return claims.sub;

@@ -1,13 +1,15 @@
 import type { ToolContext, ToolOutcome } from './tool-types';
-import type { RepoRef, FileWrite } from './contracts';
+import type { RepoRef, FileWrite, CommitReceipt } from './contracts';
 import { formatRepo } from './contracts';
 import { ForgeError, isForgeError, toForgeError } from './errors';
 import { resolveRepositoryName } from './addresses';
 import { defaultBranch, assertNotNearExisting, createRepo } from './repo';
 import { listRepos } from './read';
 import { CHANGE_BRANCH, openChanges, ensureDraftPullRequest } from './change';
-import { commitFiles } from './write';
+import { commitFiles, validateWriteInput } from './write';
 import { readCodeownersErrors } from './github-intelligence';
+import { validateSource } from './structure';
+import { assertNoHighSeveritySecretText } from './content-safety';
 
 export interface EditInput { repo: string; change?: string; intent?: string; message: string; files: FileWrite[]; private?: boolean }
 async function target(ctx: ToolContext, repo: RepoRef, description: string, privateRepo: boolean): Promise<{ base: string; created: boolean }> {
@@ -27,20 +29,38 @@ async function target(ctx: ToolContext, repo: RepoRef, description: string, priv
       try { return { base: await defaultBranch(ctx.gh, repo), created: false }; } catch { throw creationError; }
     }
     try { return { base: await defaultBranch(ctx.gh, created), created: true }; }
-    catch { throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: `Created ${formatRepo(created)}, but its default branch could not be read. Repository creation is durable; inspect it before another write.` }); }
+    catch { throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: `Created https://github.com/${formatRepo(created)}, but its default branch could not be read. Repository creation is durable; inspect it before another write.` }); }
   }
 }
 export async function author(ctx: ToolContext, input: EditInput): Promise<ToolOutcome> {
   if (input.intent !== undefined) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'The retired intent input is rejected. Refresh Forge’s catalog and use change for review work; nothing was written.' });
   if (!input.message?.trim()) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'A commit message is required.' });
   if (input.change && /^(?:forge|main|master|branch|review|proposal)$/i.test(input.change.trim())) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'change is the human review reason, not a branch/mode name. Say what needs review.' });
+  validateWriteInput(input.message, input.files);
+  for (const file of input.files) {
+    if (typeof file.content !== 'string') continue;
+    assertNoHighSeveritySecretText(file.content, 'Commit');
+    validateSource(file.path, file.content);
+  }
   const repo = await resolveRepositoryName(ctx.gh, input.repo, ctx.identity.githubLogin, true);
   const destination = await target(ctx, repo, input.message, input.private ?? true);
   const proposed = input.change !== undefined;
   const branch = proposed ? CHANGE_BRANCH : destination.base;
-  if (proposed && branch === destination.base) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'The default branch cannot also be Forge’s reserved proposal branch.' });
-  if (proposed && (await openChanges(ctx.gh, repo)).some((entry) => entry.branch !== CHANGE_BRANCH)) throw new ForgeError({ code: 'FORGE_CONFLICT', message: 'Resolve older Forge proposals before starting this fixed-branch change.' });
-  const commit = await commitFiles(ctx.gh, repo, branch, destination.base, input.message, input.files);
+  let commit: CommitReceipt;
+  try {
+    if (proposed && branch === destination.base) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'The default branch cannot also be Forge’s reserved proposal branch.' });
+    if (proposed && (await openChanges(ctx.gh, repo)).some((entry) => entry.branch !== CHANGE_BRANCH)) throw new ForgeError({ code: 'FORGE_CONFLICT', message: 'Resolve older Forge proposals before starting this fixed-branch change.' });
+    commit = await commitFiles(ctx.gh, repo, branch, destination.base, input.message, input.files);
+  } catch (thrown) {
+    if (!destination.created) throw thrown;
+    const error = toForgeError(thrown);
+    throw new ForgeError({
+      code: error.code,
+      message: `Created https://github.com/${formatRepo(repo)} before the requested write failed. Repository creation is durable; inspect it before another write. ${error.message}`,
+      retryable: false,
+      details: { ...error.details, createdRepository: formatRepo(repo), url: `https://github.com/${formatRepo(repo)}` }
+    });
+  }
   if (commit.outcome === 'committed') ctx.track('change_committed', { files: commit.paths.length, created_repo: destination.created });
   // Every failure after this point is decoration on a write that is already durable.
   const limits = [...(commit.notes ?? [])];

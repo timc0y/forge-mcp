@@ -98,7 +98,7 @@ export async function commitFiles(
   message: string,
   files: FileWrite[]
 ): Promise<CommitReceipt> {
-  validate(message, files);
+  validateWriteInput(message, files);
 
   const api = `/repos/${repo.owner}/${repo.name}`;
   const paths = files.map((file) => file.path);
@@ -242,7 +242,7 @@ export async function commitFiles(
 // Validation — refusals that happen before anything touches GitHub
 // ---------------------------------------------------------------------------
 
-function validate(message: string, files: FileWrite[]): void {
+export function validateWriteInput(message: string, files: FileWrite[]): void {
   if (!message.trim()) {
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',

@@ -20,7 +20,7 @@ async function run(tool: string, ctx: ToolContext, work: () => Promise<ToolOutco
   try {
     const result = await work();
     ctx.track('tool_called', { tool, ok: true, ms: Date.now() - started, output_bytes: utf8Bytes(JSON.stringify(result.structured)) });
-    return { content: [{ type: 'text' as const, text: result.summary }, ...(result.content ?? [])], structuredContent: result.structured };
+    return { content: [{ type: 'text' as const, text: result.summary }, { type: 'text' as const, text: JSON.stringify(result.structured) }, ...(result.content ?? [])], structuredContent: result.structured };
   } catch (thrown) {
     const error = toForgeError(thrown);
     ctx.track('tool_called', { tool, ok: false, code: error.code, ms: Date.now() - started });

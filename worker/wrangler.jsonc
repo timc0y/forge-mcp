@@ -7,6 +7,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-13",
   "compatibility_flags": ["nodejs_compat"],
+  "build": { "command": "node scripts/build-parser.mjs" },
+  "alias": { "typescript": "./.wrangler/typescript-parser.mjs" },
 
   // No cron. Nothing here needs sweeping, because nothing is allocated that
   // could leak: no containers, no slots, no workspaces to reap.
@@ -44,7 +46,7 @@
     // and approval links are minted from this value, and the router derives its
     // mount path from it, so the path here is load-bearing rather than cosmetic.
     "FORGE_PUBLIC_ORIGIN": "https://timcoy.uk/forge",
-    "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,grok.com,vscode.dev,oauth-redirect.googleusercontent.com,localhost,127.0.0.1",
+    "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,grok.com,cursor.com,vscode.dev,oauth-redirect.googleusercontent.com,localhost,127.0.0.1",
     "GITHUB_APP_ID": "4658328",
     "GITHUB_APP_CLIENT_ID": "Iv23limnLx32EUIdhl3Y",
     "GITHUB_APP_SLUG": "forge-mcp-github-app",
@@ -88,7 +90,7 @@
       "vars": {
         "FORGE_ENVIRONMENT": "development",
         "FORGE_PUBLIC_ORIGIN": "https://forge-development.timcoy72.workers.dev",
-        "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,grok.com,vscode.dev,oauth-redirect.googleusercontent.com,localhost,127.0.0.1",
+        "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,grok.com,cursor.com,vscode.dev,oauth-redirect.googleusercontent.com,localhost,127.0.0.1",
         "GITHUB_APP_ID": "4658328",
         "GITHUB_APP_CLIENT_ID": "Iv23limnLx32EUIdhl3Y",
         "GITHUB_APP_SLUG": "forge-mcp-github-app",

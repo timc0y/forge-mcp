@@ -234,6 +234,10 @@ export function selectSymbol(path: string, text: string, name: string): SourceBl
   const structure = validateSource(path, text);
   if (!structure.supported || isJsonSource(path) || yamlExtensions.test(path)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Symbol selection is unsupported for this format.' });
   const matches = structure.blocks.filter((block) => block.name === name);
+  if (!matches.length) {
+    const indexed = structure.blocks.filter((block) => block.name.startsWith(`${name}[`) && /^\d+\]$/.test(block.name.slice(name.length + 1)));
+    if (indexed.length > 1) throw new ForgeError({ code: 'FORGE_AMBIGUOUS', message: `Symbol selector matched ${indexed.length} declarations. Use an exact indexed name from the outline; no first match was chosen.` });
+  }
   if (matches.length !== 1) throw new ForgeError({ code: matches.length ? 'FORGE_AMBIGUOUS' : 'FORGE_NOT_FOUND', message: `Symbol selector matched ${matches.length} declarations. Use an exact name from the outline; no first match was chosen.` });
   return matches[0]!;
 }

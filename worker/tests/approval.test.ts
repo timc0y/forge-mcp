@@ -56,7 +56,7 @@ it('marks a draft pull request ready only after the reviewed base SHA is unchang
     calls.push(`${init?.method ?? 'GET'} ${path}`);
     if (path.endsWith('/pulls/1')) return { status: 200, json: { base: { ref: 'main' }, head: { sha: '0123456789abcdef' }, draft: true, node_id: 'PR_node' }, text: '', headers: new Headers() };
     if (path.endsWith('/git/ref/heads/main')) return { status: 200, json: { object: { sha: baseSha } }, text: '', headers: new Headers() };
-    if (path === '/graphql') return { status: 200, json: { data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } }, text: '', headers: new Headers() } };
+    if (path === '/graphql') return { status: 200, json: { data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } }, text: '', headers: new Headers() };
     return { status: 200, json: { sha: 'merge-sha' }, text: '', headers: new Headers() };
   };
 

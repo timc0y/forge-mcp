@@ -10,17 +10,10 @@
  * inactivity, and rotate on every use. A replayed token is refused rather than
  * remaining a standing bearer credential.
  *
- * There is also no pending-authorization table. The authorize request has to
- * survive a round trip through GitHub, and the only place to put it is the
- * `state` parameter, so `state` is signed with `FORGE_SIGNING_KEY` and carries
- * the request with it. That is a deliberate trade: it means the invite code is
- * visible in the URL Forge sends to GitHub, which is why an invite is single
- * use, claimed atomically, and never written to a log or a page.
- *
- * The invite gate lives in `callback`, not in `authorize`, because `authorize`
- * does not yet know who the user is. Hitting `callback` directly cannot skip
- * it: without a valid signature over the state there is no flow, and without a
- * user row there is no code to redeem.
+ * Signed state carries the authorization request through GitHub. Its nonce
+ * hash binds it to the browser that approved consent; a copied state URL cannot
+ * authorize a different browser's GitHub account. GitHub's single-use code
+ * exchange prevents a completed callback from being replayed.
  */
 import type { Env } from './env';
 import { githubUserRequest } from './github';
@@ -74,6 +67,7 @@ interface FlowState {
   challenge: string;
   /** The MCP client's `state`, returned untouched. It is their CSRF defence. */
   clientState: string;
+  browserNonce: string;
   exp: number;
 }
 
@@ -179,6 +173,9 @@ export async function registerClient(env: Env, request: Request): Promise<Respon
  */
 export async function authorize(env: Env, request: Request): Promise<Response> {
   const url = new URL(request.url);
+  if (!resourceAllowed(env, url.searchParams)) {
+    return oauthError('invalid_target', 'Forge tokens are only valid for the Forge MCP resource.', 400);
+  }
   const clientId = url.searchParams.get('client_id') ?? '';
   const redirectUri = url.searchParams.get('redirect_uri') ?? '';
   const responseType = url.searchParams.get('response_type') ?? '';
@@ -212,11 +209,13 @@ export async function authorize(env: Env, request: Request): Promise<Response> {
   if (request.method !== 'POST') return consentPage(client.client_name);
 
   await parseBody(request);
+  const browserNonce = randomSecret();
   const state: FlowState = {
     client: client.client_id,
     redirect: redirectUri,
     challenge,
     clientState: url.searchParams.get('state') ?? '',
+    browserNonce: await sha256(browserNonce),
     exp: Date.now() + STATE_MS
   };
 
@@ -224,7 +223,7 @@ export async function authorize(env: Env, request: Request): Promise<Response> {
   target.searchParams.set('client_id', env.GITHUB_APP_CLIENT_ID);
   target.searchParams.set('redirect_uri', callbackUrl(env));
   target.searchParams.set('state', await sealState(env, state));
-  return redirect(target.toString());
+  return redirect(target.toString(), oauthCookie(env, browserNonce));
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +242,10 @@ export async function callback(env: Env, request: Request): Promise<Response> {
 
   const state = await openState(env, url.searchParams.get('state') ?? '');
   const githubCode = url.searchParams.get('code') ?? '';
-  if (!state || !githubCode) {
+  const cookieNonce = request.headers.get('cookie')?.split(';').map((part) => part.trim())
+    .find((part) => part.startsWith('forge-oauth-state='))?.slice('forge-oauth-state='.length) ?? '';
+  if (!state || !githubCode || !cookieNonce ||
+    !constantTimeEqual(await sha256(cookieNonce), state.browserNonce)) {
     return problem(
       400,
       'This sign-in link is not valid',
@@ -310,7 +312,7 @@ export async function callback(env: Env, request: Request): Promise<Response> {
   const target = new URL(state.redirect);
   target.searchParams.set('code', code);
   if (state.clientState) target.searchParams.set('state', state.clientState);
-  return redirect(target.toString());
+  return redirect(target.toString(), oauthCookie(env, '', true));
 }
 
 /**
@@ -357,6 +359,9 @@ async function findOrCreateUser(
 export async function token(env: Env, request: Request): Promise<Response> {
   const body = await parseBody(request);
   if (!body) return oauthError('invalid_request', 'The token request body could not be read.', 400);
+  if (!resourceAllowed(env, body)) {
+    return oauthError('invalid_target', 'Forge tokens are only valid for the Forge MCP resource.', 400);
+  }
 
   const grantType = body.get('grant_type') ?? '';
   if (grantType === 'refresh_token') return refreshAccess(env, body);
@@ -429,14 +434,20 @@ function invalidGrant(): Response {
   );
 }
 
+/** Older clients omit resource; their tokens still bind to this single MCP endpoint. */
+function resourceAllowed(env: Env, params: URLSearchParams): boolean {
+  const resources = params.getAll('resource');
+  return resources.length === 0 || (resources.length === 1 && resources[0] === `${env.FORGE_PUBLIC_ORIGIN}/mcp`);
+}
+
 // ---------------------------------------------------------------------------
 // GitHub
 // ---------------------------------------------------------------------------
 
 /**
- * The GitHub user token is used for these two calls and then dropped. Nothing
- * stores it: every later request runs on the user's installation token, which
- * `github.ts` mints from the App's own key.
+ * The GitHub user credential establishes identity and is stored encrypted for
+ * repository creation and public search. Ordinary repository writes use the
+ * user's installation token, minted from the App's key.
  */
 async function identifyGitHubUser(
   env: Env,
@@ -554,8 +565,8 @@ function redirectAllowed(env: Env, value: string): boolean {
   const loopback = LOOPBACK.includes(hostname);
   // A code delivered over plaintext is a code an observer has. Loopback is the
   // one exception, because it never leaves the machine.
-  if (url.protocol !== 'https:' && !loopback) return false;
-  if (url.hash) return false;
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return false;
+  if (url.hash || url.username || url.password) return false;
 
   return env.FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS.split(',')
     .map((host) => host.trim().toLowerCase())
@@ -599,12 +610,14 @@ async function openState(env: Env, value: string): Promise<FlowState | null> {
   if (typeof exp !== 'number' || !Number.isFinite(exp) || exp <= Date.now()) return null;
   if (typeof record.client !== 'string' || typeof record.redirect !== 'string') return null;
   if (typeof record.challenge !== 'string' || typeof record.clientState !== 'string') return null;
+  if (typeof record.browserNonce !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(record.browserNonce)) return null;
 
   return {
     client: record.client,
     redirect: record.redirect,
     challenge: record.challenge,
     clientState: record.clientState,
+    browserNonce: record.browserNonce,
     exp
   };
 }
@@ -686,7 +699,8 @@ async function parseBody(request: Request): Promise<URLSearchParams | null> {
  * `access-control-allow-origin: *` because browser-based MCP clients fetch
  * these endpoints directly. Nothing here is protected by an origin: metadata is
  * public, and registration and token exchange carry their own proofs. No
- * cookie is ever set, so there is nothing ambient for another origin to spend.
+ * cookie authenticates these endpoints; the consent nonce cookie only binds
+ * the browser round trip and cannot spend a bearer token.
  */
 function json(body: unknown, status = 200): Response {
   return Response.json(body, {
@@ -702,11 +716,18 @@ function oauthError(error: string, description: string, status: number): Respons
   return json({ error, error_description: description }, status);
 }
 
-function redirect(location: string): Response {
+function oauthCookie(env: Env, nonce: string, clear = false): string {
+  const origin = new URL(env.FORGE_PUBLIC_ORIGIN);
+  const path = `${origin.pathname.replace(/\/+$/, '')}/oauth`;
+  return `forge-oauth-state=${nonce}; Path=${path}; HttpOnly; SameSite=Lax; Max-Age=${clear ? 0 : STATE_MS / 1000}${origin.protocol === 'https:' ? '; Secure' : ''}`;
+}
+
+function redirect(location: string, cookie?: string): Response {
   return new Response(null, {
     status: 302,
     headers: {
       location,
+      ...(cookie ? { 'set-cookie': cookie } : {}),
       // This URL carries a single-use code. It is never logged and never cached.
       'cache-control': 'no-store',
       'referrer-policy': 'no-referrer'

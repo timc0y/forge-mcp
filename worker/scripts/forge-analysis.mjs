@@ -31,7 +31,7 @@ const diagnostics = ts.getPreEmitDiagnostics(program);
 const allFindings = diagnostics.flatMap((diagnostic) => {
   if (!diagnostic.file || diagnostic.start === undefined) return [];
   const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
-  const relative = path.relative(process.cwd(), diagnostic.file.fileName).replaceAll(path.sep, '/');
+  const relative = path.relative(repositoryRoot, diagnostic.file.fileName).replaceAll(path.sep, '/');
   if (!relative || relative.startsWith('../')) return [];
   return [{
     kind: 'diagnostic',

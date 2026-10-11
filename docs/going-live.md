@@ -9,6 +9,13 @@ sources before acting on the stages that depend on them.
 
 ## Where this stands
 
+**11 October 2026 release check:** production remains version 1.1.1. V2 source
+is being consolidated on main; it is not a production deployment. GitHub CI has
+been enabled. Full capture is retained, and deployment is held until its
+private-address DNS, redirect and subresource boundary is proved. The owner
+chose to hold deployment rather than restrict capture. Astra has not approved
+release while that gate remains open.
+
 | | |
 |---|---|
 | Worker deployed at `timcoy.uk/forge` | ✅ |
@@ -36,8 +43,9 @@ ChatGPT-to-GitHub handoff.
 
 They get conflated, and only one of them is done.
 
-1. **GitHub App public** — anyone can install it. **Already true.** Nothing
-   more to do, no review, no listing.
+1. **GitHub App public** — anyone can install it. **Not established for the current registration.** The last recorded
+   provider check found the App private; verify or change visibility before a
+   public launch.
 2. **ChatGPT plugin directory** — a review process with real requirements, and
    the one with a genuine obstacle for Forge. See stage 4.
 3. **GitHub Marketplace listing** — optional, and probably not worth it. See
@@ -78,11 +86,12 @@ processing. The privacy page must remain accurate for that processing boundary.
 
 ### Current V2 provider blockers — 21 September 2026
 
-Public GitHub API evidence for `timc0y/forge-mcp` currently reports workflow
+Public GitHub API evidence for `timc0y/forge-mcp` reported workflow
 `CI` (`.github/workflows/ci.yml`, id `311718244`) as `disabled_manually`, and the
-`forge` branch has no workflow runs/check runs. The V2 workflow definition now
+`forge` branch had no workflow runs/check runs. CI was enabled on 11 October
+2026; a fresh successful run on the final source remains the required proof. The V2 workflow definition now
 runs on exact `forge` heads and no longer ignores documentation-only changes;
-the remaining action is to enable GitHub Actions/CI in repository settings.
+enabling the workflow alone is not execution proof.
 Do not merge V2 until a fresh exact-head run is visible and successful.
 
 Forge V2 also diagnoses inactive workflow states when a revision has no checks;
@@ -96,9 +105,8 @@ approval prompted by that change.
 
 Owner actions, in this order:
 
-1. In GitHub repository Actions settings, enable workflow **CI** (workflow id
-   `311718244`). Do not merge merely because the workflow is enabled; wait for a
-   run on the latest `forge` SHA.
+1. Confirm a successful **CI** run on the final main SHA (workflow id
+   `311718244`). The workflow was enabled on 11 October 2026.
 2. In the Forge MCP GitHub App registration, change visibility from **private**
    to **public**.
 3. Ensure the App requests and the installation approves **Checks: read**,

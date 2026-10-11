@@ -55,6 +55,8 @@ describe('task-shaped context compilation', () => {
     files['src/core.ts'] = 'export function submitInvoiceDelivery(reference: string) {\n  if (!reference) throw new Error("invoice delivery reference required");\n  return reference;\n}\n';
     files['src/api.ts'] = 'import { submitInvoiceDelivery } from "./core";\nexport const post = (id: string) => submitInvoiceDelivery(id);\n';
     files['tests/core.test.ts'] = 'import { submitInvoiceDelivery } from "../src/core";\nit("rejects duplicate invoice delivery", () => expect(() => submitInvoiceDelivery("")).toThrow());\n';
+    files['AGENTS.md'] = 'Preserve existing invoice contracts.\n';
+    files['tests/AGENTS.md'] = 'Invoice delivery tests must cover duplicate references.\n';
     const archive = tar(files);
     // Simulate GitHub's recursive-tree cap: the relevant implementation and test
     // exist in the immutable archive but are absent from the tree response.
@@ -63,7 +65,7 @@ describe('task-shaped context compilation', () => {
       if (path === '/repos/o/r') return { status: 200, json: { default_branch: 'main', private: false }, text: '', headers: new Headers() };
       if (path === '/repos/o/r/commits/main') return { status: 200, json: { sha: SHA }, text: '', headers: new Headers() };
       if (path.startsWith('/repos/o/r/git/trees/')) return { status: 200, json: { truncated: true, tree }, text: '', headers: new Headers() };
-      if (path.startsWith('/repos/o/r/tarball/')) return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([archive]).stream() };
+      if (path.startsWith('/repos/o/r/tarball/')) return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([new Uint8Array(archive)]).stream() };
       const match = /^\/repos\/o\/r\/contents\/(.+)\?ref=/.exec(path);
       if (match) {
         const file = files[decodeURIComponent(match[1]!)];
@@ -94,7 +96,7 @@ describe('task-shaped context compilation', () => {
           else answers[id] = { type: 'choice', choice: 'body', confidence: 0.9, probabilities: { body: 0.9, outline: 0.1 } };
         }
       }
-      return new Response(JSON.stringify({ model: 'jev-1.13.0', answers, usage: { input_tokens: 10, output_tokens: 5 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { state: 'Completed', result: { model: 'jev-1.13.0', answers, usage: { input_tokens: 10, output_tokens: 5 } } } }), { status: 200, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
 
     const snapshot = await Snapshot.open(gh, { owner: 'o', name: 'r' });
@@ -105,12 +107,14 @@ describe('task-shaped context compilation', () => {
     const packet = await compileContext(snapshot, env, 'why can duplicate invoice delivery fail?') as any;
     expect(packet.evidence.some((item: any) => item.selector === 'src/core.ts::symbol:submitInvoiceDelivery')).toBe(true);
     expect(packet.evidence.some((item: any) => item.path === 'tests/core.test.ts')).toBe(true);
+    expect(packet.evidence.some((item: any) => item.path === 'tests/AGENTS.md' && item.mandatory)).toBe(true);
+    expect(packet.evidence.filter((item: any) => item.path === 'AGENTS.md')).toHaveLength(1);
     expect(packet.relationships.some((edge: any) => edge.from === 'tests/core.test.ts' && edge.to === 'src/core.ts')).toBe(true);
     expect(packet.limitations.join(' ')).toContain('GitHub tree coverage is incomplete');
     expect(packet.limitations.join(' ')).toContain('structurally summarized candidates');
   });
 
-  it('promotes a generic dependency through request-local graph relevance despite lexical decoys', async () => {
+  it.each([false, true])('finds a generic graph dependency and reports rejected evidence as insufficient (reject evidence: %s)', async (rejectEvidence) => {
     const files: Record<string, string> = {};
     for (let index = 0; index < 70; index++) {
       files['src/decoy-' + String(index).padStart(2, '0') + '.ts'] = '// invoice reconciliation invoice reconciliation\nexport const value' + index + ' = ' + index + ';\n';
@@ -123,7 +127,7 @@ describe('task-shaped context compilation', () => {
       if (path === '/repos/o/r') return { status: 200, json: { default_branch: 'main', private: false }, text: '', headers: new Headers() };
       if (path === '/repos/o/r/commits/main') return { status: 200, json: { sha: SHA }, text: '', headers: new Headers() };
       if (path.startsWith('/repos/o/r/git/trees/')) return { status: 200, json: { truncated: false, tree }, text: '', headers: new Headers() };
-      if (path.startsWith('/repos/o/r/tarball/')) return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([zipped]).stream() };
+      if (path.startsWith('/repos/o/r/tarball/')) return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([new Uint8Array(zipped)]).stream() };
       const match = /^\/repos\/o\/r\/contents\/(.+)\?ref=/.exec(path);
       if (match) {
         const file = files[decodeURIComponent(match[1]!)];
@@ -147,12 +151,12 @@ describe('task-shaped context compilation', () => {
         answers.target = { type: 'choice', choice: 'none', confidence: 0.9, probabilities: distribution(Object.keys(questions.target.criteria), 'none') };
       } else {
         for (const [id] of Object.entries(questions)) {
-          if (id.startsWith('relevant_')) answers[id] = { type: 'noul', noul: 0.99 };
+          if (id.startsWith('relevant_')) answers[id] = { type: 'noul', noul: rejectEvidence ? 0.01 : 0.99 };
           else if (id.startsWith('counter_')) answers[id] = { type: 'noul', noul: 0.1 };
           else answers[id] = { type: 'choice', choice: 'body', confidence: 0.9, probabilities: { body: 0.9, outline: 0.1 } };
         }
       }
-      return new Response(JSON.stringify({ model: 'jev-1.13.0', answers, usage: { input_tokens: 10, output_tokens: 5 } }), { status: 200 });
+      return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { state: 'Completed', result: { model: 'jev-1.13.0', answers, usage: { input_tokens: 10, output_tokens: 5 } } } }), { status: 200 });
     }) as typeof fetch;
 
     const snapshot = await Snapshot.open(gh, { owner: 'o', name: 'r' });
@@ -160,6 +164,11 @@ describe('task-shaped context compilation', () => {
       TYPESAFE_API_KEY: 'key',
       TYPESAFE_BASE_URL: 'https://api.cloudflare.com/client/v4/accounts/' + 'a'.repeat(32) + '/ai/run'
     } as Env, 'investigate invoice reconciliation') as any;
-    expect(packet.evidence.some((item: any) => item.selector === 'src/helper.ts::symbol:persist')).toBe(true);
+    if (rejectEvidence) {
+      expect(packet.evidence).toEqual([]);
+      expect(packet.status).toBe('insufficient');
+    } else {
+      expect(packet.evidence.some((item: any) => item.selector === 'src/helper.ts::symbol:persist')).toBe(true);
+    }
   });
 });

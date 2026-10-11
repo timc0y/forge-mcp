@@ -5,6 +5,11 @@ For whoever runs the deployment. If you only want to *use* Forge, read
 
 ## What is deployed
 
+Production health reported **1.1.1** on 11 October 2026. The V2 source on main
+is not deployed. Deployment is held until Browser Run’s handling of public
+hostnames that resolve to private addresses is established; full capture remains
+part of the intended release. Local checks do not clear this provider gate.
+
 One Worker, one D1 database and one Durable Object. No R2, containers, queues,
 workflows or cron. Nothing runs between requests, so there is nothing to reap
 and nothing to babysit.
@@ -44,6 +49,36 @@ Secrets, via `wrangler secret put` from `worker/`:
 | `FORGE_SIGNING_KEY` | 32+ random bytes. Signs access and approval tokens, fingerprints rotating refresh-token families, and derives the key encrypting stored GitHub credentials. Rotating it invalidates all of them at once and forces everyone to sign in again |
 | `CLOUDFLARE_API_TOKEN` | Scoped to Browser Rendering only |
 | `TYPESAFE_API_KEY` | Authenticates the configured JEV route; semantic operations refuse when it is absent |
+
+### V2 runtime and client refresh
+
+The Worker build compiles the pinned TypeScript 5.9.3 package in browser mode,
+then aliases only that import to the generated parser. It has no filesystem
+system in the Worker; the analysis CLI still uses the ordinary Node package.
+`wrangler check startup` and a parser-backed local Worker read verify this
+boundary in addition to the Node test suite.
+
+The selected Cloudflare JEV endpoint wraps its model output in a successful
+`Completed` response. Forge validates that envelope and the answers; it accepts
+no alternate route or envelope. A real synthetic request verified this contract
+on 11 October 2026. A live repository context request returned `insufficient`
+when complete mandatory evidence could not fit, so relevance and coverage still
+need held-out evaluation before broad use.
+
+V2 access tokens carry the MCP resource audience, and transport session IDs bind
+to their authenticated owner. Reconnect after release: old access tokens and
+unsigned session IDs are refused; retained refresh credentials can issue new
+resource-bound tokens. Refresh the catalog and start a new conversation.
+
+Results include the same evidence in structured and text content, so clients
+that read only text still receive files, commit receipts and approval links.
+The configured OAuth callbacks now include Cursor’s documented HTTPS agent
+callback. Grok Bot’s remote HTTPS/OAuth support is documented, but a successful
+connection in the app remains unverified.
+
+GitHub atomically checks the proposal head on merge. Forge checks the reviewed
+base just before merging; GitHub provides no atomic base condition. A concurrent
+base push in that interval remains a disclosed limitation.
 
 ### The GitHub App
 

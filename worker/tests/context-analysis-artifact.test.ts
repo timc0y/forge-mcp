@@ -1,4 +1,8 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { configurationHashForSnapshot, matchesWorkflowRunPath, readAnalysisZip } from '../src/analysis-artifact';
 import { Snapshot } from '../src/snapshot';
@@ -83,7 +87,8 @@ describe('analysis artifact ZIP envelope', () => {
   });
   it('rejects content whose CRC no longer matches the directory', () => {
     const bytes = zip('forge-analysis.json', '{"ok":true}');
-    bytes[30 + 'forge-analysis.json'.length] ^= 1;
+    const offset = 30 + 'forge-analysis.json'.length;
+    bytes[offset] = bytes[offset]! ^ 1;
     expect(() => readAnalysisZip(bytes)).toThrow(/checksum/);
   });
 
@@ -108,4 +113,19 @@ describe('analysis artifact ZIP envelope', () => {
     }
     expect(await configurationHashForSnapshot(snapshot, ['nested/b.txt', 'a.txt'])).toBe(expected.digest('hex'));
   });
+});
+
+
+it('publishes TypeScript diagnostic paths relative to the repository root', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'forge-analysis-'));
+  try {
+    mkdirSync(path.join(root, '.github'));
+    mkdirSync(path.join(root, 'worker/src'), { recursive: true });
+    writeFileSync(path.join(root, '.github/forge-analysis.json'), JSON.stringify({ configurationPaths: ['worker/tsconfig.json'], workflowPath: '.github/workflows/forge-analysis.yml' }));
+    writeFileSync(path.join(root, 'worker/tsconfig.json'), JSON.stringify({ compilerOptions: { noEmit: true, noLib: true }, include: ['src/**/*.ts'] }));
+    writeFileSync(path.join(root, 'worker/src/example.ts'), 'const value: number = "wrong";');
+    execFileSync(process.execPath, [path.resolve('scripts/forge-analysis.mjs'), 'analysis.json'], { cwd: path.join(root, 'worker'), env: { ...process.env, FORGE_ANALYSIS_SOURCE_SHA: 'a'.repeat(40), FORGE_ANALYSIS_RUN_ID: '1', FORGE_ANALYSIS_RUN_ATTEMPT: '1', FORGE_ANALYSIS_WORKFLOW_PATH: '.github/workflows/forge-analysis.yml' } });
+    const artifact = JSON.parse(readFileSync(path.join(root, 'worker/analysis.json'), 'utf8'));
+    expect(artifact.findings).toContainEqual(expect.objectContaining({ location: { path: 'worker/src/example.ts', line: 1 } }));
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

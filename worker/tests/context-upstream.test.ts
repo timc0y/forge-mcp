@@ -40,20 +40,21 @@ function archive(files: Record<string, string>): Uint8Array {
   return gzipSync(bytes);
 }
 
-function privateGitHub(options: { truncated?: boolean; additionalManifests?: number; lock?: string } = {}) {
+function privateGitHub(options: { truncated?: boolean; additionalManifests?: number; lock?: string; source?: string; additionalDependency?: boolean } = {}) {
   const files: Record<string, string> = {
     'package.json': JSON.stringify({ devDependencies: { typescript: '^5.9.0' } }),
     'pnpm-lock.yaml': options.lock ?? "lockfileVersion: '9.0'\nimporters:\n  .:\n    devDependencies:\n      typescript:\n        specifier: ^5.9.0\n        version: 5.9.3\n",
-    'src/index.ts': "import ts from 'typescript';\nexport const version = ts.version;\n"
+    'src/index.ts': options.source ?? "import ts from 'typescript';\nexport const version = ts.version;\n"
   };
   for (let index = 0; index < (options.additionalManifests ?? 0); index++) files[`packages/p${index}/package.json`] = JSON.stringify({ name: `p${index}` });
+  if (options.additionalDependency) files['packages/app/package.json'] = JSON.stringify({ dependencies: { typescript: '^5.9.0' } });
   const zipped = archive(files);
   const tree = Object.entries(files).map(([path, content]) => ({ path, type: 'blob', size: encoder.encode(content).length }));
   const request: GitHubRequest = async (path) => {
     if (path === '/repos/private/app') return { status: 200, json: { default_branch: 'main', private: true }, text: '', headers: new Headers() };
     if (path === '/repos/private/app/commits/main') return { status: 200, json: { sha: PRIVATE_SHA }, text: '', headers: new Headers() };
     if (path.startsWith('/repos/private/app/git/trees/')) return { status: 200, json: { truncated: options.truncated ?? false, tree }, text: '', headers: new Headers() };
-    if (path.startsWith('/repos/private/app/tarball/')) return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([zipped]).stream() };
+    if (path.startsWith('/repos/private/app/tarball/')) return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([new Uint8Array(zipped)]).stream() };
     const match = /^\/repos\/private\/app\/contents\/(.+)\?ref=/.exec(path);
     if (match) {
       const value = files[decodeURIComponent(match[1]!)];
@@ -64,7 +65,7 @@ function privateGitHub(options: { truncated?: boolean; additionalManifests?: num
   return request;
 }
 
-function publicGitHub(tagExists: boolean) {
+function publicGitHub(tagExists: boolean, truncated = false) {
   const calls: string[] = [];
   const request: GitHubRequest = async (path) => {
     calls.push(path);
@@ -74,7 +75,7 @@ function publicGitHub(tagExists: boolean) {
     if (path === '/repos/microsoft/TypeScript') return { status: 200, json: { default_branch: 'main', private: false }, text: '', headers: new Headers() };
     if (path === '/repos/microsoft/TypeScript/commits/refs%2Ftags%2Fv5.9.3') return { status: 200, json: { sha: PUBLIC_SHA }, text: '', headers: new Headers() };
     if (path === `/repos/microsoft/TypeScript/git/trees/${PUBLIC_SHA}?recursive=1` || path === `/repos/microsoft/TypeScript/git/trees/${PUBLIC_SHA}`) {
-      return { status: 200, json: { truncated: false, tree: [{ path: 'README.md', type: 'blob', size: 10 }, { path: 'package.json', type: 'blob', size: 10 }] }, text: '', headers: new Headers() };
+      return { status: 200, json: { truncated, tree: [{ path: 'README.md', type: 'blob', size: 10 }, { path: 'package.json', type: 'blob', size: 10 }] }, text: '', headers: new Headers() };
     }
     return { status: 404, json: null, text: '', headers: new Headers() };
   };
@@ -82,6 +83,34 @@ function publicGitHub(tagExists: boolean) {
 }
 
 describe('version-pinned public upstream evidence', () => {
+  it.each([
+    ["import ts from 'typescript';\nfunction broken( {", 'parser diagnostics'],
+    ["import ts from 'typescript';\n//" + 'x'.repeat(256 * 1024), 'byte limit']
+  ])('reports omitted code-use source as bounded evidence', async (source, reason) => {
+    const snapshot = await Snapshot.open(privateGitHub({ source }), { owner: 'private', name: 'app' });
+    const result = await upstreamEvidence(snapshot, publicGitHub(true).request, 'typescript') as any;
+    expect(result.coverage).toBe('bounded');
+    expect(result.uses).toEqual([]);
+    expect(result.limits.join(' ')).toContain('src/index.ts');
+    expect(result.limits.join(' ')).toContain(reason);
+  });
+
+  it('marks truncated upstream reference discovery as bounded', async () => {
+    const snapshot = await Snapshot.open(privateGitHub(), { owner: 'private', name: 'app' });
+    const result = await upstreamEvidence(snapshot, publicGitHub(true, true).request, 'typescript') as any;
+    expect(result.coverage).toBe('bounded');
+    expect(result.limits.join(' ')).toContain('upstream GitHub tree is incomplete');
+  });
+
+  it('reports the location cap without implying complete code-use coverage', async () => {
+    const source = Array.from({ length: 41 }, (_value, index) => `import p${index} from 'typescript';`).join('\n');
+    const snapshot = await Snapshot.open(privateGitHub({ source }), { owner: 'private', name: 'app' });
+    const result = await upstreamEvidence(snapshot, publicGitHub(true).request, 'typescript') as any;
+    expect(result.uses).toHaveLength(40);
+    expect(result.coverage).toBe('bounded');
+    expect(result.limits.join(' ')).toContain('first 40 of 41');
+  });
+
   it('joins a private declared range to the exact installed lock version and reviewed tag', async () => {
     const snapshot = await Snapshot.open(privateGitHub(), { owner: 'private', name: 'app' });
     const publicGh = publicGitHub(true);
@@ -112,6 +141,13 @@ describe('version-pinned public upstream evidence', () => {
     const snapshot = await Snapshot.open(privateGitHub({ additionalManifests: 12 }), { owner: 'private', name: 'app' });
     const publicGh = publicGitHub(true);
     await expect(upstreamEvidence(snapshot, publicGh.request, 'typescript')).rejects.toThrow(/bounded to 12 package manifests/);
+    expect(publicGh.calls).toEqual([]);
+  });
+
+  it('does not infer one repository-wide version from a partially resolved set of declaring manifests', async () => {
+    const snapshot = await Snapshot.open(privateGitHub({ additionalDependency: true }), { owner: 'private', name: 'app' });
+    const publicGh = publicGitHub(true);
+    await expect(upstreamEvidence(snapshot, publicGh.request, 'typescript')).rejects.toThrow(/packages\/app\/package.json/);
     expect(publicGh.calls).toEqual([]);
   });
 

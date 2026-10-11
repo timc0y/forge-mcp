@@ -34,11 +34,12 @@ export async function prepareApproval(ctx: ToolContext, act: 'merge' | 'discard'
   const prepared = await requestApproval(ctx.env, ctx.identity, { act, repo, change, comparison, headSha: snapshot.identity.sha, baseBranch: snapshot.branch, baseSha, ...(verificationSummary ? { impactSummary: verificationSummary } : {}) });
   ctx.track('approval_requested', { act, files: comparison.files.length, commits: comparison.aheadBy, truncated: comparison.truncated });
   const limits = [...(report?.limitations ?? []), ...(comparison.truncated ? ['Comparison coverage is incomplete.'] : [])];
+  if (act === 'merge') limits.push('GitHub atomically checks the proposal head. Forge checks the reviewed base immediately before merging, but GitHub offers no atomic base check; a concurrent base push can still change the merge destination.');
   let names: string[] | undefined;
   try { names = (await openChanges(ctx.gh, repo)).map((entry) => entry.name); }
   catch { limits.push('The latest open-change list could not be read. Approval creation is still durable.'); }
   return {
     summary: `${evidence} Nothing has been ${act === 'merge' ? 'merged' : 'discarded'}.`,
-    structured: { approval: { url: prepared.url, expires: prepared.expiresAt }, evidence, ...(verificationSummary ? { verification: verificationSummary } : {}), ...(names ? { changes: names } : {}), limits, next: 'Open the approval link to review and decide. A changed head or reviewed base invalidates this approval.' }
+    structured: { approval: { url: prepared.url, expires: prepared.expiresAt }, evidence, ...(verificationSummary ? { verification: verificationSummary } : {}), ...(names ? { changes: names } : {}), limits, next: 'Open the approval link to review and decide. Forge refuses observed changes to the proposal head or reviewed base.' }
   };
 }

@@ -101,7 +101,7 @@ function github(files: Record<string, string>): GitHubRequest {
       return { status: 200, json: { truncated: false, tree }, text: '', headers: new Headers() };
     }
     if (path.startsWith('/repos/eval/repo/tarball/')) {
-      return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([zipped]).stream() };
+      return { status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([new Uint8Array(zipped)]).stream() };
     }
     const match = /^\/repos\/eval\/repo\/contents\/(.+)\?ref=/.exec(path);
     if (match) {
@@ -176,11 +176,11 @@ describe('30-case deterministic context plumbing evaluation', () => {
             }
           }
         }
-        return new Response(JSON.stringify({
+        return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { state: 'Completed', result: {
           model: 'jev-1.13.0',
           answers,
           usage: { input_tokens: 20, output_tokens: 5 }
-        }), { status: 200 });
+        } } }), { status: 200 });
       }) as typeof fetch;
 
       const snapshot = await Snapshot.open(github(files), { owner: 'eval', name: 'repo' });

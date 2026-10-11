@@ -87,6 +87,17 @@ a custom app with that URL.
 claude mcp add --transport http --scope user forge https://timcoy.uk/forge/mcp
 ```
 
+**Cursor agents** — add that URL as a remote HTTP MCP server. Its documented
+HTTPS callback is admitted. See [Cursor’s MCP guide](https://cursor.com/docs/mcp).
+
+**Grok Bot** — use a remote HTTPS MCP connector with per-person OAuth, as
+[documented by xAI](https://docs.x.ai/grok-bot/team-bots). Protocol compatibility
+is tested locally; successful authorization in Grok Bot still needs a real-client
+check. Adding a callback host alone does not prove the connection.
+
+After V2 is released, reconnect, re-scan the tools and start a new conversation.
+Old access tokens and session IDs are refused; refresh credentials are retained.
+
 ### 2. Authorize
 
 Your client opens a Forge page telling you what it is about to be allowed to do.

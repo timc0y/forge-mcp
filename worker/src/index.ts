@@ -1,5 +1,5 @@
 import { ForgeMcpSession, SERVER_VERSION } from './mcp';
-import { authenticate } from './identity';
+import { authenticate, bindSessionId, sessionIdFor } from './identity';
 import {
   authorizationServerMetadata,
   authorize,
@@ -118,6 +118,19 @@ export default {
         ? url.pathname.slice(mount.length) || '/'
         : url.pathname;
 
+    // Browser preflights carry no bearer credential. Answer before authentication;
+    // these endpoints use explicit tokens/PKCE, never ambient browser cookies.
+    const corsRoute = path === '/mcp' || path === '/oauth/register' || path === '/oauth/token' ||
+      path.startsWith('/.well-known/oauth-') || url.pathname.startsWith('/.well-known/oauth-');
+    const corsHeaders = {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
+      'access-control-allow-headers': 'Content-Type, Accept, Authorization, MCP-Session-Id, MCP-Protocol-Version, MCP-Method',
+      'access-control-expose-headers': 'WWW-Authenticate, MCP-Session-Id',
+      'access-control-max-age': '86400'
+    };
+    if (corsRoute && request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
+
     try {
       // The mount point. Not a dashboard and not a console — the one page that
       // answers what this is and how to connect it, because otherwise the URL a
@@ -190,7 +203,7 @@ export default {
               id: message?.id ?? null,
               error: { code: -32601, message: 'Method not found' }
             },
-            { status: 404 }
+            { status: 404, headers: corsHeaders }
           );
         }
         // The public Worker is mounted at /forge, but the Agents router is
@@ -199,10 +212,21 @@ export default {
         const sessionUrl = new URL(request.url);
         sessionUrl.pathname = path;
         const sessionRequest = new Request(sessionUrl, request);
-        return ForgeMcpSession.serve('/mcp', { binding: 'MCP_SESSIONS' }).fetch(sessionRequest, env, {
+        const publicSessionId = request.headers.get('mcp-session-id');
+        if (publicSessionId) {
+          const internalSessionId = await sessionIdFor(env, identity.userId, publicSessionId);
+          if (!internalSessionId) return Response.json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Session not found' } }, { status: 404, headers: corsHeaders });
+          sessionRequest.headers.set('mcp-session-id', internalSessionId);
+        }
+        const response = await ForgeMcpSession.serve('/mcp', { binding: 'MCP_SESSIONS' }).fetch(sessionRequest, env, {
           ...ctx,
           props: { identity }
         } as ExecutionContext & { props: { identity: typeof identity } });
+        const headers = new Headers(response.headers);
+        for (const [name, value] of Object.entries(corsHeaders)) headers.set(name, value);
+        const internalSessionId = response.headers.get('mcp-session-id');
+        if (internalSessionId) headers.set('mcp-session-id', await bindSessionId(env, identity.userId, internalSessionId));
+        return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
       }
 
       return new Response('Not found', { status: 404 });
@@ -217,6 +241,7 @@ export default {
           {
             status: 401,
             headers: {
+              ...(corsRoute ? corsHeaders : {}),
               'www-authenticate': `Bearer resource_metadata="${env.FORGE_PUBLIC_ORIGIN}/.well-known/oauth-protected-resource/mcp"`
             }
           }

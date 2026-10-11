@@ -313,7 +313,7 @@ async function performMerge(
     return { decision: 'approve', ok: false, detail: 'This change no longer has a pull request to merge.' };
   }
   if (!evidence.baseBranch || !evidence.baseSha) {
-    return { decision: 'approve', ok: false, detail: 'This merge approval predates Forge’s two-sided revision fence. Nothing was merged or changed. Ask for a fresh approval so both the proposal head and reviewed base commit are frozen.' };
+    return { decision: 'approve', ok: false, detail: 'This merge approval has no reviewed base commit. Nothing was merged or changed. Ask for a fresh approval so Forge can check both the proposal head and reviewed base before merging.' };
   }
   if (evidence.baseBranch) {
     const pull = await request(`/repos/${row.repo_owner}/${row.repo_name}/pulls/${number}`);

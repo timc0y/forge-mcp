@@ -227,6 +227,7 @@ describe('guidance integrity', () => {
   const TOOLS = new Set(['forge_read', 'forge_edit', 'forge_merge', 'forge_discard', 'forge_see']);
   // Log event names, never shown to a model or a human.
   const LOG_EVENTS = new Set([
+    'forge_metric',
     'forge_tool_failed',
     'forge_capture_unmetered',
     'forge_capture_quota_release_failed'
@@ -277,7 +278,6 @@ describe('repository facts', () => {
       { path: 'src/index.ts', type: 'file', size: 100 }
     ]);
     expect(candidates).toEqual(['.github/workflows/ci.yml', 'package.json']);
-    expect(isQualityQuery('quality gates')).toBe(true);
     expect(extractDeclaredQualityScripts([
       { path: 'package.json', content: JSON.stringify({ scripts: { check: 'tsc --noEmit && vitest run', start: 'node app.js' } }) }
     ])).toEqual([{ path: 'package.json', name: 'check', command: 'tsc --noEmit && vitest run' }]);

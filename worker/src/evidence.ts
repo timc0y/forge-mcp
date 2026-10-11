@@ -113,7 +113,7 @@ export class RequestBudget {
     throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: `Context request stopped at its ${stage} limit. Narrow the requested scope; no substitute result was used.` });
   }
 }
-export async function mapBounded<T, R>(items: readonly T[], run: (item: T, index: number) => Promise<R>, concurrency = CONTEXT_LIMITS.concurrency): Promise<R[]> {
+export async function mapBounded<T, R>(items: readonly T[], run: (item: T, index: number) => Promise<R>, concurrency: number = CONTEXT_LIMITS.concurrency): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
   let failure: unknown;

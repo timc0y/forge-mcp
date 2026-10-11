@@ -40,7 +40,7 @@ function archive(entries: Array<[string, string]>): Uint8Array {
   return gzipSync(tar);
 }
 function request(bytes: Uint8Array): GitHubRequest {
-  return async () => ({ status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([bytes]).stream() });
+  return async () => ({ status: 200, json: null, text: '', headers: new Headers(), stream: new Blob([new Uint8Array(bytes)]).stream() });
 }
 
 describe('streaming committed archive', () => {
@@ -61,8 +61,8 @@ describe('streaming committed archive', () => {
 
   it('rejects a corrupted TAR checksum', async () => {
     const bytes = archive([['root/a.ts', 'hello']]);
-    const inflated = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
-    inflated[0] ^= 1;
+    const inflated = new Uint8Array(await new Response(new Blob([new Uint8Array(bytes)]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+    inflated[0] = inflated[0]! ^ 1;
     const corrupt = gzipSync(inflated);
     await expect(scanArchive(request(corrupt), repo, SHA, new RequestBudget(), () => true, () => {})).rejects.toThrow(/checksum/);
   });

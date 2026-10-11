@@ -38,7 +38,7 @@ describe('compact structural representations', () => {
     const code = 'function f() {}\nfunction f() {}\n';
     expect(inspectStructure('a.ts', code).blocks.map((block) => block.name)).toEqual(['f[0]', 'f[1]']);
     expect(selectSymbol('a.ts', code, 'f[1]').text).toBe('function f() {}');
-    const markdown = '# Root\n## Same\none\n## Same\ntwo\nSetext\n------\n';
+    const markdown = '# Root\n## Same\none\n## Same\ntwo\n\nSetext\n------\n';
     expect(inspectStructure('a.md', markdown).blocks.map((block) => block.name)).toEqual(['Root', 'Root/Same', 'Root/Same[2]', 'Root/Setext']);
     expect(selectSymbol('a.md', markdown, 'Root/Same[2]').text).toContain('two');
   });

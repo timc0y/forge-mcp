@@ -149,7 +149,11 @@ export async function upstreamEvidence(snapshot: SnapshotType, publicGh: GitHubR
   }
   if (!declarations.length) throw new ForgeError({ code: 'FORGE_NOT_FOUND', message: 'This reviewed public dependency was not found in the inspected package manifests. No upstream request was made.' });
 
-  const installed = await installedPnpmVersions(snapshot, [...new Set(declarations.map((entry) => entry.path))], publicPackage);
+  const declaringManifests = [...new Set(declarations.map((entry) => entry.path))];
+  const installed = await installedPnpmVersions(snapshot, declaringManifests, publicPackage);
+  const resolvedManifests = new Set(installed.map((entry) => entry.manifest));
+  const unresolvedManifests = declaringManifests.filter((path) => !resolvedManifests.has(path));
+  if (unresolvedManifests.length) throw new ForgeError({ code: 'FORGE_NOT_FOUND', message: `No exact installed pnpm version was established for ${publicPackage} in ${unresolvedManifests.join(', ')}. Partial installed-version evidence was not treated as repository-wide version identity; no upstream request was made.` });
   const versions = [...new Set(installed.map((entry) => entry.version))];
   if (versions.length !== 1) {
     throw new ForgeError({
@@ -162,11 +166,15 @@ export async function upstreamEvidence(snapshot: SnapshotType, publicGh: GitHubR
   const version = versions[0]!;
 
   const uses: Array<{ path: string; line: number; specifier: string }> = [];
+  const useLimits: string[] = [];
+  let skippedUses = 0;
+  let totalUses = 0;
   const coverage = await scanArchive(snapshot.gh, snapshot.repo, snapshot.identity.sha, snapshot.budget, (path) => /\.[cm]?[jt]sx?$/.test(path) && !/(?:^|\/)(?:node_modules|vendor|dist)\//.test(path), (path, text) => {
-    if (new TextEncoder().encode(text).length > 256 * 1024) return;
+    if (new TextEncoder().encode(text).length > 256 * 1024) { skippedUses++; if (useLimits.length < 12) useLimits.push(`${path}: source exceeds the syntax-analysis byte limit.`); return; }
     const parsed = inspectStructure(path, text);
-    if (parsed.diagnostics.length) return;
+    if (parsed.diagnostics.length) { skippedUses++; if (useLimits.length < 12) useLimits.push(`${path}: parser diagnostics prevent code-use analysis.`); return; }
     for (const imported of parsed.imports) if (imported.specifier === publicPackage || imported.specifier.startsWith(`${publicPackage}/`)) {
+      totalUses++;
       if (uses.length < 40) uses.push({ path, line: imported.range.startLine, specifier: imported.specifier });
     }
   });
@@ -174,10 +182,10 @@ export async function upstreamEvidence(snapshot: SnapshotType, publicGh: GitHubR
   // Only a reviewed public repository identity and exact public version cross this join.
   const pinned = await pinnedUpstream(publicGh, mapping, version, snapshot.budget);
   const upstreamTree = await pinned.snapshot.tree();
-  const references = upstreamTree.entries
+  const referencePaths = upstreamTree.entries
     .filter((entry) => entry.type === 'file' && /(?:^|\/)(?:README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt)?|package\.json)$/.test(entry.path))
-    .map((entry) => entry.path)
-    .slice(0, 12);
+    .map((entry) => entry.path);
+  const references = referencePaths.slice(0, 12);
   return {
     source: snapshot.identity,
     publicPackage,
@@ -186,11 +194,15 @@ export async function upstreamEvidence(snapshot: SnapshotType, publicGh: GitHubR
     version,
     uses,
     upstream: { source: pinned.snapshot.identity, tag: pinned.tag, references },
-    coverage: coverage.coverage,
+    coverage: coverage.coverage === 'bounded' || skippedUses > 0 || totalUses > uses.length || upstreamTree.truncated || referencePaths.length > references.length ? 'bounded' : 'complete',
     limits: [
       ...coverage.omissions,
+      ...useLimits,
+      ...(skippedUses > useLimits.length ? [`${skippedUses} code-use source files were skipped; only the first ${useLimits.length} omissions are named.`] : []),
       `Inspected all ${manifests.length} package manifests; installed-version resolution is pnpm-lock only; code-use coverage is JS/TS syntax only.`,
-      ...(uses.length >= 40 ? ['Private use locations are bounded to the first 40 syntax imports.'] : []),
+      ...(totalUses > uses.length ? [`Private use locations are bounded to the first ${uses.length} of ${totalUses} syntax imports.`] : []),
+      ...(upstreamTree.truncated ? ['The upstream GitHub tree is incomplete; reference discovery is bounded.'] : []),
+      ...(referencePaths.length > references.length ? [`Upstream reference paths are bounded to the first ${references.length} of ${referencePaths.length} visible candidates.`] : []),
       'Private source locations were joined inside Forge and were not sent to public search or inference.',
       'The upstream source is pinned to the exact commit resolved from a reviewed tag convention; published package bytes are still a separate artifact.'
     ]

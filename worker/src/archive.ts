@@ -10,7 +10,7 @@ function archiveError(message: string): never {
 /** Retains at most one upstream chunk plus the explicitly requested bounded record. */
 class StreamReader {
   private reader: ReadableStreamDefaultReader<Uint8Array>;
-  private chunk = new Uint8Array(0);
+  private chunk: Uint8Array = new Uint8Array(0);
   private offset = 0;
   private total = 0;
   constructor(stream: ReadableStream<Uint8Array>, private readonly budget: RequestBudget) { this.reader = stream.getReader(); }
@@ -98,11 +98,11 @@ export async function scanArchive(
   const response = await gh(`/repos/${formatRepo(repo)}/tarball/${sha}`, { stream: true, maxBytes: CONTEXT_LIMITS.compressedBytes, signal: AbortSignal.timeout(budget.remaining()) });
   if (response.status !== 200 || !response.stream) githubFailure(response.status, 'a streaming committed archive');
   let compressed = 0;
-  const guarded = response.stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+  const guarded = response.stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array<ArrayBuffer>>({
     transform(chunk, controller) {
       compressed += chunk.byteLength;
       if (compressed > CONTEXT_LIMITS.compressedBytes) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: 'Compressed archive exceeds its byte ceiling.' });
-      controller.enqueue(chunk);
+      controller.enqueue(new Uint8Array(chunk));
     }
   })).pipeThrough(new DecompressionStream('gzip'));
   const reader = new StreamReader(guarded, budget);

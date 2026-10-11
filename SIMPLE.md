@@ -130,7 +130,8 @@ post-deploy smoke must be proven before describing V2 as deployed.
   Repository hygiene labels remain investigation prompts rather than claims that
   code is unreachable, broken, or safe to delete; compiler/static-analysis/CI
   evidence remains stronger. Remote GitHub stays the sole source of truth, and
-  unavailable Jev degrades to deterministic discovery and honest receipts.
+  V1 once degraded unavailable Jev to deterministic discovery. V2 reports a
+  failed semantic stage explicitly; exact-source reads remain a separate operation.
 
 ## Proof
 

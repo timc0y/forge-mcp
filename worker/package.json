@@ -15,14 +15,28 @@
     "jose": "6.2.9",
     "@shopify/liquid-html-parser": "2.10.0",
     "@lezer/markdown": "1.6.3",
-    "typescript": "7.0.2",
+    "typescript": "5.9.3",
     "yaml": "2.9.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260712.1",
+    "@cloudflare/workers-types": "5.20260925.1",
     "vitest": "5.0.1",
-    "wrangler": "4.111.0",
-    "@types/node": "24.10.1"
+    "wrangler": "4.141.0",
+    "@types/node": "24.10.1",
+    "esbuild": "0.28.1"
+  },
+  "packageManager": "pnpm@10.13.1",
+  "pnpm": {
+    "overrides": {
+      "@modelcontextprotocol/sdk": "1.30.0"
+    },
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "workerd"
+    ],
+    "ignoredBuiltDependencies": [
+      "core-js-pure"
+    ]
   }
 }

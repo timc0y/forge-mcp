@@ -121,7 +121,8 @@ Admitted V2 implementations:
 | `yaml@2.9.0` | YAML syntax/data validation | Valid/invalid document regressions; no runtime schema inference |
 | Astro compiler | **Not admitted yet** | Must prove official Wasm/runtime initialization and exact span round trips in the Worker before structural Astro selectors are exposed |
 
-Versions are pinned and Worker CI now performs a frozen install, typecheck/tests, a real Wrangler dry-run bundle, a 48 MiB internal bundle budget and startup profiling. Do not add Babel, Oxc, SWC, Tree-sitter, mdast or another JSON parser as alternative implementations for formats already owned above. No general LSP server runs inside Forge.
+The pinned TypeScript package is compiled in browser mode for the Worker only;
+Node CLI analysis retains its filesystem system. Versions are pinned and Worker CI performs a frozen install, typecheck/tests, a real Wrangler dry-run bundle, a 48 MiB internal bundle budget and startup profiling. Do not add Babel, Oxc, SWC, Tree-sitter, mdast or another JSON parser as alternative implementations for formats already owned above. No general LSP server runs inside Forge.
 
 ### Useful first-class selections
 
@@ -332,7 +333,7 @@ Measure total JEV input/output usage and request cost, GitHub calls, bytes downl
 - [x] MCP version, schema, annotations, examples and connection-refresh instructions agree in source; old incompatible inputs fail explicitly rather than silently taking another path.
 - [ ] Authorized deployment smoke and a fresh phone/ChatGPT conversation prove read, context, edit, review and human approval. Documentation alone is not release evidence.
 
-The V2 source implementation lives on Forge PR #83. Source completion is not release proof: GitHub must still execute the final typecheck/tests/bundle/startup gates, the GitHub App installation must approve the required read permissions, the context evaluation targets must be measured rather than assumed, and an authorized deployment/fresh-client smoke must pass before V2 is described as deployed.
+The V2 source implementation from Forge PR #83 is consolidated on main. Source completion is not release proof: GitHub must still execute the final typecheck/tests/bundle/startup gates, the GitHub App installation must approve the required read permissions, the context evaluation targets must be measured rather than assumed, and an authorized deployment/fresh-client smoke must pass before V2 is described as deployed.
 
 ## 15. Research basis
 

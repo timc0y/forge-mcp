@@ -64,6 +64,6 @@ export async function discoverPublic(ctx: ToolContext, query: string): Promise<T
   if (kind === 'repositories') matches.sort((a, b) => Number(b.repo.toLowerCase() === terms.toLowerCase() || b.repo.split('/')[1]?.toLowerCase() === terms.toLowerCase()) - Number(a.repo.toLowerCase() === terms.toLowerCase() || a.repo.split('/')[1]?.toLowerCase() === terms.toLowerCase()));
   return {
     summary: `${matches.length} public ${kind} matches returned by GitHub.`,
-    structured: { kind, matches, coverage: body.incomplete_results || body.total_count > matches.length ? 'bounded' : 'complete', limits: ['This is discovery from GitHub’s index. An empty result is not proof that source does not exist. No private repository context was attached.'], next: 'Pass a returned GitHub URL directly to forge_read for immutable source evidence.' }
+    structured: { kind, matches, coverage: body.incomplete_results || typeof body.total_count !== 'number' || body.total_count > matches.length ? 'bounded' : 'complete', limits: ['This is discovery from GitHub’s index. An empty result is not proof that source does not exist. No private repository context was attached.'], next: 'Pass a returned GitHub URL directly to forge_read for immutable source evidence.' }
   };
 }
