@@ -8,7 +8,8 @@ For whoever runs the deployment. If you only want to *use* Forge, read
 Production health reported **1.1.1** on 11 October 2026. The V2 source on main
 is not deployed. Deployment is held until Browser Run’s handling of public
 hostnames that resolve to private addresses is established; full capture remains
-part of the intended release. Local checks do not clear this provider gate.
+part of the intended release. Astra approved source `88d72b1` for main; its CI and Forge analysis runs passed.
+Local or GitHub checks do not clear this provider gate.
 
 One Worker, one D1 database and one Durable Object. No R2, containers, queues,
 workflows or cron. Nothing runs between requests, so there is nothing to reap

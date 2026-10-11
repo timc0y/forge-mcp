@@ -10,8 +10,10 @@ sources before acting on the stages that depend on them.
 ## Where this stands
 
 **11 October 2026 release check:** production remains version 1.1.1. V2 source
-is being consolidated on main; it is not a production deployment. GitHub CI has
-been enabled. Full capture is retained, and deployment is held until its
+is consolidated on main; it is not a production deployment. GitHub Actions and
+both workflows are enabled. [CI](https://github.com/timc0y/forge-mcp/actions/runs/38174725842)
+and [Forge analysis](https://github.com/timc0y/forge-mcp/actions/runs/38174725843)
+passed on source commit `88d72b1`. Astra approved that source for main. Full capture is retained, and deployment is held until its
 private-address DNS, redirect and subresource boundary is proved. The owner
 chose to hold deployment rather than restrict capture. Astra has not approved
 release while that gate remains open.
@@ -88,8 +90,8 @@ processing. The privacy page must remain accurate for that processing boundary.
 
 Public GitHub API evidence for `timc0y/forge-mcp` reported workflow
 `CI` (`.github/workflows/ci.yml`, id `311718244`) as `disabled_manually`, and the
-`forge` branch had no workflow runs/check runs. CI was enabled on 11 October
-2026; a fresh successful run on the final source remains the required proof. The V2 workflow definition now
+`forge` branch had no workflow runs/check runs. Repository Actions and CI were enabled on 11 October
+2026; CI and Forge analysis then passed on `88d72b1`. The V2 workflow definition now
 runs on exact `forge` heads and no longer ignores documentation-only changes;
 enabling the workflow alone is not execution proof.
 Do not merge V2 until a fresh exact-head run is visible and successful.
@@ -103,25 +105,21 @@ installed on its owning account. Before presenting Forge as open to other GitHub
 users, change the App registration to public and complete any permission
 approval prompted by that change.
 
-Owner actions, in this order:
+Remaining provider actions for public launch and release:
 
-1. Confirm a successful **CI** run on the final main SHA (workflow id
-   `311718244`). The workflow was enabled on 11 October 2026.
-2. In the Forge MCP GitHub App registration, change visibility from **private**
+1. In the Forge MCP GitHub App registration, change visibility from **private**
    to **public**.
-3. Ensure the App requests and the installation approves **Checks: read**,
+2. Ensure the App requests and the installation approves **Checks: read**,
    **Commit statuses: read** and **Actions: read**, in addition to the already
    proven repository permissions.
-4. Push or make one harmless commit on `forge` if enabling CI does not replay the
-   previous push. Confirm exact-head CI and `Forge analysis` both run.
-5. Verify Cloudflare Browser Rendering's current production security boundary
+3. Verify Cloudflare Browser Rendering's current production security boundary
    refuses private-address DNS resolutions for public hostnames, or narrow
    `forge_see` before release. Forge itself blocks IP literals, localhost/local
    names and literal private-address redirects, but `rejectRequestPattern` is a
    URL-pattern control and does not by itself prove DNS-to-private isolation.
-6. Only after those exact-head runs succeed and the Browser Rendering boundary
-   is established should `forge_merge` be asked to prepare the human merge
-   approval.
+4. Only deploy after the Browser Rendering boundary is established and Astra
+   signs off on release. Current source checks and main approval do not clear
+   that gate.
 
 ### Forge V2 catalog release
 
