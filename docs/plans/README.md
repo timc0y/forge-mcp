@@ -1,5 +1,7 @@
 # Forge Plans
 
+- [Named development APIs](./authenticated-apis.md) — proposed Forge dashboard
+  for named keys and OpenAPI URLs, called through one agent tool. Not implemented.
 - [Context engine](./context-engine.md) — selected next engineering plan: one
   GitHub/JEV evidence pipeline, no fallback chains or additional hosted context
   services. Not implemented; this is the owner for the next intelligence work.
