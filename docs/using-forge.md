@@ -191,8 +191,8 @@ else.
 
 ### forge_see
 
-The URL must already be publicly reachable. Private addresses, local addresses
-and IP literals are refused, and Browser Rendering is told to reject redirects
+The URL must already be publicly reachable. Initial URL checks reject local
+hostnames and IP literals, and Browser Rendering is told to reject redirects
 to literal local/private destinations. Arbitrary-host capture still relies on
 the rendering platform's network boundary for hostname-to-private-IP resolution;
 it is not equivalent to a fixed hostname allowlist. Images come back inline with
@@ -200,6 +200,9 @@ the same tool call; Forge does not retain a screenshot gallery.
 
 Each image is the top of the page at that viewport, not the full scrollable
 page. Default viewports are phone and desktop.
+
+A screenshot can show a server's denial or error page. Forge discloses the
+target HTTP error in the receipt even when the snapshot API itself succeeded.
 
 ---
 

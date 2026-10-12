@@ -13,6 +13,22 @@ and push after source review. TypeScript, 181 tests, the deployment dry run and
 local startup check passed. Astra withheld release approval: local or GitHub
 checks do not clear the provider gate.
 
+Further proof on 12 October executed the production refresh-family and quota
+functions against actual SQLite with repository migrations. Both revocation
+orderings passed; 64 concurrent quota requests admitted exactly one. Production
+has all required secret names and no pending D1 migrations.
+
+A live Browser Rendering trial against a public hostname resolving to loopback
+returned a target HTTP 403 denial page inside an API success response. Forge now
+discloses that target error; TypeScript and 185 tests pass. This observation proves
+that particular denial, not the provider's enforcement across all private DNS,
+redirect and subrequest paths. Astra retains the release hold. The required next
+evidence is Cloudflare confirmation identifying its enforcement at connection
+time and its coverage of those paths. Hostname controls alone do not supply that
+proof: [guardrails](https://developers.cloudflare.com/browser-run/features/guardrails/)
+exclude Quick Actions, and [outbound Workers](https://developers.cloudflare.com/browser-run/features/outbound-workers/)
+do not cover arbitrary HTTPS requests.
+
 One Worker, one D1 database and one Durable Object. No R2, containers, queues,
 workflows or cron. Nothing runs between requests, so there is nothing to reap
 and nothing to babysit.

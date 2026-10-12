@@ -18,13 +18,20 @@ export async function captureResult(ctx: ToolContext, url: string, requested: Vi
   const content: Content[] = [];
   if (shot.outline.length) content.push({ type: 'text', text: `Observed page structure:\n${shot.outline.join('\n')}` });
   const shown: string[] = [];
+  const responseWarnings: string[] = [];
   let imageBytes = 0;
   for (const image of shot.images) {
     if (imageBytes + image.base64.length > 1_500_000) { limits.push(`${image.viewport} image omitted by the transport byte limit.`); continue; }
     imageBytes += image.base64.length;
     shown.push(image.viewport);
+    if (image.httpStatus !== undefined && image.httpStatus >= 400) {
+      const kind = image.httpStatus === 403 ? 'denial page' : 'error response';
+      const warning = `${image.viewport}: captured an HTTP ${image.httpStatus} ${kind}; the requested page did not load successfully.`;
+      limits.push(warning);
+      responseWarnings.push(`HTTP ${image.httpStatus} ${kind} at ${image.viewport}`);
+    }
     content.push({ type: 'text', text: image.viewport }, { type: 'image', data: image.base64, mimeType: 'image/png' });
   }
   if (!shown.length) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: 'Capture completed but no image fit the response envelope. The browser cost was incurred; request one viewport rather than treating this as a successful visual review.' });
-  return { summary: `Captured ${shown.join(' and ')} for the public page.`, structured: { page: { url: shot.url, title: shot.title, shown }, ...(quota.unlimited ? {} : { quota: `${quota.used} of ${quota.limit}` }), limits }, content };
+  return { summary: responseWarnings.length ? `Captured ${responseWarnings.join('; ')}. Review the response limits for each viewport.` : `Captured ${shown.join(' and ')} for the public page.`, structured: { page: { url: shot.url, title: shot.title, shown }, ...(quota.unlimited ? {} : { quota: `${quota.used} of ${quota.limit}` }), limits }, content };
 }

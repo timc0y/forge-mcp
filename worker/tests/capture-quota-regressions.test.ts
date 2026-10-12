@@ -32,6 +32,27 @@ function context(limit = 1): { ctx: ToolContext; used: () => number } {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('capture spending ceiling', () => {
+  it.each([403, 404, 500])('discloses target HTTP %s even when the snapshot API succeeds', async (status) => {
+    const { ctx, used } = context();
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ success: true, result: { screenshot: 'iVBORw==', accessibilityTree: {} }, meta: { status } })));
+    const result = await captureResult(ctx, 'https://example.com/', ['desktop']);
+    expect(result.summary).toContain(`HTTP ${status}`);
+    if (status === 403) expect(result.summary).toContain('denial page');
+    expect(result.structured.limits).toEqual(expect.arrayContaining([expect.stringContaining('the requested page did not load successfully')]));
+    expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image' })]));
+    expect(used()).toBe(1);
+  });
+
+  it('reports the failed viewport when another viewport reached a successful page', async () => {
+    const { ctx } = context();
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ success: true, result: { screenshot: 'iVBORw==', accessibilityTree: {} }, meta: { status: calls++ === 0 ? 403 : 200 } })));
+    const result = await captureResult(ctx, 'https://example.com/', ['phone', 'desktop']);
+    expect(result.summary).toContain('HTTP 403 denial page at phone');
+    expect(result.structured.page).toMatchObject({ shown: ['phone', 'desktop'] });
+    expect(result.structured.limits).not.toEqual(expect.arrayContaining([expect.stringContaining('desktop: captured an HTTP')]));
+  });
+
   it('rejects invalid URLs before reserving quota or contacting the provider', async () => {
     const { ctx, used } = context();
     const fetch = vi.fn();

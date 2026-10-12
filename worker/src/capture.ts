@@ -288,10 +288,12 @@ async function captureViewport(env: Env, url: URL, viewport: Viewport, remaining
 
     const meta = isRecord(parsed.meta) ? parsed.meta : undefined;
     const title = meta && typeof meta.title === 'string' ? meta.title : '';
+    const status = meta?.status;
+    const httpStatus = typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
 
     return {
       viewport,
-      image: { viewport, base64, bytes: base64ByteLength(base64) },
+      image: { viewport, base64, bytes: base64ByteLength(base64), ...(httpStatus !== undefined ? { httpStatus } : {}) },
       title,
       structure: result.accessibilityTree
     };

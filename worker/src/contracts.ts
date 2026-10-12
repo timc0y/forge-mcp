@@ -176,6 +176,8 @@ export const VIEWPORT_SIZES: Record<Viewport, { width: number; height: number }>
 
 export interface CaptureImage {
   viewport: Viewport;
+  /** Target response status, distinct from the successful snapshot API response. */
+  httpStatus?: number;
   /** Base64 PNG, returned inline with the call that asked for it. */
   base64: string;
   bytes: number;
