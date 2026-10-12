@@ -5,11 +5,18 @@ For whoever runs the deployment. If you only want to *use* Forge, read
 
 ## What is deployed
 
-Production **2.0.0** was deployed on 12 October 2026 from source `f8d669b`.
-Cloudflare version `d61d7d1f-e1b2-4a98-a725-ed7c5aae76bd` serves 100% of traffic;
-its tag and message identify the source commit. TypeScript, 185 tests and all
-44 production HTTP/OAuth smoke checks passed. Worker startup was 138 ms.
-The previous production version is `9efd65fa-3559-40df-93ca-0eac9b7e9151`.
+Production **2.0.1** was deployed on 12 October 2026 from source `8bb0ca6`.
+Cloudflare version `cd2b4360-ba7d-41c3-8671-5ba4dd8c4ce3` is the current deployment;
+its tag and message identify the source commit. TypeScript, 188 tests, GitHub CI
+and all 44 production HTTP/OAuth smoke checks passed. Worker startup was 188 ms.
+Local startup profiling timed out; the same commit's GitHub CI startup check passed.
+The previous production version is `d61d7d1f-e1b2-4a98-a725-ed7c5aae76bd`.
+
+Live Forge reads of `timc0y/rule-of-odds` verified ledger lines 1–6, continuation
+through 7–12 at the same commit, and the final line without a further continuation.
+An oversized whole-file read returned the explicit line-range instruction, and
+an invalid line range retained its validation error. Refresh the client catalogue
+to discover the updated description and `at` input; deployment does not refresh it.
 
 Astra approved the source but withheld deployment approval because the capture
 network boundary remains incompletely verified. The owner explicitly requested
@@ -219,6 +226,13 @@ pnpm run deploy             # re-runs worker types/tests, then Wrangler deploys
                             # (bare `pnpm deploy` is pnpm's own command, not this script)
 worker/scripts/smoke.sh     # post-deploy HTTP/OAuth/version smoke
 ```
+
+Wrangler and the `cf` CLI can have separate logins. This release used the existing
+`cf` OAuth credential at `~/Library/Preferences/cloudflare/config/default.json`,
+after `cf auth whoami` verified access to the configured account. Its `oauth_token`
+was supplied as `CLOUDFLARE_API_TOKEN` only to the deployment subprocess, without
+printing or saving it elsewhere. This deployment credential is separate from the
+Worker's Browser Rendering secret of the same name.
 
 The smoke test needs no GitHub credentials. It covers the mount path, the auth
 boundary, both discovery spellings, dynamic client registration (which exercises

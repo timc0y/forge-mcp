@@ -54,7 +54,7 @@ echo "── dynamic client registration (exercises D1)"
 REG=$(body -X POST $B/oauth/register -H 'content-type: application/json' \
   -d '{"client_name":"smoke","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect","https://grok.com/connectors-oauth-exchange-code/","https://vscode.dev/redirect","https://oauth-redirect.googleusercontent.com/r/forge"]}')
 chk "registers an allowed redirect"  'client_id'      "$REG"
-chk "no client secret issued"        ''               "$(echo "$REG" | grep -o client_secret)"
+chk "no client secret issued"        'absent'         "$(if [[ "$REG" == *'"client_secret"'* ]]; then echo present; else echo absent; fi)"
 BAD=$(body -X POST $B/oauth/register -H 'content-type: application/json' \
   -d '{"client_name":"evil","redirect_uris":["https://attacker.example/cb"]}')
 chk "refuses a foreign redirect"     'invalid'        "$(echo "$BAD" | tr 'A-Z' 'a-z')"
