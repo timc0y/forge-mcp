@@ -79,12 +79,68 @@ describe('V2 public tool contract', () => {
     expect(result.structuredContent.limits.join(' ')).toContain('Open changes could not be listed');
   });
 
+  it('reads an oversized CSV in exact line windows without semantic inference', async () => {
+    const ledger = ['id,name', ...Array.from({ length: 12 }, (_, i) => `${i + 1},${'x'.repeat(6000)}`)].join('\r\n');
+    const { server, calls } = context({
+      'GET /repos/testuser/test-repo/contents/LEDGER.csv': {
+        status: 200, json: { type: 'file', encoding: 'base64', content: btoa(ledger), sha: BLOB, size: ledger.length }
+      },
+      [`GET /repos/testuser/test-repo/commits/${MAIN}`]: { status: 200, json: { sha: MAIN } }
+    });
+    const read = (server as any)._registeredTools.forge_read;
+    const whole = await read.handler({ repo: 'test-repo', paths: ['LEDGER.csv'] });
+    expect(whole.isError).toBe(true);
+    expect(whole.content[0].text).toContain('LEDGER.csv:1-6');
+    expect(whole.content[0].text).toContain(`at="${MAIN}"`);
+
+    const first = await read.handler({ repo: 'test-repo', paths: ['LEDGER.csv:1-6'] });
+    expect(first.isError).toBeFalsy();
+    expect(first.structuredContent.files[0].text).toBe(ledger.split('\r\n').slice(0, 6).join('\r\n') + '\r\n');
+    expect(first.structuredContent.files[0].totalLines).toBe(13);
+    expect(first.structuredContent.files[0].next).toBe('LEDGER.csv:7-12');
+    const second = await read.handler({ repo: 'test-repo', at: first.structuredContent.source.sha, paths: [first.structuredContent.files[0].next] });
+    expect(second.isError).toBeFalsy();
+    expect(second.structuredContent.files[0].next).toBe('LEDGER.csv:13-13');
+    const last = await read.handler({ repo: 'test-repo', at: first.structuredContent.source.sha, paths: [second.structuredContent.files[0].next] });
+    expect(last.isError).toBeFalsy();
+    expect(last.structuredContent.files[0].next).toBeUndefined();
+    expect(last.structuredContent.next).toBeUndefined();
+    expect([first, second, last].map((result) => result.structuredContent.files[0].text).join('')).toBe(ledger);
+    expect(calls.filter((call) => call.includes('/contents/LEDGER.csv')).every((call) => call.endsWith(`?ref=${MAIN}`))).toBe(true);
+    expect(read.inputSchema.shape.paths.description).toContain('LEDGER.csv:1-6');
+  });
+
   it('keeps explicit source exact even when a question is also supplied', async () => {
     const { server } = context();
     const result = await (server as any)._registeredTools.forge_read.handler({ repo: 'test-repo', paths: ['README.md'], query: 'only the title' });
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent.files[0].text).toBe('# Test Repo\n');
     expect(result.structuredContent.limits.join(' ')).toContain('no semantic excerpt replaced');
+  });
+
+  it('preserves access, upstream, quota and invalid-range failures rather than claiming absence', async () => {
+    for (const [status, code] of [[403, 'FORGE_AUTH_REQUIRED'], [502, 'FORGE_UPSTREAM_UNAVAILABLE']] as const) {
+      const { server } = context({ 'GET /repos/testuser/test-repo/contents/README.md': { status } });
+      const result = await (server as any)._registeredTools.forge_read.handler({ repo: 'test-repo', paths: ['README.md'] });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain(code);
+    }
+    const { server } = context({
+      'GET /repos/testuser/test-repo/contents/huge.csv': {
+        status: 200, json: { type: 'file', encoding: 'base64', content: '', sha: BLOB, size: 2 * 1024 * 1024 }
+      }
+    });
+    const read = (server as any)._registeredTools.forge_read;
+    for (const [path, code] of [['README.md:0-1', 'FORGE_VALIDATION_FAILED'], ['README.md:3-3', 'FORGE_NOT_FOUND'], ['huge.csv:1-6', 'FORGE_QUOTA_EXCEEDED']]) {
+      const result = await read.handler({ repo: 'test-repo', paths: [path] });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain(code);
+    }
+    const partial = await read.handler({ repo: 'test-repo', paths: ['README.md', 'huge.csv:1-6'] });
+    expect(partial.isError).toBeFalsy();
+    expect(partial.structuredContent.files[0].text).toBe('# Test Repo\n');
+    expect(partial.structuredContent.coverage).toBe('bounded');
+    expect(partial.structuredContent.limits.join(' ')).toContain('huge.csv exceeds the exact-source byte limit');
   });
 
   it('reads a proposal as a diff unless proposal source is explicitly requested', async () => {

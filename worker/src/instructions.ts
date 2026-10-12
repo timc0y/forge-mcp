@@ -18,6 +18,7 @@ export const LEAD = [
 
 const DETAIL = [
   'forge_read is the only way to look: no repo lists repositories; repo="global" discovers public repositories, while public code discovery requires code:<terms> plus explicit repo:owner/name scopes; a repo is pinned to one commit; change reads its diff; at="proposal" reads proposed source; paths are exact selectors; a natural query compiles bounded evidence.',
+  'For large files, paths=["LEDGER.csv:1-6"] reads inclusive 1-based lines without semantic inference. Continue with files[].next in paths and at=source.sha. next is output guidance, not an input cursor. CSV lines may span partial records.',
   'forge_edit creates the repository if needed. It commits directly unless change explains why review is required. Prefer exact fragments or revision-checked selectors; no whitespace guessing.',
   'Forge does not run, build, test, or deploy code. checks reports GitHub execution evidence for the exact commit when permission exists. If evidence is unavailable, say so rather than substituting another source.'
 ].join(' ');

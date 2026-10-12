@@ -64,14 +64,21 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
         const file = await snapshot.file(selector.path);
         const selected = selectSource(selector, file.text);
         return { file: { path: selector.path, selector: path, blob: file.blob, ...selected } };
-      } catch (error) { return { error: `${path}: ${toForgeError(error).message}` }; }
+      } catch (error) { return { path, error: toForgeError(error) }; }
     });
     const files = results.flatMap((result) => result.file ? [result.file] : []);
-    const limits = results.flatMap((result) => result.error ? [result.error] : []);
-    if (!files.length) throw new ForgeError({ code: 'FORGE_NOT_FOUND', message: `None of the exact selections could be read. ${limits.join(' ')}` });
-    if (utf8Bytes(JSON.stringify(files)) > 64 * 1024) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: 'The exact selections exceed the response budget. Request named symbols, records or smaller explicit ranges; source was not silently excerpted.' });
+    const failures = results.flatMap((result) => result.error ? [result.error] : []);
+    const limits = results.flatMap((result) => result.error ? [`${result.path}: ${result.error.message}`] : []);
+    if (!files.length) {
+      const failure = failures.find((error) => error.code !== 'FORGE_NOT_FOUND') ?? failures[0]!;
+      throw new ForgeError({ code: failure.code, retryable: failure.retryable, details: failure.details, message: `None of the exact selections could be read. ${limits.join(' ')}` });
+    }
+    if (utf8Bytes(JSON.stringify(files)) > 64 * 1024) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: `The exact selections exceed the response budget. Read smaller inclusive 1-based line ranges through paths, for example ${JSON.stringify([`${files[0]!.path}:1-6`])}, with at="${snapshot.identity.sha}". No query or semantic inference is needed; source was not silently excerpted.` });
     if (query) limits.push('Explicit source selectors took precedence over the question; no semantic excerpt replaced their contents.');
-    return finish(`${files.length} exact source selections at ${snapshot.identity.sha.slice(0, 7)}.`, { files, coverage: limits.length ? 'bounded' : 'complete' }, limits);
+    return finish(`${files.length} exact source selections at ${snapshot.identity.sha.slice(0, 7)}.`, {
+      files, coverage: limits.length ? 'bounded' : 'complete',
+      ...(files.some((file) => file.next) ? { next: `Read further lines by passing files[].next in paths with at="${snapshot.identity.sha}". next is guidance, not an input cursor.` } : {})
+    }, limits);
   }
   if (/^(?:checks|check results|test results)$/i.test(query)) return finish('GitHub execution evidence for the selected commit.', { checks: await readChecks(snapshot.gh, repo, snapshot.identity.sha) });
   if (/^(?:analysis|analysis artifact)$/i.test(query)) return finish('Repository-produced analysis for the exact workflow run.', { analysis: await readAnalysisArtifact(snapshot) });

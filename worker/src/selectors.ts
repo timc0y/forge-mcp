@@ -22,7 +22,7 @@ export function parseSelector(input: string): Selector {
   }
   return { path: requirePath(input) };
 }
-export function selectSource(selector: Selector, text: string): { text: string; range: SourceRange; representation: 'body' | 'record' } {
+export function selectSource(selector: Selector, text: string): { text: string; range: SourceRange; representation: 'body' | 'record'; totalLines?: number; next?: string } {
   if (selector.selection) {
     const selected = selector.selection.kind === 'symbol'
       ? selectSymbol(selector.path, text, selector.selection.value)
@@ -32,11 +32,15 @@ export function selectSource(selector: Selector, text: string): { text: string; 
   if (!selector.lines) return { text, range: sourceRange(text, 0, text.length), representation: 'body' };
   const [startLine, endLine] = selector.lines;
   const starts = [0];
-  for (let i = 0; i < text.length; i++) if (text[i] === '\n') starts.push(i + 1);
+  for (let i = 0; i < text.length - 1; i++) if (text[i] === '\n') starts.push(i + 1);
   if (startLine > starts.length || endLine > starts.length) throw new ForgeError({ code: 'FORGE_NOT_FOUND', message: 'The requested lines exceed this source revision.' });
   const start = starts[startLine - 1]!;
   const end = starts[endLine] ?? text.length;
-  return { text: text.slice(start, end), range: sourceRange(text, start, end), representation: 'body' };
+  return {
+    text: text.slice(start, end), range: sourceRange(text, start, end), representation: 'body',
+    totalLines: starts.length,
+    ...(endLine < starts.length ? { next: `${selector.path}:${endLine + 1}-${Math.min(starts.length, endLine + endLine - startLine + 1)}` } : {})
+  };
 }
 export function outline(path: string, text: string): string {
   const structure = inspectStructure(path, text);

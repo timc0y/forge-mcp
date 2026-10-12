@@ -43,7 +43,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       repo: z.string().optional().describe('owner/repo, reachable name, GitHub URL, or global. Omit to list reachable repositories.'),
       change: z.string().optional().describe('An open change, by its title or forge.'),
       at: z.string().optional().describe('Full commit SHA, or proposal for actual proposed source.'),
-      paths: z.array(z.string()).max(20).optional().describe('Paths/ranges, path::symbol:Name, path::id:ID or path::pointer:/key.'),
+      paths: z.array(z.string()).max(20).optional().describe('Exact files or inclusive 1-based line ranges: LEDGER.csv:1-6. Reads source without semantic inference. For continuation use files[].next here with at=source.sha. CSV lines are not necessarily records. Also path::symbol:Name, path::id:ID or path::pointer:/key.'),
       query: z.string().optional().describe('Task or checks, analysis, quality, history, stats, map, instructions, symbols <path>, find:<literal>, upstream <public package>. With repo="global", bare names find public repositories; code:<terms> repo:owner/name searches only verified-public scopes.')
     },
     outputSchema: readOutput,

@@ -158,6 +158,18 @@ reads the proposal diff; `at="proposal"` reads the proposal's actual source.
 Exact selectors include `path::symbol:Name`, `path::id:ID`, JSON pointers and
 line ranges, and stay exact even when a question is supplied.
 
+For a large file, pass `paths: ["LEDGER.csv:1-6"]` to read physical lines 1–6
+(inclusive, starting at 1) without a semantic query. This gives the header and
+five records only when each CSV record occupies one line; quoted records can
+span lines. The result includes `totalLines` and, when more lines remain, a
+`files[].next` path selector. Pass that selector in `paths` and the returned
+`source.sha` in `at` to continue reading the same revision. The final window
+has no continuation. `next` is an output field, not an input cursor.
+
+Exact reads retain the 1 MiB source-file limit and 64 KiB response budget.
+An oversized selection is refused with line-range guidance; Forge does not
+silently truncate it. Line ranges must exist in the selected revision.
+
 Repository queries include `migrations`, `quality`, `policy`, `history`,
 `churn`, `languages`, `stats`, `map`, `instructions`, `checks`, `analysis`,
 `symbols <path>`, exact `find:<text>` and `upstream <reviewed-public-package>`.

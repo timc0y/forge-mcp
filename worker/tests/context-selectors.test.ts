@@ -18,6 +18,23 @@ describe('exact structured source selection', () => {
     const symbol = selectSymbol('a.ts', source, 'hello');
     expect(source.slice(symbol.range.start, symbol.range.end)).toBe(symbol.text);
   });
+  it('ends continuation at the last physical line, including newline-terminated files', () => {
+    for (const newline of ['\n', '\r\n']) {
+      const source = `header${newline}one${newline}two${newline}`;
+      const first = selectSource(parseSelector('ledger.csv:1-2'), source);
+      expect(first.totalLines).toBe(3);
+      expect(first.next).toBe('ledger.csv:3-3');
+      const last = selectSource(parseSelector(first.next!), source);
+      expect(last.text).toBe(`two${newline}`);
+      expect(last.next).toBeUndefined();
+      expect(first.text + last.text).toBe(source);
+      expect(() => selectSource(parseSelector('ledger.csv:4-4'), source)).toThrow(/exceed/);
+    }
+    const blankLine = selectSource(parseSelector('a.txt:1-1'), '\n');
+    expect(blankLine.text).toBe('\n');
+    expect(blankLine.next).toBeUndefined();
+    expect(selectSource(parseSelector('a.txt:1-1'), '').text).toBe('');
+  });
   it('selects a full ledger record and rejects duplicate IDs', () => {
     const source = '{"issues":[{"id":"SR-1","action":"keep"},{"id":"SR-755","action":"test"}]}';
     expect(selectJson('issues.json', source, { id: 'SR-755' }).text).toBe('{"id":"SR-755","action":"test"}');
