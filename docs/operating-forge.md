@@ -5,13 +5,16 @@ For whoever runs the deployment. If you only want to *use* Forge, read
 
 ## What is deployed
 
-Production health reported **1.1.1** on 12 October 2026. The V2 source on main
-is not deployed. Deployment is held until Browser Run’s handling of public
-hostnames that resolve to private addresses is established; full capture remains
-part of the intended release. Astra approved the 12 October audit fixes for commit
-and push after source review. TypeScript, 181 tests, the deployment dry run and
-local startup check passed. Astra withheld release approval: local or GitHub
-checks do not clear the provider gate.
+Production **2.0.0** was deployed on 12 October 2026 from source `f8d669b`.
+Cloudflare version `d61d7d1f-e1b2-4a98-a725-ed7c5aae76bd` serves 100% of traffic;
+its tag and message identify the source commit. TypeScript, 185 tests and all
+44 production HTTP/OAuth smoke checks passed. Worker startup was 138 ms.
+The previous production version is `9efd65fa-3559-40df-93ca-0eac9b7e9151`.
+
+Astra approved the source but withheld deployment approval because the capture
+network boundary remains incompletely verified. The owner explicitly requested
+deployment after that limitation was explained, lifting the earlier hold.
+Full capture remains enabled; deployment does not establish network safety.
 
 Further proof on 12 October executed the production refresh-family and quota
 functions against actual SQLite with repository migrations. Both revocation
@@ -22,8 +25,8 @@ A live Browser Rendering trial against a public hostname resolving to loopback
 returned a target HTTP 403 denial page inside an API success response. Forge now
 discloses that target error; TypeScript and 185 tests pass. This observation proves
 that particular denial, not the provider's enforcement across all private DNS,
-redirect and subrequest paths. Astra retains the release hold. The required next
-evidence is Cloudflare confirmation identifying its enforcement at connection
+redirect and subrequest paths. The unresolved evidence is Cloudflare confirmation
+identifying its enforcement at connection
 time and its coverage of those paths. Hostname controls alone do not supply that
 proof: [guardrails](https://developers.cloudflare.com/browser-run/features/guardrails/)
 exclude Quick Actions, and [outbound Workers](https://developers.cloudflare.com/browser-run/features/outbound-workers/)

@@ -9,18 +9,18 @@ sources before acting on the stages that depend on them.
 
 ## Where this stands
 
-**12 October 2026 release check:** production remains version 1.1.1. V2 source
-is consolidated on main; it is not a production deployment. GitHub Actions and
-both workflows are enabled. [CI](https://github.com/timc0y/forge-mcp/actions/runs/38174725842)
-and [Forge analysis](https://github.com/timc0y/forge-mcp/actions/runs/38174725843)
-passed on source commit `88d72b1`. Astra approved that source for main. Full capture is retained, and deployment is held until its
-private-address DNS, redirect and subresource boundary is proved. The owner
-chose to hold deployment rather than restrict capture. Astra has not approved
-release while that gate remains open.
+**12 October 2026 release:** production serves V2 version **2.0.0**, source
+`f8d669b`, Cloudflare version `d61d7d1f-e1b2-4a98-a725-ed7c5aae76bd`.
+[CI](https://github.com/timc0y/forge-mcp/actions/runs/38217741219) and
+[Forge analysis](https://github.com/timc0y/forge-mcp/actions/runs/38217741407)
+passed for that source. The deployment reran TypeScript and 185 tests; all 44
+production HTTP/OAuth smoke checks passed.
 
-The 12 October audit fixes passed TypeScript, 181 tests, the deployment dry run
-and local Worker startup. Astra approved this source for commit and push, while
-withholding deployment approval under the same capture-safety condition.
+Astra approved the source. The owner lifted the deployment hold after the
+remaining capture network-safety gap was explained. Full capture is enabled;
+private-address DNS, redirect and subrequest enforcement remain incompletely
+verified. Reconnect clients, refresh the catalog and verify authenticated V2
+journeys separately.
 
 | | |
 |---|---|
@@ -29,7 +29,7 @@ withholding deployment approval under the same capture-safety condition.
 | GitHub App created | ✅ |
 | GitHub App public / installable by other accounts | 🟡 **blocked: App currently reports private** |
 | `FORGE_SIGNING_KEY`, `GITHUB_APP_CLIENT_SECRET` | ✅ (secret verified against GitHub) |
-| `GITHUB_APP_PRIVATE_KEY` | ✅ PKCS#8 secret verified by session startup |
+| `GITHUB_APP_PRIVATE_KEY` | Retained legacy secret; V2 no longer reads it |
 | `CLOUDFLARE_API_TOKEN` | ✅ Browser Rendering request verified |
 | ChatGPT read, capture, write and approval preparation | ✅ recorded 20 August 2026 |
 | Merge approval completed and verified | ✅ recorded 21 August 2026 |
@@ -37,10 +37,11 @@ withholding deployment approval under the same capture-safety condition.
 | Privacy policy | ✅ deployed and verified at `/forge/privacy` |
 | Support contact | 🟡 public contact links exist; dedicated support address still needed |
 
-The production traces now prove OAuth, repository access, capture, durable edit,
-semantic recovery, completed merge and completed discard. The remaining
-deployment work is the Cloudflare edge rate limit, Workers Paid spend alert and
-dedicated support contact.
+Historical V1 traces recorded OAuth, repository access, capture, durable edit,
+semantic recovery, completed merge and completed discard. The new V2 HTTP smoke
+does not prove those authenticated journeys. Remaining operational work includes
+client refresh, current authenticated verification, the capture network evidence,
+Cloudflare edge rate limits, a Workers Paid spend alert and a dedicated support contact.
 
 The public `timcoy.uk` project listing now describes Forge as the current safe
 ChatGPT-to-GitHub handoff.
