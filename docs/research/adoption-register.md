@@ -15,7 +15,7 @@ explains why each dependency exists.
 | Cloudflare D1 | platform binding | Identity, OAuth, approvals and daily capture meter | Tenancy and deletion procedures are load-bearing |
 | Cloudflare R2 | platform binding | Signed hosted copies of capture evidence | Lifecycle configuration must enforce intended expiry |
 | GitHub App | REST API `2022-11-28` | Repository-scoped reads, commits, draft PRs, merge and discard | GitHub is deliberately the single durable plane |
-| GitHub OAuth | OAuth App flow attached to the GitHub App | Human identity and the narrowly scoped credential needed to create personal repositories | Stored user credential increases review and deletion obligations |
+| GitHub OAuth | OAuth flow attached to the GitHub App | Human identity and a credential enforcing both human and App permissions for repository operations | Stored user credential increases review and deletion obligations |
 | OAuth 2.1 + PKCE | RFC 9728 resource metadata; S256 | Remote MCP client authorization | Redirect allowlist and signing-key rotation are security boundaries |
 | Jose | `6.2.2` | Supporting cryptographic utilities where used | Prefer Web Crypto for the worker's fixed token formats |
 | Wrangler | `4.110.0` | Development and deployment | Configuration changes can alter routes and bindings immediately |

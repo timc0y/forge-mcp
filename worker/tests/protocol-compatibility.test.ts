@@ -112,6 +112,25 @@ describe('remote MCP protocol boundaries', () => {
     }
   });
 
+  it('returns CORS-readable failures when the MCP transport rejects', async () => {
+    const { env } = environment();
+    transport.fetch.mockRejectedValueOnce(new Error('synthetic upstream outage'));
+    const response = await worker.fetch(new Request(resource, { method: 'POST', headers: { authorization: `Bearer ${await issueToken(env, 'user-a', 60)}`, origin: 'https://client.test' }, body: '{}' }), env, ctx);
+    expect(response.status).toBe(503);
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    expect(await response.json()).toMatchObject({ error: 'FORGE_UPSTREAM_UNAVAILABLE' });
+  });
+
+  it('handles rejected OAuth operations inside the router error boundary', async () => {
+    const { env } = environment();
+    env.FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS = 'chatgpt.com';
+    env.METADATA = { prepare: () => ({ bind: () => ({ run: async () => { throw new Error('synthetic D1 outage'); } }) }) } as unknown as D1Database;
+    const response = await worker.fetch(new Request(`${origin}/oauth/register`, { method: 'POST', body: JSON.stringify({ redirect_uris: ['https://chatgpt.com/callback'] }) }), env, ctx);
+    expect(response.status).toBe(503);
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    expect(await response.json()).toMatchObject({ error: 'FORGE_UPSTREAM_UNAVAILABLE' });
+  });
+
   it('refuses a copied GitHub callback in a different browser before exchanging a code', async () => {
     const { env } = environment();
     const client = { client_id: 'client-a', client_name: 'client', redirect_uris: JSON.stringify(['https://chatgpt.com/callback']) };

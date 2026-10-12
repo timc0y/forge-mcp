@@ -10,8 +10,8 @@
 export interface Identity {
   userId: string;
   githubLogin: string;
-  /** The user's own GitHub App installation. Their rate limit, not ours. */
-  installationId: string;
+  /** Legacy informational snapshot; never grants repository access. */
+  installationId?: string;
 }
 
 export interface RepoRef {

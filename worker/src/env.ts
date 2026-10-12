@@ -17,10 +17,8 @@ export interface Env {
   /** Comma-separated hosts permitted as OAuth redirect targets. */
   FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS: string;
 
-  GITHUB_APP_ID: string;
   GITHUB_APP_CLIENT_ID: string;
   GITHUB_APP_SLUG: string;
-  GITHUB_APP_PRIVATE_KEY: string;
   GITHUB_APP_CLIENT_SECRET: string;
 
   /** Signs approval and session tokens. At least 32 random bytes. */

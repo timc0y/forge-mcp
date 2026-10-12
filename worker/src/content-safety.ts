@@ -1,7 +1,7 @@
 import { ForgeError } from './errors';
 
 export const HIGH_SEVERITY_SECRET_PATTERNS: readonly RegExp[] = Object.freeze([
-  /-----BEGIN [A-Z]+ PRIVATE KEY-----/,
+  /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/,
   /\bghp_[A-Za-z0-9_]{36,}\b/,
   /\bgithub_pat_[A-Za-z0-9_]{82}\b/,
   /\bsk_live_[0-9a-zA-Z]{24,}\b/,

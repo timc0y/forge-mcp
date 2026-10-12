@@ -37,7 +37,7 @@ describe('exact candidate editing', () => {
       calls.push(`${init?.method ?? 'GET'} ${path}`);
       const response = (status: number, json: unknown) => ({ status, json, text: '', headers: new Headers() });
       if (path === '/repos/o/new') return response(created ? 200 : 404, created ? { default_branch: 'main' } : null);
-      if (path.startsWith('/installation/repositories')) return response(200, { repositories: [] });
+      if (path.startsWith('/user/repos?')) return response(200, []);
       if (path === '/user/repos') { created = true; return response(201, { owner: { login: 'o' }, name: 'new' }); }
       if (path === '/repos/o/new/git/ref/heads/main') return response(200, { object: { sha } });
       if (path.includes('/contents/')) return response(404, null);

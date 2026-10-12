@@ -77,8 +77,8 @@ const USE_CASES: Array<[string, string]> = [
 
 const LIMITS: Array<[string, string]> = [
   ['Free', 'research preview, open to anyone'],
-  ['30', 'screenshots per day'],
-  ['Unlimited', 'reads, commits and merges'],
+  ['30', 'capture attempts per day'],
+  ['GitHub', 'your permissions and rate limits'],
   ['No runner', 'Forge does not execute code; repository automation may react to commits']
 ];
 

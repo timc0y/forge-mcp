@@ -81,6 +81,8 @@ interface Evidence {
 interface Outcome {
   decision: 'approve' | 'reject';
   ok: boolean;
+  /** A mutation request lost its response; neither success nor no effect is established. */
+  uncertain?: boolean;
   /** One plain sentence for a human. Stored unescaped; escaped at render. */
   detail: string;
   /** The pull request or commit to look at, when there is one. */
@@ -228,8 +230,8 @@ export async function approvalPage(env: Env, id: string, token: string): Promise
  * property below assumes a deliberate form submission; nothing here re-checks
  * the HTTP method because it is not given the Request.
  *
- * `request` is an already-authenticated GitHub caller scoped to this user's own
- * installation. This file never builds a client and never sees a token.
+ * `request` carries the approval owner's GitHub user authorization. GitHub
+ * intersects human and App grants; this file never sees a token.
  */
 export async function resolveApproval(
   env: Env,
@@ -276,10 +278,12 @@ export async function resolveApproval(
     return renderOutcome(row, evidence, 'rejected', outcome);
   }
 
-  const outcome =
-    row.act === 'merge'
-      ? await performMerge(request, row, evidence)
-      : await performDiscard(request, row, evidence);
+  let outcome: Outcome;
+  try {
+    outcome = row.act === 'merge' ? await performMerge(request, row, evidence) : await performDiscard(request, row, evidence);
+  } catch {
+    outcome = { decision: 'approve', ok: false, uncertain: true, detail: 'GitHub did not return a complete outcome. The operation may have changed GitHub; inspect the pull request and branch before requesting a fresh approval. This approval will not run again.' };
+  }
 
   // A refusal or an upstream failure is recorded as `failed`, never rolled back
   // to `pending`. Re-arming the button would invite a human to click through a
@@ -324,7 +328,8 @@ async function performMerge(
         detail: `Could not re-check the pull request destination (status ${pull.status}). Nothing was merged. Ask for a fresh approval.`
       };
     }
-    const pullRequest = pull.json as { base?: { ref?: unknown }; head?: { sha?: unknown }; draft?: unknown; node_id?: unknown } | null;
+    const pullRequest = pull.json as { head?: { sha?: unknown; ref?: unknown; repo?: { full_name?: unknown } }; base?: { ref?: unknown }; draft?: unknown; node_id?: unknown } | null;
+    if (pullRequest?.head?.ref !== row.branch || (typeof pullRequest.head.repo?.full_name !== 'string' || pullRequest.head.repo.full_name.toLowerCase() !== `${row.repo_owner}/${row.repo_name}`.toLowerCase())) return { decision: 'approve', ok: false, detail: 'The pull request no longer identifies this repository’s reviewed proposal branch. Nothing was merged.' };
     const currentBase = pullRequest?.base?.ref;
     if (typeof currentBase !== 'string') {
       return {
@@ -433,11 +438,10 @@ async function performMerge(
   const sha = stringField(response.json, 'sha');
   let syncFailed = false;
   if (sha !== '') {
-    const synced = await request(
-      `/repos/${row.repo_owner}/${row.repo_name}/git/refs/heads/${encodePath(row.branch)}`,
-      { method: 'PATCH', body: { sha, force: false } }
-    );
-    syncFailed = synced.status !== 200 && synced.status !== 404;
+    try {
+      const synced = await request(`/repos/${row.repo_owner}/${row.repo_name}/git/refs/heads/${encodePath(row.branch)}`, { method: 'PATCH', body: { sha, force: false } });
+      syncFailed = synced.status !== 200 && synced.status !== 404;
+    } catch { syncFailed = true; }
   }
   const merged: Outcome = {
     decision: 'approve',
@@ -501,6 +505,9 @@ async function performDiscard(
   // fails closed above.
 
   if (number !== null) {
+    const pull = await request(`/repos/${row.repo_owner}/${row.repo_name}/pulls/${number}`);
+    const head = (pull.json as { head?: { ref?: unknown; repo?: { full_name?: unknown }; sha?: unknown } } | null)?.head;
+    if (pull.status !== 404 && (pull.status !== 200 || head?.ref !== row.branch || (typeof head.repo?.full_name !== 'string' || head.repo.full_name.toLowerCase() !== `${row.repo_owner}/${row.repo_name}`.toLowerCase()) || head.sha !== row.head_sha)) return { decision: 'approve', ok: false, detail: 'The pull request no longer identifies the exact reviewed proposal in this repository. Nothing was discarded.' };
     const closed = await request(`/repos/${row.repo_owner}/${row.repo_name}/pulls/${number}`, {
       method: 'PATCH',
       body: { state: 'closed' }
@@ -519,16 +526,20 @@ async function performDiscard(
     }
   }
 
-  const deleted = await request(
-    `/repos/${row.repo_owner}/${row.repo_name}/git/refs/heads/${encodePath(row.branch)}`,
-    { method: 'DELETE' }
-  );
-  // 404/422 both mean the ref is not there. A second click, a branch deleted by
-  // hand on github.com, and a successful first attempt all land here and all
-  // mean the same thing: the change is gone. That is what idempotent means for
-  // a deletion.
-  const deleteOk =
-    (deleted.status >= 200 && deleted.status < 300) || deleted.status === 404 || deleted.status === 422;
+  let deleted: Awaited<ReturnType<GitHubRequest>>;
+  try {
+    deleted = await request(`/repos/${row.repo_owner}/${row.repo_name}/git/refs/heads/${encodePath(row.branch)}`, { method: 'DELETE' });
+  } catch {
+    return { decision: 'approve', ok: false, uncertain: true, detail: `${number === null ? 'No pull request was closed' : `Pull request #${number} was closed`}, but GitHub did not return the branch deletion outcome. Inspect ${row.branch} before another discard; its deletion is unconfirmed.` };
+  }
+  // 422 is also a validation or policy refusal. Only an actual absence proves deletion.
+  let deleteOk = (deleted.status >= 200 && deleted.status < 300) || deleted.status === 404;
+  if (deleted.status === 422) {
+    try {
+      const remaining = await request(`/repos/${row.repo_owner}/${row.repo_name}/git/ref/heads/${encodePath(row.branch)}`);
+      deleteOk = remaining.status === 404;
+    } catch { deleteOk = false; }
+  }
   if (!deleteOk) {
     return {
       decision: 'approve',
@@ -751,7 +762,7 @@ function renderOutcome(
     detail = outcome?.detail ?? 'You rejected this. Nothing was changed.';
     tone = 'good';
   } else if (state === 'failed') {
-    heading = row.act === 'merge' ? 'Not merged' : 'Not discarded';
+    heading = outcome?.uncertain ? 'Check the outcome on GitHub' : row.act === 'merge' ? 'Not merged' : 'Not discarded';
     detail = outcome?.detail ?? 'The act could not be completed, and nothing was changed.';
     tone = 'bad';
   } else if (outcome === null) {

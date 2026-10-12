@@ -11,16 +11,16 @@ const BLOB = 'c'.repeat(40);
 function context(routes: Record<string, { status: number; json?: unknown; text?: string }> = {}) {
   const calls: string[] = [];
   const defaults: Record<string, { status: number; json?: unknown; text?: string }> = {
-    'GET /installation/repositories': {
+    'GET /user/repos': {
       status: 200,
-      json: { repositories: [{ name: 'test-repo', owner: { login: 'testuser' }, full_name: 'testuser/test-repo', description: 'test', default_branch: 'main', private: false, pushed_at: '2026-09-20T10:00:00Z' }] }
+      json: [{ name: 'test-repo', owner: { login: 'testuser' }, full_name: 'testuser/test-repo', description: 'test', default_branch: 'main', private: false, pushed_at: '2026-09-20T10:00:00Z' }]
     },
     'GET /repos/testuser/test-repo': { status: 200, json: { default_branch: 'main', private: false } },
     'GET /repos/testuser/test-repo/commits/main': { status: 200, json: { sha: MAIN } },
     'GET /repos/testuser/test-repo/commits/forge': { status: 200, json: { sha: FORGE } },
     [`GET /repos/testuser/test-repo/git/trees/${MAIN}`]: { status: 200, json: { truncated: false, tree: [{ path: 'README.md', type: 'blob', size: 14 }, { path: 'src/index.ts', type: 'blob', size: 28 }] } },
     [`GET /repos/testuser/test-repo/git/trees/${FORGE}`]: { status: 200, json: { truncated: false, tree: [{ path: 'README.md', type: 'blob', size: 14 }, { path: 'src/index.ts', type: 'blob', size: 28 }] } },
-    'GET /repos/testuser/test-repo/pulls': { status: 200, json: [{ number: 4, head: { ref: 'forge' }, base: { ref: 'main' }, title: 'Context engine', draft: true, updated_at: '2026-09-20T10:00:00Z' }] },
+    'GET /repos/testuser/test-repo/pulls': { status: 200, json: [{ number: 4, head: { ref: 'forge', repo: { full_name: 'testuser/test-repo' } }, base: { ref: 'main' }, title: 'Context engine', draft: true, updated_at: '2026-09-20T10:00:00Z' }] },
     'GET /repos/testuser/test-repo/contents/README.md': { status: 200, json: { type: 'file', encoding: 'base64', content: btoa('# Test Repo\n'), sha: BLOB, size: 12 } },
     [`GET /repos/testuser/test-repo/compare/${MAIN}...${FORGE}`]: { status: 200, json: { status: 'ahead', ahead_by: 1, behind_by: 0, files: [{ filename: 'src/index.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] } },
     'GET /search/repositories': { status: 200, json: { total_count: 1, incomplete_results: false, items: [{ full_name: 'Aider-AI/aider', html_url: 'https://github.com/Aider-AI/aider', description: 'AI pair programming', private: false }] } },

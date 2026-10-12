@@ -9,7 +9,7 @@ sources before acting on the stages that depend on them.
 
 ## Where this stands
 
-**11 October 2026 release check:** production remains version 1.1.1. V2 source
+**12 October 2026 release check:** production remains version 1.1.1. V2 source
 is consolidated on main; it is not a production deployment. GitHub Actions and
 both workflows are enabled. [CI](https://github.com/timc0y/forge-mcp/actions/runs/38174725842)
 and [Forge analysis](https://github.com/timc0y/forge-mcp/actions/runs/38174725843)
@@ -17,6 +17,10 @@ passed on source commit `88d72b1`. Astra approved that source for main. Full cap
 private-address DNS, redirect and subresource boundary is proved. The owner
 chose to hold deployment rather than restrict capture. Astra has not approved
 release while that gate remains open.
+
+The 12 October audit fixes passed TypeScript, 181 tests, the deployment dry run
+and local Worker startup. Astra approved this source for commit and push, while
+withholding deployment approval under the same capture-safety condition.
 
 | | |
 |---|---|
@@ -253,18 +257,14 @@ launch plans that assume it.
 
 Restricted data that must not be collected includes **API keys and
 authentication codes**. Forge stores one GitHub user credential per person,
-encrypted, and it exists for exactly one reason: creating a repository on your
-account, which an installation token cannot do.
+encrypted, for operations on that person's behalf. GitHub user-token requests
+enforce the intersection of human and App permissions. Removing repository
+creation alone would not remove that credential requirement; substituting an
+installation-wide token would recreate the organisation permission defect.
+Any distribution rule that forbids this credential remains a product gate,
+requiring a separately reviewed authorization design.
 
-If that becomes a blocker, there is a clean answer — **drop repository creation**.
-`forge_edit` would refuse for a repository that does not exist and say to create
-it on GitHub first. That removes the stored credential entirely, along with
-`user-token.ts`, the three `users` columns and the `Administration: Read & write`
-permission every installer currently grants.
-
-That is a real trade: the opening move of the product against a smaller security
-surface and an easier review. Worth deciding deliberately rather than when a
-reviewer forces it.
+Keep this distribution gate separate from source readiness and production release.
 
 Also: *return only task-relevant response data; exclude diagnostic metadata,
 session IDs and timestamps.* Re-read the five tools' outputs against that before
@@ -293,8 +293,8 @@ Required by both processes and the one piece of work with no code in it. It has
 to be true, which means writing it from what the system does:
 
 - **Collected:** GitHub user id and login; a GitHub credential, encrypted, used
-  only to create repositories and explicit public GitHub discovery; pending
-  approvals with the frozen diff/evidence shown; a daily capture-usage count.
+  for repository operations, approvals, creation and explicit public GitHub discovery; pending
+  approvals with the frozen diff/evidence shown; a daily capture-attempt count.
 - **Not collected at rest:** repository contents, chat transcripts, email.
   Shape-only Cloudflare logs exclude repository names, source, queries, patches,
   captured URLs and user identifiers.

@@ -5,11 +5,13 @@ For whoever runs the deployment. If you only want to *use* Forge, read
 
 ## What is deployed
 
-Production health reported **1.1.1** on 11 October 2026. The V2 source on main
+Production health reported **1.1.1** on 12 October 2026. The V2 source on main
 is not deployed. Deployment is held until Browser Run’s handling of public
 hostnames that resolve to private addresses is established; full capture remains
-part of the intended release. Astra approved source `88d72b1` for main; its CI and Forge analysis runs passed.
-Local or GitHub checks do not clear this provider gate.
+part of the intended release. Astra approved the 12 October audit fixes for commit
+and push after source review. TypeScript, 181 tests, the deployment dry run and
+local startup check passed. Astra withheld release approval: local or GitHub
+checks do not clear the provider gate.
 
 One Worker, one D1 database and one Durable Object. No R2, containers, queues,
 workflows or cron. Nothing runs between requests, so there is nothing to reap
@@ -45,11 +47,13 @@ Secrets, via `wrangler secret put` from `worker/`:
 
 | Secret | Notes |
 |---|---|
-| `GITHUB_APP_PRIVATE_KEY` | PKCS#8 PEM (`BEGIN PRIVATE KEY`). Convert GitHub's PKCS#1 download with `openssl pkcs8 -topk8 -nocrypt` before `wrangler secret put`. |
 | `GITHUB_APP_CLIENT_SECRET` | |
 | `FORGE_SIGNING_KEY` | 32+ random bytes. Signs access and approval tokens, fingerprints rotating refresh-token families, and derives the key encrypting stored GitHub credentials. Rotating it invalidates all of them at once and forces everyone to sign in again |
 | `CLOUDFLARE_API_TOKEN` | Scoped to Browser Rendering only |
 | `TYPESAFE_API_KEY` | Authenticates the configured JEV route; semantic operations refuse when it is absent |
+
+The former `GITHUB_APP_PRIVATE_KEY` secret is no longer read by this source.
+Existing deployed secrets have not been deleted while production remains held.
 
 ### V2 runtime and client refresh
 
@@ -86,7 +90,17 @@ base push in that interval remains a disclosed limitation.
 Needs **Contents: write**, **Pull requests: write**, **Metadata: read**, a
 callback URL of `<FORGE_PUBLIC_ORIGIN>/oauth/callback`, and **expiring user
 tokens enabled** — without that GitHub issues no refresh token and the stored
-credential used for new-repo creation and explicit public GitHub search can never rotate.
+credential used for all work on the person's behalf cannot rotate. Ordinary
+repository requests and approvals use the GitHub App user token, so GitHub
+enforces both the person's permissions and the App's installed repository grant.
+Installation-wide tokens no longer authorize operations. Each request resolves
+the stored credential, including requests from an existing MCP session.
+
+GitHub refresh credentials are claimed atomically in D1 before exchange. Concurrent
+requests wait briefly for the winner; an older exchange cannot overwrite a newer
+sign-in. An interrupted or failed exchange requires reconnecting because the
+provider may already have spent the credential. Forge does not retry an uncertain
+refresh exchange or reuse its consumed token.
 
 It additionally needs **Administration: read and write** if `forge_edit` is to
 create a repository that does not exist yet. `POST /user/repos` answers 403
@@ -133,18 +147,22 @@ writes do not require JEV.
 
 ## Public abuse boundary
 
-The in-code capture quota is atomic and each call renders each named viewport at
-most once, but it is not the internet-facing rate limiter. Keep Cloudflare rate
-limits on `/forge/mcp` and the OAuth mutation endpoints (`/oauth/register`,
+The in-code capture quota is atomic and counts attempts after input validation.
+Failed provider responses, locally rejected bodies and transport failures remain
+counted because browser work may already have occurred. Each call renders each
+named viewport at most once. This is not the internet-facing rate limiter. Keep
+Cloudflare rate limits on `/forge/mcp` and the OAuth mutation endpoints (`/oauth/register`,
 `/oauth/authorize`, `/oauth/token`), and keep a Workers Paid spend notification.
 Dynamic client registration is necessarily public and otherwise provides an
 unbounded way to create D1 rows.
 
 ## Cost
 
-GitHub work costs nothing — every call is metered against the user's own App
-installation. **Capture is the only meter.** Workers Paid includes 10 browser
-hours a month, then $0.09/hour, and Quick Actions like `/snapshot` are billed on
+GitHub operations use the person's GitHub App user authorization and its rate
+limit. Forge also pays for hosting and JEV inference; semantic requests have
+separate bounded budgets. Capture attempts have a per-person daily ceiling.
+Workers Paid includes 10 browser hours a month, then $0.09/hour, and Quick Actions
+like `/snapshot` are billed on
 hours alone while binding-driven Puppeteer sessions are also billed per
 concurrent browser. Forge uses the REST Quick Action, so the concurrency
 dimension never applies.
@@ -170,11 +188,8 @@ Do not diagnose cached catalog text as current Worker behavior. If two Forge
 connections exist, remove or refresh the stale one before comparing tool
 results.
 
-Release 1.1 temporarily accepts the previous cached `forge_edit.intent` shape.
-Legacy `intent` is deliberately mapped to review/proposed work, never to a
-direct default-branch commit, and the result asks the caller to refresh. Remove
-this bridge only after active clients have refreshed to the current `change`
-schema.
+V2 rejects the retired `forge_edit.intent` shape before a write. Refresh cached
+clients and use the current `change` schema before authoring.
 
 ## Running it
 
@@ -225,11 +240,7 @@ pnpm exec wrangler d1 migrations apply forge-v1-production --remote
 - **Historical deployments may still have executor-era containers.** The current
   worker creates none, but check `wrangler containers list` before assuming an
   old deployment was fully removed.
-- **A reinstall replaces the installation id.** Uninstalling and installing the
-  App again gives GitHub a new installation id, and nothing tells Forge. The
-  stored id then names an installation that no longer exists, so the first token
-  mint is a 404 and the session used to register no tools at all. Session startup
-  now re-derives the current installation from the App's own list and remembers
-  it. If tools still do not appear after a reinstall, check
-  `SELECT installation_id FROM users` against `GET /app/installations` for the
-  App.
+- **App grants and human permissions both apply.** Stored installation ids are
+  historical metadata, not credentials. Installing after sign-in can be retried
+  in the existing connection; GitHub user-token requests reflect the new grant.
+  A revoked or expired user credential requires reconnecting.

@@ -54,6 +54,20 @@ describe('exact-revision execution evidence', () => {
     expect(report.checks).toHaveLength(0);
     expect(report.limitations.join(' ')).toContain('another revision');
   });
+  it('retains observed failures and still reads statuses when optional annotations throw', async () => {
+    const calls: string[] = [];
+    const gh: GitHubRequest = async (path) => {
+      calls.push(path);
+      if (path.includes('/annotations')) throw new Error('transport timeout');
+      return reply(path.includes('check-runs') ? { total_count: 1, check_runs: [{ ...check('failure'), output: { annotations_count: 1 } }] } : { sha, total_count: 0, statuses: [] });
+    };
+    const report = await readChecks(gh, { owner: 'o', name: 'r' }, sha);
+    expect(failedChecks(report)).toHaveLength(1);
+    expect(report.coverage).toBe('complete');
+    expect(report.limitations.join(' ')).toContain('Annotations unavailable');
+    expect(calls.some((path) => path.includes('/status?'))).toBe(true);
+    expect(allObservedChecksSuccessful(report)).toBe(false);
+  });
   it('reports permissions as unavailable, never no failures', async () => {
     const gh: GitHubRequest = async () => reply({}, 403);
     const result = await readChecks(gh, { owner: 'o', name: 'r' }, sha);

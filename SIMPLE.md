@@ -3,8 +3,10 @@
 ## Reality
 
 - Intended users: anyone with a GitHub account — an open research preview. Each
-  installs the GitHub App themselves, so each brings their own credentials and
-  their own GitHub rate limit. **Current provider state (21 September 2026):**
+  installs the GitHub App themselves. All operations use a GitHub App user token:
+  GitHub intersects the person's permissions with the App's repository grant.
+  Installation-wide tokens cannot authorize work on a person's behalf.
+  **Current provider state (21 September 2026):**
   GitHub identifies the Forge App as private, which restricts installation to
   its owning account. Making the App public is a launch gate, not an
   application-code feature. Tenancy is therefore load-bearing, not inert.
@@ -118,11 +120,11 @@ post-deploy smoke must be proven before describing V2 as deployed.
   code that exists. A partial answer is never an absence: repository-scoped
   search falls back to the committed files themselves, bounded, and names the
   source of every result. The index is a shortcut, GitHub is still the truth.
-- A GitHub installation id is a snapshot GitHub replaces without telling Forge:
-  reinstalling the App mints a new id and every token request against the old one
-  is a 404. Session startup re-derives the live installation for the account from
-  the App's own list, remembers it, and only then registers tools. A stale id must
-  never empty the catalog.
+- Installation-token repair once kept reconnects working after App reinstall,
+  but installation-wide access bypasses a human's organisation permissions.
+  Ordinary operations and approvals now resolve the stored GitHub user credential
+  on each request. GitHub owns the intersection of human and App grants; stored
+  installation ids no longer authorize requests or prevent session startup.
 - Fast semantic decisions need no server-side index. Vector databases, periodic
   repo indexing, and background embeddings workers add infrastructure that drifts
   out of sync with GitHub. TypeSafe Jev evaluates trees, paths, diffs, repository

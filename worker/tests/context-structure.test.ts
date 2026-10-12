@@ -34,6 +34,17 @@ describe('compact structural representations', () => {
     expect(() => validateSource('config.yml', 'a: [\n')).toThrow(/parser errors/);
   });
 
+  it('preserves leading Markdown instructions as an exact addressable block', () => {
+    const preamble = 'Never delete user data.\n\n';
+    const source = preamble + '# Overview\nContext.\n';
+    const blocks = inspectStructure('AGENTS.md', source).blocks;
+    expect(blocks.map((block) => block.name)).toEqual(['(preamble)', 'Overview']);
+    expect(selectSymbol('AGENTS.md', source, '(preamble)').text).toBe(preamble);
+    expect(blocks.map((block) => block.text).join('')).toBe(source);
+    const collision = preamble + '# (preamble)\nHeading body.\n';
+    expect(selectSymbol('AGENTS.md', collision, '(preamble)[2]').text).toContain('Heading body');
+  });
+
   it('makes duplicate symbols and Markdown headings individually addressable', () => {
     const code = 'function f() {}\nfunction f() {}\n';
     expect(inspectStructure('a.ts', code).blocks.map((block) => block.name)).toEqual(['f[0]', 'f[1]']);

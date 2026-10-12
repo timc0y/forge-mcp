@@ -51,7 +51,6 @@ interface RefreshTokenRow {
 interface UserRow {
   id: string;
   github_login: string;
-  installation_id: string | null;
 }
 
 export async function issueToken(env: Env, userId: string, ttlSeconds: number): Promise<string> {
@@ -72,18 +71,19 @@ export async function sessionIdFor(env: Env, userId: string, value: string): Pro
   return constantTimeEqual(value, await bindSessionId(env, userId, id)) ? id : null;
 }
 
-export async function issueRefreshToken(
+async function insertRefreshToken(
   env: Env,
   userId: string,
   clientId: string,
   familyId: string = crypto.randomUUID()
-): Promise<string> {
+): Promise<string | null> {
   const token = `fr_${encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)))}`;
   const now = new Date();
-  await env.METADATA.prepare(
+  const inserted = await env.METADATA.prepare(
     `INSERT INTO oauth_refresh_tokens
        (token_hash, family_id, user_id, client_id, key_tag, expires_at, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+      WHERE NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens WHERE family_id = ?2 AND revoked_at IS NOT NULL)`
   )
     .bind(
       await sha256(token),
@@ -95,6 +95,12 @@ export async function issueRefreshToken(
       now.toISOString()
     )
     .run();
+  return (inserted.meta.changes ?? 0) === 1 ? token : null;
+}
+
+export async function issueRefreshToken(env: Env, userId: string, clientId: string): Promise<string> {
+  const token = await insertRefreshToken(env, userId, clientId);
+  if (!token) throw authRequired("This Forge connection was revoked. Reconnect Forge to continue.");
   return token;
 }
 
@@ -146,10 +152,10 @@ export async function rotateRefreshToken(
     return null;
   }
 
-  return {
-    userId: row.user_id,
-    refreshToken: await issueRefreshToken(env, row.user_id, row.client_id, row.family_id)
-  };
+  // Insertion and its revoked-family predicate are one atomic D1 statement.
+  // A replay either prevents this insert or revokes the inserted row.
+  const refreshToken = await insertRefreshToken(env, row.user_id, row.client_id, row.family_id);
+  return refreshToken ? { userId: row.user_id, refreshToken } : null;
 }
 
 async function revokeRefreshFamily(env: Env, familyId: string): Promise<void> {
@@ -170,7 +176,7 @@ export async function authenticate(env: Env, request: Request): Promise<Identity
     );
   }
 
-  if (devTokenAccepted(env, token)) return identityOf(env, await seededUser(env));
+  if (devTokenAccepted(env, token)) return identityOf(await seededUser(env));
 
   const userId = await verify(env, token);
   if (!userId) {
@@ -180,12 +186,12 @@ export async function authenticate(env: Env, request: Request): Promise<Identity
   }
 
   const row = await env.METADATA.prepare(
-    'SELECT id, github_login, installation_id FROM users WHERE id = ?1'
+    'SELECT id, github_login FROM users WHERE id = ?1'
   )
     .bind(userId)
     .first<UserRow>();
 
-  return identityOf(env, row);
+  return identityOf(row);
 }
 
 /**
@@ -193,37 +199,16 @@ export async function authenticate(env: Env, request: Request): Promise<Identity
  * makes it immediate: every request re-reads the row, so a removed user's
  * outstanding tokens stop working on their next call rather than at expiry.
  */
-function identityOf(env: Env, row: UserRow | null): Identity {
+function identityOf(row: UserRow | null): Identity {
   if (!row) {
     throw authRequired(
       'Forge has no account for this access token. Authorize Forge again from your client.'
     );
   }
-
-  if (!row.installation_id) {
-    // The one error in this file that a user can act on without a client, so
-    // it carries the exact URL rather than describing the destination. An
-    // error that names the fix is worth more than an error that is correct.
-    const url = installUrl(env);
-    throw new ForgeError({
-      code: 'FORGE_AUTH_REQUIRED',
-      message:
-        `Forge is connected to GitHub as ${row.github_login}, but the Forge GitHub App is not ` +
-        `installed on any of that account's repositories yet. Install it at ${url}, choose the ` +
-        'repositories Forge may work on, then try again.',
-      details: { installUrl: url, githubLogin: row.github_login }
-    });
-  }
-
   return {
     userId: row.id,
-    githubLogin: row.github_login,
-    installationId: row.installation_id
+    githubLogin: row.github_login
   };
-}
-
-function installUrl(env: Env): string {
-  return `https://github.com/apps/${encodeURIComponent(env.GITHUB_APP_SLUG)}/installations/new`;
 }
 
 function authRequired(message: string): ForgeError {
@@ -252,7 +237,7 @@ function devTokenAccepted(env: Env, token: string): boolean {
  */
 async function seededUser(env: Env): Promise<UserRow> {
   const row = await env.METADATA.prepare(
-    'SELECT id, github_login, installation_id FROM users ORDER BY created_at ASC, id ASC LIMIT 1'
+    'SELECT id, github_login FROM users ORDER BY created_at ASC, id ASC LIMIT 1'
   ).first<UserRow>();
 
   if (!row) {

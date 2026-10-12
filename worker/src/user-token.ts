@@ -4,20 +4,11 @@ import type { Env } from './env';
 import { ForgeError } from './errors';
 
 /**
- * The one long-lived third-party credential Forge holds.
- *
- * It has two deliberately narrow uses that an installation-scoped repository
- * client cannot replace: creating a personal repository with `POST /user/repos`,
- * and explicit `repo:"global"` searches over public GitHub. Ordinary reads,
- * writes, diffs, history and approvals always use the user's GitHub App
- * installation token and therefore remain repository-scoped.
- *
- * The credential is never used as a fallback for an installed-repository
- * request. Revoking it may disable new-repo creation and global search, but must
- * not break work in repositories the Forge App installation can already reach.
- *
- * It is encrypted at rest because D1 is not an appropriate place to keep a
- * bearer credential in plaintext, and revoked by deleting the row.
+ * GitHub user credentials authorize every operation on a human's behalf.
+ * GitHub intersects the App's grant with that person's current permissions;
+ * installation tokens alone would grant an organization member the App's
+ * broader access. Credentials are encrypted at rest and resolved per operation,
+ * so reconnecting or rotating a credential updates existing MCP sessions too.
  */
 
 const CONTEXT = 'forge.usertoken.v1';
@@ -29,6 +20,8 @@ interface StoredCredential {
   token: string;
   refreshToken: string | null;
   expiresAt: string | null;
+  sealedToken: string;
+  sealedRefreshToken: string | null;
 }
 
 /**
@@ -83,28 +76,38 @@ async function open(env: Env, sealedValue: string): Promise<string | null> {
  * because which one applies is an App setting rather than something this code
  * can assume.
  */
-export async function storeUserCredential(
+async function persistCredential(
   env: Env,
   userId: string,
-  credential: { token: string; refreshToken?: string | null; expiresInSeconds?: number | null }
-): Promise<void> {
+  credential: { token: string; refreshToken?: string | null; expiresInSeconds?: number | null },
+  expectedToken: string | null = null
+): Promise<boolean> {
   const expiresAt = credential.expiresInSeconds
     ? new Date(Date.now() + credential.expiresInSeconds * 1000).toISOString()
     : null;
 
-  await env.METADATA.prepare(
+  const result = await env.METADATA.prepare(
     `UPDATE users
         SET github_token = ?2, github_refresh_token = ?3, github_token_expires_at = ?4, updated_at = ?5
-      WHERE id = ?1`
+      WHERE id = ?1 AND (?6 IS NULL OR (github_token = ?6 AND github_refresh_token IS NULL))`
   )
     .bind(
       userId,
       await seal(env, credential.token),
       credential.refreshToken ? await seal(env, credential.refreshToken) : null,
       expiresAt,
-      new Date().toISOString()
+      new Date().toISOString(),
+      expectedToken
     )
     .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+export async function storeUserCredential(
+  env: Env, userId: string,
+  credential: { token: string; refreshToken?: string | null; expiresInSeconds?: number | null }
+): Promise<void> {
+  await persistCredential(env, userId, credential);
 }
 
 async function load(env: Env, userId: string): Promise<StoredCredential | null> {
@@ -125,42 +128,69 @@ async function load(env: Env, userId: string): Promise<StoredCredential | null> 
   return {
     token,
     refreshToken: row.github_refresh_token ? await open(env, row.github_refresh_token) : null,
-    expiresAt: row.github_token_expires_at
+    expiresAt: row.github_token_expires_at,
+    sealedToken: row.github_token,
+    sealedRefreshToken: row.github_refresh_token
   };
 }
 
-async function refresh(env: Env, userId: string, refreshToken: string): Promise<string | null> {
+function fresh(stored: StoredCredential): boolean {
+  if (stored.expiresAt === null) return true;
+  const expiry = Date.parse(stored.expiresAt);
+  return Number.isFinite(expiry) && expiry - REFRESH_SKEW_MS > Date.now();
+}
+
+async function refreshedByAnother(env: Env, userId: string, previous: string): Promise<string | null> {
+  const deadline = Date.now() + 6500;
+  do {
+    const current = await load(env, userId);
+    if (!current) return null;
+    if (current.sealedToken !== previous && fresh(current)) return current.token;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  return null;
+}
+
+async function refresh(env: Env, userId: string, stored: StoredCredential): Promise<string | null> {
+  if (!stored.refreshToken || !stored.sealedRefreshToken) return refreshedByAnother(env, userId, stored.sealedToken);
+  // Atomically consume the encrypted refresh credential before contacting GitHub.
+  // Across isolates only one request can spend it; others await its persisted result.
+  const claimed = await env.METADATA.prepare(
+    `UPDATE users SET github_refresh_token = NULL
+      WHERE id = ?1 AND github_token = ?2 AND github_refresh_token = ?3`
+  ).bind(userId, stored.sealedToken, stored.sealedRefreshToken).run();
+  if ((claimed.meta.changes ?? 0) !== 1) return refreshedByAnother(env, userId, stored.sealedToken);
+
   const response = await fetch(GITHUB_TOKEN_URL, {
     method: 'POST',
+    signal: AbortSignal.timeout(5000),
     headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'Forge-MCP' },
     body: JSON.stringify({
       client_id: env.GITHUB_APP_CLIENT_ID,
       client_secret: env.GITHUB_APP_CLIENT_SECRET,
       grant_type: 'refresh_token',
-      refresh_token: refreshToken
+      refresh_token: stored.refreshToken
     })
   }).catch(() => null);
 
-  // GitHub answers 200 with `{ "error": ... }` for a spent refresh token, so
-  // the status is not the test — the presence of a token is.
   const body = (await response?.json().catch(() => null)) as Record<string, unknown> | null;
-  const token = typeof body?.access_token === 'string' ? body.access_token : null;
+  const token = typeof body?.access_token === 'string' && body.access_token ? body.access_token : null;
   if (!token) return null;
 
-  await storeUserCredential(env, userId, {
+  // A newer OAuth sign-in must not be overwritten by this older refresh.
+  const saved = await persistCredential(env, userId, {
     token,
-    refreshToken: typeof body?.refresh_token === 'string' ? body.refresh_token : refreshToken,
+    refreshToken: typeof body?.refresh_token === 'string' ? body.refresh_token : null,
     expiresInSeconds: typeof body?.expires_in === 'number' ? body.expires_in : null
-  });
-  return token;
+  }, stored.sealedToken);
+  return saved ? token : refreshedByAnother(env, userId, stored.sealedToken);
 }
 
 /**
- * A GitHub request authenticated as the user. Only repository creation and
- * explicit global public search should ask for this.
+ * A GitHub request authenticated as the human for their requested operation.
  *
- * Failure names the fix: signing in again is what restores those two features,
- * while installed-repository work stays on the App installation credential.
+ * Failure names the fix: signing in again restores GitHub operations,
+ * and prevents requests from acting with broader installation permissions.
  */
 export async function userRequestFor(env: Env, userId: string): Promise<GitHubRequest> {
   const stored = await load(env, userId);
@@ -168,24 +198,21 @@ export async function userRequestFor(env: Env, userId: string): Promise<GitHubRe
     throw new ForgeError({
       code: 'FORGE_AUTH_REQUIRED',
       message:
-        'Forge needs you to sign in with GitHub again before it can create a repository or search public GitHub. ' +
+        'Forge needs you to sign in with GitHub again before it can work on GitHub. ' +
         'Reconnect the Forge app, then ask again.',
       retryable: false
     });
   }
 
-  const expired =
-    stored.expiresAt !== null && Date.parse(stored.expiresAt) - REFRESH_SKEW_MS <= Date.now();
+  if (fresh(stored)) return githubUserRequest(env, stored.token);
 
-  if (!expired) return githubUserRequest(env, stored.token);
-
-  const renewed = stored.refreshToken ? await refresh(env, userId, stored.refreshToken) : null;
+  const renewed = await refresh(env, userId, stored);
   if (!renewed) {
     throw new ForgeError({
       code: 'FORGE_AUTH_REQUIRED',
       message:
-        'Your GitHub sign-in has expired, so Forge cannot create a repository or search public GitHub for you. ' +
-        'Reconnect the Forge app, then ask again. Installed-repository access is unchanged.',
+        'Your GitHub sign-in has expired, so Forge cannot work on GitHub for you. ' +
+        'Reconnect the Forge app, then ask again.',
       retryable: false
     });
   }

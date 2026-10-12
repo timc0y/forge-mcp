@@ -8,7 +8,7 @@ import { ForgeError } from './errors';
 
 export const CHANGE_BRANCH = 'forge';
 const LEGACY_BRANCH_PREFIX = 'forge/';
-/** One page of open pull requests. See openChanges for why it is not paginated. */
+/** Bounded pages; decisions must never infer absence from a filtered page. */
 const OPEN_CHANGES_PAGE = 100;
 
 export function changeName(branch: string): string {
@@ -19,7 +19,7 @@ export function changeName(branch: string): string {
 /** The subset of GitHub's pull-request JSON this module actually reads. */
 interface PullRequestPayload {
   number: number;
-  head: { ref: string };
+  head: { ref: string; repository?: string | null };
   title?: string;
   draft: boolean;
   updatedAt: string;
@@ -37,7 +37,7 @@ function toPullRequestPayload(value: unknown): PullRequestPayload | null {
   if (typeof ref !== 'string') return null;
   return {
     number,
-    head: { ref },
+    head: { ref, ...(head.repo === null ? { repository: null } : isRecord(head.repo) && typeof head.repo.full_name === 'string' ? { repository: head.repo.full_name } : {}) },
     ...(typeof title === 'string' && title.trim() ? { title: title.trim() } : {}),
     draft: draft === true,
     updatedAt: typeof updatedAt === 'string' ? updatedAt : ''
@@ -49,64 +49,23 @@ function parsePullRequests(json: unknown): PullRequestPayload[] {
   return json.map(toPullRequestPayload).filter((pr): pr is PullRequestPayload => pr !== null);
 }
 
-/**
- * Lists open changes for a repo. This runs on every tool result (it's how a
- * summarised chat recovers what it was doing without remembering an id), so
- * it has to stay a single call. GitHub's "list pull requests" endpoint carries
- * no diff stats — only "get a single pull request" does — so `stats` is left
- * absent rather than costing one extra request per change on every turn.
- * Absent means unmeasured; it must never be reported as zero, because a human
- * reading "0 files changed" would believe it.
- */
+/** Complete, repository-owned proposals, or an explicit discovery failure. */
 export async function openChanges(request: GitHubRequest, repo: RepoRef): Promise<Change[]> {
-  const response = await request(
-    `/repos/${repo.owner}/${repo.name}/pulls?state=open&sort=created&direction=desc&per_page=${OPEN_CHANGES_PAGE}`
-  );
-
-  if (response.status !== 200) {
-    throw new ForgeError({
-      code: 'FORGE_UPSTREAM_UNAVAILABLE',
-      message: `Could not list open changes for ${formatRepo(repo)} (HTTP ${response.status}).`,
-      retryable: true
-    });
+  const changes: Change[] = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const response = await request(`/repos/${repo.owner}/${repo.name}/pulls?state=open&sort=created&direction=desc&per_page=${OPEN_CHANGES_PAGE}&page=${page}`);
+    if (response.status !== 200 || !Array.isArray(response.json)) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: `Could not establish the complete open-change list for ${formatRepo(repo)}.`, retryable: true });
+    const parsed = parsePullRequests(response.json);
+    if (parsed.length !== response.json.length) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: `GitHub returned malformed pull-request data while listing open changes for ${formatRepo(repo)}.`, retryable: true });
+    for (const pr of parsed) {
+      if (pr.head.repository === undefined) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'GitHub omitted pull-request repository ownership; no proposal absence was inferred.' });
+      if (pr.head.repository?.toLowerCase() !== formatRepo(repo).toLowerCase()) continue;
+      if (pr.head.ref !== CHANGE_BRANCH && !pr.head.ref.startsWith(LEGACY_BRANCH_PREFIX)) continue;
+      changes.push({ name: pr.title ?? changeName(pr.head.ref), branch: pr.head.ref, number: pr.number, draft: pr.draft, updatedAt: pr.updatedAt });
+    }
+    if (response.json.length < OPEN_CHANGES_PAGE && !response.headers.get('link')?.includes('rel="next"')) return changes;
   }
-
-  if (!Array.isArray(response.json)) {
-    throw new ForgeError({
-      code: 'FORGE_UPSTREAM_UNAVAILABLE',
-      message: `GitHub returned an unreadable open-change list for ${formatRepo(repo)}.`,
-      retryable: true
-    });
-  }
-  const parsed = parsePullRequests(response.json);
-  if (parsed.length !== response.json.length) {
-    throw new ForgeError({
-      code: 'FORGE_UPSTREAM_UNAVAILABLE',
-      message: `GitHub returned malformed pull-request data while listing open changes for ${formatRepo(repo)}.`,
-      retryable: true
-    });
-  }
-
-  // One page, deliberately: this runs on every tool result and paginating it
-  // would put an unbounded number of requests on the hot path. Past 100 open
-  // changes the list is incomplete, and `openChangesTruncated` is how a caller
-  // learns that rather than quietly seeing fewer names than exist.
-  return parsed
-    .filter((pr) => pr.head.ref === CHANGE_BRANCH || pr.head.ref.startsWith(LEGACY_BRANCH_PREFIX))
-    .map((pr) => ({
-      // The fixed branch is an implementation detail. The PR title preserves
-      // the human intent that created the change and survives chat summarisation.
-      name: pr.title ?? changeName(pr.head.ref),
-      branch: pr.head.ref,
-      number: pr.number,
-      draft: pr.draft,
-      updatedAt: pr.updatedAt
-    }));
-}
-
-/** True when the open-changes list above may be missing entries. */
-export function openChangesTruncated(changes: Change[]): boolean {
-  return changes.length >= OPEN_CHANGES_PAGE;
+  throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'Open-change discovery exceeded 1,000 pull requests. No complete proposal list or absence was inferred.' });
 }
 
 /**

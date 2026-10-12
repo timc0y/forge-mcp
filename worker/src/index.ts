@@ -12,7 +12,7 @@ import { approvalPage, resolveApproval } from './approve';
 import { installedPage, landingPage } from './landing';
 import { privacyPage } from './privacy';
 import { iconResponse } from './icon';
-import { githubRequest } from './github';
+import { userRequestFor } from './user-token';
 import type { Env } from './env';
 import { toForgeError } from './errors';
 
@@ -32,24 +32,24 @@ export { ForgeMcpSession };
  *
  * This is the boundary `approve.ts` cannot hold from inside itself: it is
  * handed a request function and has no way to check whose it is. If this
- * resolved the wrong installation, one user's click would act on another
+ * resolved the wrong user, one user's click would act on another
  * user's repository, and nothing downstream would notice.
  *
  * So the credential is derived from the approval row's own `user_id` — never
  * from the caller, who is an anonymous browser holding a link.
  */
-async function credentialForApproval(env: Env, approvalId: string): Promise<Awaited<ReturnType<typeof githubRequest>> | null> {
+async function credentialForApproval(env: Env, approvalId: string): Promise<Awaited<ReturnType<typeof userRequestFor>> | null> {
   const row = await env.METADATA.prepare(
-    `SELECT u.installation_id AS installation_id
+    `SELECT u.id AS user_id
        FROM approvals a
        JOIN users u ON u.id = a.user_id
       WHERE a.id = ?1`
   )
     .bind(approvalId)
-    .first<{ installation_id: string | null }>();
+    .first<{ user_id: string }>();
 
-  if (!row?.installation_id) return null;
-  return githubRequest(env, row.installation_id);
+  if (!row?.user_id) return null;
+  return async (path, init) => (await userRequestFor(env, row.user_id))(path, init);
 }
 
 async function handleApproval(
@@ -174,10 +174,10 @@ export default {
           : authorizationServerMetadata(env);
       }
 
-      if (path === '/oauth/register') return registerClient(env, request);
-      if (path === '/oauth/authorize') return authorize(env, request);
-      if (path === '/oauth/callback') return callback(env, request);
-      if (path === '/oauth/token') return token(env, request);
+      if (path === '/oauth/register') return await registerClient(env, request);
+      if (path === '/oauth/authorize') return await authorize(env, request);
+      if (path === '/oauth/callback') return await callback(env, request);
+      if (path === '/oauth/token') return await token(env, request);
 
       const approval = /^\/approvals\/([A-Za-z0-9-]+)$/.exec(path);
       if (approval?.[1]) {
@@ -250,7 +250,7 @@ export default {
 
       return Response.json(
         { error: forge.code, message: forge.message },
-        { status: forge.retryable ? 503 : 400 }
+        { status: forge.retryable ? 503 : 400, headers: corsRoute ? corsHeaders : {} }
       );
     }
   }

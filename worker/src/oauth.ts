@@ -277,21 +277,14 @@ export async function callback(env: Env, request: Request): Promise<Response> {
   const userId = found.id;
   if (found.created) analyticsFor(env, userId)('user_signed_up');
 
-  // Kept for the two explicit user-authenticated GitHub operations: creating a
-  // personal repository later and public GitHub search. Ordinary repository
-  // work never uses it. See user-token.ts for the narrow credential boundary.
+  // GitHub intersects this App user credential with the human's permissions.
+  // Every operation on their behalf uses it; installation-wide access does not.
   await storeUserCredential(env, userId, {
     token: account.token,
     refreshToken: account.refreshToken,
     expiresInSeconds: account.expiresInSeconds
   });
 
-  // Written on every sign-in, including as null. A user who uninstalled the App
-  // must lose the stale installation id, so the next tool call tells them to
-  // install it rather than failing against an installation GitHub has dropped.
-  await env.METADATA.prepare('UPDATE users SET installation_id = ?2, updated_at = ?3 WHERE id = ?1')
-    .bind(userId, await discoverInstallation(env, account.token), new Date().toISOString())
-    .run();
 
   const code = randomSecret();
   await env.METADATA.prepare(
@@ -446,8 +439,7 @@ function resourceAllowed(env: Env, params: URLSearchParams): boolean {
 
 /**
  * The GitHub user credential establishes identity and is stored encrypted for
- * repository creation and public search. Ordinary repository writes use the
- * user's installation token, minted from the App's key.
+ * every operation on the human's behalf, including repository writes.
  */
 async function identifyGitHubUser(
   env: Env,
@@ -505,26 +497,6 @@ async function identifyGitHubUser(
     refreshToken,
     expiresInSeconds
   };
-}
-
-/**
- * Which installation of this App the user has. Asked as the user rather than as
- * the App, because "installations this person can see" is a question only their
- * own token can answer.
- */
-async function discoverInstallation(env: Env, userToken: string): Promise<string | null> {
-  const request = await githubUserRequest(env, userToken);
-  const response = await request('/user/installations?per_page=100');
-  if (response.status !== 200) return null;
-  const body = response.json as { installations?: Array<{ id?: number; app_id?: number }> } | null;
-  const appId = Number.parseInt(env.GITHUB_APP_ID, 10);
-  // Newest wins. Installing the App again produces a newer installation id and
-  // GitHub can still list the one it replaced, whose token mint is a 404; the
-  // older id must not be written back over the live one.
-  const matches = (body?.installations ?? [])
-    .filter((installation) => installation.app_id === appId && typeof installation.id === 'number')
-    .sort((left, right) => (right.id ?? 0) - (left.id ?? 0));
-  return matches[0] ? String(matches[0].id) : null;
 }
 
 // ---------------------------------------------------------------------------

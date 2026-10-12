@@ -103,10 +103,10 @@ Old access tokens and session IDs are refused; refresh credentials are retained.
 Your client opens a Forge page telling you what it is about to be allowed to do.
 Continue from there and GitHub asks whether to let Forge act as you.
 
-That is the last time tokens come up. Forge holds one GitHub user credential
-encrypted for two narrow operations: creating a repository on your account and
-an explicit public GitHub search. All work inside installed repositories uses
-the repository-scoped GitHub App installation instead.
+Forge holds one GitHub user credential encrypted at rest. All repository work,
+approvals, repository creation and explicit public GitHub search use that
+credential. GitHub enforces both your permissions and the App's installed
+repository access, so Forge cannot borrow broader organisation permissions.
 
 ### 3. Install the GitHub App
 
@@ -207,13 +207,15 @@ page. Default viewports are phone and desktop.
 
 | | |
 |---|---|
-| Captures | 30 per person per UTC day |
-| Everything else | unlimited — it runs against your own GitHub allowance |
+| Capture attempts | 30 per person per UTC day, counted after input validation |
+| GitHub work | your GitHub allowance, with bounded requests and results |
+| Semantic context | bounded JEV requests and source budgets |
 | Approval links | expire after 7 days |
 
-Repository work costs Forge nothing, because every call is metered against the
-GitHub App installation *you* granted. Only capture spends Forge's money, which
-is why it is the only thing with a number on it.
+Capture attempts remain counted when provider responses fail, exceed local
+limits or cannot be delivered; the browser may already have done the work.
+Forge also pays for hosting and semantic inference. GitHub operations use your
+GitHub App user authorization and its rate limit.
 
 ## What Forge will not do
 

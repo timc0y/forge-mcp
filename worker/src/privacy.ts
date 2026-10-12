@@ -18,15 +18,16 @@ export function privacyPage(env: Env): Response {
 <h1>Privacy</h1>
 <p class="lead">Forge stores the minimum state needed to connect your GitHub account,
   prepare reviewable changes and carry out decisions you approve.</p>
-<p class="note">Last updated 21 September 2026.</p>
+<p class="note">Last updated 12 October 2026.</p>
 
 <h2>What Forge stores</h2>
 <div class="section">
   <h3>Account and GitHub access</h3>
   <p>Your GitHub numeric user id, current login and Forge GitHub App installation id.
-    Forge also keeps one GitHub user credential encrypted at rest. It is used only to
-    create a personal repository and when you explicitly ask Forge to search public GitHub.
-    Ordinary repository work uses your repository-scoped App installation instead.</p>
+    Forge also keeps one GitHub user credential encrypted at rest. Repository reads,
+    writes, approvals, personal repository creation and explicit public GitHub search
+    use it. GitHub restricts access to the intersection of your permissions and the
+    Forge GitHub App's installed repository access.</p>
 
   <h3>OAuth connection</h3>
   <p>Registered client names and redirect addresses, hashes of short-lived authorization
@@ -43,11 +44,11 @@ export function privacyPage(env: Env): Response {
 
   <h3>Public-page captures</h3>
   <p>Forge renders public pages on demand and returns screenshots in the tool response.
-    It stores only your daily capture count; it does not keep a screenshot gallery or
+    It stores only your daily capture-attempt count; it does not keep a screenshot gallery or
     persistent copy of captured pages.</p>
 
   <h3>Usage and analytics</h3>
-  <p>Forge stores one daily capture count per user. Shape-only operational measurements
+  <p>Forge stores one daily capture-attempt count per user. Shape-only operational measurements
     are written to the existing Cloudflare logs. These measurements contain no repository
     names, source, queries, captured URLs, user identifiers or tokens.</p>
 </div>

@@ -1,11 +1,10 @@
-import { generateKeyPairSync } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../src/env';
 import { capture } from '../src/capture';
 import { approvalPage } from '../src/approve';
-import { ForgeError, toForgeError } from '../src/errors';
+import { toForgeError } from '../src/errors';
 import { registerClient, token } from '../src/oauth';
-import { githubRequest, installationForLogin, installationRequestFor } from '../src/github';
+import { githubUserRequest } from '../src/github';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -18,189 +17,12 @@ function captureEnv(): Env {
   } as unknown as Env;
 }
 
-describe('GitHub installation token lifetime', () => {
-  it('refreshes a long-lived session after one 401 and retries exactly once', async () => {
-    const requestedTokens: string[] = [];
-    const tokenProvider = vi.fn(async (_env: Env, _installationId: string, forceRefresh = false) =>
-      forceRefresh ? 'fresh-token' : 'stale-token'
-    );
-
-    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const authorization = new Headers(init?.headers).get('authorization') ?? '';
-      requestedTokens.push(authorization);
-      if (authorization === 'Bearer stale-token') {
-        return new Response('{"message":"Bad credentials"}', { status: 401 });
-      }
-      return new Response('{"ok":true}', {
-        status: 200,
-        headers: { 'content-type': 'application/json' }
-      });
-    }));
-
-    const request = await githubRequest({} as Env, 'installation-1', tokenProvider);
-    const response = await request('/installation/repositories');
-
-    expect(response.status).toBe(200);
-    expect(requestedTokens).toEqual(['Bearer stale-token', 'Bearer fresh-token']);
-    expect(tokenProvider).toHaveBeenCalledWith({} as Env, 'installation-1', true);
-  });
-
-  it('retries one retryable mint failure at connection setup', async () => {
-    let attempts = 0;
-    const tokenProvider = vi.fn(async () => {
-      attempts += 1;
-      if (attempts === 1) {
-        throw new ForgeError({
-          code: 'FORGE_UPSTREAM_UNAVAILABLE',
-          message: 'GitHub declined to issue an installation token (HTTP 503).',
-          retryable: true
-        });
-      }
-      return 'token';
-    });
-
-    await expect(githubRequest({} as Env, 'installation-1', tokenProvider)).resolves.toBeTypeOf('function');
-    expect(attempts).toBe(2);
-  });
-
-  it('does not retry a refused installation', async () => {
-    let attempts = 0;
-    const tokenProvider = vi.fn(async () => {
-      attempts += 1;
-      throw new ForgeError({
-        code: 'FORGE_AUTH_REQUIRED',
-        message: 'The Forge GitHub App is not installed for this account.',
-        retryable: false
-      });
-    });
-
-    await expect(githubRequest({} as Env, 'installation-1', tokenProvider)).rejects.toMatchObject({
-      code: 'FORGE_AUTH_REQUIRED'
-    });
-    expect(attempts).toBe(1);
-  });
-
+describe('GitHub human credential requests', () => {
   it('never lets a GitHub read be answered from a cache', async () => {
-    const inits: RequestInit[] = [];
-    const tokenProvider = vi.fn(async () => 'token');
-    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      inits.push(init ?? {});
-      return new Response('{"ok":true}', { status: 200 });
-    }));
-
-    const request = await githubRequest({} as Env, 'installation-1', tokenProvider);
-    await request('/repos/o/r/git/ref/heads/forge');
-
-    // GitHub serves reads with s-maxage=60 and a Workers subrequest will use
-    // it, so a ref read can return a value from before a delete/recreate.
-    expect(inits[0]?.cache).toBe('no-store');
-  });
-
-  it('treats the 2026 stateless GitHub App token format as opaque', async () => {
-    const stateless = 'ghs_' + 'APPID_JWT_SEGMENT_'.repeat(12);
-    const tokenProvider = vi.fn(async () => stateless);
-    let authorization = '';
-    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      authorization = new Headers(init?.headers).get('authorization') ?? '';
-      return new Response('{"ok":true}', { status: 200 });
-    }));
-
-    const request = await githubRequest({} as Env, 'installation-1', tokenProvider);
-    await request('/installation/repositories');
-
-    expect(authorization).toBe(`Bearer ${stateless}`);
-  });
-
-  it('does not retry ordinary GitHub refusals', async () => {
-    const tokenProvider = vi.fn(async () => 'token');
-    const fetchMock = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ ok: true }));
     vi.stubGlobal('fetch', fetchMock);
-
-    const request = await githubRequest({} as Env, 'installation-1', tokenProvider);
-    const response = await request('/repos/o/r');
-
-    expect(response.status).toBe(404);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('stale installation repair', () => {
-  function appKeyEnv(): Env {
-    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-    return {
-      GITHUB_APP_ID: '4658328',
-      GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
-    } as unknown as Env;
-  }
-
-  it('re-derives a replaced installation and remembers it', async () => {
-    const env = appKeyEnv();
-    const remembered: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith('/app/installations?per_page=100')) {
-        return Response.json([{ id: 163206430, account: { login: 'timc0y' } }]);
-      }
-      if (url.endsWith('/app/installations/155142960/access_tokens')) {
-        return new Response('{"message":"Not Found"}', { status: 404 });
-      }
-      if (url.endsWith('/app/installations/163206430/access_tokens')) {
-        return Response.json({ token: 'ghs_live', expires_at: '2099-01-01T00:00:00Z' });
-      }
-      return new Response('{}', { status: 200 });
-    }));
-
-    const request = await installationRequestFor(env, '155142960', 'timc0y', async (installationId) => {
-      remembered.push(installationId);
-    });
-
-    expect(remembered).toEqual(['163206430']);
-    expect(typeof request).toBe('function');
-  });
-
-  it('asks for the exact installation before walking the App list', async () => {
-    const env = appKeyEnv();
-    const seen: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      seen.push(url);
-      if (url.endsWith('/users/timc0y/installation')) return Response.json({ id: 163206430 });
-      return new Response('{}', { status: 404 });
-    }));
-
-    expect(await installationForLogin(env, 'timc0y')).toBe('163206430');
-    expect(seen[0]).toContain('/users/timc0y/installation');
-    expect(seen.some((url) => url.includes('/app/installations'))).toBe(false);
-  });
-
-  it('falls back to the App list when the exact lookup names nothing', async () => {
-    const env = appKeyEnv();
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith('/app/installations?per_page=100')) {
-        return Response.json([{ id: 163206430, account: { login: 'timc0y' } }]);
-      }
-      return new Response('{}', { status: 404 });
-    }));
-
-    expect(await installationForLogin(env, 'timc0y')).toBe('163206430');
-  });
-
-  it('finds no installation when the App is not installed for that login', async () => {
-    const env = appKeyEnv();
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json([{ id: 1, account: { login: 'someone-else' } }])));
-    expect(await installationForLogin(env, 'timc0y')).toBeNull();
-  });
-
-  it('leaves a genuine upstream failure alone instead of treating it as a reinstall', async () => {
-    const env = appKeyEnv();
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"message":"oops"}', { status: 500 })));
-
-    await expect(
-      installationRequestFor(env, '155142960', 'timc0y', async () => {
-        throw new Error('must never remember on a non-auth failure');
-      })
-    ).rejects.toMatchObject({ code: 'FORGE_UPSTREAM_UNAVAILABLE' });
+    await (await githubUserRequest({} as Env, 'synthetic-user-token'))('/repos/o/r');
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ cache: 'no-store' });
   });
 });
 

@@ -2,12 +2,8 @@ import type { Env } from './env';
 import { ForgeError } from './errors';
 
 /**
- * The only meter in the product.
- *
- * GitHub work costs Forge nothing: every user installs the App themselves, so
- * reads, commits and merges are metered against their own installation limit.
- * Capture is the one action that spends Forge's money, so it is the one action
- * with a number attached.
+ * The per-person capture-attempt ceiling. GitHub and inference have separate
+ * request budgets; browser attempts are counted before provider work begins.
  *
  * The preview is open to anyone. This limit is what makes that affordable — a
  * ceiling per person per day, rather than a gate that refuses everyone who
@@ -82,19 +78,4 @@ export async function reserveCaptureQuota(
     .bind(userId, day)
     .first<{ count: number }>();
   return { used: row?.count ?? 1, limit, unlimited: false, day };
-}
-
-/**
- * Give a reserved slot back only when no viewport succeeded. The reservation's
- * original UTC day is supplied so a failure that crosses midnight cannot
- * decrement the wrong day's counter.
- */
-export async function releaseCaptureQuota(env: Env, userId: string, day: string): Promise<void> {
-  await env.METADATA.prepare(
-    `UPDATE capture_usage
-        SET count = CASE WHEN count > 0 THEN count - 1 ELSE 0 END
-      WHERE user_id = ?1 AND day = ?2`
-  )
-    .bind(userId, day)
-    .run();
 }

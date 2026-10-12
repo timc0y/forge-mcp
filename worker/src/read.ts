@@ -99,22 +99,17 @@ export async function listRepos(
   query?: string
 ): Promise<Array<{ repo: string; description: string | null; defaultBranch: string; private: boolean; pushedAt: string }>> {
   const all: GitHubInstallationRepo[] = [];
-  // No Link-header parsing needed here: GitHub's installation-repositories
-  // list is a flat page walk, and a short final page is itself the stop
-  // signal.
-  for (let page = 1; ; page += 1) {
-    const response = await request(`/installation/repositories?per_page=100&page=${page}`);
+  // The GitHub App user token restricts this list to the intersection of user
+  // and App access; an installation token would bypass the user's rights.
+  for (let page = 1; page <= 10; page += 1) {
+    const response = await request(`/user/repos?per_page=100&page=${page}&sort=full_name`);
     if (response.status !== 200) {
-      throw upstreamUnavailable(response.status, 'listing repositories for this installation');
+      throw upstreamUnavailable(response.status, 'listing repositories reachable by this user and App');
     }
-    if (typeof response.json !== 'object' || response.json === null || Array.isArray(response.json)) {
+    if (!Array.isArray(response.json)) {
       throw unreadableGitHub('reading the repository list');
     }
-    const body = response.json as { repositories?: unknown };
-    if (!Array.isArray(body.repositories)) {
-      throw unreadableGitHub('reading the repository list');
-    }
-    const repositories = body.repositories.filter((value): value is GitHubInstallationRepo => {
+    const repositories = response.json.filter((value): value is GitHubInstallationRepo => {
       if (typeof value !== 'object' || value === null) return false;
       const row = value as Record<string, unknown>;
       const owner = typeof row.owner === 'object' && row.owner !== null
@@ -129,11 +124,12 @@ export async function listRepos(
         (typeof row.description === 'string' || row.description === null)
       );
     });
-    if (repositories.length !== body.repositories.length) {
+    if (repositories.length !== response.json.length) {
       throw unreadableGitHub('reading the repository list');
     }
     all.push(...repositories);
-    if (repositories.length < 100) break;
+    if (repositories.length < 100 && !/rel="next"/.test(response.headers.get('link') ?? '')) break;
+    if (page === 10) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: 'Repository discovery exceeded 1,000 repositories. No complete list or absence was inferred.' });
   }
 
   const needle = query?.toLowerCase();
@@ -479,11 +475,10 @@ export async function compare(
     return changed;
   });
 
-  // GitHub caps this endpoint at 300 files and signals more the way any
-  // paginated GitHub list does: a Link header with rel="next". It gives no
-  // cheap way to fetch the rest of a huge diff, so the honest move is to say
-  // it's incomplete rather than paginate a possibly enormous comparison.
-  const truncated = /rel="next"/.test(response.headers.get('Link') ?? '') || rawFiles.length > 300;
+  // Changed files are capped at 300 for the entire comparison. Link pagination
+  // describes commits, so a single large commit need not carry a next-page link.
+  // At the cap, completeness cannot be established from this response.
+  const truncated = /rel="next"/.test(response.headers.get('Link') ?? '') || rawFiles.length >= 300;
 
   return {
     // Same reasoning as the counts: an unrecognised status must not become a

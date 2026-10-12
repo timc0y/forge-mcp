@@ -1,18 +1,16 @@
 import type { ToolContext, ToolOutcome, Content } from './tool-types';
 import type { Viewport } from './contracts';
-import { capture } from './capture';
-import { reserveCaptureQuota, releaseCaptureQuota } from './quota';
+import { capture, validateCaptureRequest } from './capture';
+import { reserveCaptureQuota } from './quota';
 import { ForgeError } from './errors';
 
 export async function captureResult(ctx: ToolContext, url: string, requested: Viewport[] = ['phone', 'desktop']): Promise<ToolOutcome> {
   const viewports = [...new Set(requested.length ? requested : ['phone', 'desktop'] as Viewport[])];
+  validateCaptureRequest(url, viewports);
   const quota = await reserveCaptureQuota(ctx.env, ctx.identity.userId, ctx.identity.githubLogin);
-  let shot: Awaited<ReturnType<typeof capture>>;
-  try { shot = await capture(ctx.env, url, viewports); }
-  catch (error) {
-    if (!quota.unlimited && quota.day) await releaseCaptureQuota(ctx.env, ctx.identity.userId, quota.day).catch(() => console.error('forge_capture_quota_release_failed'));
-    throw error;
-  }
+  // A provider request can spend browser time even when its result is rejected
+  // locally. Count attempts after validation; never refund uncertain expenditure.
+  const shot = await capture(ctx.env, url, viewports);
   ctx.track('capture_taken', { requested: viewports.length, captured: shot.images.length, failures: shot.failures.length });
   const limits = shot.failures.map((entry) => `${entry.viewport}: ${entry.reason}`);
   limits.push('Each capture shows the top of the page, not the full scrollable page. The outline is observation, not an AI diagnosis.');

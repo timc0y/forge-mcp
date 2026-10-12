@@ -60,7 +60,7 @@
   },
 
   // Secrets, set with `wrangler secret put`, never in this file:
-  //   GITHUB_APP_PRIVATE_KEY, GITHUB_APP_CLIENT_SECRET,
+  //   GITHUB_APP_CLIENT_SECRET,
   //   FORGE_SIGNING_KEY, CLOUDFLARE_API_TOKEN, TYPESAFE_API_KEY
   //
   // CLOUDFLARE_API_TOKEN is scoped to Browser Rendering only. Capture goes

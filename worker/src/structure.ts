@@ -84,6 +84,13 @@ function markdownStructure(_path: string, text: string): Structure {
   const blocks: SourceBlock[] = [];
   const stack: Array<{ level: number; segment: string }> = [];
   const siblings = new Map<string, number>();
+  const firstHeading = headings[0]?.start;
+  if (firstHeading !== undefined && text.slice(0, firstHeading).trim()) {
+    const range = sourceRange(text, 0, firstHeading);
+    blocks.push({ name: '(preamble)', kind: 'MarkdownPreamble', range, signature: '(preamble)', text: text.slice(0, firstHeading) });
+    // Keep an actual heading named "(preamble)" independently addressable.
+    siblings.set('\0(preamble)', 1);
+  }
   for (let index = 0; index < headings.length; index++) {
     const heading = headings[index]!;
     while (stack.length && stack.at(-1)!.level >= heading.level) stack.pop();

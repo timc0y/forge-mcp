@@ -181,13 +181,9 @@ function isIpLiteral(hostname: string): boolean {
 }
 
 /**
- * The security boundary: Forge is an HTTP client aimed at whatever URL a chat
- * supplies, so this must refuse by default rather than pattern-match known
- * bad hosts. A bare IP literal skips DNS entirely and is exactly how SSRF
- * against cloud metadata endpoints and internal services works — banning the
- * whole class subsumes every specific private range (10.x, 172.16-31.x,
- * 192.168.x, 127.x, 169.254.x, ::1, fc00::/7, fe80::/10) without maintaining a
- * blocklist that a new encoding can slip past.
+ * Initial URL validation rejects credentials and all IP literal encodings.
+ * Hostname validation does not prove public DNS resolution or browser-network
+ * safety; those provider boundaries remain a release gate.
  */
 function assertPublicUrl(rawUrl: string): URL {
   let url: URL;
@@ -315,7 +311,7 @@ async function captureViewport(env: Env, url: URL, viewport: Viewport, remaining
   }
 }
 
-export async function capture(env: Env, url: string, viewports: Viewport[]): Promise<Capture> {
+export function validateCaptureRequest(url: string, viewports: Viewport[]): { target: URL; requestedViewports: Viewport[] } {
   if (viewports.length === 0) {
     throw new ForgeError({
       code: 'FORGE_VALIDATION_FAILED',
@@ -328,9 +324,14 @@ export async function capture(env: Env, url: string, viewports: Viewport[]): Pro
       message: 'At most three viewports can be captured in one call.'
     });
   }
-  const requestedViewports = [...new Set(viewports)];
+  if (viewports.some((viewport) => !Object.hasOwn(VIEWPORT_SIZES, viewport))) {
+    throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'Use phone, tablet or desktop viewports.' });
+  }
+  return { target: assertPublicUrl(url), requestedViewports: [...new Set(viewports)] };
+}
 
-  const target = assertPublicUrl(url);
+export async function capture(env: Env, url: string, viewports: Viewport[]): Promise<Capture> {
+  const { target, requestedViewports } = validateCaptureRequest(url, viewports);
   const deadline = Date.now() + CAPTURE_BUDGET_MS;
 
   // One request per viewport, fired together: a slow phone capture must not

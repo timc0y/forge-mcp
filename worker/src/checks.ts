@@ -69,7 +69,9 @@ export async function readChecks(gh: GitHubRequest, repo: RepoRef, sha: string):
       const count = object(row.output)?.annotations_count;
       if (kind !== 'check-run' || !numeric(count) || count === 0) continue;
       if (annotationReads++ >= 4) { report.limitations.push('Further check annotations omitted by the request budget.'); continue; }
-      const annotations = await gh(`${api}/check-runs/${row.id}/annotations?per_page=20`);
+      let annotations: Awaited<ReturnType<GitHubRequest>>;
+      try { annotations = await gh(`${api}/check-runs/${row.id}/annotations?per_page=20`); }
+      catch { report.limitations.push(`Annotations unavailable for check ${row.id}; check state remains available.`); continue; }
       if (annotations.status !== 200 || !Array.isArray(annotations.json)) { report.limitations.push(`Annotations unavailable for check ${row.id}.`); continue; }
       for (const rawAnnotation of annotations.json) {
         const a = object(rawAnnotation);

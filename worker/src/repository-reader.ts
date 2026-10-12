@@ -3,7 +3,7 @@ import { Snapshot, resolveCommit } from './snapshot';
 import { ForgeError, toForgeError } from './errors';
 import { CONTEXT_LIMITS, mapBounded, requirePath, requireSha, utf8Bytes } from './evidence';
 import { githubAddress, resolveRepositoryName } from './addresses';
-import { findChange, openChanges, openChangesTruncated } from './change';
+import { findChange, openChanges } from './change';
 import { compare, listRepos } from './read';
 import { discoverPublic } from './public-discovery';
 import { compileContext } from './context-compiler';
@@ -40,7 +40,6 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
   try {
     const changes = await openChanges(snapshot.gh, repo);
     names = changes.map((entry) => entry.name);
-    if (openChangesTruncated(changes)) changesLimits.push('The open-change list is bounded; additional changes may exist.');
   } catch (error) {
     changesLimits.push(`Open changes could not be listed: ${toForgeError(error).message}. Repository source/evidence remains pinned and authoritative.`);
   }
@@ -55,7 +54,7 @@ export async function readRepository(ctx: ToolContext, input: ReadInput): Promis
       baseSha,
       diff: { status: comparison.status, ahead: comparison.aheadBy, behind: comparison.behindBy, files: comparison.files.slice(0, 200).map((file) => ({ path: file.path, change: `${file.status} +${file.additions}/-${file.deletions}`, ...(file.patch !== undefined ? { patch: file.patch } : {}) })) },
       next: 'Use at="proposal" with paths to read actual proposal contents rather than patches.'
-    }, comparison.truncated ? ['GitHub comparison is incomplete.'] : []);
+    }, [...(comparison.truncated ? ['GitHub comparison is incomplete.'] : []), ...(comparison.files.length > 200 ? [`Returned change files are bounded to 200 of ${comparison.files.length} files provided by GitHub.`] : [])]);
   }
   if (paths?.length) {
     if (paths.length > 20) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: 'At most 20 exact source selections are accepted.' });

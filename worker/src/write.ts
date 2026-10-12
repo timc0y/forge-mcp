@@ -64,12 +64,7 @@ const WHOLE_FILE_REWRITE_BYTES = 8 * 1024;
  */
 const COMPARE_FILE_CAP = 300;
 
-/**
- * Every file Forge writes from a chat is a regular file. Trap: this rewrites an
- * existing 100755 entry as 100644, dropping its executable bit. Forge does not
- * run code, so nothing here depends on that bit; a caller that needs it must
- * not use this path.
- */
+/** New text files are regular; existing file modes come from the exact Git tree. */
 const BLOB_MODE = '100644';
 
 type GitHubResponse = Awaited<ReturnType<GitHubRequest>>;
@@ -177,7 +172,9 @@ export async function commitFiles(
       await assertNoOverlap(request, api, original, head, paths);
     }
 
-    const tree = await createTree(request, api, baseTree, entries, paths);
+    const modes = await readFileModes(request, api, baseTree, resolved.filter((file) => file.content !== null).map((file) => file.path));
+    const preservedEntries = entries.map((entry) => ({ ...entry, mode: modes.get(entry.path) ?? BLOB_MODE }));
+    const tree = await createTree(request, api, baseTree, preservedEntries, paths);
 
     // Identical tree: the content already matched. No commit, and say so.
     if (tree === baseTree) {
@@ -628,6 +625,42 @@ async function readCommitTree(request: GitHubRequest, api: string, commit: strin
   return sha;
 }
 
+/** Traverse exact non-recursive trees so large repository truncation cannot hide a file mode. */
+async function readFileModes(request: GitHubRequest, api: string, root: string, paths: string[]): Promise<Map<string, string>> {
+  type Entry = { path: string; mode: string; type: string; sha: string };
+  const trees = new Map<string, Promise<Entry[]>>();
+  const load = (sha: string): Promise<Entry[]> => {
+    const cached = trees.get(sha);
+    if (cached) return cached;
+    const reading = (async () => {
+      const response = await request(`${api}/git/trees/${sha}`);
+      if (response.status !== 200) throw githubError(response, 'file mode read');
+      const body = response.json as { tree?: unknown; truncated?: unknown } | null;
+      if (!Array.isArray(body?.tree) || body?.truncated === true || body.tree.some((entry) => !isRecord(entry) || typeof entry.path !== 'string' || typeof entry.mode !== 'string' || typeof entry.type !== 'string' || typeof entry.sha !== 'string')) throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: 'GitHub did not provide complete file-mode evidence. Nothing was committed.' });
+      return body.tree as Entry[];
+    })();
+    trees.set(sha, reading);
+    return reading;
+  };
+  const result = new Map<string, string>();
+  await Promise.all(paths.map(async (path) => {
+    const segments = path.split('/');
+    let tree = root;
+    for (let index = 0; index < segments.length; index += 1) {
+      const entry = (await load(tree)).find((entry) => entry.path === segments[index]);
+      if (!entry) return;
+      if (index < segments.length - 1) {
+        if (entry.type !== 'tree') throw new ForgeError({ code: 'FORGE_CONFLICT', message: `${path} has a parent that is not a directory.` });
+        tree = entry.sha;
+      } else {
+        if (entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)) throw new ForgeError({ code: 'FORGE_VALIDATION_FAILED', message: `${path} is not a regular file; Forge will not replace a symlink or submodule.` });
+        result.set(path, entry.mode);
+      }
+    }
+  }));
+  return result;
+}
+
 async function createTree(
   request: GitHubRequest,
   api: string,
@@ -869,7 +902,7 @@ async function assertNoOverlap(
     });
   }
   const body = response.json as { files?: unknown };
-  if (!Array.isArray(body.files) || body.files.some((file) => typeof file !== 'object' || file === null)) {
+  if (!Array.isArray(body.files) || body.files.some((file) => !isRecord(file) || typeof file.filename !== 'string' || (file.previous_filename !== undefined && typeof file.previous_filename !== 'string'))) {
     throw new ForgeError({
       code: 'FORGE_CONFLICT',
       message:
@@ -878,7 +911,7 @@ async function assertNoOverlap(
       details: { paths, from, to }
     });
   }
-  const files = body.files as Array<{ filename?: unknown }>;
+  const files = body.files as Array<{ filename?: unknown; previous_filename?: unknown }>;
 
   if (files.length >= COMPARE_FILE_CAP) {
     throw new ForgeError({
@@ -891,7 +924,7 @@ async function assertNoOverlap(
   }
 
   const changed = new Set(
-    files.map((file) => file.filename).filter((name): name is string => typeof name === 'string')
+    files.flatMap((file) => [file.filename, file.previous_filename]).filter((name): name is string => typeof name === 'string')
   );
   const collisions = paths.filter((path) => changed.has(path));
   if (collisions.length > 0) {
