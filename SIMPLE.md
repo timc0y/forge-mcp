@@ -148,6 +148,10 @@ post-deploy smoke must be proven before describing V2 as deployed.
   change is made and diffed, a public page is captured, and the change is merged
   or discarded — each step useful even if the chat sends nothing further.
 
+## Cloudflare framework fit — 15 October 2026 (source review)
+
+Forge is an MCP/GitHub authoring handoff, not a frontend app or execution platform. Keep its five-tool surface, GitHub durability, existing Worker and JEV route. Void infrastructure inference or a full-stack UI would add state and deployment ownership without solving the product job. Treat TypeScript compiler/parser API consumers separately from any TypeScript 7 or Vite+ trial; prove parsing, exact-SHA reads, the fixed five-tool catalog, OAuth/authority checks and real production smoke before accepting a replacement. No resource mutation or new service follows from this dated review.
+
 ## Reconsider when
 
 - Someone needs to run code inside Forge again.
