@@ -5,19 +5,27 @@ For whoever runs the deployment. If you only want to *use* Forge, read
 
 ## What is deployed
 
-Production **2.0.1** was deployed on 23 October 2026 from source `5ad83f4`.
-Cloudflare version `5777ec89-1dda-4ec3-9549-19b908485cc6` is the current deployment;
-its tag and message identify the source commit. TypeScript, 189 tests and all
-44 production HTTP/OAuth smoke checks passed. Worker startup was 170 ms.
-The previous production version is `cd2b4360-ba7d-41c3-8671-5ba4dd8c4ce3`.
+Production **2.0.2** first deployed on 23 October 2026 from source `5334759`,
+Cloudflare version `0c2baf94-fa2b-45a5-bcda-70bdce978d7d`. Its tag and message
+identify the source commit. TypeScript, 190 tests and all 44 production HTTP/OAuth
+smoke checks passed. Worker startup was 158 ms. The preceding production version
+was `5777ec89-1dda-4ec3-9549-19b908485cc6` (2.0.1).
 
-Semantic requests were failing before inference because Workers rejects
-`redirect: 'error'` with a TypeError. A local Workers-runtime check reproduced
-that rejection. JEV now uses `manual`; non-success responses, including redirects,
-remain explicit failures without following another route. A live question about
-Personal's PostHog initialization returned the owning provider and layout source,
-with three JEV stages and bounded coverage. Larger questions can still return
-`insufficient` when mandatory evidence exceeds the output budget.
+The earlier transport repair remains: Workers rejects `redirect: 'error'` before
+inference, so JEV uses `manual` and refuses non-success/redirect responses without
+following another route. The context compiler now offers one representative from
+each selected file before additional blocks, asks JEV which evidence directly
+answers the task, and retains that primary body before related callers and tests.
+The nominal output allowance is 20 KiB; the hard response ceiling remains 32 KiB.
+No provider fallback or automatic inference retry was introduced.
+
+At immutable source `1056c7c`, the configured hosted JEV route returned bounded
+packets containing the complete owners for tool registration, capture daily-limit
+enforcement and GitHub user-token refresh. Production at `5334759` also returned
+bounded source evidence for these three tasks, alongside a successful exact README
+read. These are three known-task checks, not a held-out relevance benchmark.
+Broader tasks can still return explicit `insufficient`; keep coverage evaluation
+open. The public page now states the private-preview installation restriction.
 
 Live Forge reads of `timc0y/rule-of-odds` verified ledger lines 1–6, continuation
 through 7–12 at the same commit, and the final line without a further continuation.

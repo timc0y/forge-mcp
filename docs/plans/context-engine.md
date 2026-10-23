@@ -1,6 +1,6 @@
 # Forge context engine
 
-Status: active V2 architecture; source implementation is complete on the Forge review change, with deployment evidence still required.
+Status: deployed V2 architecture. Version 2.0.2 first deployed from `5334759` on 23 October 2026; [Operations](../operating-forge.md) records release and known-task evidence. Held-out relevance and broad-task coverage remain open.
 Owner instruction: Tim, 20 September 2026.
 Source baseline: `main` at abbreviated commit `9b6c2c6`, inspected through Forge.
 
