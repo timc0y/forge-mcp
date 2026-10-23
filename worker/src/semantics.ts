@@ -111,8 +111,13 @@ export async function evaluate(
   if (utf8Bytes(body) > 96 * 1024) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: 'JEV stage exceeds its input budget.' });
   let response: Response;
   try {
-    response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.TYPESAFE_API_KEY}` }, body, redirect: 'error', signal: AbortSignal.timeout(Math.min(6000, budget.remaining())) });
-  } catch { invalid('the request timed out or the transport failed'); }
+    // Workers rejects redirect: 'error' before sending the request. Manual mode
+    // preserves the single-route policy; the status check below refuses 3xx.
+    response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.TYPESAFE_API_KEY}` }, body, redirect: 'manual', signal: AbortSignal.timeout(Math.min(6000, budget.remaining())) });
+  } catch (error) {
+    const reason = error instanceof Error && ['TimeoutError', 'AbortError', 'TypeError'].includes(error.name) ? error.name : 'Error';
+    invalid(`the request timed out or the transport failed (${reason})`);
+  }
   if (!response.ok) {
     throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: `JEV returned HTTP ${response.status}. No automatic retry or substitute was used.`, details: { retryAfter: response.headers.get('retry-after') } });
   }
