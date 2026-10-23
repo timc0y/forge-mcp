@@ -5,12 +5,19 @@ For whoever runs the deployment. If you only want to *use* Forge, read
 
 ## What is deployed
 
-Production **2.0.1** was deployed on 12 October 2026 from source `8bb0ca6`.
-Cloudflare version `cd2b4360-ba7d-41c3-8671-5ba4dd8c4ce3` is the current deployment;
-its tag and message identify the source commit. TypeScript, 188 tests, GitHub CI
-and all 44 production HTTP/OAuth smoke checks passed. Worker startup was 188 ms.
-Local startup profiling timed out; the same commit's GitHub CI startup check passed.
-The previous production version is `d61d7d1f-e1b2-4a98-a725-ed7c5aae76bd`.
+Production **2.0.1** was deployed on 23 October 2026 from source `5ad83f4`.
+Cloudflare version `5777ec89-1dda-4ec3-9549-19b908485cc6` is the current deployment;
+its tag and message identify the source commit. TypeScript, 189 tests and all
+44 production HTTP/OAuth smoke checks passed. Worker startup was 170 ms.
+The previous production version is `cd2b4360-ba7d-41c3-8671-5ba4dd8c4ce3`.
+
+Semantic requests were failing before inference because Workers rejects
+`redirect: 'error'` with a TypeError. A local Workers-runtime check reproduced
+that rejection. JEV now uses `manual`; non-success responses, including redirects,
+remain explicit failures without following another route. A live question about
+Personal's PostHog initialization returned the owning provider and layout source,
+with three JEV stages and bounded coverage. Larger questions can still return
+`insufficient` when mandatory evidence exceeds the output budget.
 
 Live Forge reads of `timc0y/rule-of-odds` verified ledger lines 1–6, continuation
 through 7–12 at the same commit, and the final line without a further continuation.
