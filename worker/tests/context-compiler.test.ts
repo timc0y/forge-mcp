@@ -91,7 +91,8 @@ describe('task-shaped context compilation', () => {
         answers.target = { type: 'choice', choice: testId, confidence: 0.9, probabilities: distribution(targets, testId) };
       } else {
         for (const id of Object.keys(questions)) {
-          if (id.startsWith('relevant_')) answers[id] = { type: 'noul', noul: 0.95 };
+          if (id.startsWith('primary_')) answers[id] = { type: 'noul', noul: state.candidates[Number(id.split('_')[1])]?.path === 'src/core.ts' ? 0.99 : 0.01 };
+          else if (id.startsWith('relevant_')) answers[id] = { type: 'noul', noul: 0.95 };
           else if (id.startsWith('counter_')) answers[id] = { type: 'noul', noul: 0.2 };
           else answers[id] = { type: 'choice', choice: 'body', confidence: 0.9, probabilities: { body: 0.9, outline: 0.1 } };
         }
@@ -151,7 +152,8 @@ describe('task-shaped context compilation', () => {
         answers.target = { type: 'choice', choice: 'none', confidence: 0.9, probabilities: distribution(Object.keys(questions.target.criteria), 'none') };
       } else {
         for (const [id] of Object.entries(questions)) {
-          if (id.startsWith('relevant_')) answers[id] = { type: 'noul', noul: rejectEvidence ? 0.01 : 0.99 };
+          if (id.startsWith('primary_')) answers[id] = { type: 'noul', noul: rejectEvidence ? 0.01 : 0.99 };
+          else if (id.startsWith('relevant_')) answers[id] = { type: 'noul', noul: rejectEvidence ? 0.01 : 0.99 };
           else if (id.startsWith('counter_')) answers[id] = { type: 'noul', noul: 0.1 };
           else answers[id] = { type: 'choice', choice: 'body', confidence: 0.9, probabilities: { body: 0.9, outline: 0.1 } };
         }

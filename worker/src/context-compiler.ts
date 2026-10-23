@@ -7,7 +7,7 @@ import { evaluate, choice, noul, redactSemanticText, type Question, type Evaluat
 import { packEvidence } from './context-packing';
 import { scanArchive } from './archive';
 
-const TEMPLATE = 'forge-context/v1';
+const TEMPLATE = 'forge-context/v2';
 const EXCLUDED = /(?:^|\/)(?:node_modules|vendor|dist|build|\.git|\.env(?:\.[^/]*)?|\.dev\.vars(?:\.[^/]*)?)(?:\/|$)|(?:\.min\.[jt]s|\.map|\.lock|pnpm-lock\.yaml|package-lock\.json)$/;
 function category(path: string): Evidence['category'] {
   if (/(?:^|\/)(?:AGENTS|SIMPLE)\.md$/.test(path)) return 'instruction';
@@ -217,23 +217,32 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
     }
   }
   const instructions = evidence.filter((item) => item.mandatory);
-  const candidates = evidence.filter((item) => !item.mandatory).sort((a, b) => relevance(b.text, words) - relevance(a.text, words)).slice(0, 24);
+  const rankedBlocks = evidence.filter((item) => !item.mandatory).sort((a, b) => relevance(b.text, words) - relevance(a.text, words));
+  // Let JEV see each selected file before repeated blocks from one caller or test fill the stage.
+  const firstByPath = new Map<string, Evidence>();
+  for (const item of rankedBlocks) if (!firstByPath.has(item.path)) firstByPath.set(item.path, item);
+  const candidates = [...firstByPath.values(), ...rankedBlocks.filter((item) => firstByPath.get(item.path) !== item)].slice(0, 24);
   if (!candidates.length) return { source: snapshot.identity, status: 'insufficient', limitations: [...limitations, 'No implementation blocks could be selected.'] };
   const questions: Record<string, Question> = {};
   candidates.forEach((item, index) => {
     questions[`relevant_${index}`] = { type: 'noul', instructions: `Does evidence candidate ${item.id} materially help answer the stated task?` };
-    questions[`counter_${index}`] = { type: 'noul', instructions: `Does evidence candidate ${item.id} contain a failure path, mandatory constraint, retained consumer or counter-evidence that could invalidate a tempting simplification?` };
+    questions[`primary_${index}`] = { type: 'noul', instructions: `Does candidate ${item.id} directly supply the information requested by the stated task? Rate incidental mentions low. A caller or test is primary only when it directly supplies the requested information.` };
+    questions[`counter_${index}`] = { type: 'noul', instructions: `Would omitting evidence candidate ${item.id} materially change the answer to the stated task because it contains a necessary constraint or contradictory evidence? Unrelated guards, tests and failure handling are not counter-evidence merely because they exist.` };
     questions[`detail_${index}`] = { type: 'choice', instructions: `For evidence candidate ${item.id}, is full source logic required? Keep guards, exception handling, persistence, cleanup and target implementations complete.`, criteria: { body: 'Complete source block is required', outline: 'Only an off-path API signature is required' } };
   });
   const ranked = await evaluate(env, { goal: redactSemanticText(goal), candidates: candidates.map((item) => ({ id: item.id, path: redactSemanticText(item.path), category: item.category, text: semanticPreview(item.text), previewOnly: item.text.length > 2500 })) }, questions, `${TEMPLATE}/evidence`, snapshot.budget, snapshot.identity.private);
   judgments.push(ranked);
+  const primary = candidates.map((item, index) => ({ id: item.id, score: noul(ranked, `primary_${index}`) }))
+    .filter((item) => item.score >= 0.65)
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))[0]?.id ?? 'none';
   const included: Evidence[] = [...instructions];
-  candidates.forEach((item, index) => {
+  const judged = candidates.map((item, index) => ({ item, index })).sort((a, b) => Number(b.item.id === primary) - Number(a.item.id === primary));
+  judged.forEach(({ item, index }) => {
     const relevance = noul(ranked, `relevant_${index}`);
     const counterEvidence = noul(ranked, `counter_${index}`);
     if (relevance < 0.35 && counterEvidence < 0.65) return;
     // A full target block and material counter-evidence are never reduced to signatures.
-    const full = index === 0 || counterEvidence >= 0.65 || item.category === 'test' || choice(ranked, `detail_${index}`).choice === 'body';
+    const full = item.id === primary || counterEvidence >= 0.65 || item.category === 'test' || choice(ranked, `detail_${index}`).choice === 'body';
     let text = item.text;
     let representation: Evidence['representation'] = 'body';
     if (!full && item.range) {
@@ -241,7 +250,7 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
       const block = structure.blocks.find((block) => block.range.start === item.range!.start && block.range.end === item.range!.end);
       if (block) { text = block.signature; representation = 'outline'; }
     }
-    included.push({ ...item, text, representation, relevance, counterEvidence, mandatory: index === 0 || counterEvidence >= 0.8 });
+    included.push({ ...item, text, representation, relevance, counterEvidence, mandatory: item.id === primary || counterEvidence >= 0.8 });
   });
   const neighborPaths = [...neighbors].sort((a, b) => (sketchByPath.get(b)?.lexical ?? 0) - (sketchByPath.get(a)?.lexical ?? 0) || a.localeCompare(b)).slice(0, 20);
   if (neighborPaths.length) {
@@ -285,7 +294,7 @@ export async function compileContext(snapshot: Snapshot, env: Env, goal: string)
   const packet = {
     source: snapshot.identity,
     goal,
-    status: packed.missingMandatory || !packed.items.some((item) => item.category !== 'instruction') ? 'insufficient' : 'bounded',
+    status: primary === 'none' || packed.missingMandatory || !packed.items.some((item) => item.id === primary) ? 'insufficient' : 'bounded',
     evidence: packed.items.map(({ source: _source, ...item }) => item),
     relationships: relationships.slice(0, 24),
     omitted: packed.omitted.slice(0, 24),

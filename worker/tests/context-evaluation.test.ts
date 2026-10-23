@@ -122,6 +122,42 @@ function github(files: Record<string, string>): GitHubRequest {
 afterEach(() => { globalThis.fetch = originalFetch; });
 
 describe('30-case deterministic context plumbing evaluation', () => {
+  it('keeps a direct implementation visible when repeated caller blocks dominate lexical matches', async () => {
+    const files: Record<string, string> = {
+      'AGENTS.md': 'Preserve immutable source and complete constraints.\n',
+      'src/owner.ts': 'export function configure() { return ["read", "edit", "see", "merge", "discard"]; }\n',
+    };
+    for (let index = 0; index < 11; index++) {
+      files[`src/caller-${index}.ts`] = Array.from({ length: 8 }, (_, block) =>
+        `export function mention${block}() { return "five tools registered five tools registered"; }\n`).join('');
+    }
+    let ownerWasOffered = false;
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      const { input } = JSON.parse(String(init?.body));
+      const { state, questions } = input;
+      const answers: Record<string, unknown> = {};
+      if (state.candidates[0]?.symbols !== undefined) {
+        for (const key of Object.keys(questions)) answers[key] = { type: 'noul', noul: state.candidates[Number(key.split('_')[1])]?.path === 'AGENTS.md' ? 0.01 : 0.9 };
+      } else {
+        ownerWasOffered = state.candidates.some((entry: any) => entry.path === 'src/owner.ts');
+        for (const key of Object.keys(questions)) {
+          const candidate = state.candidates[Number(key.split('_')[1])];
+          if (key.startsWith('primary_')) answers[key] = { type: 'noul', noul: candidate?.path === 'src/owner.ts' ? 0.99 : 0.01 };
+          else if (key.startsWith('counter_')) answers[key] = { type: 'noul', noul: 0.01 };
+          else if (key.startsWith('relevant_')) answers[key] = { type: 'noul', noul: 0.9 };
+          else answers[key] = { type: 'choice', choice: 'body', confidence: 0.9, probabilities: { body: 0.9, outline: 0.1 } };
+        }
+      }
+      return Response.json({ success: true, errors: [], messages: [], result: { state: 'Completed', result: { model: 'jev-1.13.0', answers } } });
+    }) as typeof fetch;
+    const packet = await compileContext(await Snapshot.open(github(files), { owner: 'eval', name: 'repo' }), {
+      TYPESAFE_API_KEY: 'key', TYPESAFE_BASE_URL: 'https://api.cloudflare.com/client/v4/accounts/' + 'a'.repeat(32) + '/ai/run',
+    } as Env, 'Where are the five tools registered?') as any;
+    expect(ownerWasOffered).toBe(true);
+    expect(packet.status).toBe('bounded');
+    expect(packet.evidence).toContainEqual(expect.objectContaining({ selector: 'src/owner.ts::symbol:configure', mandatory: true, text: files['src/owner.ts']!.trim() }));
+  });
+
   it('meets the context/call budget while retaining gold target and failure-test evidence', async () => {
     const ratios: number[] = [];
     for (let caseIndex = 0; caseIndex < CASES.length; caseIndex++) {
@@ -162,7 +198,9 @@ describe('30-case deterministic context plumbing evaluation', () => {
             const index = Number(key.split('_')[1]);
             const candidate = state.candidates[index];
             const isTarget = String(candidate?.text ?? '').includes(marker);
-            if (key.startsWith('relevant_')) {
+            if (key.startsWith('primary_')) {
+              answers[key] = { type: 'noul', noul: state.candidates[index]?.path === 'src/core.ts' ? 0.99 : 0.01 };
+            } else if (key.startsWith('relevant_')) {
               answers[key] = { type: 'noul', noul: isTarget ? 0.99 : 0.01 };
             } else if (key.startsWith('counter_')) {
               answers[key] = { type: 'noul', noul: isTarget ? 0.7 : 0.01 };

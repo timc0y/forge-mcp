@@ -46,7 +46,7 @@ export const CONTEXT_LIMITS = Object.freeze({
   parseBytes: 256 * 1024,
   sourceBytes: 1024 * 1024,
   retainedBytes: 2 * 1024 * 1024,
-  outputBytes: 16 * 1024,
+  outputBytes: 20 * 1024,
   maxOutputBytes: 32 * 1024,
   compressedBytes: 20 * 1024 * 1024,
   unpackedBytes: 40 * 1024 * 1024,
