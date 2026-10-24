@@ -1,0 +1,49 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Copy to wrangler.self-host.jsonc. This file never uses the maintainer's config.
+  "name": "forge-self-host",
+  "account_id": "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "build": { "command": "node scripts/build-parser.mjs" },
+  "alias": { "typescript": "./.wrangler/typescript-parser.mjs" },
+  "rules": [
+    { "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
+    { "type": "Data", "globs": ["**/*.ttf"], "fallthrough": true }
+  ],
+  "workers_dev": true,
+  "routes": [],
+  // Decide log retention and disclose it before accepting other people's data.
+  "observability": { "enabled": false },
+  "vars": {
+    "FORGE_ENVIRONMENT": "production",
+    // Only these GitHub accounts can connect, including with existing tokens.
+    "FORGE_ALLOWED_LOGINS": "REPLACE_WITH_OWN_GITHUB_LOGIN",
+    "FORGE_PUBLIC_ORIGIN": "https://forge-self-host.REPLACE_WITH_WORKERS_SUBDOMAIN.workers.dev",
+    "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,grok.com,cursor.com,vscode.dev,oauth-redirect.googleusercontent.com,localhost,127.0.0.1",
+    "GITHUB_APP_CLIENT_ID": "REPLACE_WITH_GITHUB_APP_CLIENT_ID",
+    "GITHUB_APP_SLUG": "REPLACE_WITH_GITHUB_APP_SLUG",
+    "CLOUDFLARE_ACCOUNT_ID": "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID",
+    "FORGE_CAPTURE_DAILY_LIMIT": "30",
+    // Only explicitly enabled, consenting accounts may invoke public capture.
+    "FORGE_CAPTURE_ALLOWED_LOGINS": "REPLACE_WITH_OWN_GITHUB_LOGIN",
+    "FORGE_SEMANTIC_DAILY_CALL_LIMIT": "200",
+    "FORGE_SEMANTIC_MAX_CONCURRENCY": "4",
+    // Explicit operator policy. Change only after disclosing the processor.
+    "FORGE_JEV_PRIVATE_SOURCE": "deny",
+    "TYPESAFE_BASE_URL": "https://api.cloudflare.com/client/v4/accounts/REPLACE_WITH_JEV_CLOUDFLARE_ACCOUNT_ID/ai/run"
+  },
+  // Set GITHUB_APP_CLIENT_SECRET, FORGE_SIGNING_KEY, CLOUDFLARE_API_TOKEN and
+  // TYPESAFE_API_KEY as secrets. No private key or capture-quota exemption.
+  "d1_databases": [{
+    "binding": "METADATA",
+    "database_name": "REPLACE_WITH_OWN_D1_DATABASE_NAME",
+    "database_id": "REPLACE_WITH_OWN_D1_DATABASE_ID",
+    "migrations_dir": "migrations"
+  }],
+  "durable_objects": {
+    "bindings": [{ "class_name": "ForgeMcpSession", "name": "MCP_SESSIONS" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ForgeMcpSession"] }]
+}

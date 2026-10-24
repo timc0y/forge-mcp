@@ -1,0 +1,127 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "forge",
+  // Two accounts are reachable from this login; naming one keeps deploys from
+  // depending on whichever happens to be selected.
+  "account_id": "04d3e478b1ddf0f5147120cacbf430de",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "build": { "command": "node scripts/build-parser.mjs" },
+  "alias": { "typescript": "./.wrangler/typescript-parser.mjs" },
+  "rules": [
+    { "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
+    { "type": "Data", "globs": ["**/*.ttf"], "fallthrough": true }
+  ],
+
+  // No cron. Nothing here needs sweeping, because nothing is allocated that
+  // could leak: no containers, no slots, no workspaces to reap.
+
+  // Served at a path on an existing site, not on its own hostname.
+  //
+  // The trailing `*` on the mount point is load-bearing, not tidiness: an exact
+  // route matches the path only, so `timcoy.uk/forge` does NOT match
+  // `timcoy.uk/forge?installation_id=1`, and GitHub always appends a query when
+  // it returns someone from installing the App. Without the wildcard that
+  // redirect fell through to the site's own 404.
+  "routes": [
+    { "pattern": "timcoy.uk/forge*", "zone_name": "timcoy.uk" },
+    { "pattern": "timcoy.uk/forge/*", "zone_name": "timcoy.uk" },
+    // RFC 8414 puts the well-known segment before the path, so these land
+    // outside /forge. Scoped to the two exact prefixes rather than
+    // /.well-known/* so the rest of the site keeps its own.
+    { "pattern": "timcoy.uk/.well-known/oauth-protected-resource/*", "zone_name": "timcoy.uk" },
+    { "pattern": "timcoy.uk/.well-known/oauth-authorization-server/*", "zone_name": "timcoy.uk" }
+  ],
+
+  // Kept on so the workers.dev URL stays available as a fallback while the
+  // route is being proven.
+  "workers_dev": true,
+
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": true }
+  },
+  "upload_source_maps": true,
+
+  "vars": {
+    "FORGE_ENVIRONMENT": "production",
+    "FORGE_ALLOWED_LOGINS": "timc0y",
+    // Not forge.timcoy.uk — that hostname still serves Forge 1. OAuth redirects
+    // and approval links are minted from this value, and the router derives its
+    // mount path from it, so the path here is load-bearing rather than cosmetic.
+    "FORGE_PUBLIC_ORIGIN": "https://timcoy.uk/forge",
+    "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,grok.com,cursor.com,vscode.dev,oauth-redirect.googleusercontent.com,localhost,127.0.0.1",
+    "GITHUB_APP_ID": "4658328",
+    "GITHUB_APP_CLIENT_ID": "Iv23limnLx32EUIdhl3Y",
+    "GITHUB_APP_SLUG": "forge-mcp-github-app",
+    "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
+    "FORGE_CAPTURE_DAILY_LIMIT": "30",
+    "FORGE_CAPTURE_ALLOWED_LOGINS": "timc0y",
+    "FORGE_SEMANTIC_DAILY_CALL_LIMIT": "200",
+    "FORGE_SEMANTIC_MAX_CONCURRENCY": "4",
+    // The operator's own escape hatch from the daily limit. Not a tier: there
+    // is no path inside the product that grants it.
+    "FORGE_UNLIMITED_LOGINS": "timc0y",
+    "FORGE_JEV_PRIVATE_SOURCE": "allow",
+    "TYPESAFE_BASE_URL": "https://api.cloudflare.com/client/v4/accounts/d6784b5908746881ddb313d17efd5cc2/ai/run"
+  },
+
+  // Secrets, set with `wrangler secret put`, never in this file:
+  //   GITHUB_APP_CLIENT_SECRET,
+  //   FORGE_SIGNING_KEY, CLOUDFLARE_API_TOKEN, TYPESAFE_API_KEY
+  //
+  // CLOUDFLARE_API_TOKEN is scoped to Browser Rendering only. Capture goes
+  // through the REST Quick Action rather than a `browser` binding: Quick
+  // Actions bill browser hours alone, while binding-driven sessions also bill
+  // per concurrent browser.
+
+  "d1_databases": [
+    {
+      "binding": "METADATA",
+      "database_name": "forge-v1-production",
+      "database_id": "403cb9a9-cac2-424e-a075-905c49fc3306",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [{ "class_name": "ForgeMcpSession", "name": "MCP_SESSIONS" }]
+  },
+
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ForgeMcpSession"] }],
+
+  "env": {
+    "development": {
+      "name": "forge-development",
+      "workers_dev": true,
+      "vars": {
+        "FORGE_ENVIRONMENT": "development",
+        "FORGE_ALLOWED_LOGINS": "timc0y",
+        "FORGE_PUBLIC_ORIGIN": "https://forge-development.timcoy72.workers.dev",
+        "FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS": "chatgpt.com,openai.com,claude.ai,anthropic.com,grok.com,cursor.com,vscode.dev,oauth-redirect.googleusercontent.com,localhost,127.0.0.1",
+        "GITHUB_APP_ID": "4658328",
+        "GITHUB_APP_CLIENT_ID": "Iv23limnLx32EUIdhl3Y",
+        "GITHUB_APP_SLUG": "forge-mcp-github-app",
+        "CLOUDFLARE_ACCOUNT_ID": "04d3e478b1ddf0f5147120cacbf430de",
+        "FORGE_CAPTURE_DAILY_LIMIT": "30",
+        "FORGE_CAPTURE_ALLOWED_LOGINS": "timc0y",
+        "FORGE_SEMANTIC_DAILY_CALL_LIMIT": "200",
+        "FORGE_SEMANTIC_MAX_CONCURRENCY": "4",
+        "FORGE_UNLIMITED_LOGINS": "timc0y",
+        "FORGE_JEV_PRIVATE_SOURCE": "allow"
+      },
+      "d1_databases": [
+        {
+          "binding": "METADATA",
+          "database_name": "forge-v1-development",
+          "database_id": "366320dc-0d18-46c9-86cc-6713a51f295b",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [{ "class_name": "ForgeMcpSession", "name": "MCP_SESSIONS" }]
+      }
+    }
+  }
+}

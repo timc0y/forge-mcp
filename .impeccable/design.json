@@ -1,0 +1,529 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-23T22:24:27Z",
+  "title": "Design System: Forge",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Annotation blue",
+        "tonalRamp": [
+          "oklch(15.000% 0.24094 266.093)",
+          "oklch(26.429% 0.24094 266.093)",
+          "oklch(37.857% 0.24094 266.093)",
+          "oklch(49.286% 0.24094 266.093)",
+          "oklch(60.714% 0.24094 266.093)",
+          "oklch(72.143% 0.24094 266.093)",
+          "oklch(83.571% 0.24094 266.093)",
+          "oklch(95.000% 0.24094 266.093)"
+        ]
+      },
+      "primary-deep": {
+        "role": "primary",
+        "displayName": "Deep blue",
+        "tonalRamp": [
+          "oklch(15.000% 0.19236 266.131)",
+          "oklch(26.429% 0.19236 266.131)",
+          "oklch(37.857% 0.19236 266.131)",
+          "oklch(49.286% 0.19236 266.131)",
+          "oklch(60.714% 0.19236 266.131)",
+          "oklch(72.143% 0.19236 266.131)",
+          "oklch(83.571% 0.19236 266.131)",
+          "oklch(95.000% 0.19236 266.131)"
+        ]
+      },
+      "primary-wash": {
+        "role": "primary",
+        "displayName": "Blue wash",
+        "tonalRamp": [
+          "oklch(15.000% 0.01925 273.238)",
+          "oklch(26.429% 0.01925 273.238)",
+          "oklch(37.857% 0.01925 273.238)",
+          "oklch(49.286% 0.01925 273.238)",
+          "oklch(60.714% 0.01925 273.238)",
+          "oklch(72.143% 0.01925 273.238)",
+          "oklch(83.571% 0.01925 273.238)",
+          "oklch(95.000% 0.01925 273.238)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "White paper",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 0.000)",
+          "oklch(26.429% 0.00000 0.000)",
+          "oklch(37.857% 0.00000 0.000)",
+          "oklch(49.286% 0.00000 0.000)",
+          "oklch(60.714% 0.00000 0.000)",
+          "oklch(72.143% 0.00000 0.000)",
+          "oklch(83.571% 0.00000 0.000)",
+          "oklch(95.000% 0.00000 0.000)"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Pale panel",
+        "tonalRamp": [
+          "oklch(15.000% 0.00287 264.542)",
+          "oklch(26.429% 0.00287 264.542)",
+          "oklch(37.857% 0.00287 264.542)",
+          "oklch(49.286% 0.00287 264.542)",
+          "oklch(60.714% 0.00287 264.542)",
+          "oklch(72.143% 0.00287 264.542)",
+          "oklch(83.571% 0.00287 264.542)",
+          "oklch(95.000% 0.00287 264.542)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Charcoal ink",
+        "tonalRamp": [
+          "oklch(15.000% 0.00748 211.058)",
+          "oklch(26.429% 0.00748 211.058)",
+          "oklch(37.857% 0.00748 211.058)",
+          "oklch(49.286% 0.00748 211.058)",
+          "oklch(60.714% 0.00748 211.058)",
+          "oklch(72.143% 0.00748 211.058)",
+          "oklch(83.571% 0.00748 211.058)",
+          "oklch(95.000% 0.00748 211.058)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted grey",
+        "tonalRamp": [
+          "oklch(15.000% 0.01112 222.202)",
+          "oklch(26.429% 0.01112 222.202)",
+          "oklch(37.857% 0.01112 222.202)",
+          "oklch(49.286% 0.01112 222.202)",
+          "oklch(60.714% 0.01112 222.202)",
+          "oklch(72.143% 0.01112 222.202)",
+          "oklch(83.571% 0.01112 222.202)",
+          "oklch(95.000% 0.01112 222.202)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Divider grey",
+        "tonalRamp": [
+          "oklch(15.000% 0.00453 214.329)",
+          "oklch(26.429% 0.00453 214.329)",
+          "oklch(37.857% 0.00453 214.329)",
+          "oklch(49.286% 0.00453 214.329)",
+          "oklch(60.714% 0.00453 214.329)",
+          "oklch(72.143% 0.00453 214.329)",
+          "oklch(83.571% 0.00453 214.329)",
+          "oklch(95.000% 0.00453 214.329)"
+        ]
+      },
+      "operate-panel": {
+        "role": "neutral",
+        "displayName": "Operational pale panel",
+        "tonalRamp": [
+          "oklch(15.000% 0.00132 286.376)",
+          "oklch(26.429% 0.00132 286.376)",
+          "oklch(37.857% 0.00132 286.376)",
+          "oklch(49.286% 0.00132 286.376)",
+          "oklch(60.714% 0.00132 286.376)",
+          "oklch(72.143% 0.00132 286.376)",
+          "oklch(83.571% 0.00132 286.376)",
+          "oklch(95.000% 0.00132 286.376)"
+        ]
+      },
+      "operate-ink": {
+        "role": "neutral",
+        "displayName": "Operational ink",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 0.000)",
+          "oklch(26.429% 0.00000 0.000)",
+          "oklch(37.857% 0.00000 0.000)",
+          "oklch(49.286% 0.00000 0.000)",
+          "oklch(60.714% 0.00000 0.000)",
+          "oklch(72.143% 0.00000 0.000)",
+          "oklch(83.571% 0.00000 0.000)",
+          "oklch(95.000% 0.00000 0.000)"
+        ]
+      },
+      "operate-muted": {
+        "role": "neutral",
+        "displayName": "Operational muted grey",
+        "tonalRamp": [
+          "oklch(15.000% 0.02782 285.440)",
+          "oklch(26.429% 0.02782 285.440)",
+          "oklch(37.857% 0.02782 285.440)",
+          "oklch(49.286% 0.02782 285.440)",
+          "oklch(60.714% 0.02782 285.440)",
+          "oklch(72.143% 0.02782 285.440)",
+          "oklch(83.571% 0.02782 285.440)",
+          "oklch(95.000% 0.02782 285.440)"
+        ]
+      },
+      "operate-line": {
+        "role": "neutral",
+        "displayName": "Operational divider",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 0.000)",
+          "oklch(26.429% 0.00000 0.000)",
+          "oklch(37.857% 0.00000 0.000)",
+          "oklch(49.286% 0.00000 0.000)",
+          "oklch(60.714% 0.00000 0.000)",
+          "oklch(72.143% 0.00000 0.000)",
+          "oklch(83.571% 0.00000 0.000)",
+          "oklch(95.000% 0.00000 0.000)"
+        ]
+      },
+      "operate-dark-bg": {
+        "role": "neutral",
+        "displayName": "Operational dark page",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 0.000)",
+          "oklch(26.429% 0.00000 0.000)",
+          "oklch(37.857% 0.00000 0.000)",
+          "oklch(49.286% 0.00000 0.000)",
+          "oklch(60.714% 0.00000 0.000)",
+          "oklch(72.143% 0.00000 0.000)",
+          "oklch(83.571% 0.00000 0.000)",
+          "oklch(95.000% 0.00000 0.000)"
+        ]
+      },
+      "operate-dark-panel": {
+        "role": "neutral",
+        "displayName": "Operational dark panel",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 0.000)",
+          "oklch(26.429% 0.00000 0.000)",
+          "oklch(37.857% 0.00000 0.000)",
+          "oklch(49.286% 0.00000 0.000)",
+          "oklch(60.714% 0.00000 0.000)",
+          "oklch(72.143% 0.00000 0.000)",
+          "oklch(83.571% 0.00000 0.000)",
+          "oklch(95.000% 0.00000 0.000)"
+        ]
+      },
+      "operate-dark-ink": {
+        "role": "neutral",
+        "displayName": "Operational light ink",
+        "tonalRamp": [
+          "oklch(15.000% 0.00668 286.271)",
+          "oklch(26.429% 0.00668 286.271)",
+          "oklch(37.857% 0.00668 286.271)",
+          "oklch(49.286% 0.00668 286.271)",
+          "oklch(60.714% 0.00668 286.271)",
+          "oklch(72.143% 0.00668 286.271)",
+          "oklch(83.571% 0.00668 286.271)",
+          "oklch(95.000% 0.00668 286.271)"
+        ]
+      },
+      "operate-dark-muted": {
+        "role": "neutral",
+        "displayName": "Operational dark muted text",
+        "tonalRamp": [
+          "oklch(15.000% 0.01741 285.935)",
+          "oklch(26.429% 0.01741 285.935)",
+          "oklch(37.857% 0.01741 285.935)",
+          "oklch(49.286% 0.01741 285.935)",
+          "oklch(60.714% 0.01741 285.935)",
+          "oklch(72.143% 0.01741 285.935)",
+          "oklch(83.571% 0.01741 285.935)",
+          "oklch(95.000% 0.01741 285.935)"
+        ]
+      },
+      "operate-dark-line": {
+        "role": "neutral",
+        "displayName": "Operational dark divider",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 0.000)",
+          "oklch(26.429% 0.00000 0.000)",
+          "oklch(37.857% 0.00000 0.000)",
+          "oklch(49.286% 0.00000 0.000)",
+          "oklch(60.714% 0.00000 0.000)",
+          "oklch(72.143% 0.00000 0.000)",
+          "oklch(83.571% 0.00000 0.000)",
+          "oklch(95.000% 0.00000 0.000)"
+        ]
+      },
+      "success": {
+        "role": "secondary",
+        "displayName": "Success green",
+        "tonalRamp": [
+          "oklch(15.000% 0.13039 151.461)",
+          "oklch(26.429% 0.13039 151.461)",
+          "oklch(37.857% 0.13039 151.461)",
+          "oklch(49.286% 0.13039 151.461)",
+          "oklch(60.714% 0.13039 151.461)",
+          "oklch(72.143% 0.13039 151.461)",
+          "oklch(83.571% 0.13039 151.461)",
+          "oklch(95.000% 0.13039 151.461)"
+        ]
+      },
+      "success-bg": {
+        "role": "secondary",
+        "displayName": "Success wash",
+        "tonalRamp": [
+          "oklch(15.000% 0.01730 159.121)",
+          "oklch(26.429% 0.01730 159.121)",
+          "oklch(37.857% 0.01730 159.121)",
+          "oklch(49.286% 0.01730 159.121)",
+          "oklch(60.714% 0.01730 159.121)",
+          "oklch(72.143% 0.01730 159.121)",
+          "oklch(83.571% 0.01730 159.121)",
+          "oklch(95.000% 0.01730 159.121)"
+        ]
+      },
+      "error": {
+        "role": "secondary",
+        "displayName": "Error red",
+        "tonalRamp": [
+          "oklch(15.000% 0.18970 26.769)",
+          "oklch(26.429% 0.18970 26.769)",
+          "oklch(37.857% 0.18970 26.769)",
+          "oklch(49.286% 0.18970 26.769)",
+          "oklch(60.714% 0.18970 26.769)",
+          "oklch(72.143% 0.18970 26.769)",
+          "oklch(83.571% 0.18970 26.769)",
+          "oklch(95.000% 0.18970 26.769)"
+        ]
+      },
+      "error-bg": {
+        "role": "secondary",
+        "displayName": "Error wash",
+        "tonalRamp": [
+          "oklch(15.000% 0.01856 21.570)",
+          "oklch(26.429% 0.01856 21.570)",
+          "oklch(37.857% 0.01856 21.570)",
+          "oklch(49.286% 0.01856 21.570)",
+          "oklch(60.714% 0.01856 21.570)",
+          "oklch(72.143% 0.01856 21.570)",
+          "oklch(83.571% 0.01856 21.570)",
+          "oklch(95.000% 0.01856 21.570)"
+        ]
+      },
+      "success-dark": {
+        "role": "secondary",
+        "displayName": "Dark-theme success",
+        "tonalRamp": [
+          "oklch(15.000% 0.18206 151.711)",
+          "oklch(26.429% 0.18206 151.711)",
+          "oklch(37.857% 0.18206 151.711)",
+          "oklch(49.286% 0.18206 151.711)",
+          "oklch(60.714% 0.18206 151.711)",
+          "oklch(72.143% 0.18206 151.711)",
+          "oklch(83.571% 0.18206 151.711)",
+          "oklch(95.000% 0.18206 151.711)"
+        ]
+      },
+      "success-dark-bg": {
+        "role": "secondary",
+        "displayName": "Dark-theme success wash",
+        "tonalRamp": [
+          "oklch(15.000% 0.03074 162.275)",
+          "oklch(26.429% 0.03074 162.275)",
+          "oklch(37.857% 0.03074 162.275)",
+          "oklch(49.286% 0.03074 162.275)",
+          "oklch(60.714% 0.03074 162.275)",
+          "oklch(72.143% 0.03074 162.275)",
+          "oklch(83.571% 0.03074 162.275)",
+          "oklch(95.000% 0.03074 162.275)"
+        ]
+      },
+      "error-dark": {
+        "role": "secondary",
+        "displayName": "Dark-theme error",
+        "tonalRamp": [
+          "oklch(15.000% 0.16615 22.216)",
+          "oklch(26.429% 0.16615 22.216)",
+          "oklch(37.857% 0.16615 22.216)",
+          "oklch(49.286% 0.16615 22.216)",
+          "oklch(60.714% 0.16615 22.216)",
+          "oklch(72.143% 0.16615 22.216)",
+          "oklch(83.571% 0.16615 22.216)",
+          "oklch(95.000% 0.16615 22.216)"
+        ]
+      },
+      "error-dark-bg": {
+        "role": "secondary",
+        "displayName": "Dark-theme error wash",
+        "tonalRamp": [
+          "oklch(15.000% 0.03630 20.360)",
+          "oklch(26.429% 0.03630 20.360)",
+          "oklch(37.857% 0.03630 20.360)",
+          "oklch(49.286% 0.03630 20.360)",
+          "oklch(60.714% 0.03630 20.360)",
+          "oklch(72.143% 0.03630 20.360)",
+          "oklch(83.571% 0.03630 20.360)",
+          "oklch(95.000% 0.03630 20.360)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Public display",
+        "purpose": "Homepage proposition."
+      },
+      "display-mobile": {
+        "displayName": "Mobile public display",
+        "purpose": "Homepage proposition at 760px and below."
+      },
+      "headline": {
+        "displayName": "Public section headline",
+        "purpose": "Repeated homepage section headings."
+      },
+      "docs-title": {
+        "displayName": "Documentation title",
+        "purpose": "Document title; mobile override remains component-specific."
+      },
+      "docs-heading": {
+        "displayName": "Documentation heading",
+        "purpose": "Second-level document headings."
+      },
+      "body": {
+        "displayName": "Public paragraph baseline",
+        "purpose": "Inherited public body size and paragraph leading."
+      },
+      "docs-body": {
+        "displayName": "Documentation article",
+        "purpose": "Article container; paragraphs retain public paragraph leading."
+      },
+      "operate-body": {
+        "displayName": "Operational body",
+        "purpose": "Retained system-font task shell."
+      },
+      "mono": {
+        "displayName": "Repository monospace",
+        "purpose": "Source addresses and code."
+      }
+    },
+    "shadows": [
+      {
+        "name": "receipt-highlight",
+        "value": "0 4px 20px #2349e820",
+        "purpose": "Transient receipt highlight only; animates to 0 0 0 #2349e800. Resting panels have no shadow."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-transition",
+        "value": "background 140ms ease,border-color 140ms ease",
+        "purpose": "Inherited control state transition; removed for reduced motion."
+      },
+      {
+        "name": "receipt-highlight",
+        "value": "receipt 850ms cubic-bezier(.16,1,.3,1) both",
+        "purpose": "One receipt animation under prefers-reduced-motion:no-preference, from #e0e7ff to transparent."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "operate-actions-max",
+        "value": "640px"
+      },
+      {
+        "name": "public-stack-max",
+        "value": "760px"
+      },
+      {
+        "name": "handoff-compact-max",
+        "value": "1000px"
+      },
+      {
+        "name": "docs-contents-disclosure-max",
+        "value": "1150px"
+      },
+      {
+        "name": "docs-wide-gap-min",
+        "value": "1500px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Public primary button",
+      "kind": "button",
+      "description": "The blue setup action from the public shell.",
+      "html": "<a class=\"ds-public-button\" href=\"/forge/docs/self-hosting\">Run your own Forge <svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" aria-hidden=\"true\"><path d=\"M5 12h14M13 6l6 6-6 6\"/></svg></a>",
+      "css": ".ds-public-button{display:inline-flex;align-items:center;justify-content:center;gap:.65rem;min-height:48px;padding:.7rem 1.15rem;border:1px solid #2349e8;border-radius:7px;background:#2349e8;color:#fff;font:500 .91rem/1.6 Onest,ui-sans-serif,system-ui,sans-serif;text-decoration:none;cursor:pointer;transition:background 140ms ease,border-color 140ms ease}.ds-public-button:hover{background:#1835ad;border-color:#1835ad}.ds-public-button:focus-visible{outline:2px solid #2349e8;outline-offset:4px}.ds-public-button:active{transform:translateY(1px)}@media(prefers-reduced-motion:reduce){.ds-public-button{transition:none}}",
+      "refersTo": "button-public-primary"
+    },
+    {
+      "name": "Operational primary button",
+      "kind": "button",
+      "description": "Shared shell primary treatment; follows the system theme.",
+      "html": "<button class=\"ds-operate-primary\" type=\"button\">Continue</button>",
+      "css": ".ds-operate-primary{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:.55rem 1.05rem;border:1px solid var(--ink,#0d0d0d);border-radius:10px;background:var(--ink,#0d0d0d);color:var(--bg,#fff);font:500 16px/1.6 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif;cursor:pointer;transition:background 140ms ease,border-color 140ms ease}.ds-operate-primary:hover{opacity:.88;background:var(--ink,#0d0d0d)}.ds-operate-primary:focus-visible{outline:2px solid var(--ring,#0d0d0d);outline-offset:2px}@media(prefers-color-scheme:dark){.ds-operate-primary{background:var(--ink,#ececf1);border-color:var(--ink,#ececf1);color:var(--bg,#0d0d0d)}.ds-operate-primary:hover{background:var(--ink,#ececf1)}.ds-operate-primary:focus-visible{outline-color:var(--ring,#ececf1)}}@media(prefers-reduced-motion:reduce){.ds-operate-primary{transition:none}}",
+      "refersTo": "button-operate-primary"
+    },
+    {
+      "name": "Operational secondary button",
+      "kind": "button",
+      "description": "The bordered action used by the installed page.",
+      "html": "<a class=\"ds-operate-secondary\" href=\"#main\">What Forge does</a>",
+      "css": ".ds-operate-secondary{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:.55rem 1.05rem;border:1px solid var(--line,#e5e5e5);border-radius:10px;background:var(--bg,#fff);color:var(--ink,#0d0d0d);font:500 16px/1.6 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif;text-decoration:none;cursor:pointer;transition:background 140ms ease,border-color 140ms ease}.ds-operate-secondary:hover{background:var(--panel,#f7f7f8)}.ds-operate-secondary:focus-visible{outline:2px solid var(--ring,#0d0d0d);outline-offset:2px}@media(prefers-color-scheme:dark){.ds-operate-secondary{background:var(--bg,#0d0d0d);color:var(--ink,#ececf1);border-color:var(--line,#2a2a2a)}.ds-operate-secondary:hover{background:var(--panel,#161616)}.ds-operate-secondary:focus-visible{outline-color:var(--ring,#ececf1)}}@media(prefers-reduced-motion:reduce){.ds-operate-secondary{transition:none}}",
+      "refersTo": "button-operate-secondary"
+    },
+    {
+      "name": "Operational count badge",
+      "kind": "chip",
+      "description": "Noninteractive count pill from the shared shell; sample count.",
+      "html": "<span class=\"ds-operate-badge\">5</span>",
+      "css": ".ds-operate-badge{display:inline-grid;place-items:center;min-width:24px;height:24px;padding:0 .45rem;border-radius:12px;background:var(--ink,#0d0d0d);color:var(--bg,#fff);font:600 .78rem/1.6 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif;vertical-align:middle}@media(prefers-color-scheme:dark){.ds-operate-badge{background:var(--ink,#ececf1);color:var(--bg,#0d0d0d)}}",
+      "refersTo": "badge-operate"
+    },
+    {
+      "name": "Public navigation and mark",
+      "kind": "nav",
+      "description": "Public anvil/wordmark, text links and setup action; the setup action hides on mobile.",
+      "html": "<div class=\"ds-public-topbar\"><a class=\"ds-public-mark\" href=\"#main\"><svg width=\"30\" height=\"30\" viewBox=\"0 0 64 64\" fill=\"none\" aria-hidden=\"true\"><path fill=\"currentColor\" d=\"M3 21 L17 15 L54 15 L57 18 L57 24 L54 27 L38 27 L38 37 L48 37 L54 50 L10 50 L16 37 L26 37 L26 27 L17 27 Z\"/></svg>Forge</a><nav class=\"ds-public-nav\" aria-label=\"Main\"><a href=\"#documentation\">Docs</a><a href=\"#repository\">GitHub <svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" aria-hidden=\"true\"><path d=\"M5 12h14M13 6l6 6-6 6\"/></svg></a><a class=\"ds-public-start\" href=\"/forge/docs/self-hosting\">Run your own Forge <svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" aria-hidden=\"true\"><path d=\"M5 12h14M13 6l6 6-6 6\"/></svg></a></nav></div>",
+      "css": ".ds-public-topbar{display:flex;align-items:center;justify-content:space-between;gap:2rem;height:92px;color:#202526;background:#fff;font:16px/1.6 Onest,ui-sans-serif,system-ui,sans-serif}.ds-public-mark{display:inline-flex;align-items:center;gap:.6rem;font-size:1.5rem;font-weight:600;letter-spacing:-.035em;text-decoration:none;color:inherit}.ds-public-nav{display:flex;align-items:center;gap:2rem;font-size:.88rem}.ds-public-nav>a{display:inline-flex;align-items:center;gap:.4rem;min-height:44px;color:inherit;text-decoration:none}.ds-public-nav .ds-public-start{justify-content:center;gap:.65rem;min-height:48px;padding:.7rem 1.15rem;border:1px solid #2349e8;border-radius:7px;background:#2349e8;color:#fff;font-size:.91rem;font-weight:500;transition:background 140ms ease,border-color 140ms ease}.ds-public-topbar a:hover{color:#2349e8}.ds-public-nav .ds-public-start:hover{background:#1835ad;border-color:#1835ad;color:#fff}.ds-public-topbar a:focus-visible{outline:2px solid #2349e8;outline-offset:4px}.ds-public-start:active{transform:translateY(1px)}@media(max-width:760px){.ds-public-topbar{height:78px;gap:1rem}.ds-public-nav{gap:1rem;font-size:.8rem}.ds-public-nav .ds-public-start{display:none}}@media(prefers-reduced-motion:reduce){.ds-public-nav .ds-public-start{transition:none}}"
+    },
+    {
+      "name": "Documentation navigation",
+      "kind": "nav",
+      "description": "Current page uses blue text and blue wash; other links stay muted.",
+      "html": "<nav class=\"ds-docs-nav\" aria-label=\"Documentation\"><a href=\"#documentation\">Documentation</a><a href=\"#using-forge\">Using Forge</a><a href=\"#self-hosting\" aria-current=\"page\">Self-host Forge</a></nav>",
+      "css": ".ds-docs-nav{display:flex;flex-direction:column;gap:.25rem;margin:0 0 2rem;font-family:Onest,ui-sans-serif,system-ui,sans-serif;background:#fff}.ds-docs-nav a{padding:.55rem .7rem;margin-left:-.7rem;line-height:1.35;font-size:.83rem;text-decoration:none;border-radius:5px;color:#575f62}.ds-docs-nav a[aria-current=page]{color:#2349e8;background:#edf1ff;font-weight:500}.ds-docs-nav a:hover{color:#2349e8}.ds-docs-nav a:focus-visible{outline:2px solid #2349e8;outline-offset:4px}@media(max-width:760px){.ds-docs-nav a{min-height:44px}}",
+      "refersTo": "navigation-docs-current"
+    },
+    {
+      "name": "Mobile and intermediate-width contents",
+      "kind": "custom",
+      "description": "Native second-level-heading disclosure shown when the desktop contents rail is hidden.",
+      "html": "<details class=\"ds-docs-contents\"><summary>On this page</summary><nav aria-label=\"Sections on this page\"><a href=\"#operate\">What you operate and pay for</a><a href=\"#install\">1. Install and make your config</a><a href=\"#register\">2. Register your GitHub App</a></nav></details>",
+      "css": ".ds-docs-contents{border-bottom:1px solid #e1e5e6;margin-bottom:2rem;background:#fff;color:#202526;font:.86rem/1.6 Onest,ui-sans-serif,system-ui,sans-serif}.ds-docs-contents summary{cursor:pointer;min-height:44px;padding:.4rem 0 1rem;font-weight:500}.ds-docs-contents nav{display:flex;flex-direction:column;padding:.25rem 0 1rem;gap:.25rem}.ds-docs-contents nav a{padding:.6rem 0;min-height:44px;line-height:1.5;text-decoration:none;font-size:.82rem;color:#575f62}.ds-docs-contents nav a:hover{color:#2349e8}.ds-docs-contents :focus-visible{outline:2px solid #2349e8;outline-offset:4px}"
+    },
+    {
+      "name": "Document sheet and diff",
+      "kind": "card",
+      "description": "The homepage illustrative document, including its working native diff disclosure.",
+      "html": "<section class=\"ds-document-sheet\" aria-label=\"Illustrative document saved to GitHub\"><div class=\"ds-sheet-heading\">In your repository</div><div class=\"ds-saved-document\"><h2>Use the existing<br>email service</h2><div class=\"ds-doc-rule\"></div><h3>Decision</h3><p>Use the project’s existing email service for account notifications.</p><h3>Why</h3><p>It already owns delivery, retries and templates. A second provider would duplicate that work.</p><h3>Next step</h3><p>Add the notification to the existing sender.</p></div><details class=\"ds-demo-diff\"><summary>See what changed <span>+ 11 lines</span></summary><pre><code>+ # Use the existing email service\n+\n+ ## Decision\n+ Use the project’s existing email service for account notifications.\n+\n+ ## Why\n+ It already owns delivery, retries and templates. A second provider would duplicate that work.\n+\n+ ## Next step\n+ Add the notification to the existing sender.\n+</code></pre></details></section>",
+      "css": ".ds-document-sheet{min-width:0;background:#fff;color:#202526;border-radius:8px;overflow:hidden;font:16px/1.6 Onest,ui-sans-serif,system-ui,sans-serif}.ds-sheet-heading{display:flex;align-items:center;gap:.55rem;font-size:.73rem;font-weight:500;padding:1.1rem 1.4rem;border-bottom:1px solid #e1e5e6;min-height:55px}.ds-saved-document{padding:1.8rem 2rem 1.5rem}.ds-saved-document h2{font-size:1.65rem;line-height:1.15;margin:0 0 1.2rem;font-weight:500;letter-spacing:-.035em}.ds-doc-rule{height:1px;background:#e1e5e6;margin-bottom:1.2rem}.ds-saved-document h3{font-size:.75rem;margin:1rem 0 .4rem;font-weight:600;letter-spacing:0}.ds-saved-document p{font-size:.79rem;line-height:1.65;margin:0;max-width:44ch;color:#575f62;overflow-wrap:anywhere}.ds-demo-diff{border-top:1px solid #e1e5e6;font-size:.72rem}.ds-demo-diff summary{cursor:pointer;list-style:revert;min-height:47px;padding:.85rem 1.5rem;color:#2349e8;font-weight:500}.ds-demo-diff summary span{float:right;font-size:.67rem;color:#267045}.ds-demo-diff pre{padding:0 1.5rem 1.2rem;overflow:auto;font-size:.68rem;color:#267045;margin:0;line-height:1.65}.ds-demo-diff code{font:.9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.ds-demo-diff summary:focus-visible{outline:2px solid #2349e8;outline-offset:4px}@media(max-width:1000px){.ds-sheet-heading{padding:1rem}.ds-saved-document{padding:1.5rem}}@media(max-width:760px){.ds-sheet-heading{font-size:.7rem;padding:.9rem 1rem;min-height:44px}.ds-saved-document h2{font-size:1.5rem}.ds-saved-document p{font-size:.8rem}}",
+      "refersTo": "sheet-document"
+    }
+  ],
+  "narrative": {
+    "northStar": "The review folio",
+    "overview": "The public build reads as a generous white sheet with strong Onest headings,\nblue actions and clearly separated conversation and document examples. “Review\nfolio” comes from the [surface brief](./.impeccable/surfaces/worker-src-landing-ts.md).\nThe descriptions here are inferences from the finished form, not a record of\nuser approval or a permanent aesthetic commitment.\n\nPublic marketing and documentation share this treatment. The original operational\nshell retains system typography and the reader’s light/dark setting. Both use the\nexisting anvil and Forge wordmark required by [PRODUCT.md](./PRODUCT.md).\nHomepage composition belongs to its surface brief; it is not a template for every page.",
+    "keyCharacteristics": [
+      "White public surfaces, blue actions and restrained grey dividers.",
+      "Medium-weight Onest headings with close letter spacing.",
+      "Reading layouts distinct from the compact operational shell."
+    ],
+    "rules": [
+      {
+        "name": "The Surface Theme Rule",
+        "body": "Public pages stay light; operational pages follow the\nsystem color scheme. Apply each surface’s palette together.",
+        "section": "colors"
+      }
+    ],
+    "dos": [
+      "Do keep public light styling and operational system themes distinct.",
+      "Do preserve the shared anvil silhouette and Forge wordmark.",
+      "Do keep mobile docs navigation and section contents separately available.",
+      "Do retain visible keyboard focus and reduced-motion behavior."
+    ],
+    "donts": [
+      "Don't turn the homepage’s paired-sheet composition into a requirement for every surface.",
+      "Don't treat the provisional review folio as a permanent user-approved aesthetic.",
+      "Don't present illustrative receipts or local screenshots as proof of live product behavior."
+    ]
+  }
+}

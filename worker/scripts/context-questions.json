@@ -1,0 +1,204 @@
+[
+  {
+    "id": "concurrent-edit-conflict",
+    "repo": "timc0y/forge-mcp",
+    "question": "Where does Forge stop an edit from overwriting a concurrent change to the same file? Return implementation and regression test proving conflict path.",
+    "required": [
+      {
+        "selector": "worker/src/write.ts::symbol:assertNoOverlap",
+        "mustContain": [
+          "collisions.length > 0",
+          "FORGE_CONFLICT",
+          "previous_filename"
+        ]
+      },
+      {
+        "selector": "worker/tests/write-safety.test.ts::symbol:it:refuses a concurrent modification of the same file before a second commit",
+        "mustContain": [
+          "commitFiles(",
+          "FORGE_CONFLICT",
+          "filename: 'a.md', status: 'modified'",
+          "toHaveLength(1)"
+        ]
+      }
+    ],
+    "counterevidence": [
+      {
+        "selector": "worker/src/write.ts::symbol:assertNoOverlap",
+        "mustContain": [
+          "files.length >= COMPARE_FILE_CAP",
+          "FORGE_CONFLICT"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "conflict-guard-caller",
+    "repo": "timc0y/forge-mcp",
+    "question": "Show assertNoOverlap and the commitFiles caller that checks it after the branch moves, before Forge tries to commit the edit again.",
+    "required": [
+      {
+        "selector": "worker/src/write.ts::symbol:assertNoOverlap",
+        "mustContain": [
+          "collisions.length > 0",
+          "FORGE_CONFLICT"
+        ]
+      },
+      {
+        "selector": "worker/src/write.ts::symbol:commitFiles",
+        "mustContain": [
+          "await assertNoOverlap(",
+          "original",
+          "head",
+          "paths"
+        ]
+      }
+    ],
+    "counterevidence": []
+  },
+  {
+    "id": "unreadable-conflict-evidence",
+    "repo": "timc0y/forge-mcp",
+    "question": "If a branch moved and GitHub cannot list the changed files reliably, where does Forge refuse the edit? Show the unreadable comparison and too-many-files conditions, without claiming that source proves a passing runtime test.",
+    "required": [
+      {
+        "selector": "worker/src/write.ts::symbol:assertNoOverlap",
+        "mustContain": [
+          "!Array.isArray(body.files)",
+          "files.length >= COMPARE_FILE_CAP",
+          "FORGE_CONFLICT"
+        ]
+      }
+    ],
+    "counterevidence": [
+      {
+        "selector": "worker/src/write.ts::symbol:assertNoOverlap",
+        "mustContain": [
+          "previous_filename",
+          "collisions.length > 0"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "github-user-credential-owner",
+    "repo": "timc0y/forge-mcp",
+    "question": "Which code owns GitHub user credential refresh for repository requests, and what happens when it cannot refresh? Show userRequestFor calling refresh, the single-use refresh claim, and the auth regression proving four simultaneous request handlers spend that credential once.",
+    "required": [
+      {
+        "selector": "worker/src/user-token.ts::symbol:userRequestFor",
+        "mustContain": [
+          "const renewed = await refresh(env, userId, stored);",
+          "FORGE_AUTH_REQUIRED",
+          "return githubUserRequest(env, renewed)"
+        ]
+      },
+      {
+        "selector": "worker/src/user-token.ts::symbol:refresh",
+        "mustContain": [
+          "SET github_refresh_token = NULL",
+          "(claimed.meta.changes ?? 0) !== 1",
+          "await persistCredential(env, userId"
+        ]
+      },
+      {
+        "selector": "worker/tests/auth-regressions.test.ts::symbol:it:spends one rotating GitHub credential once across simultaneous request handlers",
+        "mustContain": [
+          "length: 4",
+          "actual.userRequestFor(env, 'alice')",
+          "expect(exchanges).toBe(1)",
+          "expect(authorizations).toEqual(Array(4).fill('Bearer new-user-token'))"
+        ]
+      }
+    ],
+    "counterevidence": [
+      {
+        "selector": "worker/src/user-token.ts::symbol:refresh",
+        "mustContain": [
+          "return saved ? token : refreshedByAnother(env, userId, stored.sealedToken)"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "capture-quota-failure-workflow",
+    "repo": "timc0y/forge-mcp",
+    "question": "Trace the public capture workflow from captureResult through reserveCaptureQuota. Why does failed provider output still spend the capture attempt, and which failure regression proves a second browser request is refused by the quota?",
+    "required": [
+      {
+        "selector": "worker/src/capture-result.ts::symbol:captureResult",
+        "mustContain": [
+          "validateCaptureRequest(url, viewports)",
+          "const quota = await reserveCaptureQuota",
+          "const shot = await capture"
+        ]
+      },
+      {
+        "selector": "worker/src/quota.ts::symbol:reserveCaptureQuota",
+        "mustContain": [
+          "WHERE capture_usage.count < ?3",
+          "FORGE_QUOTA_EXCEEDED"
+        ]
+      },
+      {
+        "selector": "worker/tests/capture-quota-regressions.test.ts::symbol:it:keeps a reservation when successful provider output is too large to read",
+        "mustContain": [
+          "FORGE_UPSTREAM_UNAVAILABLE",
+          "expect(used()).toBe(1)",
+          "FORGE_QUOTA_EXCEEDED",
+          "expect(fetch).toHaveBeenCalledTimes(1)"
+        ]
+      }
+    ],
+    "counterevidence": [
+      {
+        "selector": "worker/tests/capture-quota-regressions.test.ts::symbol:it:counts attempts with unknown transport outcomes and successful captures",
+        "mustContain": [
+          "mockRejectedValueOnce",
+          "FORGE_UPSTREAM_UNAVAILABLE",
+          "quota: '2 of 2'",
+          "expect(used()).toBe(2)"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "oauth-spent-refresh-failure",
+    "repo": "timc0y/forge-mcp",
+    "question": "How does Forge fail when a spent OAuth refresh token is replayed while its replacement is being inserted? Show rotateRefreshToken, the replacement insertion condition, and the auth regression proving no replacement is issued after the replay revokes the family.",
+    "required": [
+      {
+        "selector": "worker/src/identity.ts::symbol:rotateRefreshToken",
+        "mustContain": [
+          "if (row.used_at || row.revoked_at)",
+          "await revokeRefreshFamily(env, row.family_id)",
+          "(spent.meta.changes ?? 0) !== 1",
+          "await insertRefreshToken(env, row.user_id, row.client_id, row.family_id)"
+        ]
+      },
+      {
+        "selector": "worker/src/identity.ts::symbol:insertRefreshToken",
+        "mustContain": [
+          "WHERE NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens WHERE family_id = ?2 AND revoked_at IS NOT NULL)",
+          "(inserted.meta.changes ?? 0) === 1 ? token : null"
+        ]
+      },
+      {
+        "selector": "worker/tests/auth-regressions.test.ts::symbol:it:does not issue a replacement after replay revokes the family before insertion",
+        "mustContain": [
+          "beforeInsert(async () =>",
+          "expect(await rotateRefreshToken(env, original, 'client')).toBeNull()",
+          "expect(await rotating).toBeNull()"
+        ]
+      }
+    ],
+    "counterevidence": [
+      {
+        "selector": "worker/src/identity.ts::symbol:rotateRefreshToken",
+        "mustContain": [
+          "if (!row || row.client_id !== clientId || !isLoginAllowed(env, row.github_login)) return null;"
+        ]
+      }
+    ]
+  }
+]

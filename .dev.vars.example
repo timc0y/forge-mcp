@@ -1,0 +1,25 @@
+# Copy to worker/.dev.vars for the self-host config (no named environment).
+# The maintainer's `pnpm dev` uses --env development: use
+# worker/.dev.vars.development there; that file replaces .dev.vars, not merges.
+# Never commit real values. Production sets these with `wrangler secret put`.
+# Instance access is non-secret: set FORGE_ALLOWED_LOGINS in your Wrangler
+# config to your own GitHub login; missing/blank/invalid denies all access.
+# Capture availability is separate and non-secret: set FORGE_CAPTURE_ALLOWED_LOGINS in your
+# Wrangler config to your own consenting login; empty denies provider work.
+FORGE_DEV_AUTH_TOKEN=replace-me
+
+# Signs access tokens and approval links, and derives the key that encrypts the
+# stored GitHub user credential. 32+ random bytes. Rotating it invalidates all
+# three at once.
+FORGE_SIGNING_KEY=replace-with-at-least-32-random-bytes
+
+# Your GitHub App's OAuth client secret; enable expiring user tokens.
+# No GitHub App private key is read by Forge.
+GITHUB_APP_CLIENT_SECRET=replace-me
+
+# Scoped to Browser Rendering only.
+CLOUDFLARE_API_TOKEN=replace-me
+
+# Credential for the single configured Cloudflare JEV route. Semantic operations
+# refuse when it is missing; exact reads and writes do not need inference.
+TYPESAFE_API_KEY=replace-me
