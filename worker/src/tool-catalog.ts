@@ -72,7 +72,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, async (input) => run('forge_discard', ctx, () => prepareApproval(ctx, 'discard', input.repo, input.change)));
   server.registerTool('forge_see', {
-    title: 'See', description: 'Capture an already-public page at phone and desktop unless specified. Images come back with this call; nothing to fetch afterwards. The outline is observation, not an AI diagnosis.',
+    title: 'See', description: 'Capture an already-public page for an operator-enabled preview account, at phone and desktop unless specified. Images return with this call. The outline is observation, not an AI diagnosis.',
     inputSchema: { url: z.string(), viewports: z.array(z.enum(['phone', 'tablet', 'desktop'])).max(3).optional() },
     outputSchema: { page: z.object({ url: z.string(), title: z.string(), shown: z.array(z.string()) }).optional(), quota: z.string().optional(), limits: z.array(z.string()).optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }

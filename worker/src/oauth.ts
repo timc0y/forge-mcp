@@ -21,6 +21,7 @@ import { storeUserCredential } from './user-token';
 import { analyticsFor } from './analytics';
 import { escapeHtml, page as ui } from './ui';
 import { issueRefreshToken, issueToken, rotateRefreshToken } from './identity';
+import { allowedLogins, isLoginAllowed } from './access';
 
 /**
  * Access is short-lived; the refresh grant keeps the connection alive until it
@@ -55,6 +56,7 @@ interface CodeRow {
   redirect_uri: string;
   code_challenge: string;
   user_id: string;
+  github_login: string;
   expires_at: string;
   used_at: string | null;
 }
@@ -176,6 +178,7 @@ export async function authorize(env: Env, request: Request): Promise<Response> {
   if (!resourceAllowed(env, url.searchParams)) {
     return oauthError('invalid_target', 'Forge tokens are only valid for the Forge MCP resource.', 400);
   }
+  if (!allowedLogins(env).length) return accessDenied();
   const clientId = url.searchParams.get('client_id') ?? '';
   const redirectUri = url.searchParams.get('redirect_uri') ?? '';
   const responseType = url.searchParams.get('response_type') ?? '';
@@ -235,6 +238,7 @@ export async function authorize(env: Env, request: Request): Promise<Response> {
  * pass, with no way in from outside except a state Forge signed.
  */
 export async function callback(env: Env, request: Request): Promise<Response> {
+  if (!allowedLogins(env).length) return accessDenied();
   const url = new URL(request.url);
   if (url.searchParams.get('error')) {
     return problem(400, 'GitHub did not complete the sign-in', 'Nothing was created. Start again from your client.');
@@ -269,6 +273,7 @@ export async function callback(env: Env, request: Request): Promise<Response> {
       'Nothing was created. Try connecting again in a moment.'
     );
   }
+  if (!isLoginAllowed(env, account.login)) return accessDenied();
 
   const found = await findOrCreateUser(env, account);
   if (!found) {
@@ -311,10 +316,7 @@ export async function callback(env: Env, request: Request): Promise<Response> {
 /**
  * Find the user behind this GitHub account, or make one.
  *
- * The preview is open: anyone who can authorize the App becomes a user. What
- * stops "open" from becoming "expensive" is the daily limit in quota.ts, not a
- * gate at the door — a limit degrades for one person on one day, where a gate
- * refuses everybody who did not already know somebody.
+ * The callback checks the operator's allowed logins before reaching this write.
  */
 async function findOrCreateUser(
   env: Env,
@@ -367,8 +369,8 @@ export async function token(env: Env, request: Request): Promise<Response> {
   }
 
   const row = await env.METADATA.prepare(
-    `SELECT code_hash, client_id, redirect_uri, code_challenge, user_id, expires_at, used_at
-       FROM oauth_codes WHERE code_hash = ?1`
+    `SELECT c.code_hash, c.client_id, c.redirect_uri, c.code_challenge, c.user_id, u.github_login, c.expires_at, c.used_at
+       FROM oauth_codes c JOIN users u ON u.id = c.user_id WHERE c.code_hash = ?1`
   )
     .bind(await sha256(body.get('code') ?? ''))
     .first<CodeRow>();
@@ -376,6 +378,7 @@ export async function token(env: Env, request: Request): Promise<Response> {
   // One refusal for every reason. Which check failed is information about
   // whether a code exists, and this endpoint is unauthenticated.
   if (!row) return invalidGrant();
+  if (!isLoginAllowed(env, row.github_login)) return invalidGrant();
   if (row.used_at) return invalidGrant();
   if (row.client_id !== (body.get('client_id') ?? '')) return invalidGrant();
   if (row.redirect_uri !== (body.get('redirect_uri') ?? '')) return invalidGrant();
@@ -425,6 +428,10 @@ function invalidGrant(): Response {
     'This Forge connection is no longer valid. Reconnect Forge to continue.',
     400
   );
+}
+
+function accessDenied(): Response {
+  return problem(403, 'This Forge instance is private', 'Your GitHub account must be allowed by its operator before you can connect.');
 }
 
 /** Older clients omit resource; their tokens still bind to this single MCP endpoint. */

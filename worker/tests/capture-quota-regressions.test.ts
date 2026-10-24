@@ -20,7 +20,7 @@ function context(limit = 1): { ctx: ToolContext; used: () => number } {
     }
   };
   const ctx: ToolContext = {
-    env: { METADATA: metadata, FORGE_CAPTURE_DAILY_LIMIT: String(limit), CLOUDFLARE_ACCOUNT_ID: 'synthetic', CLOUDFLARE_API_TOKEN: 'synthetic' } as unknown as Env,
+    env: { METADATA: metadata, FORGE_CAPTURE_ALLOWED_LOGINS: 'ordinary', FORGE_CAPTURE_DAILY_LIMIT: String(limit), CLOUDFLARE_ACCOUNT_ID: 'synthetic', CLOUDFLARE_API_TOKEN: 'synthetic' } as unknown as Env,
     identity: { userId: 'synthetic', githubLogin: 'ordinary' },
     track: () => {},
     gh: async () => { throw new Error('Unexpected GitHub request'); },
@@ -32,6 +32,18 @@ function context(limit = 1): { ctx: ToolContext; used: () => number } {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('capture spending ceiling', () => {
+  it('refuses unenabled accounts before quota or browser spending', async () => {
+    const { ctx, used } = context();
+    ctx.env.FORGE_CAPTURE_ALLOWED_LOGINS = 'operator';
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    await expect(captureResult(ctx, 'https://example.com/', ['desktop'])).rejects.toMatchObject({ code: 'FORGE_AUTH_REQUIRED' });
+    expect(used()).toBe(0);
+    expect(fetch).not.toHaveBeenCalled();
+    delete ctx.env.FORGE_CAPTURE_ALLOWED_LOGINS;
+    await expect(captureResult(ctx, 'https://example.com/', ['desktop'])).rejects.toMatchObject({ code: 'FORGE_AUTH_REQUIRED' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it.each([403, 404, 500])('discloses target HTTP %s even when the snapshot API succeeds', async (status) => {
     const { ctx, used } = context();
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ success: true, result: { screenshot: 'iVBORw==', accessibilityTree: {} }, meta: { status } })));

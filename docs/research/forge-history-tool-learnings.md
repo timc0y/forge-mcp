@@ -5,6 +5,11 @@
 files inspected with `git show`. Commit links point to the repository's primary
 history.
 
+This document records the 7 August architecture, including execution, deployment
+and galleries that were subsequently removed. Those sections are historical
+evidence, not current setup instructions. The current five-tool contract lives
+in [SIMPLE.md](../../SIMPLE.md); later precedents are recorded below.
+
 ## Product conclusion
 
 Forge's history supports a precise product:
@@ -527,3 +532,67 @@ The lasting advances were:
 - honest compact receipts.
 
 That is the product to finish.
+
+
+## Later profile precedents — moved 23 October 2026
+
+These dated discoveries explain the current profile. The namespace-cleanup and
+search paragraphs below describe earlier behaviour: the 2.1.0 local candidate
+refuses every legacy `forge/*` collision by name for deliberate cleanup, because
+a compare followed by deletion can race another writer. It does not automatically
+delete even an apparently inert legacy ref. V2 semantic failure is explicit;
+exact-source discovery is a separate operation, not a semantic fallback. GitHub
+write concurrency remains distinct from the new D1 inference-spend reservations.
+
+- Execution once kept state outside GitHub. Lost workspace IDs (`5377975`,
+  `bd8d130`), reaped local edits (`ca0a99a`) and commands that outlived transport
+  (`9c78d0f`) caused repeated failures. T3 Code now owns execution. Authoring and
+  capture need no local repository copy. Reconsider if a user needs execution
+  and has no other route. Do not restore workspace, container, capacity, process,
+  checkout-recovery or mutation-queue machinery without that need.
+- The catalog grew to about 64 tools, fell to 34, grew again, then fell to 38
+  (`79bf6fc`). Recovery tools caused more selection and ordering failures;
+  guidance named removed tools in four regressions. Five tools now remain,
+  without mode or action parameters that hide more choices. Reconsider only
+  when a real need has no expression in the five. Remove unnecessary tools
+  rather than add instructions to avoid them.
+- GitHub refuses non-fast-forward ref updates; merge returns 409 when `sha`
+  differs from the head. Each write carries expected state. Reapply on a moved
+  ref; raise a conflict when another commit changed the same path. Never force.
+  An identical tree returns `unchanged` without a commit. GitHub owns concurrency;
+  no locks, leases or model-invented idempotency keys. Reconsider for a write
+  that GitHub cannot arbitrate.
+- One repository has one pending Forge decision. Ordinary edits update the
+  default branch; proposed edits continue the fixed `forge` branch. The model
+  selects review from the conversation; commit and pull-request text describe
+  the work. Do not add path classification, intent-based branch names, change
+  IDs or session state. Reconsider when users need two independent proposals
+  open in one repository.
+- A git ref cannot be both a branch and a directory, so old `forge/<name>`
+  branches make the fixed `forge` branch impossible to create. Forge's namespace
+  is cleaned of inert leftovers (no commit the base does not already have) and
+  says so; a leftover holding real commits is refused by name, never deleted.
+  The fixed branch stays fixed rather than falling back to a variable name.
+- GitHub's code-search index can report `incomplete_results` with no matches for
+  code that exists. A partial answer is never an absence: repository-scoped
+  search falls back to the committed files themselves, bounded, and names the
+  source of every result. The index is a shortcut, GitHub is still the truth.
+- Installation-token repair once kept reconnects working after App reinstall,
+  but installation-wide access bypasses a human's organisation permissions.
+  Ordinary operations and approvals now resolve the stored GitHub user credential
+  on each request. GitHub owns the intersection of human and App grants; stored
+  installation ids no longer authorize requests or prevent session startup.
+- Fast semantic decisions need no server-side index. Vector databases, periodic
+  repo indexing, and background embeddings workers add infrastructure that drifts
+  out of sync with GitHub. TypeSafe Jev evaluates trees, paths, diffs, repository
+  hygiene candidates, and review judgments on the fly using bounded evidence.
+  Repository hygiene labels remain investigation prompts rather than claims that
+  code is unreachable, broken, or safe to delete; compiler/static-analysis/CI
+  evidence remains stronger. Remote GitHub stays the sole source of truth, and
+  V1 once degraded unavailable Jev to deterministic discovery. V2 reports a
+  failed semantic stage explicitly; exact-source reads remain a separate operation.
+
+
+### Cloudflare framework fit — 15 October 2026 (source review)
+
+Forge is an MCP/GitHub authoring handoff, not a frontend app or execution platform. Keep its five-tool surface, GitHub durability, existing Worker and JEV route. Void infrastructure inference or a full-stack UI would add state and deployment ownership without solving the product job. Treat TypeScript compiler/parser API consumers separately from any TypeScript 7 or Vite+ trial; prove parsing, exact-SHA reads, the fixed five-tool catalog, OAuth/authority checks and real production smoke before accepting a replacement. No resource mutation or new service follows from this dated review.

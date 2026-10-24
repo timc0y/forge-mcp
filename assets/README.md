@@ -27,3 +27,7 @@ anyone who needs the file without cloning:
 The same path is compiled into `worker/src/ui.ts` as `forgeGlyph()`, so the site,
 the favicon, the social card and the GitHub App avatar are one mark rather than
 four that drifted.
+
+Public pages use the self-hosted Onest variable font. Its source and separate
+SIL Open Font License are in [worker/assets/fonts](../worker/assets/fonts/README.md).
+The shared visual tokens and responsive patterns are in [DESIGN.md](../DESIGN.md).

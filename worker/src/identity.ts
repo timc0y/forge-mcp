@@ -16,6 +16,7 @@
 import type { Identity } from './contracts';
 import type { Env } from './env';
 import { ForgeError } from './errors';
+import { isLoginAllowed } from './access';
 
 /**
  * Domain separation. `FORGE_SIGNING_KEY` also signs approval links. Access
@@ -41,6 +42,7 @@ interface Claims {
 interface RefreshTokenRow {
   family_id: string;
   user_id: string;
+  github_login: string;
   client_id: string;
   key_tag: string;
   expires_at: string;
@@ -117,14 +119,14 @@ export async function rotateRefreshToken(
   if (!token.startsWith('fr_')) return null;
   const hash = await sha256(token);
   const row = await env.METADATA.prepare(
-    `SELECT r.family_id, r.user_id, r.client_id, r.key_tag, r.expires_at, r.used_at, r.revoked_at
+    `SELECT r.family_id, r.user_id, u.github_login, r.client_id, r.key_tag, r.expires_at, r.used_at, r.revoked_at
        FROM oauth_refresh_tokens r
        JOIN users u ON u.id = r.user_id
       WHERE r.token_hash = ?1`
   )
     .bind(hash)
     .first<RefreshTokenRow>();
-  if (!row || row.client_id !== clientId) return null;
+  if (!row || row.client_id !== clientId || !isLoginAllowed(env, row.github_login)) return null;
   if (row.key_tag !== (await signingKeyTag(env))) {
     await revokeRefreshFamily(env, row.family_id);
     return null;
@@ -176,7 +178,7 @@ export async function authenticate(env: Env, request: Request): Promise<Identity
     );
   }
 
-  if (devTokenAccepted(env, token)) return identityOf(await seededUser(env));
+  if (devTokenAccepted(env, token)) return identityOf(env, await seededUser(env));
 
   const userId = await verify(env, token);
   if (!userId) {
@@ -185,13 +187,18 @@ export async function authenticate(env: Env, request: Request): Promise<Identity
     );
   }
 
+  return identityForUser(env, userId);
+}
+
+/** Approval links and bearer requests must apply the same current account policy. */
+export async function identityForUser(env: Env, userId: string): Promise<Identity> {
   const row = await env.METADATA.prepare(
     'SELECT id, github_login FROM users WHERE id = ?1'
   )
     .bind(userId)
     .first<UserRow>();
 
-  return identityOf(row);
+  return identityOf(env, row);
 }
 
 /**
@@ -199,11 +206,14 @@ export async function authenticate(env: Env, request: Request): Promise<Identity
  * makes it immediate: every request re-reads the row, so a removed user's
  * outstanding tokens stop working on their next call rather than at expiry.
  */
-function identityOf(row: UserRow | null): Identity {
+function identityOf(env: Env, row: UserRow | null): Identity {
   if (!row) {
     throw authRequired(
       'Forge has no account for this access token. Authorize Forge again from your client.'
     );
+  }
+  if (!isLoginAllowed(env, row.github_login)) {
+    throw authRequired('This GitHub account is not allowed to use this Forge instance. Contact its operator.');
   }
   return {
     userId: row.id,

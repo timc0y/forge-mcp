@@ -1,36 +1,47 @@
 # Documentation
 
-**[Context engine](./plans/context-engine.md)** — the active V2 architecture:
-GitHub source, parser-backed structure, JEV evidence selection, exact-commit CI
-evidence and compact context packets, without fallback chains or additional
-hosted context services. Deployment proof is tracked separately.
+Forge connects a conversation to GitHub. Read the project, save the useful work
+as a commit, and let the next coding session pick it up from the repository.
 
-**[Using Forge](./using-forge.md)** — the product vocabulary, current client
-availability, setup, examples, tools and limits.
+## Run your own Forge
 
-**[Product route](./plans/product-route.md)** — the active adoption,
-measurement and revenue plan. This is where positioning and commercial
-hypotheses live; the architecture plan stays architectural.
+Forge's code and documentation are [MIT licensed](../LICENSE) for reuse.
+The [self-hosting guide](./self-hosting.md) takes you through your own GitHub App,
+Cloudflare resources, credentials, migrations and a disposable first commit.
+You pay your providers and supply your own client plan. The guide explains JEV
+source processing and costs. Independent fresh-account setup remains unverified.
 
-**[Operating Forge](./operating-forge.md)** — configuration, secrets, analytics,
-cost, and the things that will bite. The
-[account-deletion runbook](./account-deletion.md) is the manual privacy-control
-procedure.
+Tim's hosted endpoint and GitHub App are his private deployment. They are not a
+public preview or a public installation path. Check the [release status](./going-live.md)
+for the private deployment and tested client capabilities.
 
-**[Going live](./going-live.md)** — everything between the current deployment
-and strangers relying on it: production proof, hardening, privacy and review.
+## Start with a useful task
 
-**[Forge V1 architecture](./plans/forge-v1.md)** — historical design record for
-the five-tool, GitHub-first reset. Current behavior and invariants live in
-`SIMPLE.md`.
+[Using Forge](./using-forge.md) covers connecting to your instance, choosing
+repositories, reading source, saving decisions and preparing changes. It includes
+the five tools, permissions and practical limits.
 
-**[Research](./research/)** — current platform notes and historical evidence.
-Start with the dated
-[ChatGPT availability note](./research/chatgpt-availability-2026-08-20.md), the
-[market signal note](./research/market-signal-2026-08-20.md), and
-[`forge-history-tool-learnings.md`](./research/forge-history-tool-learnings.md).
-`SIMPLE.md` at the repository root carries the invariants that still bind.
+## Understand the system
 
-**[Test runs](./test-runs/)** — traces recorded against production from clients
-that may stop after any tool call. The latest is the
-[20 August ChatGPT smoke run](./test-runs/production-chatgpt-smoke-2026-08-20.md).
+The [context engine](./plans/context-engine.md) describes source retrieval,
+parser-backed selection, JEV and exact-commit evidence. [SIMPLE.md](../SIMPLE.md)
+records the repository's constraints. The [product route](./plans/product-route.md)
+records the private-hosted and open-source decision, with earlier commercial
+hypotheses retained as history.
+
+## Operate an instance
+
+[Operating Forge](./operating-forge.md) covers configuration, secrets, cost,
+deployment, client catalogue refresh and recovery. The
+[account-deletion runbook](./account-deletion.md) explains manual privacy controls.
+
+## Contribute or investigate
+
+Read [Contributing](../CONTRIBUTING.md) for local setup and checks, and
+[Security](../SECURITY.md) for private reporting. Code and documentation are
+[MIT licensed](../LICENSE); dependencies retain their own notices.
+
+The [history](./research/forge-history-tool-learnings.md) retains production
+lessons. [Research](./research/) and [test runs](./test-runs/) are dated evidence,
+not promises of current availability. The [V1 design](./plans/forge-v1.md) is
+historical; [release status](./going-live.md) owns current release proof.

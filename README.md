@@ -1,85 +1,68 @@
-<img src="assets/forge-app-icon.svg" width="72" alt="">
-
 # Forge
 
-Think in ChatGPT. Commit safely to GitHub.
+Bring the conversation into your project. Forge lets a conversation read GitHub
+source and save research, decisions and changes as ordinary commits or draft
+pull requests. Your next coding session can pick up the work from the repository.
 
-Forge is the hosted handoff between a conversation and a repository. Research,
-plans and routine content become real commits. Work that needs review goes on
-Forge's one change branch and becomes a draft pull request.
+[Website](https://timcoy.uk/forge) · [Documentation](./docs/README.md) ·
+[Self-hosting](./docs/self-hosting.md) · [Contributing](./CONTRIBUTING.md)
 
-Forge complements Codex, Claude Code, Cursor and OpenCode. It has no runner and
-does not build, test, serve or deploy code itself. Its GitHub commits are normal
-GitHub writes, so repository automation may react to them.
+## What it does
 
-## Three useful first jobs
+- Read exact files, source-backed context and GitHub execution evidence.
+- Commit documents, content and code directly, or prepare a proposed change.
+- Return a human approval link for merging or discarding proposed work.
+- Capture already-public pages inline for enabled, consenting accounts.
 
-- **Research → repository** — save a plan, decision or brief where the next
-  coding session can use it.
-- **Live page → visual review** — capture phone and desktop, then turn the
-  findings into a document or a small corrective change.
-- **Small edit → draft pull request** — fix copy, CSS or documentation from a
-  conversation without touching `main`.
+Forge has five tools. GitHub keeps repository truth; Forge does not run code.
+Builds, tests, previews and deployments belong in your coding environment.
+Proposed work uses one fixed `forge` branch and draft PR per repository.
 
-## Five tools
+## Run your own copy
 
-| Tool | Gate |
-|---|---|
-| `forge_read` — immutable source, diffs, checks, analysis and task-shaped context | free |
-| `forge_edit` — write files directly or on Forge's one change | free |
-| `forge_merge` — returns one link a human opens | **approved** |
-| `forge_discard` — returns one link a human opens | **approved** |
-| `forge_see` — capture a public URL | free, quota'd |
+Forge is open source under the [MIT licence](./LICENSE). Use it, adapt it and
+run your own copy with the [self-hosting guide](./docs/self-hosting.md) and
+independent configuration template. You need your own GitHub App, Cloudflare
+resources and credentials. Semantic questions use the configured JEV service;
+the guide explains private
+source processing, missing credentials and provider costs. Client subscriptions
+are separate. Independent fresh-account setup remains unverified.
 
-You never name a branch. Forge commits plans, research, direction and routine
-content directly. Work that needs review uses the fixed `forge` branch. There
-can be only one open Forge change in a repository.
+Start with [Using Forge](./docs/using-forge.md) for connection instructions,
+examples, permissions, the five tools and their limits. Connect to your own
+instance's server URL and GitHub App.
 
-**Free research preview** — designed to be open to anyone with a GitHub account,
-at **<https://timcoy.uk/forge>**. The current GitHub App registration is private,
-so third-party installation is a launch blocker until the owner changes its
-visibility to public. Client support varies by plan and surface; the
-[current ChatGPT availability note](./docs/research/chatgpt-availability-2026-08-20.md)
-records what is documented and what still needs testing.
+## Maintainer's private deployment
 
-## Where things are
+[Tim's hosted instance](https://timcoy.uk/forge) and GitHub App are private for
+his own use. Public visitors should run their own copy. The hosted endpoint is
+not a public service or a waitlist for one.
 
-- **[Using Forge](./docs/using-forge.md)** — connect it, install the App, and
-  what the tools do.
-- **[Operating Forge](./docs/operating-forge.md)** — config, secrets, cost.
-- [`worker/`](./worker) — the implementation.
-- [`assets/`](./assets) — the mark, and the app icon in both tones.
-- [`SIMPLE.md`](./SIMPLE.md) — the design profile: what is real, what is
-  preserved, and the precedents that must not be re-litigated.
-- [`docs/plans/context-engine.md`](./docs/plans/context-engine.md) — the active V2
-  architecture: a single-path GitHub/JEV context engine.
-- [`docs/plans/forge-v1.md`](./docs/plans/forge-v1.md) — the historical five-tool reset record.
-- [`docs/plans/product-route.md`](./docs/plans/product-route.md) — the active adoption,
-  measurement and revenue plan.
-- [`docs/research/`](./docs/research) — the record. Read
-  [`forge-history-tool-learnings.md`](./docs/research/forge-history-tool-learnings.md)
-  before changing anything: it is a register of production failures and the
-  invariants they bought.
+Each operator sets an explicit GitHub login allowlist. Capture requires separate
+consent; enabling capture does not grant service access. Client support varies
+by plan and surface, and deployment does not refresh a client's cached tool
+catalogue. The [release status](./docs/going-live.md) separates the private
+deployment from source checks and independent setup proof.
 
-## Working on it
+## Work on Forge
 
-```sh
-pnpm check                # types and invariants
-pnpm dev
-pnpm run deploy           # checks again before publishing (bare `pnpm deploy` is pnpm's own command)
-worker/scripts/smoke.sh   # post-deploy HTTP/OAuth/version smoke
-```
+Read [CONTRIBUTING.md](./CONTRIBUTING.md) for installation and meaningful checks.
+Report sensitive issues through [SECURITY.md](./SECURITY.md).
 
-## History
+- [`worker/`](./worker) contains the implementation and local commands.
+- [SIMPLE.md](./SIMPLE.md) records repository constraints and invariants.
+- [Context engine](./docs/plans/context-engine.md) owns the active architecture.
+- [Operating Forge](./docs/operating-forge.md) owns deployment and recovery.
+- [Assets](./assets/README.md) and [DESIGN.md](./DESIGN.md) describe the identity.
 
-The first Forge ran code. It had containers, an executor, workspaces, shell,
-previews, deployments, and forty-five MCP tools. Nearly every production failure
-it recorded traced to compute holding state GitHub did not — lost workspace ids,
-local-only edits a reaper could erase, commands dying in the transport while
-continuing remotely. Each fix was a mitigation; the cause remained and kept
-producing recovery tools, so the catalog grew back after every cut.
+## Licence and history
 
-Running code moved elsewhere, which removed the executor's last justification.
-What replaced it is two organs, five tools, one durable plane and no second copy
-of anything. The old implementation is in this repository's history; its
-lessons are in `docs/research/` and its invariants are in `SIMPLE.md`.
+Project code and documentation are [MIT licensed](./LICENSE). Retain the licence
+notice when reusing the source. Dependencies and the self-hosted Onest font keep
+their own licences; see the [dependency inventory](./docs/research/adoption-register.md#direct-dependency-licences--23-october-2026)
+and [font licence](./worker/assets/fonts/OFL.txt).
+
+Earlier Forge versions ran code and maintained workspaces. Execution moved into
+coding tools so the conversation's work could stay durable in GitHub. The
+[history](./docs/research/forge-history-tool-learnings.md) retains the failures
+and decisions behind that boundary.

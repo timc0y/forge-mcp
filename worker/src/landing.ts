@@ -1,107 +1,7 @@
 import type { Env } from './env';
-import { escapeHtml, page } from './ui';
+import { escapeHtml, forgeGlyph, page } from './ui';
+import { arrow, publicFooter, publicPage } from './public-site';
 
-/**
- * The one page a person can read.
- *
- * Forge has no dashboard, no console and no observer API — the previous system
- * had all three and each was a surface to keep working, secure and honest. This
- * is the mount point, which would otherwise be a 404, and it answers only what
- * someone can ask before they are a user: what is this, how do I connect it,
- * where does the GitHub App go. Once connected, everything happens in the chat.
- *
- * Written to be scanned, not read. A person arriving here wants the server URL
- * and the install link; the prose exists to make those two make sense, and it
- * is kept short enough that skipping it costs nothing.
- */
-
-/** One icon set, one stroke weight, drawn rather than borrowed from a font. */
-const ICONS: Record<string, string> = {
-  read: '<path d="M3 5.5h6a2.5 2.5 0 0 1 2.5 2.5v9A2 2 0 0 0 9.5 15H3Zm18 0h-6A2.5 2.5 0 0 0 12.5 8v9A2 2 0 0 1 14.5 15H21Z"/>',
-  edit: '<path d="M4 20h16"/><path d="M14.5 4.5 19 9 9.5 18.5 4.5 20l1.5-5Z"/>',
-  merge: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7"/><path d="M8.5 6.6c4 .6 5.6 2.4 6.6 5"/>',
-  discard: '<path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.5 7l1 12.5h9L17.5 7"/>',
-  see: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>'
-};
-
-function icon(name: string, muted = false): string {
-  return (
-    `<svg class="ico${muted ? ' mut' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
-    `stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] ?? ''}</svg>`
-  );
-}
-
-/**
- * The product in one picture: you talk, Forge writes to GitHub, and what it
- * sees comes back. Drawn rather than described, because the loop is the whole
- * idea and a paragraph of it is the thing people skip.
- */
-function loop(): string {
-  const node = (x: number, label: string, sub: string) =>
-    `<g transform="translate(${x} 34)">` +
-    `<rect x="-58" y="-26" width="116" height="52" rx="12" fill="var(--panel)" stroke="var(--line)"/>` +
-    `<text x="0" y="-3" text-anchor="middle" fill="var(--ink)" font-size="13" font-weight="600">${label}</text>` +
-    `<text x="0" y="14" text-anchor="middle" fill="var(--muted)" font-size="10.5">${sub}</text></g>`;
-
-  return (
-    '<svg class="loop" viewBox="0 0 620 128" role="img" ' +
-    'aria-label="You ask in a chat, Forge commits to GitHub, and what it sees comes back to you.">' +
-    '<defs><marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">' +
-    '<path d="M0 0.5 7 4 0 7.5Z" fill="var(--muted)"/></marker></defs>' +
-    node(70, 'You', 'in any chat') +
-    node(310, 'Forge', 'five tools') +
-    node(550, 'GitHub', 'the only copy') +
-    '<path d="M132 34h100" stroke="var(--muted)" fill="none" marker-end="url(#ar)"/>' +
-    '<path d="M372 34h100" stroke="var(--muted)" fill="none" marker-end="url(#ar)"/>' +
-    '<path d="M550 66v26q0 12-12 12H82q-12 0-12-12V66" stroke="var(--muted)" fill="none" ' +
-    'stroke-dasharray="4 4" marker-end="url(#ar)"/>' +
-    '<text x="310" y="121" text-anchor="middle" fill="var(--muted)" font-size="10.5">' +
-    'commits, diffs and screenshots come back</text>' +
-    '</svg>'
-  );
-}
-
-const TOOLS: Array<[string, string, string, boolean]> = [
-  ['read', 'forge_read', 'Your repos, a repo&rsquo;s files, or what a change did', false],
-  ['edit', 'forge_edit', 'Commits files directly or holds one change for review', false],
-  ['merge', 'forge_merge', 'Sends one link to land a change on main', true],
-  ['discard', 'forge_discard', 'Sends one link to throw a change away', true],
-  ['see', 'forge_see', 'Captures a public page at phone and desktop', false]
-];
-
-const USE_CASES: Array<[string, string]> = [
-  ['Research &rarr; repository', 'Save a plan, decision or brief where the next coding session can use it.'],
-  ['Live page &rarr; visual review', 'See phone and desktop, then record the findings or make a small correction.'],
-  ['Proposed edit &rarr; draft PR', 'Hold implementation or risky work for review before it becomes repository truth.']
-];
-
-const LIMITS: Array<[string, string]> = [
-  ['Free', 'private research preview; external GitHub App installation is not available yet'],
-  ['30', 'capture attempts per day'],
-  ['GitHub', 'your permissions and rate limits'],
-  ['No runner', 'Forge does not execute code; repository automation may react to commits']
-];
-
-const REFUSALS: Array<[string, string, string]> = [
-  ['edit', 'Run code', 'Use a coding agent for builds, tests, commands and deployments'],
-  ['edit', 'Open many changes', 'Each repository has one Forge change'],
-  ['see', 'See private pages', 'Captures need a URL that is already public'],
-  ['read', 'Keep a copy', 'GitHub is the only place your work lives']
-];
-
-/**
- * Where GitHub returns someone after they install the App.
- *
- * It sends them to the Setup URL with `installation_id` and `setup_action`, and
- * the honest answer to "I just installed this" is not the page that explains
- * what Forge is — they have already decided. It is: it worked, here is the one
- * thing left to do.
- *
- * Which thing that is depends on how they arrived, and Forge cannot tell:
- * installing from GitHub directly is a perfectly normal way to find it, and
- * those people have no client connected yet. So both steps are stated, shortest
- * first, and neither is presented as an error.
- */
 export function installedPage(env: Env, action: string): Response {
   const origin = env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, '');
   const mcp = `${origin}/mcp`;
@@ -136,93 +36,115 @@ export function installedPage(env: Env, action: string): Response {
 }
 
 export function landingPage(env: Env): Response {
-  const origin = env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, '');
-  const mcp = `${origin}/mcp`;
-  const install = `https://github.com/apps/${env.GITHUB_APP_SLUG}/installations/new`;
-
-  const tools = TOOLS.map(
-    ([ico, name, what, gated]) =>
-      `<li>${icon(ico, !gated)}<b>${name}</b><p>${what}</p>` +
-      `<span class="you${gated ? ' yes' : ''}">${gated ? 'you approve' : 'no approval'}</span></li>`
-  ).join('');
-
-  const useCases = USE_CASES.map(
-    ([name, what]) => `<article class="card"><h3>${name}</h3><p>${what}</p></article>`
-  ).join('');
-
-  const limits = LIMITS.map(([big, small]) => `<div><b>${big}</b><span>${small}</span></div>`).join('');
-
-  const refusals = REFUSALS.map(
-    ([ico, name, why]) => `<li>${icon(ico, true)}<b>${name}</b><p>${why}</p><span class="you"></span></li>`
-  ).join('');
-
-  const body = `
-<section class="hero">
-  <h1 class="rise">Think in ChatGPT.<br>Commit safely to GitHub.</h1>
-  <p class="lead rise">Forge is the safe handoff between a conversation and your repository:
-    research, visual reviews and small edits become <b>real commits</b> and <b>draft pull requests</b>.
-    It never runs code. It holds proposed work for your review.</p>
-  <div class="row"><a class="btn primary" href="#setup">Connect Forge</a>
-    <a class="btn" href="${escapeHtml(install)}">Choose repositories</a></div>
-  <div class="endpoint"><span>Server</span><code>${escapeHtml(mcp)}</code></div>
-  <p class="note">Client support varies by plan and surface. Read and screenshot tools remain useful where write actions are unavailable.</p>
+  const home = env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, '');
+  const origin = escapeHtml(home);
+  const install = escapeHtml(`https://github.com/apps/${env.GITHUB_APP_SLUG}/installations/new`);
+  return publicPage({
+    home, title: 'Forge — bring the conversation into your project',
+    index: true, cache: 'public,max-age=300',
+    head: `<meta name="description" content="Read GitHub projects and save research, decisions and changes as ordinary commits. Open source under MIT. Run your own Forge.">
+<link rel="canonical" href="${origin}"><meta property="og:title" content="Forge — bring the conversation into your project">
+<meta property="og:description" content="Research, decisions and changes. From your conversation to GitHub. Open source. Run your own copy."><meta property="og:image" content="${origin}/icon.png"><meta property="og:url" content="${origin}"><meta name="twitter:card" content="summary">`,
+    css: LANDING_CSS,
+    body: `
+<section class="home-intro">
+  <h1>Bring the conversation<br>into your project.</h1>
+  <div class="intro-bottom"><p>Research, decisions and changes shouldn’t get lost in a chat.<br class="desktop-break"> Forge gives them a home in GitHub. Open source. Run your own copy.</p><div class="intro-actions"><a class="btn primary" href="${origin}/docs/self-hosting">Run your own Forge ${arrow}</a><a class="btn secondary" href="https://github.com/timc0y/forge-mcp">Source on GitHub ${arrow}</a></div></div>
 </section>
-
-<h2>Three useful first jobs</h2>
-<div class="usecases">${useCases}</div>
-
-${loop()}
-
-<h2>Five tools. Two need you.</h2>
-<ul class="tools">${tools}</ul>
-<p class="note">You never name a branch — describe the work, and say those words again to continue it.
-  A commit is on GitHub the moment a tool returns.</p>
-
-<h2 id="setup">Setting up</h2>
-<ol class="steps">
-  <li><div><h3>Add the server to your client</h3>
-    <p>ChatGPT: Settings → Apps → Advanced settings → Developer mode.
-      Claude: Settings → Connectors.</p>
-    <code class="block">${escapeHtml(mcp)}</code>
-    <p class="note">ChatGPT custom write support currently depends on plan, workspace and surface. Use the actions your client enables.</p></div></li>
-  <li><div><h3>Continue with GitHub</h3>
-    <p>Your client opens a Forge page, then GitHub asks whether to let Forge act as you.
-      That is the last time tokens come up.</p></div></li>
-  <li><div><h3>Choose what it may touch</h3>
-    <p>Authorizing says who you are. Installing says which repositories — all of them or a few,
-      changeable any time from GitHub.</p>
-    <div class="row"><a class="btn" href="${escapeHtml(install)}">Install the App</a></div></div></li>
-</ol>
-
-<h2>What it costs</h2>
-<div class="spec">${limits}</div>
-
-<h2>What it will not do</h2>
-<ul class="tools">${refusals}</ul>
-
-<footer>Free research preview. <a href="${escapeHtml(origin)}/privacy">Privacy</a> ·
-  <a href="https://timcoy.uk/">About &amp; contact</a>. Screenshot links last 30 days,
-  approval links 7.</footer>`;
-
-  return page({
-    title: 'Forge — think in ChatGPT, commit safely to GitHub',
-    body,
-    home: origin,
-    // The one page meant to be found. Every other surface is about somebody's
-    // branch or somebody's screenshot and is deliberately not indexed.
-    index: true,
-    cache: 'public,max-age=300',
-    head:
-      `<meta property="og:title" content="Forge — think in ChatGPT, commit safely to GitHub">` +
-      `<meta property="og:description" content="Turn research, visual reviews and small edits into safe GitHub changes.">` +
-      `<meta property="og:image" content="${escapeHtml(origin)}/icon.png">` +
-      `<meta property="og:url" content="${escapeHtml(origin)}">` +
-      `<meta name="twitter:card" content="summary">`,
-    css:
-      '.usecases{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.75rem;margin:.7rem 0 2rem}' +
-      '.usecases h3{margin:0 0 .35rem}.usecases p{margin:0}.hero .endpoint{margin-top:1rem}' +
-      '.loop{display:block;width:100%;height:auto;margin:2.6rem 0 .5rem}' +
-      '@media(max-width:720px){.usecases{grid-template-columns:1fr}}' +
-      '@media(max-width:560px){.loop{display:none}}'
+<figure class="handoff">
+  <figcaption><span>A conversation, carried through.</span><span>Illustrative example</span></figcaption>
+  <div class="handoff-sheets">
+    <section class="conversation" aria-label="Example conversation"><div class="sheet-heading"><span class="chat-dot"></span> In your conversation</div>
+      <div class="person-message">We’ve decided to use the existing email service. Save the decision so my next coding session can pick it up.</div>
+      <div class="forge-message"><span class="demo-mark">${forgeGlyph(18)}</span><div><p>Saved the decision in <code>docs/decisions/email.md</code>.</p><p>The project now has the reason, the constraint and the next step.</p><span class="demo-receipt">Committed to main ${arrow}</span></div></div>
+      <div class="conversation-bottom">You decide. Forge saves the work.</div>
+    </section>
+    <section class="repository-sheet" aria-label="Example document saved to GitHub"><div class="sheet-heading">In your repository <span class="file-path">docs / decisions / email.md</span></div>
+      <div class="saved-document"><h2>Use the existing<br>email service</h2><div class="doc-rule"></div><h3>Decision</h3><p>Use the project’s existing email service for account notifications.</p><h3>Why</h3><p>It already owns delivery, retries and templates. A second provider would duplicate that work.</p><h3>Next step</h3><p>Add the notification to the existing sender.</p></div>
+      <details class="demo-diff"><summary>See what changed <span>+ 11 lines</span></summary><pre><code>+ # Use the existing email service
++
++ ## Decision
++ Use the project’s existing email service for account notifications.
++
++ ## Why
++ It already owns delivery, retries and templates. A second provider would duplicate that work.
++
++ ## Next step
++ Add the notification to the existing sender.
++</code></pre></details>
+    </section>
+  </div>
+  <div class="handoff-caption"><span>Conversation ${arrow} Forge ${arrow} GitHub</span><span>Ready for the next coding session.</span></div>
+</figure>
+<section class="work-section" id="how-it-works"><div class="section-intro"><h2>Keep the useful part.</h2><p>Work with the repository from the conversation you’re already in. The result is a normal GitHub commit.</p></div>
+  <div class="work-list">
+    <article><h3>Find the source.</h3><div><p>Ask how the project works. Read exact files or get source-backed context, with revisions and the gaps in the evidence kept visible.</p><a href="${origin}/docs/using-forge#forge_read">Explore repository reads ${arrow}</a></div></article>
+    <article><h3>Save the decision.</h3><div><p>Turn research, a plan or a small edit into committed work. Write directly, or prepare a proposed change in a draft pull request.</p><a href="${origin}/docs/using-forge#forge_edit">See how changes work ${arrow}</a></div></article>
+    <article><h3>Check the page.</h3><div><p>Bring a public page back into the conversation as phone and desktop captures. Record what you find in the project.</p><a href="${origin}/docs/using-forge#forge_see">Read about captures ${arrow}</a><p class="capture-note">Your operator must enable service access and separate capture consent for your account.</p></div></article>
+  </div>
+</section>
+<section class="boundary-section"><h2>GitHub keeps the work.<br>Your coding tools run it.</h2><div><p>Forge focuses on the handoff: authorised reads, committed changes and public-page captures.</p><p>Builds, tests, previews and deployments stay in your coding environment. Merge and discard actions return a link for you to approve.</p><a href="${origin}/docs/architecture">Read the architecture ${arrow}</a></div></section>
+<section class="start-section" id="setup"><div><h2>Run your own<br>Forge.</h2><p>Use, adapt and host the MIT-licensed source. You supply your own accounts and pay your providers; client plans are separate.</p><a class="text-link" href="${origin}/docs/release-status">See release proof and tested clients ${arrow}</a></div><div class="start-paths"><article><h3>Start with your own copy</h3><p>Use your own GitHub App, Cloudflare account and credentials. Follow the setup guide and verify a disposable commit. Independent fresh-account setup remains unverified.</p><a href="${origin}/docs/self-hosting">Self-hosting guide ${arrow}</a></article><article><h3>Read it. Make it yours.</h3><p>MIT-licensed source, one Worker and five tools. Start with the code or contribute a focused improvement.</p><a href="https://github.com/timc0y/forge-mcp">Explore the source ${arrow}</a></article><article id="private-connection"><h3>Connect to this private instance</h3><p>This hosted instance is private. Connect only with a GitHub account enabled by its operator, then choose the repositories Forge can reach.</p><code class="endpoint-code">${origin}/mcp</code><div class="start-links"><a href="${origin}/docs/using-forge">Connection guide ${arrow}</a><a href="${install}">This instance’s GitHub App ${arrow}</a></div></article></div></section>
+${publicFooter(home)}`
   });
 }
+
+const LANDING_CSS = `
+.home-intro{padding:4rem 0 3rem}
+.home-intro h1{font-size:clamp(3rem,6.1vw,5.6rem);line-height:1.06;margin:0 0 2rem;letter-spacing:-.04em;font-weight:500}
+.intro-bottom{display:flex;justify-content:space-between;align-items:end;gap:2rem}
+.intro-bottom p{font-size:1.1rem;line-height:1.6;margin:0;max-width:60ch}
+.intro-bottom .btn{flex-shrink:0;margin-bottom:.3rem}
+.intro-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.75rem}
+.handoff{background:var(--blue);color:#fff;border-radius:12px;margin:0;padding:1.6rem 2.5rem 1.3rem;overflow:hidden}
+.handoff figcaption{display:flex;justify-content:space-between;gap:1rem;margin:0 0 1.5rem;color:#e0e6ff;font-size:.76rem;text-transform:none;letter-spacing:0}
+.handoff figcaption span:first-child{color:#fff;font-weight:500}
+.handoff-sheets{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:start}
+.conversation,.repository-sheet{min-width:0;background:#fff;color:var(--ink);border-radius:8px;overflow:hidden}
+.sheet-heading{display:flex;align-items:center;gap:.55rem;font-size:.73rem;font-weight:500;padding:1.1rem 1.4rem;border-bottom:1px solid var(--line);min-height:55px}
+.chat-dot{width:8px;height:8px;background:var(--blue);border-radius:50%}
+.file-path{margin-left:auto;font-size:.65rem;color:var(--muted);font-weight:400}
+.person-message{margin:2rem 1.7rem 1.8rem 3.5rem;padding:1rem 1.2rem;background:#f0f2f4;border-radius:12px 12px 3px 12px;line-height:1.65;font-size:.9rem}
+.forge-message{display:flex;align-items:start;gap:.7rem;margin:0 1.7rem 2rem}
+.demo-mark{display:grid;place-items:center;width:25px;height:25px;flex-shrink:0;background:var(--blue);color:#fff;border-radius:6px;font-weight:600;font-size:.78rem}
+.forge-message p{font-size:.85rem;color:var(--ink);margin:0 0 .9rem}
+.forge-message code{font-size:.78rem;background:var(--panel);padding:.1rem .3rem;border-radius:3px}
+.demo-receipt{display:inline-flex;align-items:center;gap:.7rem;font-size:.73rem;color:var(--blue);font-weight:500;padding-top:.4rem}
+.conversation-bottom{border-top:1px solid var(--line);padding:1.2rem 1.5rem;font-size:.7rem;color:var(--muted)}
+.saved-document{padding:1.8rem 2rem 1.5rem}
+.saved-document h2{font-size:1.65rem;line-height:1.15;margin:0 0 1.2rem;font-weight:500}
+.doc-rule{height:1px;background:var(--line);margin-bottom:1.2rem}
+.saved-document h3{font-size:.75rem;margin:1rem 0 .4rem;font-weight:600;letter-spacing:0}
+.saved-document p{font-size:.79rem;line-height:1.65;margin:0;max-width:44ch}
+.demo-diff{border-top:1px solid var(--line);font-size:.72rem}
+.demo-diff summary{cursor:pointer;list-style:revert;min-height:47px;padding:.85rem 1.5rem;color:var(--blue);font-weight:500}
+.demo-diff summary span{float:right;font-size:.67rem;color:#267045}
+.demo-diff pre{padding:0 1.5rem 1.2rem;overflow:auto;font-size:.68rem;color:#267045;margin:0;line-height:1.65}
+.handoff-caption{display:flex;justify-content:space-between;gap:1rem;margin-top:1.2rem;color:#e0e6ff;font-size:.7rem}
+.handoff-caption span:first-child{display:flex;align-items:center;gap:.7rem}
+.handoff-caption svg{width:14px}
+.work-section{padding:6.5rem 0}
+.section-intro{display:grid;grid-template-columns:1fr 1fr;gap:5rem;margin-bottom:2rem;align-items:start}
+.section-intro h2,.boundary-section h2,.start-section h2{font-size:clamp(2rem,3.8vw,3.2rem);line-height:1.12;margin:0}
+.section-intro p{max-width:43ch;font-size:1.02rem;margin:.3rem 0 0}
+.work-list{border-top:1px solid var(--line)}
+.work-list article{display:grid;grid-template-columns:1fr 1fr;gap:5rem;padding:2rem 0;border-bottom:1px solid var(--line)}
+.work-list h3{font-size:1.4rem;margin:0}
+.work-list p{font-size:.96rem;max-width:51ch;margin:0 0 1rem}
+.work-list a,.boundary-section a,.start-section a:not(.btn){display:inline-flex;align-items:center;gap:.45rem;font-size:.86rem;text-decoration:none;color:var(--blue);font-weight:500}
+.work-list .capture-note{font-size:.74rem;margin:.8rem 0 0}
+.boundary-section{display:grid;grid-template-columns:1.15fr 1fr;gap:5rem;background:var(--panel);border-radius:12px;padding:3.5rem;margin-bottom:6.5rem}
+.boundary-section h2{font-size:clamp(1.8rem,3vw,2.7rem)}
+.boundary-section p{font-size:.91rem;margin:0 0 1rem}
+.start-section{display:grid;grid-template-columns:1fr 1fr;gap:6rem;padding-bottom:6rem}
+.start-section>div>p{max-width:39ch;margin:1.5rem 0 1rem;font-size:.94rem}
+.start-paths article{border-top:1px solid var(--line);padding:1.5rem 0 2rem}
+.start-paths h3{font-size:1.1rem;margin:0 0 .6rem}
+.start-paths p{font-size:.86rem;margin:0 0 1rem;max-width:52ch}
+.endpoint-code{display:block;font-size:.76rem;padding:.7rem .8rem;background:var(--panel);border-radius:5px;margin:1rem 0;overflow-wrap:anywhere}
+.start-links{display:flex;flex-wrap:wrap;gap:1rem}
+.start-section .start-links a{font-size:.74rem}
+@media(prefers-reduced-motion:no-preference){.demo-receipt{animation:receipt 850ms cubic-bezier(.16,1,.3,1) both}@keyframes receipt{from{background-color:#e0e7ff;box-shadow:0 4px 20px #2349e820}to{background-color:transparent;box-shadow:0 0 0 #2349e800}}}
+@media(max-width:1000px){.handoff{padding:1.3rem}.sheet-heading{padding:1rem}.file-path{display:none}.person-message{margin:1.5rem 1rem 1.5rem 2rem;font-size:.82rem}.forge-message{margin:0 1rem 1.5rem}.saved-document{padding:1.5rem}.section-intro,.work-list article,.boundary-section{gap:3rem}.start-section{gap:4rem}}
+@media(max-width:760px){.intro-actions{justify-content:flex-start}.home-intro{padding:2.5rem 0 2rem}.home-intro h1{font-size:clamp(2.6rem,9.5vw,4rem);line-height:1.08;margin-bottom:1.4rem}.intro-bottom{display:block}.intro-bottom p{font-size:1rem;margin-bottom:1.3rem}.intro-bottom .btn{margin:0}.desktop-break{display:none}.handoff{padding:1rem .8rem;border-radius:9px}.handoff figcaption{font-size:.61rem;gap:.4rem;margin-bottom:1rem}.handoff-sheets{grid-template-columns:1fr;gap:1rem}.sheet-heading{font-size:.7rem;padding:.9rem 1rem;min-height:44px}.file-path{display:block;font-size:.55rem}.person-message{margin:1.3rem 1rem 1.2rem 2.5rem;font-size:.83rem}.forge-message p{font-size:.81rem}.conversation-bottom{padding:.9rem 1rem}.saved-document{padding:1.5rem}.saved-document h2{font-size:1.5rem}.saved-document p{font-size:.8rem}.handoff-caption{font-size:.61rem;line-height:1.5;flex-direction:column;gap:.3rem}.work-section{padding:4rem 0}.section-intro{display:block;margin-bottom:2rem}.section-intro p{font-size:.94rem;margin:1rem 0 0}.work-list article{grid-template-columns:1fr;gap:.8rem;padding:1.5rem 0}.work-list h3{font-size:1.25rem}.work-list p{font-size:.89rem}.boundary-section{grid-template-columns:1fr;gap:1.5rem;padding:1.6rem;margin-bottom:4rem}.boundary-section p{font-size:.88rem}.start-section{grid-template-columns:1fr;gap:2rem;padding-bottom:3.5rem}.start-section h2 br{display:none}.start-section>div>p{max-width:100%;font-size:.9rem}.start-paths article{padding:1.3rem 0 1.5rem}}
+`;

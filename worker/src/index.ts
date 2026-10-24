@@ -1,5 +1,7 @@
 import { ForgeMcpSession, SERVER_VERSION } from './mcp';
-import { authenticate, bindSessionId, sessionIdFor } from './identity';
+import { authenticate, bindSessionId, identityForUser, sessionIdFor } from './identity';
+import { isLoginAllowed } from './access';
+import { boundedMcpRequest } from './mcp-request';
 import {
   authorizationServerMetadata,
   authorize,
@@ -11,6 +13,8 @@ import {
 import { approvalPage, resolveApproval } from './approve';
 import { installedPage, landingPage } from './landing';
 import { privacyPage } from './privacy';
+import { documentationResponse } from './public-site';
+import onestFont from '../assets/fonts/onest-latin-variable.ttf';
 import { iconResponse } from './icon';
 import { userRequestFor } from './user-token';
 import type { Env } from './env';
@@ -21,7 +25,7 @@ export { ForgeMcpSession };
 /**
  * The whole surface. Operational capabilities reach the outside world through
  * the MCP endpoint, OAuth and approval pages. The landing, privacy notice,
- * icons and health route are public information surfaces only.
+ * documentation, font, icons and health route are public information surfaces only.
  *
  * There is no dashboard, observer API, task console, workspace console or
  * capture gallery. Evidence from forge_see is returned inline with that call.
@@ -40,16 +44,19 @@ export { ForgeMcpSession };
  */
 async function credentialForApproval(env: Env, approvalId: string): Promise<Awaited<ReturnType<typeof userRequestFor>> | null> {
   const row = await env.METADATA.prepare(
-    `SELECT u.id AS user_id
+    `SELECT u.id AS user_id, u.github_login
        FROM approvals a
        JOIN users u ON u.id = a.user_id
       WHERE a.id = ?1`
   )
     .bind(approvalId)
-    .first<{ user_id: string }>();
+    .first<{ user_id: string; github_login: string }>();
 
-  if (!row?.user_id) return null;
-  return async (path, init) => (await userRequestFor(env, row.user_id))(path, init);
+  if (!row?.user_id || !isLoginAllowed(env, row.github_login)) return null;
+  return async (path, init) => {
+    await identityForUser(env, row.user_id);
+    return (await userRequestFor(env, row.user_id))(path, init);
+  };
 }
 
 async function handleApproval(
@@ -67,7 +74,8 @@ async function handleApproval(
   // scanners fetch them, and browsers prefetch them. If loading the page could
   // resolve the approval, a link preview would merge someone's branch.
   if (request.method === 'GET') {
-    return approvalPage(env, id, token);
+    const gh = await credentialForApproval(env, id);
+    return approvalPage(env, id, gh ? token : 'invalid');
   }
   if (request.method !== 'POST') {
     return new Response('Method not allowed', { status: 405, headers: { allow: 'GET, POST' } });
@@ -132,9 +140,6 @@ export default {
     if (corsRoute && request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
 
     try {
-      // The mount point. Not a dashboard and not a console — the one page that
-      // answers what this is and how to connect it, because otherwise the URL a
-      // person is handed is a 404.
       if (path === '/' || path === '') {
         // GitHub returns people here after installing, with setup_action set.
         // They have already decided what Forge is; what they need now is
@@ -145,6 +150,24 @@ export default {
 
       if (path === '/privacy') {
         return privacyPage(env);
+      }
+
+      if (path === '/docs' || path.startsWith('/docs/')) {
+        if (!['GET', 'HEAD'].includes(request.method)) {
+          return new Response('Method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
+        }
+        const slug = path === '/docs' || path === '/docs/' ? 'overview' : path.slice('/docs/'.length);
+        const response = documentationResponse(env.FORGE_PUBLIC_ORIGIN.replace(/\/+$/, ''), slug);
+        return request.method === 'HEAD' ? new Response(null, response) : response;
+      }
+
+      if (path === '/fonts/onest-variable.ttf') {
+        if (!['GET', 'HEAD'].includes(request.method)) {
+          return new Response('Method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
+        }
+        return new Response(request.method === 'HEAD' ? null : onestFont, {
+          headers: { 'content-type': 'font/ttf', 'cache-control': 'public,max-age=86400', 'x-content-type-options': 'nosniff' }
+        });
       }
 
       // The mark, at a stable URL for a favicon, an unfurler and anyone who
@@ -189,6 +212,14 @@ export default {
         // rather than re-derived inside, so a session can never outlive or
         // disagree with the token that opened it.
         const identity = await authenticate(env, request);
+        const bounded = await boundedMcpRequest(request);
+        if (!bounded) {
+          return Response.json(
+            { error: 'FORGE_VALIDATION_FAILED', message: 'MCP requests are limited to 4 MiB. Split this request into smaller calls.' },
+            { status: 413, headers: corsHeaders }
+          );
+        }
+        request = bounded;
         // ChatGPT probes the stateless 2026-07-28 protocol first. The current
         // Agents transport implements the initialized 2025 protocol, whose
         // correct response to the new discovery RPC is a 404 JSON-RPC

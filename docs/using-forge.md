@@ -2,7 +2,7 @@
 
 Think in ChatGPT. Commit safely to GitHub.
 
-Forge is the hosted handoff between a conversation and a repository. It turns
+Forge connects a conversation to a repository. It turns
 research, visual reviews and small edits into durable commits and draft pull
 requests. It does not run your code, and GitHub remains the only copy.
 
@@ -12,9 +12,17 @@ Start with one of three jobs:
   can use it.
 - Capture a public page at phone and desktop, then record the findings or make a
   small correction.
-- Fix copy, CSS or documentation from a conversation without touching `main`.
+- Commit routine work directly, or explicitly hold a proposed edit for review
+  on the fixed `forge` branch.
 
-Free research preview by design. As of 21 September 2026 the GitHub App registration is still private, so unrelated GitHub accounts cannot install it until the owner changes the App visibility to public.
+Run your own copy from the [MIT-licensed source](../LICENSE) using the
+[self-hosting guide](./self-hosting.md). You supply your own GitHub App,
+Cloudflare resources and credentials, pay your providers and supply your client
+plan. Independent fresh-account setup remains unverified.
+
+Tim's hosted endpoint and GitHub App are his private deployment for his own use.
+The public path is self-hosting. See the [release status](./going-live.md) for
+deployment, client and inference proof; those are separate from source checks.
 
 ---
 
@@ -48,11 +56,10 @@ may react to that commit just as it would to any other GitHub write.
 direction and routine content go to the default branch. Work that needs review
 goes to the Forge change and needs your approval before it lands.
 
-**Two things need approval: merging and discarding.** Everything else is
-additive — a commit only ever adds, and a change you abandon is still there
-tomorrow. Merging moves what everything else treats as truth, and discarding
-destroys work. Both send you one link showing exactly what would land, or how
-many commits would stop being reachable. The link keeps working after the
+**Two things need Forge approval: merging and discarding.** Authorised routine
+writes can commit directly to the default branch; your client may ask separately
+for write permission. Merging lands a held proposal, and discarding destroys it.
+Both send you one link showing exactly what would land, or how many commits would stop being reachable. The link keeps working after the
 conversation ends, so you can decide later, from any device.
 
 **Nothing is created by ceremony.** Write to a repository that does not exist and
@@ -62,6 +69,17 @@ You do not make a repository, name a branch, or open a pull request first.
 ---
 
 ## Getting connected
+
+First [set up your own instance](./self-hosting.md), then use its server URL and
+GitHub App installation link from the homepage's private connection panel.
+`<FORGE_PUBLIC_ORIGIN>` below means your configured instance URL, including any
+path prefix. It does not mean Tim's hosted endpoint.
+
+The operator must include your GitHub login in `FORGE_ALLOWED_LOGINS`, a
+comma-separated, case-insensitive list. Missing, blank or any malformed entry
+denies everyone; wildcards are not accepted. App installation alone does not
+grant service access. Capture also needs your login in the separate
+`FORGE_CAPTURE_ALLOWED_LOGINS` consent list, which cannot grant service access.
 
 > **ChatGPT availability changes by account, rollout, plan and surface.** OpenAI
 > currently documents read/fetch custom MCP access for Pro and full write/modify
@@ -75,7 +93,7 @@ You do not make a repository, name a branch, or open a pull request first.
 ### 1. Add the server to your client
 
 ```
-https://timcoy.uk/forge/mcp
+<FORGE_PUBLIC_ORIGIN>/mcp
 ```
 
 **ChatGPT** — Settings → Apps → Advanced settings → Developer mode, then add
@@ -84,8 +102,11 @@ a custom app with that URL.
 **Claude** — Settings → Connectors → Add custom connector. Or from Claude Code:
 
 ```sh
-claude mcp add --transport http --scope user forge https://timcoy.uk/forge/mcp
+claude mcp add --transport http --scope user forge https://YOUR_FORGE_HOST/mcp
 ```
+
+Replace `https://YOUR_FORGE_HOST` with your full `FORGE_PUBLIC_ORIGIN`, retaining
+any path prefix. Copy the complete server URL from your instance's homepage.
 
 **Cursor agents** — add that URL as a remote HTTP MCP server. Its documented
 HTTPS callback is admitted. See [Cursor’s MCP guide](https://cursor.com/docs/mcp).
@@ -95,7 +116,10 @@ HTTPS callback is admitted. See [Cursor’s MCP guide](https://cursor.com/docs/m
 is tested locally; successful authorization in Grok Bot still needs a real-client
 check. Adding a callback host alone does not prove the connection.
 
-After V2 is released, reconnect, re-scan the tools and start a new conversation.
+After a catalog release, reconnect, re-scan the tools and start a new conversation.
+Check your instance's deployed version and the
+[compatibility/release checklist](./going-live.md); a successful deployment
+does not prove a refreshed client catalog.
 Old access tokens and session IDs are refused; refresh credentials are retained.
 
 ### 2. Authorize
@@ -114,8 +138,11 @@ Authorizing tells Forge **who you are**. Installing tells it **which
 repositories it may touch**. They are deliberately separate.
 
 ```
-https://github.com/apps/forge-mcp-github-app/installations/new
+https://github.com/apps/YOUR_GITHUB_APP_SLUG/installations/new
 ```
+
+Replace `YOUR_GITHUB_APP_SLUG` with your own App's slug, or follow the link in
+your instance's connection panel. Tim's private App is for his deployment.
 
 Choose all your repositories or only some. Change it whenever you like, from
 GitHub, without involving Forge. Repositories Forge creates for you are
@@ -203,6 +230,13 @@ else.
 
 ### forge_see
 
+Capture is available only to explicitly allowed service users with separate
+consent. Your GitHub login must be in both `FORGE_ALLOWED_LOGINS` and
+`FORGE_CAPTURE_ALLOWED_LOGINS`. Empty `FORGE_CAPTURE_ALLOWED_LOGINS` denies before quota/provider work.
+Enabled accounts may request any already-public URL; this restriction does not
+prove provider DNS, redirect or subrequest isolation. It stays until actual
+provider proof and an explicit release change.
+
 The URL must already be publicly reachable. Initial URL checks reject local
 hostnames and IP literals, and Browser Rendering is told to reject redirects
 to literal local/private destinations. Arbitrary-host capture still relies on
@@ -220,16 +254,22 @@ target HTTP error in the receipt even when the snapshot API itself succeeded.
 
 ## Limits
 
+These are the source defaults; check your operator's settings.
+Local checks do not prove live inference/concurrency or external spending controls.
+
 | | |
 |---|---|
 | Capture attempts | 30 per person per UTC day, counted after input validation |
 | GitHub work | your GitHub allowance, with bounded requests and results |
-| Semantic context | bounded JEV requests and source budgets |
+| Semantic context | shared default 200 inference calls/day and 4 concurrent, plus bounded source |
 | Approval links | expire after 7 days |
 
 Capture attempts remain counted when provider responses fail, exceed local
 limits or cannot be delivered; the browser may already have done the work.
-Forge also pays for hosting and semantic inference. GitHub operations use your
+Unknown inference attempts stay counted and reserve capacity for a fixed 60
+seconds; missing D1 budget state refuses inference. Call limits are not a billing
+guarantee. Each instance's operator pays for hosting and semantic inference;
+client subscriptions are separate. GitHub operations use your
 GitHub App user authorization and its rate limit.
 
 ## What Forge will not do
@@ -238,7 +278,7 @@ GitHub App user authorization and its rate limit.
 - Open more than one Forge change in a repository.
 - Capture anything not publicly reachable.
 - Keep a copy of your repository.
-- Show a model your secrets — it holds none of yours.
+- Return credential values to a model; the stored GitHub credential stays encrypted.
 
 ## When something goes wrong
 

@@ -33,7 +33,15 @@ export function selectSource(selector: Selector, text: string): { text: string; 
   const [startLine, endLine] = selector.lines;
   const starts = [0];
   for (let i = 0; i < text.length - 1; i++) if (text[i] === '\n') starts.push(i + 1);
-  if (startLine > starts.length || endLine > starts.length) throw new ForgeError({ code: 'FORGE_NOT_FOUND', message: 'The requested lines exceed this source revision.' });
+  if (startLine > starts.length || endLine > starts.length) {
+    const suggestedStart = Math.min(startLine, starts.length);
+    const suggestedSelector = `${selector.path}:${suggestedStart}-${Math.min(starts.length, suggestedStart + endLine - startLine)}`;
+    throw new ForgeError({
+      code: 'FORGE_NOT_FOUND',
+      message: `The requested lines exceed this source revision (${starts.length} lines). Read ${suggestedSelector}; the exact request was not shortened.`,
+      details: { path: selector.path, requestedLines: selector.lines, totalLines: starts.length, suggestedSelector }
+    });
+  }
   const start = starts[startLine - 1]!;
   const end = starts[endLine] ?? text.length;
   return {

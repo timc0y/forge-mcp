@@ -12,9 +12,8 @@
  * served from a Worker with no asset pipeline, and inlining keeps every page a
  * single request that cannot half-arrive with its stylesheet missing.
  *
- * Colours come from the reader's own light/dark setting. Nothing here hard-codes
- * a theme, and nothing loads from anywhere — no font, no script, no image — so
- * opening one of these pages tells no third party that you use Forge.
+ * Operational pages follow the reader's light/dark setting. Public pages add
+ * their own reading layout and a self-hosted font; no third-party assets load.
  */
 
 /**
@@ -102,48 +101,6 @@ a{text-underline-offset:.18em;text-decoration-thickness:1px}
 li::marker{color:var(--muted)}
 :root{scrollbar-color:var(--line) var(--bg);scrollbar-width:thin}
 
-/* Hero */
-.hero{padding:3.5rem 0 1rem}
-.hero h1{margin:0 0 1rem;font-size:clamp(2.4rem,7vw,4.2rem);letter-spacing:-.045em;line-height:.98}
-.hero .lead{font-size:clamp(1.15rem,2.4vw,1.45rem);max-width:34ch;line-height:1.35;margin-bottom:1.8rem}
-.hero .lead b{font-weight:600}
-.endpoint{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;border:1px solid var(--line);border-radius:12px;padding:.7rem .9rem;background:var(--panel);max-width:38rem}
-.endpoint code{flex:1 1 16rem;font-size:.9rem}
-.endpoint span{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}
-
-/* Drawn icons: one library, one stroke weight. */
-.ico{width:20px;height:20px;flex:0 0 auto;color:var(--ink)}
-.ico.mut{color:var(--muted)}
-
-/* The tool list: a rail, not a grid of identical cards. */
-.tools{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
-.tools li{display:grid;grid-template-columns:20px minmax(0,10rem) minmax(0,1fr) auto;gap:.9rem;align-items:baseline;padding:.95rem .25rem;border-bottom:1px solid var(--line)}
-.tools li .ico{align-self:center}
-.tools b{font-weight:600;font-size:.95rem}
-.tools p{margin:0;font-size:.92rem}
-.tools .you{font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);white-space:nowrap}
-.tools .you.yes{color:var(--ink);font-weight:600}
-@media(max-width:640px){.tools li{grid-template-columns:20px 1fr;row-gap:.3rem}.tools li p{grid-column:2}.tools li .you{grid-column:2}}
-
-/* Ordered setup: the sequence is the information. */
-.steps{list-style:none;counter-reset:s;margin:0;padding:0;display:grid;gap:1.5rem}
-.steps li{counter-increment:s;display:grid;grid-template-columns:2.1rem 1fr;gap:1rem;align-items:start}
-.steps li::before{content:counter(s);display:grid;place-items:center;width:2.1rem;height:2.1rem;border-radius:50%;background:var(--ink);color:var(--bg);font-size:.85rem;font-weight:600}
-.steps h3{margin:.25rem 0 .3rem}
-.steps .code{margin-top:.55rem}
-
-/* Compact spec strip instead of a paragraph of numbers. */
-.spec{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden}
-.spec div{padding:1rem 1.1rem;background:var(--bg)}
-.spec b{display:block;font-size:1.35rem;letter-spacing:-.02em;margin-bottom:.15rem}
-.spec span{color:var(--muted);font-size:.82rem}
-
-/* One authored moment, from an already-visible default. */
-@media(prefers-reduced-motion:no-preference){
-  .rise{animation:rise .7s cubic-bezier(.16,1,.3,1) both}
-  .rise:nth-of-type(2){animation-delay:.06s}
-  @keyframes rise{from{opacity:0;transform:translateY(10px);filter:blur(6px)}to{opacity:1;transform:none;filter:none}}
-}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 `.trim();
 
@@ -167,6 +124,9 @@ export interface PageOptions {
   /** Authenticated pages must never sit in a shared cache. */
   cache?: string;
   headers?: Record<string, string>;
+  /** Public reading/marketing surfaces share a wider header and navigation. */
+  wide?: boolean;
+  navigation?: string;
 }
 
 /**
@@ -188,10 +148,10 @@ export function page(options: PageOptions): Response {
       (home ? `<link rel="icon" href="${escapeHtml(home)}/favicon.svg">` : '') +
       head +
       `<style>${BASE_CSS}${css}</style></head>` +
-      '<body><a class="skip" href="#main">Skip to content</a>' +
+      `<body${options.wide ? ' class="public-site"' : ''}><a class="skip" href="#main">Skip to content</a>` +
       `<div class="wrap"><div class="topbar">` +
       (home ? `<a class="mark" href="${escapeHtml(home)}">${mark}</a>` : `<span class="mark">${mark}</span>`) +
-      '</div></div>' +
+      (options.navigation ?? '') + '</div></div>' +
       `<main id="main" class="wrap">${body}</main>` +
       '</body></html>',
     {
@@ -201,9 +161,7 @@ export function page(options: PageOptions): Response {
         'cache-control': cache,
         'x-content-type-options': 'nosniff',
         'referrer-policy': 'no-referrer',
-        // Inline styles and inline images only. Nothing here loads from a
-        // network, which is what keeps these pages private to open.
-        'content-security-policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; form-action 'self'",
+        'content-security-policy': "default-src 'none'; img-src 'self' data:; font-src 'self'; style-src 'unsafe-inline'; form-action 'self'",
         ...(options.headers ?? {})
       }
     }

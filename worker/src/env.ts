@@ -14,6 +14,8 @@ export interface Env {
 
   FORGE_ENVIRONMENT: 'production' | 'development' | 'local';
   FORGE_PUBLIC_ORIGIN: string;
+  /** Explicit GitHub logins allowed to use this instance. Missing, blank or invalid denies all. */
+  FORGE_ALLOWED_LOGINS?: string;
   /** Comma-separated hosts permitted as OAuth redirect targets. */
   FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS: string;
 
@@ -30,18 +32,24 @@ export interface Env {
 
   /** Captures allowed per user per UTC day. Absent means the default in quota.ts. */
   FORGE_CAPTURE_DAILY_LIMIT?: string;
+  /** Temporary operator-approved preview accounts until provider network isolation is proven. */
+  FORGE_CAPTURE_ALLOWED_LOGINS?: string;
   /**
    * GitHub logins exempt from the daily limits, comma separated.
    *
-   * The preview is open to anyone, and the limit exists so that "open" cannot
-   * become expensive. This is the operator's own escape hatch, not a tier —
-   * there is no way for a user to be granted it from inside the product.
+   * This never grants access to the instance. The operator controls access
+   * separately through FORGE_ALLOWED_LOGINS.
    */
   FORGE_UNLIMITED_LOGINS?: string;
 
   /** TypeSafe Jev API key for token-safe repo triage and excerpt search. */
   TYPESAFE_API_KEY?: string;
   TYPESAFE_BASE_URL?: string;
+
+  /** Shared daily paid-stage admission, including failed/unknown attempts. */
+  FORGE_SEMANTIC_DAILY_CALL_LIMIT?: string;
+  /** Shared simultaneous inference requests; unknown outcomes quarantine a slot. */
+  FORGE_SEMANTIC_MAX_CONCURRENCY?: string;
 
   /** Hosted inference is a separate processing boundary. Default: private source is not sent. */
   FORGE_JEV_PRIVATE_SOURCE?: 'allow' | 'deny';

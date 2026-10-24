@@ -3,6 +3,7 @@ import { ForgeError } from './errors';
 import { RequestBudget, utf8Bytes } from './evidence';
 import { object } from './snapshot';
 import { assertNoHighSeveritySecretText } from './content-safety';
+import { reserveSemantic, completeSemantic } from './semantic-budget';
 
 export type Question =
   | { type: 'noul'; instructions: string }
@@ -20,17 +21,21 @@ export interface Evaluation {
   contract: 'cloudflare-jev-output-v1';
   template: string;
   modelPinned: false;
+  accounting?: 'settled' | 'unknown';
 }
 const probability = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
-function invalid(message: string): never {
-  throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: `JEV semantic evaluation is unavailable: ${message}. No alternative ranking was substituted.` });
+function invalid(message: string, details?: Record<string, unknown>): never {
+  throw new ForgeError({ code: 'FORGE_UPSTREAM_UNAVAILABLE', message: `JEV semantic evaluation is unavailable: ${message}. No alternative ranking was substituted.`, details });
 }
-function distribution(value: unknown, keys: string[]): Record<string, number> {
+function distribution(value: unknown, keys: string[], id: string, template: string): Record<string, number> {
   const record = object(value);
   if (!record || Object.keys(record).length !== keys.length || !keys.every((key) => probability(record[key]))) invalid('incomplete probability distribution');
   const values = record as Record<string, number>;
   const sum = Object.values(values).reduce((total, value) => total + value, 0);
-  if (Math.abs(sum - 1) > 0.001) invalid('probabilities do not sum to one');
+  if (Math.abs(sum - 1) > 0.001) {
+    const safeTemplate = /^[a-zA-Z0-9_./-]{1,100}$/.test(template) ? template : 'unavailable';
+    invalid(`probabilities do not sum to one (question ${id}, template ${safeTemplate}, sum ${sum})`, { question: id, template: safeTemplate, probabilitySum: sum, expectedSum: 1, tolerance: 0.001 });
+  }
   return values;
 }
 export function validateQuestions(questions: Record<string, Question>): void {
@@ -61,12 +66,12 @@ export function parseEvaluation(raw: unknown, questions: Record<string, Question
       parsed[id] = { type: 'noul', noul: answer.noul };
     } else if (question.type === 'choice') {
       if (typeof answer.choice !== 'string' || !Object.hasOwn(question.criteria, answer.choice) || !probability(answer.confidence)) invalid(`invalid Choice answer ${id}`);
-      const probabilities = distribution(answer.probabilities, Object.keys(question.criteria));
+      const probabilities = distribution(answer.probabilities, Object.keys(question.criteria), id, template);
       if (probabilities[answer.choice]! + 0.001 < Math.max(...Object.values(probabilities))) invalid(`Choice ${id} is not a highest-probability option`);
       parsed[id] = { type: 'choice', choice: answer.choice, probabilities, confidence: answer.confidence };
     } else {
       if (typeof answer.score !== 'number' || !Number.isFinite(answer.score) || answer.score < 0 || answer.score > question.criteria.length - 1 || !probability(answer.confidence)) invalid(`invalid Score answer ${id}`);
-      const probabilities = distribution(answer.probabilities, question.criteria.map((_value, index) => String(index)));
+      const probabilities = distribution(answer.probabilities, question.criteria.map((_value, index) => String(index)), id, template);
       const expectation = Object.entries(probabilities).reduce((sum, [level, value]) => sum + Number(level) * value, 0);
       if (Math.abs(expectation - answer.score) > 0.01) invalid(`Score ${id} disagrees with its distribution`);
       parsed[id] = { type: 'score', score: answer.score, probabilities, confidence: answer.confidence };
@@ -109,6 +114,8 @@ export async function evaluate(
   const body = JSON.stringify({ model: 'typesafe/jev', input: { state, questions } });
   assertNoHighSeveritySecretText(body, 'JEV semantic processing');
   if (utf8Bytes(body) > 96 * 1024) throw new ForgeError({ code: 'FORGE_QUOTA_EXCEEDED', message: 'JEV stage exceeds its input budget.' });
+  const reservation = await reserveSemantic(env, budget.remaining());
+  budget.assert();
   let response: Response;
   try {
     // Workers rejects redirect: 'error' before sending the request. Manual mode
@@ -144,7 +151,9 @@ export async function evaluate(
   if (envelope?.success !== true || !Array.isArray(envelope.errors) || envelope.errors.length || completed?.state !== 'Completed' || !object(completed.result)) {
     invalid('the Cloudflare response did not contain a successful completed JEV result');
   }
-  return parseEvaluation(completed.result, questions, template);
+  const evaluation = parseEvaluation(completed.result, questions, template);
+  evaluation.accounting = await completeSemantic(env, reservation, evaluation.usage, Math.min(250, Math.floor(budget.remaining() / 4))) ? 'settled' : 'unknown';
+  return evaluation;
 }
 export function noul(evaluation: Evaluation, id: string): number {
   const answer = evaluation.answers[id];

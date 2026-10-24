@@ -90,7 +90,7 @@ export class RequestBudget {
   retained = 0;
   jevStages = 0;
   downloaded = 0;
-  constructor(readonly milliseconds = CONTEXT_LIMITS.requestMs) {}
+  constructor(readonly milliseconds: number = CONTEXT_LIMITS.requestMs) {}
   remaining(): number { return Math.max(0, this.milliseconds - (Date.now() - this.started)); }
   assert(): void {
     if (!this.remaining()) this.exceeded('request deadline');

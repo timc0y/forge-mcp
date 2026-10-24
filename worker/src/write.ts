@@ -8,7 +8,8 @@
  * origin (`ca0a99a`). Here the remote IS the write target: blobs, one tree, one
  * commit, one guarded ref update. The commit exists on GitHub before this
  * function returns, so there is no push step, nothing to strand, and no third
- * state to misdescribe. An edit becomes a commit on origin or nothing happened.
+ * state to misdescribe. An edit is durable only after the ref update is confirmed;
+ * an uncertain update must be inspected before another write.
  *
  * Concurrency is Forge's problem, not the caller's. GitHub already refuses a
  * non-fast-forward ref update; that refusal is the whole concurrency design.
@@ -19,7 +20,7 @@
 import { formatRepo } from './contracts';
 import type { CommitReceipt, FileWrite, GitHubRequest, RepoRef } from './contracts';
 import { CHANGE_BRANCH } from './change';
-import { ForgeError } from './errors';
+import { ForgeError, toForgeError } from './errors';
 import { containsHighSeveritySecret } from './content-safety';
 import { parseSelector, selectSource } from './selectors';
 import { validateSource } from './structure';
@@ -50,6 +51,7 @@ const MAX_ATTEMPTS = 3;
  * into a failure.
  */
 const WRITE_BUDGET_MS = 40_000;
+const WRITE_RESPONSE_BUDGET_MS = 55_000;
 /**
  * Above this, an existing file may only be edited by fragment. Small enough
  * that re-emitting it whole is a plausible thing to have composed deliberately;
@@ -98,140 +100,203 @@ export async function commitFiles(
   const api = `/repos/${repo.owner}/${repo.name}`;
   const paths = files.map((file) => file.path);
   const deadline = Date.now() + WRITE_BUDGET_MS;
+  const responseDeadline = deadline - WRITE_BUDGET_MS + WRITE_RESPONSE_BUDGET_MS;
 
-  const outOfTime = (): boolean => Date.now() > deadline;
-  const giveUp = (stage: string): never => {
-    throw new ForgeError({
+  const branchCreation: { outcome: 'none' | 'uncertain' | 'created'; sha: string | null } = { outcome: 'none', sha: null };
+  let detachedObjects = false;
+  const budgetError = (stage: string): ForgeError =>
+    new ForgeError({
       code: 'FORGE_UPSTREAM_UNAVAILABLE',
       message:
-        `GitHub was too slow to finish this write (${stage}), so it was stopped before committing. ` +
-        'Nothing was committed. Write again when GitHub is responding normally.',
+        `GitHub was too slow to finish this write (${stage}), so it was stopped before attaching file changes to ${branch}. ` +
+        (detachedObjects ? 'GitHub may retain unattached blobs, trees or commits from this attempt. ' : '') +
+        'The requested file changes were not applied to the branch.',
       retryable: true,
       details: { branch, paths, stage }
     });
+  const checkBudget = (stage: string): void => {
+    if (Date.now() >= deadline) throw budgetError(stage);
   };
 
-  // The head we resolve every fragment edit against. Reading content at this
-  // exact SHA — not at the branch name — means a branch that moves mid-write
-  // cannot make us apply a fragment to a file we never saw.
-  const { sha: original, removedLegacy } = await resolveHead(request, repo, api, branch, baseBranch);
-  const notes =
-    removedLegacy.length > 0
-      ? [
-          `Removed the older unused Forge branch${removedLegacy.length === 1 ? '' : 'es'} ${removedLegacy.join(', ')} ` +
-            `so the fixed ${branch} branch could be created. Nothing on ${baseBranch} was lost — that branch held no ` +
-            'commit this repository did not already have.'
-        ]
-      : [];
-
-  if (outOfTime()) giveUp('resolving the branch');
-  const resolved = await resolveContents(request, api, original, files);
-
-  if (outOfTime()) giveUp('reading the files being edited');
-
-  // Secret checks run against the exact candidate content produced from the
-  // current GitHub head. This catches secrets introduced by fragment edits
-  // without putting an optional semantic service on the durable write path.
-  assertNoHighSeveritySecrets(resolved);
-  const unsupported: string[] = [];
-  for (const file of resolved) {
-    if (file.content === null) continue;
-    const validation = validateSource(file.path, file.content);
-    if (!validation.supported) unsupported.push(file.path);
-  }
-  if (unsupported.length) notes.push(`Syntax validation is unsupported for: ${unsupported.join(', ')}. No parser substitute was used; this is not test or typecheck evidence.`);
-  if (outOfTime()) giveUp('checking the resolved content');
-
-  // Blobs are content-addressed, so they are identical however many times the
-  // ref update is rejected: create them once, in parallel, outside the loop.
-  // An abandoned attempt leaves unreferenced blobs, which are inert and cost
-  // nothing — there is no cleanup step to get wrong.
-  const blobs = await createBlobs(request, api, resolved);
-
-  const entries: TreeEntry[] = resolved.map((file) => ({
-    path: file.path,
-    mode: BLOB_MODE,
-    type: 'blob',
-    sha: blobs.get(file.path) ?? null
-  }));
-
-  let head = original;
-  let lastRejection: string | null = null;
-
-  for (let attempt = 1; ; attempt += 1) {
-    // Checked between attempts, never mid-commit: a retry that starts inside
-    // the last second is how a write ends up in flight with nobody waiting.
-    if (outOfTime()) giveUp(`retrying a moving branch (attempt ${attempt})`);
-
-    const baseTree = await readCommitTree(request, api, head);
-
-    // The branch moved under us. Re-applying is only safe for paths nobody else
-    // touched: a concurrent commit to a path this write also writes is a real
-    // conflict, not a race we are entitled to win by being second.
-    if (head !== original) {
-      await assertNoOverlap(request, api, original, head, paths);
+  // Abort the whole request, including its response body, at the remaining
+  // deadline. Racing also bounds request implementations that ignore abort.
+  const beforeRef: GitHubRequest = async (path, init) => {
+    const stage = `${init?.method ?? 'GET'} ${path}`;
+    checkBudget(stage);
+    const controller = new AbortController();
+    const creatingBranch = init?.method === 'POST' && path === `${api}/git/refs`;
+    if (creatingBranch) branchCreation.outcome = 'uncertain';
+    if (init?.method === 'POST' && ['/git/blobs', '/git/trees', '/git/commits'].some((suffix) => path.endsWith(suffix))) detachedObjects = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(budgetError(stage));
+        }, Math.max(0, deadline - Date.now()));
+      });
+      const response = await Promise.race([request(path, { ...init, signal: controller.signal }), timeout]);
+      if (creatingBranch) {
+        if (response.status === 201) {
+          branchCreation.outcome = 'created';
+          branchCreation.sha = readSha(response.json);
+        } else if (response.status >= 400 && response.status < 500) branchCreation.outcome = 'none';
+      }
+      checkBudget(stage);
+      return response;
+    } catch (error) {
+      if (controller.signal.aborted || Date.now() >= deadline) throw budgetError(stage);
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
+  };
 
-    const modes = await readFileModes(request, api, baseTree, resolved.filter((file) => file.content !== null).map((file) => file.path));
-    const preservedEntries = entries.map((entry) => ({ ...entry, mode: modes.get(entry.path) ?? BLOB_MODE }));
-    const tree = await createTree(request, api, baseTree, preservedEntries, paths);
+  try {
+    // The head we resolve every fragment edit against. Reading content at this
+    // exact SHA — not at the branch name — means a branch that moves mid-write
+    // cannot make us apply a fragment to a file we never saw.
+    const original = await resolveHead(beforeRef, repo, api, branch, baseBranch);
+    const notes: string[] = [];
+    const resolved = await resolveContents(beforeRef, api, original, files);
 
-    // Identical tree: the content already matched. No commit, and say so.
-    if (tree === baseTree) {
-      return receipt(repo, branch, head, 'unchanged', paths, notes);
+    // Secret checks run against the exact candidate content produced from the
+    // current GitHub head. This catches secrets introduced by fragment edits
+    // without putting an optional semantic service on the durable write path.
+    assertNoHighSeveritySecrets(resolved);
+    const unsupported: string[] = [];
+    for (const file of resolved) {
+      if (file.content === null) continue;
+      const validation = validateSource(file.path, file.content);
+      if (!validation.supported) unsupported.push(file.path);
     }
+    if (unsupported.length) notes.push(`Syntax validation is unsupported for: ${unsupported.join(', ')}. No parser substitute was used; this is not test or typecheck evidence.`);
+    checkBudget('checking the resolved content');
 
-    const commit = await createCommit(request, api, message, tree, head);
+    // Blobs are content-addressed, so they are identical however many times the
+    // ref update is rejected: create them once, in parallel, outside the loop.
+    // An abandoned attempt may leave unattached Git objects, never file changes
+    // on the branch. There is no automatic cleanup to race other writers.
+    const blobs = await createBlobs(beforeRef, api, resolved);
 
-    const update = await request(`${api}/git/refs/heads/${encodePath(branch)}`, {
-      method: 'PATCH',
-      // force:false is the entire lock. GitHub arbitrates; Forge never wins by
-      // overwriting.
-      body: { sha: commit, force: false }
-    });
+    const entries: TreeEntry[] = resolved.map((file) => ({
+      path: file.path,
+      mode: BLOB_MODE,
+      type: 'blob',
+      sha: blobs.get(file.path) ?? null
+    }));
 
-    if (update.status === 200) {
-      // The PATCH response IS the post-update ref, so this is origin's own
-      // account of where the branch points — no second read, which would only
-      // add latency and a chance of hitting a stale replica.
-      const landed = readSha(update.json);
-      if (landed !== commit) {
+    let head = original;
+    let lastRejection: string | null = null;
+
+    for (let attempt = 1; ; attempt += 1) {
+      const baseTree = await readCommitTree(beforeRef, api, head);
+
+      // The branch moved under us. Re-applying is only safe for paths nobody else
+      // touched: a concurrent commit to a path this write also writes is a real
+      // conflict, not a race we are entitled to win by being second.
+      if (head !== original) {
+        await assertNoOverlap(beforeRef, api, original, head, paths);
+      }
+
+      const modes = await readFileModes(beforeRef, api, baseTree, resolved.filter((file) => file.content !== null).map((file) => file.path));
+      const preservedEntries = entries.map((entry) => ({ ...entry, mode: modes.get(entry.path) ?? BLOB_MODE }));
+      const tree = await createTree(beforeRef, api, baseTree, preservedEntries, paths);
+
+      // Identical tree: the content already matched. No commit, and say so.
+      if (tree === baseTree) {
+        return receipt(repo, branch, head, 'unchanged', paths, notes);
+      }
+
+      const commit = await createCommit(beforeRef, api, message, tree, head);
+
+      checkBudget('updating the branch');
+      const uncertainUpdate = (message: string): ForgeError => new ForgeError({
+        code: 'FORGE_UPSTREAM_UNAVAILABLE',
+        message: `${message} The update to ${branch} may have taken effect. Candidate commit: https://github.com/${formatRepo(repo)}/commit/${commit}. Read the branch before writing again.`,
+        retryable: false,
+        details: { branch, paths, sha: commit, url: `https://github.com/${formatRepo(repo)}/commit/${commit}`, refUpdate: 'uncertain' }
+      });
+      let update: GitHubResponse;
+      const updateController = new AbortController();
+      let updateTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        // The transport still needs a finite result after dispatch. Its later
+        // deadline returns uncertainty, never a claim that GitHub stayed put.
+        const timeout = new Promise<never>((_, reject) => {
+          updateTimer = setTimeout(() => { updateController.abort(); reject(uncertainUpdate('GitHub did not confirm the update inside the response budget.')); }, Math.max(0, responseDeadline - Date.now()));
+        });
+        update = await Promise.race([request(`${api}/git/refs/heads/${encodePath(branch)}`, {
+          method: 'PATCH',
+          // force:false is the entire lock. GitHub arbitrates; Forge never wins by
+          // overwriting.
+          body: { sha: commit, force: false },
+          signal: updateController.signal
+        }), timeout]);
+      } catch {
+        throw uncertainUpdate('GitHub did not confirm the branch update.');
+      } finally {
+        clearTimeout(updateTimer);
+      }
+
+      if (update.status === 200) {
+        // The PATCH response IS the post-update ref, so this is origin's own
+        // account of where the branch points — no second read, which would only
+        // add latency and a chance of hitting a stale replica.
+        const landed = readSha(update.json);
+        if (landed !== commit) {
+          throw uncertainUpdate(`GitHub accepted the update but reports ${landed ?? 'an unknown commit'}, not ${commit}.`);
+        }
+        return receipt(repo, branch, commit, 'committed', paths, notes);
+      }
+
+      // 422 is GitHub's non-fast-forward: the branch moved between our read and
+      // our write. Anything else is a real failure and must not be retried.
+      if (update.status !== 422) {
+        const error = githubError(update, `update of ${branch}`);
+        const uncertain = uncertainUpdate(error.message);
         throw new ForgeError({
-          code: 'FORGE_UPSTREAM_UNAVAILABLE',
-          message:
-            `GitHub accepted the update to ${branch} but reports it at ` +
-            `${landed ?? 'an unknown commit'}, not ${commit}. Read the branch before writing again.`,
-          retryable: true
+          code: error.code,
+          message: uncertain.message,
+          retryable: false,
+          details: { ...uncertain.details, status: update.status }
         });
       }
-      return receipt(repo, branch, commit, 'committed', paths, notes);
-    }
+      lastRejection = githubMessage(update.json);
 
-    // 422 is GitHub's non-fast-forward: the branch moved between our read and
-    // our write. Anything else is a real failure and must not be retried.
-    if (update.status !== 422) throw githubError(update, `update of ${branch}`);
-    lastRejection = githubMessage(update.json);
+      if (attempt >= MAX_ATTEMPTS) {
+        throw new ForgeError({
+          code: 'FORGE_CONFLICT',
+          message:
+            `${branch} moved during all ${MAX_ATTEMPTS} attempts to update it, so nothing was committed. ` +
+            `Read the change and write again.`,
+          retryable: true,
+          details: { branch, attempts: MAX_ATTEMPTS, paths, github: lastRejection }
+        });
+      }
 
-    if (attempt >= MAX_ATTEMPTS) {
-      throw new ForgeError({
-        code: 'FORGE_CONFLICT',
-        message:
-          `${branch} moved during all ${MAX_ATTEMPTS} attempts to update it, so nothing was committed. ` +
-          `Read the change and write again.`,
-        retryable: true,
-        details: { branch, attempts: MAX_ATTEMPTS, paths, github: lastRejection }
-      });
+      const moved = await readRef(beforeRef, api, branch);
+      if (moved === null) {
+        throw new ForgeError({
+          code: 'FORGE_NOT_FOUND',
+          message: `${branch} was deleted while this write was in flight. Nothing was committed.`,
+          details: { branch }
+        });
+      }
+      head = moved;
     }
-
-    const moved = await readRef(request, api, branch);
-    if (moved === null) {
-      throw new ForgeError({
-        code: 'FORGE_NOT_FOUND',
-        message: `${branch} was deleted while this write was in flight. Nothing was committed.`,
-        details: { branch }
-      });
-    }
-    head = moved;
+  } catch (thrown) {
+    if (branchCreation.outcome === 'none') throw thrown;
+    const error = toForgeError(thrown);
+    throw new ForgeError({
+      code: error.code,
+      message: (branchCreation.outcome === 'created'
+        ? `Created ${branch}${branchCreation.sha ? ` at ${branchCreation.sha}` : ' without a returned commit SHA'} before the requested write failed. `
+        : `Creation of ${branch} was requested, but its outcome is not confirmed. `) +
+        `Inspect https://github.com/${formatRepo(repo)}/tree/${encodePath(branch)} before another write. ${error.message}`,
+      retryable: false,
+      details: { ...error.details, branchCreation: { branch, sha: branchCreation.sha, outcome: branchCreation.outcome } }
+    });
   }
 }
 
@@ -443,7 +508,7 @@ export function applyReplacements(
 
     const first = next.indexOf(replacement.old);
     if (first !== -1) {
-      if (next.indexOf(replacement.old, first + replacement.old.length) !== -1) {
+      if (next.indexOf(replacement.old, first + 1) !== -1) {
         throw new ForgeError({
           code: 'FORGE_VALIDATION_FAILED',
           message:
@@ -728,9 +793,9 @@ async function resolveHead(
   api: string,
   branch: string,
   baseBranch: string
-): Promise<{ sha: string; removedLegacy: string[] }> {
+): Promise<string> {
   const existing = await readRef(request, api, branch);
-  if (existing !== null) return { sha: existing, removedLegacy: [] };
+  if (existing !== null) return existing;
 
   const base = await readRef(request, api, baseBranch);
   if (base === null) {
@@ -748,22 +813,18 @@ async function resolveHead(
     });
 
   const created = await create();
-  if (created.status === 201) return { sha: createdSha(created, branch), removedLegacy: [] };
+  if (created.status === 201) return createdSha(created, branch);
   if (created.status !== 422) throw githubError(created, `creation of ${branch}`);
 
   // A 422 is either a concurrent caller that created this branch first, or a
   // legacy `forge/<name>` ref making this exact name impossible — a ref cannot
   // be both a branch and a directory. Only now, on the refusal, is it worth
-  // asking which; the ordinary create above stays a single request and does not
-  // depend on a cleanup lookup succeeding.
+  // asking which; the ordinary create stays a single request.
   const raced = await readRef(request, api, branch);
-  if (raced !== null) return { sha: raced, removedLegacy: [] };
+  if (raced !== null) return raced;
 
-  const removedLegacy = await clearLegacyChangeRefs(request, repo, api, branch, baseBranch, base);
-  const retried = await create();
-  if (retried.status === 201) return { sha: createdSha(retried, branch), removedLegacy };
-
-  throw githubError(retried, `creation of ${branch}`);
+  await refuseLegacyChangeRefs(request, repo, api, branch, baseBranch);
+  throw githubError(created, `creation of ${branch}`);
 }
 
 function createdSha(response: GitHubResponse, branch: string): string {
@@ -787,24 +848,21 @@ const LEGACY_BRANCH_PREFIX = 'forge/';
  * with a bare 422 "Reference update failed" that reads like a validation
  * problem rather than a name clash, and leaves the whole review workflow dead.
  *
- * `forge/` is Forge's own namespace. A leftover that carries no commit the base
- * does not already have is inert, and is removed exactly as an unused review
- * branch is after a no-op write. One that does carry commits is real proposed
- * work: it is reported, never deleted, and a git ref cannot be both names, so
- * the caller has to resolve it before a new change can start.
+ * GitHub offers no expected-head deletion. Even an apparently unused branch
+ * can gain real work after a comparison, so only deliberate human recovery
+ * may clear the conflicting names.
  */
-async function clearLegacyChangeRefs(
+async function refuseLegacyChangeRefs(
   request: GitHubRequest,
   repo: RepoRef,
   api: string,
   branch: string,
-  baseBranch: string,
-  base: string
-): Promise<string[]> {
-  if (branch !== CHANGE_BRANCH) return [];
+  baseBranch: string
+): Promise<void> {
+  if (branch !== CHANGE_BRANCH) return;
 
   const listed = await request(`${api}/git/matching-refs/heads/${encodePath(CHANGE_BRANCH)}`);
-  if (listed.status === 404) return [];
+  if (listed.status === 404) return;
   if (listed.status !== 200) throw githubError(listed, `check for older ${CHANGE_BRANCH}/ branches`);
   if (!Array.isArray(listed.json)) {
     throw new ForgeError({
@@ -819,35 +877,16 @@ async function clearLegacyChangeRefs(
     .filter((ref) => ref.startsWith(`refs/heads/${LEGACY_BRANCH_PREFIX}`))
     .map((ref) => ref.slice('refs/heads/'.length));
 
-  const holding: string[] = [];
-  const removed: string[] = [];
-  for (const name of names) {
-    const compared = await request(`${api}/compare/${base}...${encodePath(name)}`);
-    const aheadBy = isRecord(compared.json) ? compared.json.ahead_by : undefined;
-    // Anything Forge cannot prove inert is treated as work: a guard that
-    // degrades open would delete a branch it cannot account for.
-    if (compared.status !== 200 || typeof aheadBy !== 'number' || aheadBy > 0) {
-      holding.push(name);
-      continue;
-    }
-    const deleted = await request(`${api}/git/refs/heads/${encodePath(name)}`, { method: 'DELETE' });
-    if (deleted.status === 204 || deleted.status === 200) removed.push(name);
-    else holding.push(name);
-  }
-
-  if (holding.length > 0) {
+  if (names.length > 0) {
     throw new ForgeError({
       code: 'FORGE_CONFLICT',
       message:
-        `${formatRepo(repo)} has an older Forge branch ${holding.join(', ')} that holds commits not on ` +
-        `${baseBranch}. A branch named ${CHANGE_BRANCH}/… prevents the fixed ${CHANGE_BRANCH} branch from ` +
-        `existing, because a git ref cannot be both a branch and a directory. Merge or discard that work ` +
-        `first, then write this change again.`,
-      details: { branches: holding, baseBranch }
+        `${formatRepo(repo)} has older Forge branches ${names.join(', ')} that prevent the fixed ${CHANGE_BRANCH} branch from existing. ` +
+        `Forge left them untouched because deleting even an apparently unused branch can lose a concurrent push. ` +
+        `Inspect these branches in GitHub, preserve any work by merging or renaming them, then deliberately remove any remaining conflicting names before writing this change again.`,
+      details: { branches: names, baseBranch }
     });
   }
-
-  return removed;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

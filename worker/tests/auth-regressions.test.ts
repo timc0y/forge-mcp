@@ -16,9 +16,9 @@ afterEach(() => { vi.restoreAllMocks(); bindings.register.mockReset(); bindings.
 function refreshEnvironment() {
   const rows = new Map<string, Record<string, any>>();
   let beforeInsert: (() => Promise<void>) | undefined;
-  const env = { FORGE_SIGNING_KEY: 'synthetic-test-key', METADATA: { prepare(sql: string) {
+  const env = { FORGE_SIGNING_KEY: 'synthetic-test-key', FORGE_ALLOWED_LOGINS: 'alice', METADATA: { prepare(sql: string) {
     return { bind(...v: any[]) { return {
-      async first() { const row = rows.get(v[0]); return row ? { ...row } : null; },
+      async first() { const row = rows.get(v[0]); return row ? { ...row, github_login: 'alice' } : null; },
       async run() {
         if (sql.includes('INSERT INTO oauth_refresh_tokens')) {
           await beforeInsert?.();
@@ -46,12 +46,12 @@ function refreshEnvironment() {
 
 describe('human authorization and refresh replay', () => {
   it('authenticates an existing connection without a cached installation', async () => {
-    const env = { FORGE_SIGNING_KEY: 'synthetic-test-key', FORGE_PUBLIC_ORIGIN: 'https://example.test/forge', METADATA: { prepare: () => ({ bind: () => ({ first: async () => ({ id: 'alice', github_login: 'alice', installation_id: null }) }) }) } } as unknown as Env;
+    const env = { FORGE_SIGNING_KEY: 'synthetic-test-key', FORGE_ALLOWED_LOGINS: 'alice', FORGE_PUBLIC_ORIGIN: 'https://example.test/forge', METADATA: { prepare: () => ({ bind: () => ({ first: async () => ({ id: 'alice', github_login: 'alice', installation_id: null }) }) }) } } as unknown as Env;
     await expect(authenticate(env, new Request('https://example.test/forge/mcp', { headers: { authorization: `Bearer ${await issueToken(env, 'alice', 60)}` } }))).resolves.toEqual({ userId: 'alice', githubLogin: 'alice' });
   });
 
   it('resolves the human credential for each repository request instead of minting an App token', async () => {
-    const env = {} as Env;
+    const env = { FORGE_ALLOWED_LOGINS: 'alice', METADATA: { prepare: () => ({ bind: () => ({ first: async () => ({ id: 'alice', github_login: 'alice' }) }) }) } } as unknown as Env;
     const session = new ForgeMcpSession({} as DurableObjectState, env);
     Object.assign(session, { env, props: { identity: { userId: 'alice', githubLogin: 'alice', installationId: 'org-installation' } }, ctx: { waitUntil: vi.fn() } });
     const denied = vi.fn(async () => ({ status: 403, json: null, text: 'Forbidden', headers: new Headers() }));
@@ -66,7 +66,7 @@ describe('human authorization and refresh replay', () => {
   });
 
   it('executes an approval using its stored human owner, never installation-wide credentials', async () => {
-    const env = { FORGE_PUBLIC_ORIGIN: 'https://example.test/forge', METADATA: { prepare: () => ({ bind: () => ({ first: async () => ({ user_id: 'approval-owner' }) }) }) } } as unknown as Env;
+    const env = { FORGE_PUBLIC_ORIGIN: 'https://example.test/forge', FORGE_ALLOWED_LOGINS: 'alice', METADATA: { prepare: () => ({ bind: () => ({ first: async () => ({ id: 'approval-owner', user_id: 'approval-owner', github_login: 'alice' }) }) }) } } as unknown as Env;
     const denied = vi.fn(async () => ({ status: 403, json: null, text: 'Forbidden', headers: new Headers() }));
     bindings.user.mockResolvedValue(denied);
     bindings.approval.mockImplementation(async (_env, _id, _token, _decision, gh) => Response.json(await gh('/repos/org/secret', { method: 'DELETE' })));

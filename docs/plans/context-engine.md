@@ -1,6 +1,6 @@
 # Forge context engine
 
-Status: deployed V2 architecture. Version 2.0.2 first deployed from `5334759` on 23 October 2026; [Operations](../operating-forge.md) records release and known-task evidence. Held-out relevance and broad-task coverage remain open.
+Status: V2 architecture, distributed as MIT source for self-hosting; the maintainer instance is private. [Operations](../operating-forge.md) and the [release status](../going-live.md) identify deployment evidence separately from source. Held-out relevance and broad-task coverage remain open.
 Owner instruction: Tim, 20 September 2026.
 Source baseline: `main` at abbreviated commit `9b6c2c6`, inspected through Forge.
 
@@ -96,6 +96,18 @@ A `complete` result always means complete for an explicit scope, not the whole r
 Resolve default/proposal heads once; use their SHAs for trees, contents, archives and comparisons. Check metadata may change while being read: include observation time and the exact tested SHA, without pretending it is an atomic GitHub-wide snapshot.
 
 Accept GitHub repository, blob, commit and pull-request URLs directly. Resolve slash-containing refs using GitHub data rather than guessing URL segments. Return anchors that Forge itself accepts. For proposal work, make reading the actual proposal file possible, not just its patch or an accidental default-branch read. Resolve exact caller-supplied selectors before semantic routing; reject conflicting selectors instead of guessing.
+
+A containing source block can satisfy a required child only when its original
+parser identity is proven. Parsing a fragment cannot establish a name's original
+uniqueness or duplicate index. The compiler supplies original selector/range
+anchors within 2 KiB, sharing 4 KiB with omission entries; unlisted or ambiguous
+identities remain unverified. Complete exact receipts and proven whole-file
+source remain sufficient without a redundant anchor.
+
+Evaluation masks actual comments in their source context before selecting
+assertions. Partial lines without proven comment context remain unverified.
+Preserve literal JSX text and apply the JSON parser's comment policy to JSONC;
+comments do not prove behavior.
 
 Permissions and scope are deterministic. A failed private-repository lookup must never widen into public search. A `404` is not sufficient proof that a policy, private resource or capability does not exist.
 
@@ -260,7 +272,7 @@ Reference evidence can include upstream tests, type declarations, documentation,
 
 The only model egress is the selected JEV route. Relevant private snippets already sent for JEV decisions remain external processing and must be disclosed; minimize/redact them and apply an explicit deployment policy. Do not repeat the earlier inaccurate implication that private source never leaves Forge while hosted JEV evaluates it. No secrets/customer messages in inference or telemetry.
 
-New metrics use existing Cloudflare observations and CI artifacts, not another analytics service. The target architecture removes optional PostHog emission: first preserve the required shape-only operational measurements in Cloudflare, then delete the external emitter and unused configuration in the same accepted replacement. Do not run dual telemetry paths. This planning commit changes no deployed reporting.
+New metrics use existing Cloudflare observations and CI artifacts, not another analytics service. Current source has removed optional PostHog emission; required shape-only operational measurements stay in Cloudflare. Do not restore dual telemetry paths. The 2.1.0 shared D1 meter stores only anonymous daily attempts/completed/unknown/input/output counts and random transient reservations, without source, paths or user identifiers. Input/output totals are reported usage, not proof of all billed usage; missing usage is not zero provider charge.
 
 ## 11. Better editing without custom chat scripts
 
@@ -301,6 +313,25 @@ Adversarial cases include duplicate symbol names, import aliases, dynamic refere
 
 Run ablations offline: current Forge; structure only; structure plus JEV; then gap closure and packing. These are benchmark variants, not runtime fallbacks. Grade factual support, required-evidence recall, contradictions retained, fabricated edges, wrong-revision evidence, wrong edits, and the downstream task outcome. Human/code-checked labels are the authority; JEV does not certify its own benchmark.
 
+The local evaluator keeps the 30-case deterministic plumbing test alongside six
+real-source questions. From the repository root:
+
+```sh
+node worker/scripts/evaluate-context.mjs --mock
+node worker/scripts/evaluate-context.mjs --check-dataset
+node worker/scripts/evaluate-context.mjs --real --url '<MCP-URL>' --at '<full-SHA>' --follow-ups 3
+```
+
+`--mock` checks local source selectors/assertions without live inference;
+`--check-dataset` checks schema only. Real mode can consume paid JEV allowance.
+Choose a runtime running the candidate and a full repository SHA containing the
+dataset's source and tests. Record that runtime's version/release source beside
+the report: repository/SHA checks do not prove the deployed compiler's identity.
+Supply any runtime bearer privately through `FORGE_CONTEXT_EVAL_TOKEN`.
+The report grades source delivery, follows only returned selectors, and records
+calls, latency and known/unknown usage. Its human answer-quality review remains
+unfilled; neither offline checks nor source recall establish hosted retrieval quality.
+
 Initial targets below are acceptance goals, not measurements:
 
 | Metric | Target |
@@ -331,9 +362,9 @@ Measure total JEV input/output usage and request cost, GitHub calls, bytes downl
 - [ ] The 30-case deterministic plumbing benchmark enforces the token/round/evidence budgets; real hosted-JEV held-out repository tasks must still measure relevance quality and confirm the targets outside the synthetic selector oracle.
 - [x] CI runs on every pull request and direct `forge`/`main` push, including documentation-only changes. Merge approval requires at least one exact-head check/status and all observed exact-head execution states to be completed success; zero, pending, skipped or neutral evidence is never treated as passing. CI and Forge analysis passed on source `88d72b1` on 11 October 2026; later revisions require their own exact-head proof.
 - [x] MCP version, schema, annotations, examples and connection-refresh instructions agree in source; old incompatible inputs fail explicitly rather than silently taking another path.
-- [ ] Authorized deployment smoke and a fresh phone/ChatGPT conversation prove read, context, edit, review and human approval. Documentation alone is not release evidence.
+- [ ] A refreshed catalog and fresh phone/ChatGPT conversation prove context, edit, review and human approval. The 2.1.0 deployment, 44 HTTP/OAuth checks and existing-connection exact reads passed; those do not prove the remaining client journey.
 
-The V2 source implementation from Forge PR #83 is consolidated on main. Source completion is not release proof: GitHub must still execute the final typecheck/tests/bundle/startup gates, the GitHub App installation must approve the required read permissions, the context evaluation targets must be measured rather than assumed, and an authorized deployment/fresh-client smoke must pass before V2 is described as deployed.
+The V2 source implementation from Forge PR #83 is consolidated on main; 2.1.0 was deployed from the reviewed uncommitted working tree. It adds atomic shared inference admission (default 200 calls/day, 4 concurrent), fixed 60-second quarantine after unknown outcomes without daily refunds, and explicit consenting-login capture availability. Missing D1 budget state refuses inference. Completed semantic evidence can return with accounting still unknown when bounded completion accounting cannot finish; missing reported usage does not prove zero actual provider charge. These are call/capacity limits, not monetary guarantees. Production migration, settings and HTTP/OAuth smoke passed. Each source release needs its own exact-head CI. Fresh-client/catalog proof, held-out context quality, live inference/concurrency, provider network isolation and spend/edge configuration remain separate observations; see the current release receipt.
 
 ## 15. Research basis
 

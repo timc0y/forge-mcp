@@ -40,6 +40,13 @@ describe('exact structured source selection', () => {
     expect(selectJson('issues.json', source, { id: 'SR-755' }).text).toBe('{"id":"SR-755","action":"test"}');
     expect(() => selectJson('issues.json', '{"a":{"id":"same"},"b":{"id":"same"}}', { id: 'same' })).toThrow(/2 objects/);
   });
+  it.each(['first\nsecond\n', 'first\r\nsecond\r\n', ''])('refuses out-of-range reads with known line count and a valid recovery selector', (source) => {
+    let failure: any;
+    try { selectSource(parseSelector('notes.txt:36-99'), source); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ code: 'FORGE_NOT_FOUND', details: { totalLines: source ? 2 : 1, requestedLines: [36, 99] } });
+    expect(failure.message).toContain('exact request was not shortened');
+    expect(() => selectSource(parseSelector(failure.details.suggestedSelector), source)).not.toThrow();
+  });
   it('understands escaped JSON pointers without executing queries', () => {
     expect(selectJson('a.json', '{"a/b":{"~x":4}}', { pointer: '/a~1b/~0x' }).text).toBe('4');
     expect(() => selectJson('a.json', '{}', { pointer: '/~2' })).toThrow(/escape/);

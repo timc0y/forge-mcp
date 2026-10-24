@@ -1,22 +1,50 @@
-# Product route: adoption and revenue
+# Product route
 
-**Status:** Active validation plan  
+## Current choice — 24 October 2026
+
+Keep Tim's hosted endpoint and GitHub App private for his own use. Publish Forge
+as MIT-licensed source for others to use, adapt and self-host. Public pages explain
+Forge, then lead to the [self-hosting guide](../self-hosting.md) and
+[source](https://github.com/timc0y/forge-mcp). There is no public hosted preview,
+waitlist or marketplace commitment.
+
+Each self-host supplies their own GitHub App, Cloudflare resources and credentials,
+pays provider costs and supplies their client plan. Service access requires an
+explicit `FORGE_ALLOWED_LOGINS` list; capture requires separate consent in
+`FORGE_CAPTURE_ALLOWED_LOGINS`. Neither App installation nor capture consent can
+expand service access. Preserve GitHub user permissions, ordinary durable commits,
+one proposal per repository and human approval for merge/discard.
+
+The [release status](../going-live.md) owns current deployment and client proof;
+[operations](../operating-forge.md) retains actual deployment history. Independent
+fresh-account bootstrap, live inference and provider network isolation remain
+unverified. Local checks cannot establish those facts.
+
+## Historical adoption and revenue plan
+
+The plan below records the earlier adoption and commercial hypotheses. It is
+superseded by the private-hosted and open-source choice above. Recruitment,
+public launch, directory submission, measurement targets, prices and paid
+features below are historical proposals, not an active queue or public promises.
+
+**Status at the time:** Active validation plan
 **Date:** 20 August 2026
 
-## Product claim
+### Product claim
 
 **Think in ChatGPT. Commit safely to GitHub.**
 
 Forge is the safe, hosted handoff between a conversation and a repository. It
 turns research, visual reviews and small edits into real commits and draft pull
-requests. GitHub remains the source of truth, and the default branch moves only
-after a human approves it.
+requests. GitHub remains the source of truth. Authorised routine edits commit directly
+to the default branch; proposed work uses the fixed `forge` branch. Merging and
+discarding that proposal require a human approval link.
 
 Forge complements Codex, Claude Code, Cursor and OpenCode. It is not a weaker
 coding agent and should not be sold as one: it has no shell, runner, build,
 test, preview or deployment plane.
 
-## First user and buyer
+### First user and buyer
 
 The first user is a technical founder, indie developer, design engineer or open
 source maintainer who already alternates between ChatGPT and a coding agent.
@@ -32,28 +60,29 @@ individual ChatGPT sessions are necessarily read-only. The dated
 [availability note](../research/chatgpt-availability-2026-08-20.md) records the
 discrepancy.
 
-## Three core jobs
+### Three core jobs
 
-### Research to repository
+#### Research to repository
 
 A conversation researches an architecture choice, feature or market and saves
 the conclusion as a plan, ADR, README change or implementation brief. The value
 is the removed handoff: the conclusion no longer dies in a chat.
 
-### Rendered page to visual review
+#### Rendered page to visual review
 
-Forge captures a public page at phone and desktop. The model can identify a
+For explicitly enabled, consenting preview accounts, Forge captures an
+already-public page at phone and desktop and returns the images inline. The model can identify a
 visible problem, read the relevant files, record a review or prepare a small
 correction. This combines vision and repository context without giving the
 conversation a machine to control.
 
-### Small edit from a conversation
+#### Small edit from a conversation
 
-A user can update copy, CSS or documentation and receive a durable commit and
-draft pull request. It is especially useful away from a laptop, but the promise
+A user can update copy, CSS or documentation and receive a durable direct commit,
+or explicitly request the one draft pull request for review. It is especially useful away from a laptop, but the promise
 must remain client-agnostic because mobile and MCP availability change.
 
-## Claims not to make
+### Claims not to make
 
 - Do not promise to turn ChatGPT into Codex. DevSpace already owns that framing,
   and Forge deliberately does less execution.
@@ -63,7 +92,18 @@ must remain client-agnostic because mobile and MCP availability change.
 - Do not imply a screenshot is a full-page audit: the current capture is the top
   viewport only.
 
-## Acquisition path
+### Hosted-preview boundary — 23 October 2026
+
+The maintainer App was private at the last provider check; unrelated accounts
+cannot install it. Deployed 2.1.0 restricts capture through explicit
+`FORGE_CAPTURE_ALLOWED_LOGINS`; empty denies all, without a public wildcard. This
+preserves already-public URL capture for enabled consenting testers while provider
+DNS/redirect/subrequest isolation remains unresolved. Retiring the restriction
+needs actual provider proof and an explicit release change. Deployment does not
+clear fresh-account/client, live retrieval, shared-spend or edge-control proof. Use
+the [dated release checklist](../going-live.md); recruitment below remains a plan.
+
+### Acquisition path
 
 1. Publish one short, continuous demonstration: capture a live site on phone and
    desktop, find one problem, read the file, commit a fix and show the approval
@@ -75,7 +115,7 @@ must remain client-agnostic because mobile and MCP availability change.
 5. Prepare a Plugin Directory submission only after the plan/surface matrix and
    privacy requirements are satisfied.
 
-## Activation and retention
+### Activation and retention
 
 A connection is setup, not activation.
 
@@ -94,9 +134,9 @@ contents:
 - return use within 7 and 14 days;
 - the repeated job: research, visual review or small edit.
 
-## Thirty-day sequence
+### Thirty-day sequence
 
-### Week 1 — truth and message
+#### Week 1 — truth and message
 
 - Complete the plan/model/surface test matrix.
 - Deploy the job-led landing page.
@@ -104,19 +144,19 @@ contents:
 - Deploy and verify the activation events now emitted by the worker; confirm
   they contain shape only.
 
-### Week 2 — qualified users
+#### Week 2 — qualified users
 
 Recruit 20 users from the target group. Give each a real research, visual-review
 or small-edit task rather than a generic invitation to try Forge. Observe the
 authorisation and GitHub App installation drop-offs.
 
-### Week 3 — repetition
+#### Week 3 — repetition
 
 Look for a job people repeat without prompting. Build only the missing
 capability requested independently by several users. Do not add execution simply
 because competitors have it.
 
-### Week 4 — payment intent
+#### Week 4 — payment intent
 
 Test two clearly labelled hypotheses:
 
@@ -130,7 +170,7 @@ Test two clearly labelled hypotheses:
 These are tests, not announced prices. Ask for a pilot, deposit or purchasing
 commitment; an email signup alone is not willingness to pay.
 
-## Decision gates
+### Decision gates
 
 Continue investing when the evidence shows all of the following:
 
@@ -143,7 +183,7 @@ Continue investing when the evidence shows all of the following:
 If most use is a single experiment to stretch model limits, Forge has an
 acquisition trick rather than a durable product.
 
-## Roadmap order
+### Roadmap order
 
 1. Compatibility proof and honest messaging.
 2. Activation measurement.

@@ -14,7 +14,7 @@ const origin = 'https://example.test/forge';
 const resource = `${origin}/mcp`;
 function environment() {
   const prepare = vi.fn(() => ({ bind: (id: string) => ({ first: async () => ({ id, github_login: 'alice', installation_id: '1' }) }) }));
-  return { env: { FORGE_PUBLIC_ORIGIN: origin, FORGE_SIGNING_KEY: 'test-key-with-at-least-32-bytes', METADATA: { prepare } } as unknown as Env, prepare };
+  return { env: { FORGE_PUBLIC_ORIGIN: origin, FORGE_ALLOWED_LOGINS: 'alice', FORGE_SIGNING_KEY: 'test-key-with-at-least-32-bytes', METADATA: { prepare } } as unknown as Env, prepare };
 }
 const ctx = { waitUntil: vi.fn() } as unknown as ExecutionContext;
 

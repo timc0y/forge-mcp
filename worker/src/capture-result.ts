@@ -7,6 +7,10 @@ import { ForgeError } from './errors';
 export async function captureResult(ctx: ToolContext, url: string, requested: Viewport[] = ['phone', 'desktop']): Promise<ToolOutcome> {
   const viewports = [...new Set(requested.length ? requested : ['phone', 'desktop'] as Viewport[])];
   validateCaptureRequest(url, viewports);
+  const enabled = (ctx.env.FORGE_CAPTURE_ALLOWED_LOGINS ?? '').split(',').map((login) => login.trim().toLowerCase()).filter(Boolean);
+  if (!enabled.includes(ctx.identity.githubLogin.toLowerCase())) {
+    throw new ForgeError({ code: 'FORGE_AUTH_REQUIRED', message: 'Public-page capture is limited to operator-enabled preview accounts while the provider network boundary is verified. No browser request was sent.' });
+  }
   const quota = await reserveCaptureQuota(ctx.env, ctx.identity.userId, ctx.identity.githubLogin);
   // A provider request can spend browser time even when its result is rejected
   // locally. Count attempts after validation; never refund uncertain expenditure.

@@ -5,9 +5,8 @@ import { ForgeError } from './errors';
  * The per-person capture-attempt ceiling. GitHub and inference have separate
  * request budgets; browser attempts are counted before provider work begins.
  *
- * The preview is open to anyone. This limit is what makes that affordable — a
- * ceiling per person per day, rather than a gate that refuses everyone who
- * does not already know somebody.
+ * Instance access and capture consent are checked separately. This ceiling
+ * counts work for admitted accounts; it never grants access to an instance.
  */
 
 const DEFAULT_DAILY_LIMIT = 30;

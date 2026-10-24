@@ -11,6 +11,9 @@
 #   worker/scripts/smoke.sh [base-url]
 #
 B="${1:-https://timcoy.uk/forge}"
+B="${B%/}"
+ORIGIN=$(node -e 'process.stdout.write(new URL(process.argv[1]).origin)' "$B")
+MOUNT=$(node -e 'process.stdout.write(new URL(process.argv[1]).pathname.replace(/\/+$/, ""))' "$B")
 pass=0; fail=0
 chk() { # name expected actual
   if [[ "$3" == *"$2"* ]]; then printf "  \033[32m✓\033[0m %s\n" "$1"; pass=$((pass+1));
@@ -21,18 +24,18 @@ body() { curl -s --max-time 25 "$@"; }
 
 echo "── liveness"
 chk "health answers"                 '"status":"ok"'   "$(body $B/health)"
-chk "health exposes server version"  '"version":"2.0.2"' "$(body $B/health)"
+chk "health exposes server version"  '"version":"2.2.0"' "$(body $B/health)"
 chk "unknown route 404s"             "404"            "$(code $B/nope)"
 chk "mount root serves the page"     "Forge"          "$(body $B)"
 # GitHub always appends a query when returning from an install, and an exact
 # Cloudflare route does not match one. This is that regression.
 chk "mount root survives a query"    "Forge"          "$(body "$B?x=1")"
 chk "post-install is acknowledged"   "installed"      "$(body "$B?installation_id=1&setup_action=install")"
-chk "page names the server url"      "/forge/mcp"     "$(body $B)"
+chk "page names the server url"      "$B/mcp"        "$(body $B)"
 chk "page links the github app"      "installations/new" "$(body $B)"
 chk "privacy page answers"           "Privacy"        "$(body $B/privacy)"
 chk "privacy page names deletion"    "deleted"        "$(body $B/privacy)"
-chk "site root untouched"            "200"            "$(code https://timcoy.uk/)"
+chk "site root untouched"            "200"            "$(code "$ORIGIN/")"
 
 echo "── auth boundary"
 chk "mcp without token 401s"         "401"            "$(code -X POST $B/mcp -H 'content-type: application/json' -d '{}')"
@@ -42,10 +45,10 @@ chk "401 body is a forge error"      "FORGE_AUTH_REQUIRED" "$(body -X POST $B/mc
 
 echo "── oauth discovery (both spellings)"
 chk "protected-resource (append)"    '"resource"'     "$(body $B/.well-known/oauth-protected-resource)"
-chk "protected-resource (rfc8414)"   '"resource"'     "$(body https://timcoy.uk/.well-known/oauth-protected-resource/forge)"
+chk "protected-resource (rfc8414)"   '"resource"'     "$(body "$ORIGIN/.well-known/oauth-protected-resource$MOUNT")"
 chk "auth-server (append)"           '"issuer"'       "$(body $B/.well-known/oauth-authorization-server)"
-chk "auth-server (rfc8414)"          '"issuer"'       "$(body https://timcoy.uk/.well-known/oauth-authorization-server/forge)"
-chk "issuer names the mount"         'timcoy.uk/forge' "$(body $B/.well-known/oauth-authorization-server)"
+chk "auth-server (rfc8414)"          '"issuer"'       "$(body "$ORIGIN/.well-known/oauth-authorization-server$MOUNT")"
+chk "issuer names the mount"         "$B" "$(body $B/.well-known/oauth-authorization-server)"
 chk "PKCE S256 advertised"           'S256'           "$(body $B/.well-known/oauth-authorization-server)"
 chk "offline access advertised"      'offline_access' "$(body $B/.well-known/oauth-authorization-server)"
 chk "refresh grant advertised"       'refresh_token'  "$(body $B/.well-known/oauth-authorization-server)"

@@ -399,6 +399,7 @@ describe('OAuth remains connected in ChatGPT', () => {
                   return {
                     family_id: row.familyId,
                     user_id: row.userId,
+                    github_login: 'alice',
                     client_id: row.clientId,
                     key_tag: row.keyTag,
                     expires_at: row.expiresAt,
@@ -417,6 +418,7 @@ describe('OAuth remains connected in ChatGPT', () => {
     return {
       env: {
         FORGE_SIGNING_KEY: 'test-signing-key-with-at-least-32-bytes',
+        FORGE_ALLOWED_LOGINS: 'alice',
         METADATA: metadata
       } as unknown as Env,
       rows

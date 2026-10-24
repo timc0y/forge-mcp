@@ -63,6 +63,20 @@ describe('exact candidate editing', () => {
     expect(() => applyReplacements('a.ts', 'x x', [{ old: 'x', new: 'y' }])).toThrow(/more than once/);
     expect(applyReplacements('a.ts', 'x x', [{ old: 'x', new: 'y', all: true }])).toBe('y y');
   });
+  it.each([
+    ['banana', 'ana', 'bXna'],
+    ['aaaa', 'aa', 'XX']
+  ])('rejects overlapping matches in %s unless all was explicitly requested', (source, old, allResult) => {
+    expect(() => applyReplacements('a.txt', source, [{ old, new: 'X' }])).toThrow(/more than once/);
+    expect(applyReplacements('a.txt', source, [{ old, new: 'X', all: true }])).toBe(allResult);
+  });
+  it('refuses an overlapping fragment before creating any blob', async () => {
+    const gh = github('banana');
+    await expect(commitFiles(gh.request, repo, 'main', 'main', 'edit', [{ path: 'a.txt', replace: [{ old: 'ana', new: 'X' }] }])).rejects.toMatchObject({
+      code: 'FORGE_VALIDATION_FAILED', details: { reason: 'repeated' }
+    });
+    expect(gh.calls.some((call) => call.startsWith('POST '))).toBe(false);
+  });
   it('refuses a stale source selector before creating any blob', async () => {
     const gh = github('function run() {}');
     await expect(commitFiles(gh.request, repo, 'main', 'main', 'edit', [{ path: 'a.ts', edit: { expectedCommit: 'b'.repeat(40), selector: 'a.ts::symbol:run', replacement: 'function run() { return 1; }' } }])).rejects.toMatchObject({ code: 'FORGE_CONFLICT' });

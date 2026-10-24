@@ -19,17 +19,17 @@ import { analyticsFor } from './analytics';
 import { INSTRUCTIONS } from './instructions';
 
 const SERVER_NAME = 'Forge';
-export const SERVER_VERSION = '2.0.2';
+export const SERVER_VERSION = '2.2.0';
 
 export class ForgeMcpSession extends McpAgent<Env, never, { identity: Identity }> {
   // Replaced in init: props are not hydrated until then, and the tools need
   // the caller's identity to be registered at all.
-  server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+  server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION }, { maxToolInputElements: 10_000 });
 
   async init(): Promise<void> {
     this.server = new McpServer(
       { name: SERVER_NAME, version: SERVER_VERSION },
-      { instructions: INSTRUCTIONS }
+      { instructions: INSTRUCTIONS, maxToolInputElements: 10_000 }
     );
 
     // The router authenticates before it ever reaches a session, so an absent

@@ -3,9 +3,70 @@
 For whoever runs the deployment. If you only want to *use* Forge, read
 [using-forge.md](./using-forge.md).
 
-## What is deployed
+## Source and recorded deployment
 
-Production **2.0.2** first deployed on 23 October 2026 from source `5334759`,
+Forge 2.2.0 distributes MIT source for independent self-hosting. The maintainer
+instance is private to `timc0y`; the public website explains Forge and routes
+visitors to the source and self-hosting guide. There is no public hosted offer.
+
+The [2.2.0 release receipt](https://github.com/timc0y/forge-mcp/releases/tag/v2.2.0)
+identifies the source, exact-head checks, Cloudflare version and completed live
+checks. `/health` reports the running version. The dated deployment observations
+below are retained evidence; they are not a claim that an old version still runs.
+
+Seven public docs pages render their complete repository Markdown. Native Wrangler
+Text/Data rules bundle those sources and the self-hosted Onest font, with the same
+rules in the self-host template. No additional content build step or third-party
+asset request is required. Keep the whole checkout when building the Worker.
+
+Instance access uses `FORGE_ALLOWED_LOGINS`, an explicit comma-separated list of
+GitHub logins. Missing, blank or malformed configuration denies all accounts.
+The current stored login is checked on bearer requests, OAuth grants and approval
+links; OAuth sign-in refreshes that login. Approval execution rechecks the stored
+owner before GitHub requests. Logins are case-insensitive; wildcards are refused.
+Production and development admit only `timc0y`. Capture consent is a separate,
+narrower list and cannot grant instance access. No billing path was introduced.
+
+MCP POST bodies are bounded at 4 MiB of actual streamed bytes before JSON parsing
+or session transport, including absent or misleading Content-Length. The MCP SDK
+also limits tool-input elements to 10,000 before schema validation. Keep both
+limits: the Agents transport does not expose the SDK's body-size option.
+
+The maintainer's retired untracked `apps/`, `packages/`, `infra/`, `dist/`,
+`artifacts/` and `.firecrawl/` directories were archived outside Git on 23 October
+2026. The private recovery copy is `~/Backups/forge-mcp-legacy-2026-10-23/`;
+its `RESTORE.md` records restoration without overwriting an existing directory.
+It includes local state and must remain outside the published repository.
+
+Previous production **2.1.0** deployed on 23 October 2026 at 21:39 UTC, with task-evidence
+recovery, write safety, restricted capture, shared D1 inference limits and corrected
+setup/deletion docs. Cloudflare version `dfa6772d-30e6-4756-90d6-66b666996a7b`
+served 100% of traffic at that observation; deployment `503846f5-c90a-43cf-b05b-33af8aae68f0` carries
+tag `2.1.0-wip-dc5715c79fe4`.
+
+This release used the reviewed **uncommitted working tree**, based on
+`f3baec373ec4412b3a8d90f235e86d139ef8f6de`; no source commit or push was made.
+The version message records runtime-source SHA-256
+`dc5715c79fe4b5fadf3ef4b533c9784b74400947752e5a0f7e57625908432228`.
+It hashes sorted relative paths followed by NUL, file bytes and NUL for Worker
+source, migrations, Wrangler config, parser build script, root/Worker package
+manifests and present lockfiles. Documentation is outside that runtime hash.
+
+Production migration `0004_semantic_budget.sql` applied successfully; both semantic
+tables and deployed settings were read back: capture login `timc0y`, 200 inference
+attempts/day and concurrency 4. The release command passed TypeScript, 315 Vitest
+tests and 11 Node fixtures. The deployed bundle is 33.07 MiB against the 48 MiB
+internal budget; Cloudflare reported 126 ms startup. Health returned 2.1.0 and all
+44 production HTTP/OAuth smoke checks passed. The existing Forge connection read
+`README.md:1-6` at `f3baec3`; an out-of-range request returned 85 lines and valid
+recovery selector `README.md:85-85`, which also succeeded.
+
+No paid inference, repository write/approval, capture, reconnect or fresh-account
+journey was exercised for this release. Live inference/concurrency, provider network
+isolation and external spend/edge controls remain unverified. [Going live](./going-live.md)
+owns those gates; [self-hosting](./self-hosting.md) owns independent setup.
+
+The preceding production release, **2.0.2**, first deployed on 23 October 2026 from source `5334759`,
 Cloudflare version `0c2baf94-fa2b-45a5-bcda-70bdce978d7d`. Its tag and message
 identify the source commit. TypeScript, 190 tests and all 44 production HTTP/OAuth
 smoke checks passed. Worker startup was 158 ms. The preceding production version
@@ -13,7 +74,7 @@ was `5777ec89-1dda-4ec3-9549-19b908485cc6` (2.0.1).
 
 The earlier transport repair remains: Workers rejects `redirect: 'error'` before
 inference, so JEV uses `manual` and refuses non-success/redirect responses without
-following another route. The context compiler now offers one representative from
+following another route. That release's context compiler offers one representative from
 each selected file before additional blocks, asks JEV which evidence directly
 answers the task, and retains that primary body before related callers and tests.
 The nominal output allowance is 20 KiB; the hard response ceiling remains 32 KiB.
@@ -36,12 +97,18 @@ to discover the updated description and `at` input; deployment does not refresh 
 Astra approved the source but withheld deployment approval because the capture
 network boundary remains incompletely verified. The owner explicitly requested
 deployment after that limitation was explained, lifting the earlier hold.
-Full capture remains enabled; deployment does not establish network safety.
+That recorded 2.0.2 release had full capture enabled; deployment did not establish
+network safety. Deployed 2.1.0 instead allows capture only for explicit
+consenting GitHub logins, before quota/provider work. The maintainer config names
+`timc0y`; self-hosts must name their own login. Empty denies all, with no wildcard
+or public opt-out. Enabled accounts retain arbitrary already-public URLs. The
+restriction remains until actual provider proof and an explicit release change.
 
 Further proof on 12 October executed the production refresh-family and quota
 functions against actual SQLite with repository migrations. Both revocation
-orderings passed; 64 concurrent quota requests admitted exactly one. Production
-has all required secret names and no pending D1 migrations.
+orderings passed; 64 concurrent quota requests admitted exactly one. That recorded deployment had all required secret names and no pending D1
+migrations then. That observation predates `0004`; its production application is
+recorded in the 2.1.0 release above.
 
 A live Browser Rendering trial against a public hostname resolving to loopback
 returned a target HTTP 403 denial page inside an API success response. Forge now
@@ -54,7 +121,9 @@ proof: [guardrails](https://developers.cloudflare.com/browser-run/features/guard
 exclude Quick Actions, and [outbound Workers](https://developers.cloudflare.com/browser-run/features/outbound-workers/)
 do not cover arbitrary HTTPS requests.
 
-One Worker, one D1 database and one Durable Object. No R2, containers, queues,
+One Worker, one D1 database and one Durable Object binding. Current runtime has
+no R2 store; this is not evidence that historical capture objects were removed.
+No containers, queues,
 workflows or cron. Nothing runs between requests, so there is nothing to reap
 and nothing to babysit.
 
@@ -72,15 +141,21 @@ routes for `/.well-known/oauth-*`.
 
 ## Configuration
 
-Non-secret values live in `worker/wrangler.jsonc`.
+Maintainer non-secret values live in `worker/wrangler.jsonc`. Self-hosts copy
+`worker/wrangler.self-host.example.jsonc` and always select their own config, as
+[documented](./self-hosting.md).
 
 | Variable | Meaning |
 |---|---|
 | `FORGE_PUBLIC_ORIGIN` | The public address **including the mount path**. OAuth redirects and approval links are minted from it, and the router takes its mount from it. Load-bearing. |
+| `FORGE_ALLOWED_LOGINS` | Explicit GitHub logins admitted to this instance; missing/blank/malformed denies all, including existing connections |
 | `FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS` | Hosts a registering client may redirect to |
 | `GITHUB_APP_ID` / `_CLIENT_ID` / `_SLUG` | The GitHub App |
+| `FORGE_CAPTURE_ALLOWED_LOGINS` | Explicit consenting GitHub logins allowed to capture already-public URLs; empty/absent denies before quota/provider work; no wildcard |
 | `FORGE_CAPTURE_DAILY_LIMIT` | Captures per person per UTC day (default 30) |
 | `FORGE_UNLIMITED_LOGINS` | GitHub logins exempt from that limit, comma separated. The operator's escape hatch — nothing inside the product grants it |
+| `FORGE_SEMANTIC_DAILY_CALL_LIMIT` | Shared paid inference attempts per UTC day; default 200; not a monetary guarantee |
+| `FORGE_SEMANTIC_MAX_CONCURRENCY` | Shared in-flight inference calls; default 4; unknown outcome holds a fixed 60-second reservation, without daily refund |
 | `FORGE_JEV_PRIVATE_SOURCE` | `allow` permits bounded private-repository evidence to be processed by the configured JEV route; `deny` refuses semantic context before source is sent |
 | `TYPESAFE_BASE_URL` | The single admitted Cloudflare JEV inference route |
 
@@ -94,7 +169,12 @@ Secrets, via `wrangler secret put` from `worker/`:
 | `TYPESAFE_API_KEY` | Authenticates the configured JEV route; semantic operations refuse when it is absent |
 
 The former `GITHUB_APP_PRIVATE_KEY` secret is no longer read by this source.
-Existing deployed secrets have not been deleted while production remains held.
+Setup instructions omit it. The deployed legacy secret is still present;
+removal is a separate operator action and was not performed by this release.
+Local secrets belong beside the selected config: self-hosts without a named
+environment use `worker/.dev.vars`; maintainer `pnpm dev` uses the complete
+`worker/.dev.vars.development`. The latter replaces `.dev.vars`; secret
+variants and the two filled self-host configs are ignored by Git.
 
 ### V2 runtime and client refresh
 
@@ -158,10 +238,9 @@ Verified 2026-09-20: the production App holds Administration, Contents, Pull
 requests, Metadata and Workflows, and one `forge_edit` call created
 `timc0y/forge-self-test` from a document — repository creation is proven end to
 end. Provider evidence on 21 September 2026 shows the App registration itself is
-still **private**, so it cannot yet be installed by unrelated GitHub accounts.
-Making the registration public is a launch gate. V2's additional Checks, Commit
-statuses and Actions read permissions must be approved at the same time or
-before release.
+still **private**. The maintainer registration stays private; independent
+operators create their own App. V2's additional Checks, Commit statuses and
+Actions read permissions must be approved for the instance using them.
 
 Forge V2 additionally reads exact-commit Check Runs, legacy Commit Statuses and
 repository-produced analysis artifacts. Those capabilities require **Checks:
@@ -186,8 +265,21 @@ to the configured Cloudflare inference route. With
 externally processed by that route. Exact reads, GitHub metadata and durable
 writes do not require JEV.
 
+The shared inference meter uses D1 atomic reservations and daily aggregate
+attempts/completed/unknown/input/output counts. Transient reservations use random
+IDs without source, paths or user identifiers. Every inference attempt consumes
+the daily allowance, even after an unknown provider outcome; capacity remains
+quarantined for a fixed 60 seconds in that case. Missing budget state refuses
+inference. Completion accounting waits at most 250 ms and at most one quarter of
+the remaining operation budget; validated evidence can return with
+`accounting: unknown` and the original charge retained. Input/output totals record
+reported usage only; missing usage never proves zero provider charge. Apply
+migration `0004` before deploying this source.
+
 ## Public abuse boundary
 
+The login availability restriction runs before capture quota/provider work. It
+limits admitted accounts and does not establish provider network isolation.
 The in-code capture quota is atomic and counts attempts after input validation.
 Failed provider responses, locally rejected bodies and transport failures remain
 counted because browser work may already have occurred. Each call renders each
@@ -199,18 +291,17 @@ unbounded way to create D1 rows.
 
 ## Cost
 
-GitHub operations use the person's GitHub App user authorization and its rate
-limit. Forge also pays for hosting and JEV inference; semantic requests have
-separate bounded budgets. Capture attempts have a per-person daily ceiling.
-Workers Paid includes 10 browser hours a month, then $0.09/hour, and Quick Actions
-like `/snapshot` are billed on
-hours alone while binding-driven Puppeteer sessions are also billed per
-concurrent browser. Forge uses the REST Quick Action, so the concurrency
-dimension never applies.
+GitHub requests use the person's GitHub App user authorization and rate allowance.
+Repository Actions may consume their own allowance or charges. Client plans do
+not include Forge hosting, Browser Rendering or JEV. The private deployment operator
+pays those providers; self-hosts pay their own Worker, D1, Durable Object, rendering
+and inference charges.
 
-At roughly 5 s a capture, the included 10 hours is about 7,200 captures a month.
-Fifty people at 30 a day is ~62 browser hours, about **$4.73 a month in total**.
-That 5 s figure is an assumption and should be measured.
+Measure rendering duration, inference input/output usage and provider prices.
+Per-user capture attempts and shared semantic call/concurrency caps bound work,
+not monetary spend. Verify account-level spend notifications and edge rules
+separately; their live configuration is not established by local tests. No provider billing
+or edge-control changes were made by this release.
 
 ## Releasing MCP metadata
 
@@ -260,7 +351,12 @@ Apply migrations before deploying worker code that depends on them. Migration
 capture-gallery implementation; current code does not read or write that table.
 Migration `0003_security_hardening.sql` adds rotating, hashed OAuth refresh tokens
 and is required before code that issues them. Existing signed refresh tokens from
-before that migration intentionally stop working after the deploy.
+before that migration intentionally stop working after the deploy. Migration
+`0004_semantic_budget.sql` adds shared anonymous inference metering and must be
+applied before 2.1.0 code. Production application is recorded above; a new
+self-host must apply it to its own database.
+The [deletion runbook](./account-deletion.md) inventories all owned tables, handles
+historical captures and verifies deletion with foreign keys enabled.
 
 ```sh
 pnpm exec wrangler d1 migrations apply forge-v1-production --remote
@@ -273,16 +369,15 @@ pnpm exec wrangler d1 migrations apply forge-v1-production --remote
   release event, not an edit.
 - **A legacy `forge/<name>` branch blocks the fixed `forge` branch.** A git ref
   cannot be both a branch and a directory, so while any `forge/…` ref exists
-  GitHub refuses to create `forge` with a bare 422. Writing a change removes a
-  legacy ref that holds no commit the default branch does not already have, and
-  says so in the result; one that holds commits is refused by name rather than
-  deleted.
+  GitHub refuses to create `forge` with a bare 422. Version 2.1.0
+  refuses and names every collision for deliberate
+  cleanup. It does not automatically delete even apparently inert refs: a compare
+  followed by deletion can race another writer's commit.
 - **GitHub code search is an index, not the truth.** It can answer 200 with
-  `incomplete_results: true` and no matches for code that exists. Forge never
-  reads that as absence; a repository-scoped exact or concept search falls back
-  to reading the committed files (the repository archive, one request, bounded).
-  A `limits` line always says when a result came from committed content rather
-  than the index.
+  `incomplete_results: true` and no matches for code that exists. Incomplete
+  results never prove absence. Bounded exact-source discovery
+  names its committed-source provenance; semantic failure remains explicit and
+  is not silently replaced by lexical discovery.
 - **`FORGE_PUBLIC_ORIGIN` is three things at once** — mount path, approval-link
   origin, and OAuth issuer. Changing it invalidates outstanding approval links.
 - **Historical deployments may still have executor-era containers.** The current

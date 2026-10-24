@@ -18,7 +18,9 @@ export function privacyPage(env: Env): Response {
 <h1>Privacy</h1>
 <p class="lead">Forge stores the minimum state needed to connect your GitHub account,
   prepare reviewable changes and carry out decisions you approve.</p>
-<p class="note">Last updated 12 October 2026.</p>
+<p class="note">Last updated 24 October 2026. This instance is private to its
+  operator's configured GitHub accounts. The open-source project can be run
+  independently with your own accounts and credentials.</p>
 
 <h2>What Forge stores</h2>
 <div class="section">
@@ -45,10 +47,15 @@ export function privacyPage(env: Env): Response {
   <h3>Public-page captures</h3>
   <p>Forge renders public pages on demand and returns screenshots in the tool response.
     It stores only your daily capture-attempt count; it does not keep a screenshot gallery or
-    persistent copy of captured pages.</p>
+    persistent copy of captured pages. Capture is restricted to operator-enabled
+    accounts while the provider network boundary is verified.</p>
 
   <h3>Usage and analytics</h3>
-  <p>Forge stores one daily capture-attempt count per user. Shape-only operational measurements
+  <p>Forge stores one daily capture-attempt count per user. Shared inference admission keeps
+    anonymous daily attempt, completed, unknown-outcome and returned token totals, plus
+    random reservations that expire after 60 seconds and are removed on the next admission.
+    These records contain no user or repository identifiers, source or queries.
+    Shape-only operational measurements
     are written to the existing Cloudflare logs. These measurements contain no repository
     names, source, queries, captured URLs, user identifiers or tokens.</p>
 </div>
