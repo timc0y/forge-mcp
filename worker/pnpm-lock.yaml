@@ -19,8 +19,8 @@ importers:
         specifier: 1.32.2
         version: 1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.6)
       '@shopify/liquid-html-parser':
-        specifier: 2.10.0
-        version: 2.10.0
+        specifier: 2.10.2
+        version: 2.10.2
       agents:
         specifier: 0.17.3
         version: 0.17.3(@babel/core@8.0.1)(@babel/runtime@7.29.10)(@cloudflare/workers-types@5.20261006.1)(react@19.2.8)(rolldown@1.2.5)(vite@8.2.4(@types/node@24.10.1)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.6.6)
@@ -863,8 +863,8 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@shopify/liquid-html-parser@2.10.0':
-    resolution: {integrity: sha512-fdfKqVOoGCvLWgXUiqPjw99wM64wZV/3RpSQZb59P1K8pT7l1cyJZV+QAyHgvVV1jcglUCtFmr+8ioY7rGVdKg==}
+  '@shopify/liquid-html-parser@2.10.2':
+    resolution: {integrity: sha512-/qBtTT3tbzSFgFVMNTPhX2pPN14ShMSYTu9nzkCB1vorjNvm1G9mvgYW9jKod0mrki+TUVfMYi5d1H+QKrLnCA==}
 
   '@sindresorhus/is@7.2.0':
     resolution: {integrity: sha512-P1Cz1dWaFfR4IR+U13mqqiGsLFf1KbayybWwdd2vfctdV6hDpUkgCY0nKOLLTMSoRd/jJNjtbqzf13K8DCCXQw==}
@@ -2400,7 +2400,7 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@shopify/liquid-html-parser@2.10.0':
+  '@shopify/liquid-html-parser@2.10.2':
     dependencies:
       line-column: 1.0.2
 

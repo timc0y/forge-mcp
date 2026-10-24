@@ -13,7 +13,7 @@
     "@modelcontextprotocol/sdk": "1.32.2",
     "agents": "0.17.3",
     "jose": "6.2.9",
-    "@shopify/liquid-html-parser": "2.10.0",
+    "@shopify/liquid-html-parser": "2.10.2",
     "@lezer/markdown": "1.6.3",
     "typescript": "5.9.3",
     "yaml": "2.9.0",
