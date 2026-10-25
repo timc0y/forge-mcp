@@ -1,0 +1,6 @@
+# Opt in only after replacing the origin with your own instance.
+[mcp_servers.forge]
+url = "<YOUR_FORGE_ORIGIN>/mcp"
+auth = "oauth"
+tool_timeout_sec = 60
+default_tools_approval_mode = "prompt"

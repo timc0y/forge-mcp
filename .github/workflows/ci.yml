@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main, forge]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.13.1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # The worker has no workspace dependencies, deliberately: it installs and
+      # checks on its own, which is what let it be built while the previous
+      # system was still here.
+      - run: pnpm install --ignore-workspace --frozen-lockfile
+
+      - name: Types
+        run: pnpm typecheck
+
+      # Includes the guidance-integrity sweep (no string may name a tool that
+      # does not exist) and the 512-character budget on server instructions.
+      - name: Invariants
+        run: pnpm test
+
+      - name: Worker bundle dry run
+        run: pnpm exec wrangler deploy --dry-run --config wrangler.jsonc --env="" --outdir /tmp/forge-worker
+
+      - name: Enforce Worker bundle headroom
+        run: node scripts/check-bundle-budget.mjs /tmp/forge-worker
+
+      - name: Profile Worker startup
+        run: pnpm exec wrangler check startup --config wrangler.jsonc --env=""

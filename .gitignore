@@ -1,0 +1,35 @@
+node_modules/
+dist/
+coverage/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+worker/wrangler.self-host.jsonc
+worker/wrangler.self-host.local.jsonc
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+artifacts/
+.tmp/
+*.tsbuildinfo
+worker/src/worker-configuration.d.ts
+
+# Local design review evidence; the design contract and tokens remain shareable.
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/questions/
+.impeccable/config.local.json
+
+# Claude Code local state and agent worktrees
+.claude/
+.pnpm-store/
+.firecrawl/
+
+# Optional local MCP connection; use the self-host example.
+.codex/config.toml
+
+# Operator deployment configuration stays local.
+worker/wrangler.operator.jsonc
