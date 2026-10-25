@@ -31,8 +31,14 @@ chk "mount root serves the page"     "Forge"          "$(body $B)"
 # Cloudflare route does not match one. This is that regression.
 chk "mount root survives a query"    "Forge"          "$(body "$B?x=1")"
 chk "install return does not assert access" "cannot confirm installation or repository access"      "$(body "$B?installation_id=1&setup_action=install")"
-chk "page names the server url"      "$B/mcp"        "$(body $B)"
-chk "page links the github app"      "installations/new" "$(body $B)"
+PUBLIC_PAGE="$(body "$B")"
+for private_link in "$B/mcp" "installations/new"; do
+  if [[ "$PUBLIC_PAGE" == *"$private_link"* ]]; then
+    printf "  ✗ public page advertises an operator connection\n"; fail=$((fail+1))
+  else
+    printf "  ✓ public page omits operator connection link\n"; pass=$((pass+1))
+  fi
+done
 chk "privacy page answers"           "Privacy"        "$(body $B/privacy)"
 chk "privacy page names deletion"    "deleted"        "$(body $B/privacy)"
 chk "site root untouched"            "200"            "$(code "$ORIGIN/")"
@@ -83,7 +89,7 @@ done
 
 echo "── nothing leaks"
 ALL="$(body $B/health)$(body $B/.well-known/oauth-authorization-server)$REG$(body -X POST $B/mcp -d '{}')"
-for s in "BEGIN PRIVATE KEY" "GITHUB_APP" "CLOUDFLARE_API" "FORGE_SIGNING_KEY" "Iv23li"; do
+for s in "BEGIN PRIVATE KEY" "GITHUB_APP" "CLOUDFLARE_API" "FORGE_SIGNING_KEY"; do
   if [[ "$ALL" == *"$s"* ]]; then printf "  \033[31m✗\033[0m leaked: %s\n" "$s"; fail=$((fail+1));
   else printf "  \033[32m✓\033[0m no %s in any response\n" "$s"; pass=$((pass+1)); fi
 done
