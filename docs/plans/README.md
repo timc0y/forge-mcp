@@ -1,11 +1,6 @@
-# Forge Plans
+# Plans and design
 
-- [Named development APIs](./authenticated-apis.md) — proposed Forge dashboard
-  for named keys and OpenAPI URLs, called through one agent tool. Not implemented.
-- [Context engine](./context-engine.md) — active V2 architecture: one GitHub/JEV
-  evidence pipeline, parser-backed structure, exact-commit CI evidence and no
-  fallback chains or additional hosted context services.
-- [Forge V1](./forge-v1.md) — historical architecture record for the five-tool,
-  no-execution reset.
-- [Product route](./product-route.md) — current private-hosted/OSS choice,
-  with historical adoption, measurement and commercial proposals.
+- [Context engine](./context-engine.md): how Forge selects and returns source.
+- [Product route](./product-route.md): the self-hosting approach.
+- [Named development APIs](./authenticated-apis.md): a proposal for future API access.
+- [Forge V1](./forge-v1.md): the earlier design behind the five-tool interface.

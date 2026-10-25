@@ -1,14 +1,12 @@
 # Account deletion runbook
 
-An operator deletes a verified person's Forge state and accounts for historical
-capture objects before removing their ownership records. Current capture returns
-images inline and creates no R2 objects; that does not prove older objects or
-the historical `captures` rows are gone.
+Use this guide to remove a person's Forge account and stored data. Confirm
+their identity first. Older installations may have capture objects to remove
+before deleting the database records that identify them.
 
 Run from `worker/`. The commands below explicitly select your ignored
 `wrangler.self-host.jsonc` and its `METADATA` binding. This is a manual production mutation: confirm the request and target
-account/database before running it. No production deletion was run to verify
-this document.
+account and database before running it.
 
 ## 1. Confirm identity and inventory
 

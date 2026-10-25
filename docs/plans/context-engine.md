@@ -1,12 +1,15 @@
 # Forge context engine
 
-Status: V2 architecture, distributed as MIT source for self-hosting. [Operations](../operating-forge.md) and the [release status](../going-live.md) identify deployment evidence separately from source. Held-out relevance and broad-task coverage remain open.
-Owner instruction: Tim, 20 September 2026.
-Source baseline: `main` at abbreviated commit `9b6c2c6`, inspected through Forge.
+Forge gathers the source behind a question and returns it with references to
+the exact GitHub revision. This document explains that design. See
+[operations](../operating-forge.md) for deployment and the
+[release checklist](../going-live.md) for updates.
 
-## 1. Decision
+## 1. Approach
 
-Build a **query-specific context compiler** inside Forge. Given a task, it gathers authoritative GitHub evidence, extracts structure, uses JEV to select the relevant evidence, and returns a small, source-addressable packet. ChatGPT should reason about the change, not write temporary scripts to discover files, walk imports, filter a JSON ledger, reconstruct a diff, or gather test failures.
+Given a task, Forge reads the relevant GitHub revision, identifies its structure
+and uses JEV to select useful source. The result is a compact set of references
+and content for the conversation to work with.
 
 Keep five public tools, GitHub-first durability, the existing human approval boundary and no repository execution plane. Replace responsibilities rather than adding parallel implementations.
 
@@ -18,7 +21,7 @@ Do not integrate Context7, DeepWiki, Sourcegraph, grep.app, deps.dev, OSV's host
 
 Open-source libraries bundled into Forge or run in a repository's existing CI are permitted. A package is not a hosted service. Do not automatically install packages, enable a paid GitHub feature, dispatch CI, or create new provider accounts.
 
-This supersedes the earlier conversational federation/provider-cascade proposal. The [repository-intelligence research](../research/repository-intelligence.md) remains evidence about prior/current behavior, not a competing implementation queue. [Forge V1](./forge-v1.md) remains the historical reset record. [Product route](./product-route.md) continues to own commercial direction.
+This supersedes the earlier conversational federation/provider-cascade proposal. The [repository-intelligence research](../research/repository-intelligence.md) remains evidence about prior/current behavior, not a competing implementation queue. [Forge V1](./forge-v1.md) remains the historical reset record. [Product route](./product-route.md) explains the self-hosting approach.
 
 ### What “no fallbacks” means
 
@@ -119,7 +122,7 @@ Permissions and scope are deterministic. A failed private-repository lookup must
 
 Use the existing TypeScript package's parse-only API for JS/TS/JSX/TSX. Do not execute source, load repository plugins or create a compiler program that resolves arbitrary filesystem/network inputs inside Forge. Extract declarations, signatures, literal imports/exports, source spans and syntactic call sites. Cross-file binding and reachability claims require the matching project/tool evidence described below.
 
-Use format-owner parsers only after Worker/runtime and exact-span admission. Shopify Liquid is admitted through `@shopify/liquid-html-parser` with source-range tests. Astro remains deliberately unsupported for structural selection: the current official compiler's browser path requires asynchronous Wasm initialization and its synchronous path loads `astro.wasm` relative to `import.meta.url`; that bundling contract has not yet been proven inside the deployed Worker. Exact Astro source reads remain available. No delimiter or TypeScript approximation substitutes for an Astro AST.
+Use format-owner parsers only after Worker/runtime and exact-span admission. Shopify Liquid is admitted through `@shopify/liquid-html-parser` with source-range tests. Astro structural selection is not supported by the current Worker build. Exact Astro source reads remain available. No delimiter or TypeScript approximation substitutes for an Astro AST.
 
 Markdown sections use Lezer's CommonMark parser so fenced content and Setext/ATX headings are syntax facts, not heading regexes. JSON/JSONC structure uses the already-bundled TypeScript parser with filename-specific comment policy and duplicate-key rejection; strict JSON stays strict. YAML uses the maintained `yaml` package in data-only parse/validation mode. Unsupported formats remain exact-source only.
 
@@ -350,21 +353,17 @@ Measure total JEV input/output usage and request cost, GitHub calls, bytes downl
 
 ## 14. Acceptance and release
 
-- [ ] Deterministic fixture baselines are executable in CI; named real Forge/HeadteacherChat baselines and hosted-JEV measurements still need final run evidence.
-- [x] Exactly five tools remain; first-party operation discovery does not depend on magic query words or custom ChatGPT orchestration code.
-- [x] One authoritative implementation serves each operation; replaced search/JEV/review cascades are removed from runtime source.
-- [x] One JEV transport and one documented Cloudflare output contract are enforced; missing/malformed/timeout evidence cannot become semantic success.
-- [x] Context references immutable source; syntax/import/check/artifact relationships retain explicit provenance and limitations.
-- [x] Explicit paths, proposal source, symbols, Markdown sections and JSON ledger records are selectable without semantic rereading.
-- [x] Unsupported formats, incomplete scopes, missing permissions and stale-revision evidence remain visible rather than substituted.
-- [x] No additional hosted indexing, docs, security, AI or telemetry service is required.
-- [x] No repository code/plugin/config executes inside Forge; secret egress, prompt/data separation, archive, URL and artifact boundaries have adversarial regression tests.
-- [ ] The 30-case deterministic plumbing benchmark enforces the token/round/evidence budgets; real hosted-JEV held-out repository tasks must still measure relevance quality and confirm the targets outside the synthetic selector oracle.
-- [x] CI runs on every pull request and direct `forge`/`main` push, including documentation-only changes. Merge approval requires at least one exact-head check/status and all observed exact-head execution states to be completed success; zero, pending, skipped or neutral evidence is never treated as passing. CI and Forge analysis passed on source `88d72b1` on 11 October 2026; later revisions require their own exact-head proof.
-- [x] MCP version, schema, annotations, examples and connection-refresh instructions agree in source; old incompatible inputs fail explicitly rather than silently taking another path.
-- [ ] A refreshed catalog and fresh phone/ChatGPT conversation prove context, edit, review and human approval. The 2.1.0 deployment, 44 HTTP/OAuth checks and existing-connection exact reads passed; those do not prove the remaining client journey.
+Check the five-tool contract, exact-source selectors, permissions, parser errors
+and GitHub writes in CI. Tests should also cover provider failures, concurrent
+requests and missing budget state. Unsupported or incomplete evidence must stay
+visible in the result.
 
-The V2 source implementation from Forge PR #83 is consolidated on main; 2.1.0 was deployed from the reviewed uncommitted working tree. It adds atomic shared inference admission (default 200 calls/day, 4 concurrent), fixed 60-second quarantine after unknown outcomes without daily refunds, and explicit consenting-login capture availability. Missing D1 budget state refuses inference. Completed semantic evidence can return with accounting still unknown when bounded completion accounting cannot finish; missing reported usage does not prove zero actual provider charge. These are call/capacity limits, not monetary guarantees. Production migration, settings and HTTP/OAuth smoke passed. Each source release needs its own exact-head CI. Fresh-client/catalog proof, held-out context quality, live inference/concurrency, provider network isolation and spend/edge configuration remain separate observations; see the current release receipt.
+Use held-out repository questions to measure relevance and coverage. Synthetic
+fixtures check the plumbing; they do not measure answer quality. Keep the
+performance targets above as evaluation targets, not published results.
+
+Follow the [release checklist](../going-live.md) for deployment and client checks.
+Keep deployment records with the operator's configuration.
 
 ## 15. Research basis
 

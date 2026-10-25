@@ -162,7 +162,7 @@ describe('format-owner Markdown rendering', () => {
 
   it('preserves release and cost caveats, privacy SQL and final source sections', () => {
     expect(documentationPage(home, 'using-forge')?.bodyHTML).toContain('your configured instance URL');
-    expect(documentationPage(home, 'release-status')?.bodyHTML).toContain('Remaining limits');
+    expect(documentationPage(home, 'release-status')?.bodyHTML).toContain('Before inviting others');
     expect(documentationPage(home, 'self-hosting')?.bodyHTML).toContain('Local development');
     expect(documentationPage(home, 'operations')?.bodyHTML).toContain('Things that will bite');
     expect(documentationPage(home, 'account-deletion')?.bodyHTML).toContain('DELETE FROM captures WHERE user_id = &#39;FORGE_USER_ID&#39;;');

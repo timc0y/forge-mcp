@@ -1,33 +1,29 @@
-# Release verification
+# Release checklist
 
-Source checks, a deployment and a working client connection are separate evidence.
-Run these checks for your own instance before relying on it.
+Use this checklist when setting up or updating your Forge instance.
 
-## Source checks
+## Check the source
 
-Run `pnpm check` for TypeScript, runtime tests and Node fixtures. Follow the
-bundle and startup checks in [operations](./operating-forge.md). Record the exact
-commit, commands and results privately alongside your deployment configuration.
+Run `pnpm check`, then the bundle and startup checks in
+[operations](./operating-forge.md). Keep the release commit and your deployment
+configuration together so you can return to a known version.
 
-## Deployment checks
+## Deploy
 
-Follow [self-hosting](./self-hosting.md), apply migrations, deploy and check
-`<FORGE_PUBLIC_ORIGIN>/health`. Run the smoke script with your explicit origin.
-Verify query-string log redaction, rate limits and provider spending alerts.
-A successful upload does not establish OAuth, repository grants or client support.
+Follow [self-hosting](./self-hosting.md), apply migrations and deploy.
+Check the version at `<FORGE_PUBLIC_ORIGIN>/health`, then run the smoke script
+with your instance URL. Check log redaction, rate limits and spending alerts.
 
-## Client checks
+## Try your client
 
-Refresh or reconnect your MCP client after a version or tool-schema change.
-In a new conversation, read a disposable repository, commit a document and verify
-the commit on GitHub. Exercise a proposed change, merge and discard through the
-human approval links. Confirm an account outside the allowlist cannot connect.
-Client plans and supported surfaces change; verify the client you intend to use.
+Refresh the connection after changing tool names or settings, then start a new
+conversation. Read a test repository, make a small edit and open the commit on
+GitHub. Try a proposed change and its merge or discard link. Check that an
+account outside your access list is refused.
 
-## Remaining limits
+## Before inviting others
 
-Independent fresh-account setup is unverified. Capture remains restricted to
-explicitly enabled, consenting accounts: provider DNS, redirect and subrequest
-isolation is not established by source tests. Semantic quality and provider spend
-need their own evidence. Keep operator URLs, account IDs and test receipts out of
-public source and documentation.
+Choose who can connect and enable capture separately for people who consent.
+Review the [capture restrictions](./using-forge.md#forge_see), provider costs and
+privacy settings with anyone using your instance. Keep account IDs, credentials
+and deployment records out of the public repository.

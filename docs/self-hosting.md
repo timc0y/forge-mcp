@@ -1,11 +1,10 @@
 # Self-host Forge
 
 Run your own Forge with your GitHub App, Cloudflare account and JEV credential.
-The source and documentation are MIT licensed for reuse. Initial setup checks
-ran locally on 23 October 2026; this guide has not been completed on a fresh
-account. Local checks do not prove an independent setup. See [release evidence](./going-live.md).
+The code and documentation are MIT licensed. This guide covers the accounts,
+configuration and checks you need to get started.
 
-This guide creates your own instance, with its own URL, App, access list and provider costs.
+You choose who can connect and pay your own provider costs.
 
 ## What you operate and pay for
 
@@ -43,10 +42,8 @@ cp .dev.vars.example worker/.dev.vars
 
 Replace the account, URL, App and `REPLACE_WITH_OWN_GITHUB_LOGIN` placeholders in
 `worker/wrangler.self-host.jsonc`; step 3 supplies the new D1 database identifiers.
-Both filled config variants and
-`.dev.vars*` secret files are ignored; never put secret values in Wrangler `vars`. The example deliberately has no named
-environment, existing routes, resource IDs or quota-exempt logins. All commands
-below select it explicitly. Root `pnpm dev` uses the local-only config;
+Filled configuration and `.dev.vars*` secret files are ignored by Git. Keep
+secret values out of Wrangler `vars`. The commands below select your own config. Root `pnpm dev` uses the local-only config;
 `pnpm run deploy` checks and deploys your ignored `wrangler.self-host.jsonc`.
 
 The example uses `https://WORKER_NAME.YOUR_SUBDOMAIN.workers.dev` at the root of
@@ -158,9 +155,8 @@ capture requires membership in both lists. You may explicitly add a separate
 consenting user who already has service access, comma-separated. Empty or absent
 denies all captures before quota/provider work; there is no wildcard or public
 opt-out flag. Enabled accounts can capture arbitrary already-public URLs. This
-restriction limits who can call the provider; it does not establish provider
-DNS, redirect or subrequest isolation. Retiring it requires actual provider proof
-and an explicit release change. Keep private-page capture out of scope.
+restriction controls who can use capture. Browser request isolation depends on
+the provider; keep capture limited to trusted, consenting people and public pages.
 
 From `worker/`, check locally without network calls or deployment:
 
@@ -170,8 +166,8 @@ node scripts/check-config.mjs --config wrangler.self-host.jsonc --secrets-file .
 
 The checker parses JSONC, refuses placeholders, requires a valid nonempty `FORGE_ALLOWED_LOGINS` list, checks
 routes/resources/bindings/policies, and checks required secret
-presence. It prints field names and errors, never values. It cannot prove token
-scope, App grants, a working JEV route, provider isolation or deployed state.
+presence. It prints field names and errors, never values. Check provider
+permissions and the connection after deploying.
 `--config-only` explicitly skips credentials. With no `--secrets-file` it checks
 the process environment; it never fetches deployed secrets.
 
@@ -201,11 +197,10 @@ pnpm exec wrangler deploy --config wrangler.self-host.jsonc
 Open `<FORGE_PUBLIC_ORIGIN>/health` and verify the returned version, then open
 the landing and `/privacy` pages and check OAuth discovery. Connect your client
 to `<FORGE_PUBLIC_ORIGIN>/mcp`, authorise your App and install it on your
-disposable repository. A deployment is not a client refresh. Refresh/re-scan
-the connection and start a new conversation after catalog changes; record the
-client, plan, surface, version and date. See the [release status](./going-live.md).
+disposable repository. Refresh the connection and start a new conversation
+after tool changes. See the [release checklist](./going-live.md).
 
-## 6. Prove one useful read and edit
+## 6. Try a read and edit
 
 Ask for the disposable repository's `README.md` with an exact path. Confirm
 the result includes the immutable source SHA and the expected content. Then
@@ -216,16 +211,12 @@ explicitly authorise one harmless marker edit in that disposable repository:
 
 Inspect the returned branch, full commit SHA and GitHub URL. Open that actual
 GitHub commit and confirm the repository, branch, marker diff and resulting
-README at that SHA. Read the exact path back at the returned SHA. A successful
-tool envelope alone does not prove the GitHub write. Record this evidence before
-claiming your installation works. This guide's author has not performed this
-fresh-account journey.
+README at that SHA. Read the file back to check the result.
 
 For review, explicitly ask for a proposal; it uses the one fixed `forge` branch.
 Only merge/discard require a human approval link. Open and approve each on a
 disposable proposal and verify GitHub's resulting commit or deletion separately.
-Screenshots, if enabled for your login, return inline; there is no gallery or
-30-day screenshot-link retention contract.
+Screenshots, when enabled, return in the conversation. Forge does not store a gallery.
 
 ## Local development
 
@@ -259,8 +250,7 @@ your own single-user development database and include your login in
 refused even when the token matches. Do not insert GitHub tokens
 by hand or create a default user to bypass OAuth. Local bearer authentication
 does not itself test OAuth or populate the database. This bootstrap is required
-setup, not a newly verified OAuth journey; local checks do not establish deployed
-budget, edge/spend configuration, provider isolation or a fresh client journey.
+setup. Use the [release checklist](./going-live.md) to check your deployed instance.
 
 ## Optional Codex connection
 

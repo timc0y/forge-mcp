@@ -1,6 +1,6 @@
 # Using Forge
 
-Think in ChatGPT. Commit safely to GitHub.
+Read your project and save useful work from your conversation.
 
 Forge connects a conversation to a repository. It turns
 research, visual reviews and small edits into durable commits and draft pull
@@ -18,16 +18,15 @@ Start with one of three jobs:
 Run your own copy from the [MIT-licensed source](../LICENSE) using the
 [self-hosting guide](./self-hosting.md). You supply your own GitHub App,
 Cloudflare resources and credentials, pay your providers and supply your client
-plan. Independent fresh-account setup remains unverified.
+plan.
 
-See [release verification](./going-live.md) for separate source, deployment
-and client checks.
+Use the [release checklist](./going-live.md) when setting up or updating.
 
 ---
 
 ## The words Forge uses
 
-There are three nouns, and you only ever handle two of them.
+Forge works with repositories, changes and captures.
 
 **Repository** — yours, on GitHub. Forge never keeps a copy. If Forge vanished
 tomorrow your repositories would look completely normal, because everything it
@@ -40,10 +39,7 @@ have two active Forge changes.
 **Capture** — a screenshot of a page that is already public, returned inline with
 the tool call.
 
-That is the whole vocabulary. There is no workspace, no session, no task, no job
-and no id to carry.
-
-## The rules that make it safe
+## How changes work
 
 **A commit is durable the moment a tool returns.** There is no push step, no
 staging area, no "unsaved" state. If `forge_edit` reports success, the commit is
@@ -61,8 +57,8 @@ for write permission. Merging lands a held proposal, and discarding destroys it.
 Both send you one link showing exactly what would land, or how many commits would stop being reachable. The link keeps working after the
 conversation ends, so you can decide later, from any device.
 
-**Nothing is created by ceremony.** Write to a repository that does not exist and
-Forge creates it. Ask to hold work for review and Forge creates the one change.
+**Create a repository as you work.** With the required App permission, writing
+to a repository that does not exist creates it. Ask to hold work for review and Forge creates the one change.
 You do not make a repository, name a branch, or open a pull request first.
 
 ---
@@ -80,9 +76,8 @@ denies everyone; wildcards are not accepted. App installation alone does not
 grant service access. Capture also needs your login in the separate
 `FORGE_CAPTURE_ALLOWED_LOGINS` consent list, which cannot grant service access.
 
-> **Client availability varies by account, plan and surface.** Verify custom MCP
-> read and write support in your client before setup. A successful connection
-> does not prove that every tool is available in every conversation.
+Choose a client and plan that supports remote MCP connections and the actions
+you want to use.
 
 ### 1. Add the server to your client
 
@@ -106,15 +101,10 @@ any path prefix. Use your configured origin followed by `/mcp`.
 HTTPS callback is admitted. See [Cursor’s MCP guide](https://cursor.com/docs/mcp).
 
 **Grok Bot** — use a remote HTTPS MCP connector with per-person OAuth, as
-[documented by xAI](https://docs.x.ai/grok-bot/team-bots). Protocol compatibility
-is tested locally; successful authorization in Grok Bot still needs a real-client
-check. Adding a callback host alone does not prove the connection.
+[described by xAI](https://docs.x.ai/grok-bot/team-bots).
 
-After a catalog release, reconnect, re-scan the tools and start a new conversation.
-Check your instance's deployed version and the
-[compatibility/release checklist](./going-live.md); a successful deployment
-does not prove a refreshed client catalog.
-Old access tokens and session IDs are refused; refresh credentials are retained.
+After a tool update, refresh the connection and start a new conversation.
+See the [release checklist](./going-live.md).
 
 ### 2. Authorize
 
@@ -242,9 +232,8 @@ those conditions independently. Complete those merges on GitHub.
 Capture is available only to explicitly allowed service users with separate
 consent. Your GitHub login must be in both `FORGE_ALLOWED_LOGINS` and
 `FORGE_CAPTURE_ALLOWED_LOGINS`. Empty `FORGE_CAPTURE_ALLOWED_LOGINS` denies before quota/provider work.
-Enabled accounts may request any already-public URL; this restriction does not
-prove provider DNS, redirect or subrequest isolation. It stays until actual
-provider proof and an explicit release change.
+Keep capture limited to people you trust. Forge checks the requested URL, but
+relies on the rendering provider to isolate the resulting browser requests.
 
 The URL must already be publicly reachable. Initial URL checks reject local
 hostnames and IP literals, and Browser Rendering is told to reject redirects
@@ -263,8 +252,7 @@ target HTTP error in the receipt even when the snapshot API itself succeeded.
 
 ## Limits
 
-These are the source defaults; check your operator's settings.
-Local checks do not prove live inference/concurrency or external spending controls.
+These are the defaults; your operator may set different limits.
 
 | | |
 |---|---|

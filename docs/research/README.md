@@ -1,22 +1,19 @@
 # Research
 
-This directory holds dated platform research, current market evidence and the
-historical investigations that produced Forge's invariants. Older files are
-preserved as evidence; they are not automatically descriptions of the current
-worker.
+Background research and earlier design decisions. For current behaviour, start
+with [Using Forge](../using-forge.md) and [SIMPLE.md](../../SIMPLE.md).
 
 ## Read first
 
 - [Forge history tool learnings](./forge-history-tool-learnings.md) — production
-  failures and the invariants they bought.
+  lessons behind the current design.
 - [Market signal, 20 August 2026](./market-signal-2026-08-20.md) — Treg evidence
   for ChatGPT-to-GitHub, phone and visual-review workflows.
 
 ## Current architecture context
 
 - [Context engine](../plans/context-engine.md) — active V2 architecture.
-  Earlier fallback/provider suggestions are not the current direction; deployment
-  proof remains separate from source implementation.
+  The current design uses one GitHub/JEV path.
 - [Repository intelligence](./repository-intelligence.md) — historical research
   behind V2, retained as evidence rather than a second implementation queue.
 - [Executor alternatives](./executor-alternatives-2026-07.md) — why execution
@@ -34,5 +31,4 @@ worker.
 - [Progress potential](./progress-potential.md) — executor-era control research,
   not part of the current worker.
 
-When a historical note conflicts with `SIMPLE.md`, the current source or a dated
-production trace, the latter wins.
+Use the current source and `SIMPLE.md` when an older note describes a different design.

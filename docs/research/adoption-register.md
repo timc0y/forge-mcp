@@ -1,7 +1,7 @@
 # Adoption register
 
-**Source/package check:** 24 October 2026. Package files and actual deployed
-bindings are authoritative; local configuration is not proof of live state.
+Dependency snapshot from 24 October 2026. Check package files for current versions
+and your own account for deployed resources.
 
 ## Active dependencies and integrations
 
@@ -13,13 +13,13 @@ bindings are authoritative; local configuration is not proof of live state.
 | TypeScript | 5.9.3 | Browser-compiled syntax parser; Node analysis CLI retains filesystem APIs |
 | Shopify Liquid parser / Lezer Markdown / YAML | 2.10.0 / 1.6.3 / 2.9.0 | Format-owner structure and exact source spans |
 | Jose | 6.2.9 | Cryptographic utilities alongside Worker Web Crypto |
-| Cloudflare Browser Rendering | REST `/snapshot` | Inline public-page screenshots; source restricts consenting logins; provider network proof remains open |
+| Cloudflare Browser Rendering | REST `/snapshot` | Inline public-page screenshots; source restricts consenting logins; browser isolation depends on the provider |
 | Cloudflare D1 | `METADATA` | Identity, OAuth, approval evidence, capture counters and anonymous shared inference budgets |
 | Configured Cloudflare JEV route | `typesafe/jev` | One inference route and validated output contract; explicit private-source policy, no alternate model/provider |
 | GitHub App user OAuth | REST API `2022-11-28` | Human and App repository permissions intersect; encrypted credential is resolved on each request/approval |
 | OAuth 2.1 + PKCE | RFC 9728 metadata; S256 | Redirect hosts, signing-key rotation and session ownership remain boundaries |
 | Wrangler / Workers types | 4.149.0 / 5.20261006.1 | Deployment/build tooling and runtime types |
-| Vitest / Vite / esbuild / Node types | 5.0.3 / 8.2.4 / 0.28.1 / 24.10.1 | Checks, parser build and script types; source tests are not live proof |
+| Vitest / Vite / esbuild / Node types | 5.0.3 / 8.2.4 / 0.28.1 / 24.10.1 | Checks, parser build and script types; runtime and script checks |
 
 ## Removed or rejected
 

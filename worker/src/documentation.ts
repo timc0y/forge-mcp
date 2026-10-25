@@ -19,7 +19,7 @@ export const documentationManifest = [
   { slug: 'self-hosting', title: 'Self-host Forge', sourcePath: 'docs/self-hosting.md', markdown: selfHosting },
   { slug: 'operations', title: 'Operating Forge', sourcePath: 'docs/operating-forge.md', markdown: operations },
   { slug: 'account-deletion', title: 'Account deletion', sourcePath: 'docs/account-deletion.md', markdown: accountDeletion },
-  { slug: 'release-status', title: 'Release status', sourcePath: 'docs/going-live.md', markdown: releaseStatus },
+  { slug: 'release-status', title: 'Release checklist', sourcePath: 'docs/going-live.md', markdown: releaseStatus },
   { slug: 'architecture', title: 'Context engine', sourcePath: 'docs/plans/context-engine.md', markdown: architecture }
 ] as const;
 

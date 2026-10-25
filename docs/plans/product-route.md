@@ -17,8 +17,8 @@ Keep operator deployments, endpoints, account identifiers, configuration and
 private test records outside the public repository and its history. The homepage
 must not advertise a running instance or offer its App installation link.
 
-## Evidence
+## Further reading
 
-[Release verification](../going-live.md) separates source checks, deployment,
-client access and independent setup. [SIMPLE.md](../../SIMPLE.md) owns invariants;
-[the context engine](./context-engine.md) owns the active architecture.
+The [release checklist](../going-live.md) covers updates and connection checks.
+[SIMPLE.md](../../SIMPLE.md) explains the design constraints, and
+[the context engine](./context-engine.md) describes how Forge selects source.

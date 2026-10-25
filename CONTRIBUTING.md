@@ -28,14 +28,12 @@ pnpm test
 node --test worker/scripts/*.node-test.mjs
 ```
 
-Local checks do not prove a deployment or a working client connection.
 [CI](./.github/workflows/ci.yml) also checks the Worker bundle and startup.
 
 ## Run your own Worker
 
 Follow [self-hosting](./docs/self-hosting.md) for your own GitHub App, Cloudflare
-resources, credentials and explicitly selected config. That guide has local
-checks; a fresh-account setup has not yet been verified.
+resources, credentials and configuration.
 
 Root `pnpm dev` selects the local-only `worker/wrangler.jsonc`. Deployment uses
 your ignored `worker/wrangler.self-host.jsonc`; follow the self-hosting guide.
@@ -43,12 +41,11 @@ your ignored `worker/wrangler.self-host.jsonc`; follow the self-hosting guide.
 ## Prepare a pull request
 
 Keep the change to one problem. Explain the resulting behaviour, the checks you
-ran and anything still unverified. Include regression coverage for behaviour
+ran and any remaining issues. Include regression coverage for behaviour
 changes and update the documentation that describes them.
 
 Tool, schema or instruction changes need a server-version release and a client
-refresh. Follow the [release checklist](./docs/going-live.md); a local test pass
-does not establish that clients have the new catalogue.
+refresh. Follow the [release checklist](./docs/going-live.md).
 
 Keep secrets, filled self-host configs, personal data and private repository
 content out of issues, pull requests and screenshots. The
@@ -57,5 +54,4 @@ retain their own licences and notices.
 
 Main requires the GitHub Actions `check` result and blocks force-pushes and
 deletion. Repository administrators retain an explicit bypass for recovery;
-record why it was needed. Passing local checks does not establish remote CI
-or deployment. Report vulnerabilities through [SECURITY.md](./SECURITY.md).
+record why it was needed. Report vulnerabilities through [SECURITY.md](./SECURITY.md).

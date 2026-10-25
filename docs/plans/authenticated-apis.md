@@ -1,5 +1,8 @@
 # Named APIs in Forge: design plan
 
+A proposal for adding API connections. The current Forge tools are described in
+[Using Forge](../using-forge.md).
+
 ## The person's path
 
 Before: an API key lets Forge send requests, but it does not tell ChatGPT which requests exist.

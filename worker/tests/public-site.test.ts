@@ -51,7 +51,7 @@ describe('public documentation presentation', () => {
     expect(html).toContain(`href="${home}/docs/self-hosting">Self-host Forge`);
     expect(html).toContain('href="https://github.com/timc0y/forge-mcp">Source on GitHub');
     expect(html).toContain('MIT-licensed source');
-    expect(html).toContain('Independent fresh-account setup remains unverified');
+    expect(html).toContain('The guide takes you from setup to your first commit');
     expect(html).toContain('Illustrative example');
     expect(html).not.toMatch(/free|hosted preview|waitlist|marketplace/i);
   });

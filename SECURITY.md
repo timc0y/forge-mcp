@@ -5,15 +5,13 @@ in a public issue or pull request.
 
 ## Contact
 
-For Forge source,
-use [GitHub’s private vulnerability report](https://github.com/timc0y/forge-mcp/security/advisories/new).
+For source-code issues, use [GitHub’s private vulnerability report](https://github.com/timc0y/forge-mcp/security/advisories/new).
 This sends the report privately to the repository maintainers; do not open a
 public issue with exploit details.
 
-For someone else's self-hosted installation, contact its operator through its
-privacy/contact page. The Forge maintainer cannot access or change that
-operator's accounts or retained data. Report a source-code issue to the Forge
-maintainer as well.
+For an issue with an instance, contact its operator using the contact details
+they supplied. Only that operator can change their accounts or delete stored
+data. Report any underlying source-code issue here too.
 
 ## What to include privately
 
@@ -28,8 +26,7 @@ repository content or another person's data. Reproduce against your own
 disposable setup; do not access other people's repositories or trigger paid
 capture/inference on another operator’s service to demonstrate a report.
 
-There is no published response-time or fix-time commitment. Keep exploit details
-private while discussing a fix and disclosure with the affected operator.
+Keep exploit details private while discussing a fix and disclosure.
 
 If you exposed a credential you control, revoke or rotate it with its provider.
 Removing it from the current files does not remove it from Git history.

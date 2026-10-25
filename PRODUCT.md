@@ -12,13 +12,12 @@ People who use a conversation to research, decide and author work for GitHub
 projects, often in ChatGPT on a phone. Coding tools pick up the committed work
 afterwards. Public visitors run their own copy or contribute to the MIT-licensed
 source.
-These are the existing audiences in [SIMPLE.md](./SIMPLE.md).
 
 ## Product purpose
 
 Keep useful research, decisions and changes in the project rather than leaving
 them inside a conversation. Forge reads authorised GitHub source and makes
-authorised work durable as ordinary commits and draft pull requests.
+work as ordinary commits and draft pull requests.
 
 ## Positioning
 
@@ -32,12 +31,10 @@ GitHub App user permissions intersect with the person's repository permissions.
 Routine writes commit directly; proposed work uses one fixed `forge` branch per
 repository. Merge and discard require a human to open an approval link.
 
-The public path is the MIT-licensed source and independent self-hosting with the operator's
-own GitHub App, Cloudflare resources and credentials. Operators pay their own
+People run the MIT-licensed source with their own GitHub App, Cloudflare
+resources and credentials. Operators pay their own
 provider costs; client plans are separate. Service access uses an explicit
-GitHub login allowlist; capture consent is separate. Independent fresh-account
-setup remains unverified. The [release status](./docs/going-live.md) records
-deployment and client proof, not inferred from a successful deploy.
+GitHub login allowlist; capture consent is separate. The [release checklist](./docs/going-live.md) covers updates and connection checks.
 
 ## Capabilities and constraints
 
@@ -56,16 +53,14 @@ measured retrieval improvements or provider network isolation.
 ## Brand commitments
 
 Use the Forge name and existing anvil from [assets](./assets/README.md). The
-current redesign brief asks for clean marketing, readable docs and Mobbin
-references. Product language stays direct and specific to the GitHub handoff.
+site should be clear and the docs easy to read. Explain the GitHub handoff
+in plain language.
 
-## Evidence on hand
+## Public claims
 
-Working source and source/test regressions support the implementation.
-Deployment records stay private. The source includes an MIT
-licence and a self-host guide; source availability and independent setup proof are
-separate facts. There are no supplied customer testimonials or measured live
-retrieval gains to advertise. Illustrative workflows must be labelled examples.
+Describe the implemented product and link to the source and setup guide.
+Keep deployment records private. Label illustrative workflows as examples;
+do not invent customer testimonials or performance claims.
 
 ## Product principles
 

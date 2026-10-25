@@ -1,8 +1,6 @@
 # Assets
 
-One mark, three files. The anvil is a single silhouette with no strokes and no
-curves, so it knocks out of any background and its profile survives being drawn
-small — which is the only size a GitHub avatar is ever seen at in a list.
+Use the anvil mark for Forge. The simple shape stays legible at small sizes.
 
 | File | Use |
 |---|---|
@@ -11,7 +9,7 @@ small — which is the only size a GitHub avatar is ever seen at in a list.
 | `forge-app-icon-light.svg` · `-512.png` · `-1024.png` | Same, for dark surroundings. |
 
 Upload `forge-app-icon-512.png` at **Settings → Developer settings → GitHub Apps
-→ forge-mcp-cloud → Display information**. GitHub accepts PNG and rounds the
+→ your App → Display information**. GitHub accepts PNG and rounds the
 corners itself; the tile already carries its own radius so it survives either
 way.
 
@@ -25,8 +23,7 @@ anyone who needs the file without cloning:
 | `<YOUR_FORGE_ORIGIN>/favicon.svg` | the glyph alone, no tile |
 
 The same path is compiled into `worker/src/ui.ts` as `forgeGlyph()`, so the site,
-the favicon, the social card and the GitHub App avatar are one mark rather than
-four that drifted.
+favicon, social card and GitHub App avatar use the same mark.
 
 Public pages use the self-hosted Onest variable font. Its source and separate
 SIL Open Font License are in [worker/assets/fonts](../worker/assets/fonts/README.md).

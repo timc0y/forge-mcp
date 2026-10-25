@@ -1,10 +1,7 @@
 # Repository intelligence
 
-> Implementation authority, 20 September 2026: [the context engine plan](../plans/context-engine.md)
-> now owns the next engineering work. The sections below record earlier research and
-> current implementation, including behavior selected for removal. They do not
-> authorize provider federation, fallback chains, silent JEV substitution or a
-> competing backlog. Retain the evidence; follow the selected plan for changes.
+Earlier research and implementation notes. Some approaches described here were
+replaced. See the [context engine](../plans/context-engine.md) for the current design.
 
 ## 2026-09-19 — Jev Sift reference
 

@@ -1,14 +1,13 @@
 # Operating Forge
 
-For whoever runs the deployment. If you only want to *use* Forge, read
-[using-forge.md](./using-forge.md).
+Keep your instance configured, updated and working. For connection and everyday
+use, see [Using Forge](./using-forge.md).
 
 ## Source and deployment
 
 Forge distributes MIT source for independent self-hosting. Public pages explain
 Forge and setup; deployment configuration and receipts stay with each operator.
-Source publication does not deploy a Worker. Verify the running version at your
-configured origin’s `/health` endpoint.
+Check the running version at your configured origin’s `/health` endpoint.
 
 Seven public docs pages render their complete repository Markdown. Native Wrangler
 Text/Data rules bundle those sources and the self-hosted Onest font, with the same
@@ -20,46 +19,42 @@ GitHub logins. Missing, blank or malformed configuration denies all accounts.
 The current stored login is checked on bearer requests, OAuth grants and approval
 links; OAuth sign-in refreshes that login. Approval execution rechecks the stored
 owner before GitHub requests. Logins are case-insensitive; wildcards are refused.
-Capture consent is a separate,
-narrower list and cannot grant instance access. No billing path was introduced.
+Capture has a separate consent list. Adding someone there does not grant
+service access.
 
 MCP POST bodies are bounded at 4 MiB of actual streamed bytes before JSON parsing
 or session transport, including absent or misleading Content-Length. The MCP SDK
 also limits tool-input elements to 10,000 before schema validation. Keep both
 limits: the Agents transport does not expose the SDK's body-size option.
 
-One Worker, one D1 database and one Durable Object binding. Current runtime has
-no R2 store; this is not evidence that historical capture objects were removed.
-No containers, queues,
-workflows or cron. Nothing runs between requests, so there is nothing to reap
-and nothing to babysit.
+Forge uses one Worker, one D1 database and one Durable Object binding. It does
+not create containers or run scheduled work. If you are upgrading from an older
+version, check for retained storage before deleting ownership records.
 
-Forge is mounted at a **path**, not a hostname. The router derives that mount
-from `FORGE_PUBLIC_ORIGIN`, so moving it is a config change, not a code change.
+Forge can use a dedicated hostname or a path. The router takes its mount
+from `FORGE_PUBLIC_ORIGIN`.
 Both OAuth discovery spellings are served — RFC 8414 puts the well-known segment
 before the path, while many clients simply append — which is why there are extra
 routes for `/.well-known/oauth-*`.
 
 
-Capture's provider boundary remains unverified for private DNS, redirects and
-subresources. Literal-IP/hostname checks and a single rejected browser trial do
-not establish isolation. Keep `FORGE_CAPTURE_ALLOWED_LOGINS` restricted to
-consenting accounts until provider enforcement is proved. Browser Run guardrails
-and outbound Workers do not establish Quick Action isolation. The remaining
-proof belongs in [release status](./going-live.md).
+Keep `FORGE_CAPTURE_ALLOWED_LOGINS` limited to trusted, consenting accounts.
+Forge checks the requested URL; browser DNS, redirects and subresources still
+depend on the rendering provider’s network isolation. See the
+[capture guide](./using-forge.md#forge_see).
 
 ## Configuration
 
-Maintainer non-secret values live in `worker/wrangler.jsonc`. Self-hosts copy
-`worker/wrangler.self-host.example.jsonc` and always select their own config, as
-[documented](./self-hosting.md).
+`worker/wrangler.jsonc` is for local development. Copy
+`worker/wrangler.self-host.example.jsonc` to your ignored deployment config,
+as described in [self-hosting](./self-hosting.md).
 
 | Variable | Meaning |
 |---|---|
-| `FORGE_PUBLIC_ORIGIN` | The public address **including the mount path**. OAuth redirects and approval links are minted from it, and the router takes its mount from it. Load-bearing. |
+| `FORGE_PUBLIC_ORIGIN` | The public address **including the mount path**. OAuth redirects and approval links are minted from it, and the router takes its mount from it.  |
 | `FORGE_ALLOWED_LOGINS` | Explicit GitHub logins admitted to this instance; missing/blank/malformed denies all, including existing connections |
 | `FORGE_OAUTH_ALLOWED_REDIRECT_HOSTS` | Hosts a registering client may redirect to |
-| `GITHUB_APP_ID` / `_CLIENT_ID` / `_SLUG` | The GitHub App |
+| `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_SLUG` | The GitHub App |
 | `FORGE_CAPTURE_ALLOWED_LOGINS` | Explicit consenting GitHub logins allowed to capture already-public URLs; empty/absent denies before quota/provider work; no wildcard |
 | `FORGE_CAPTURE_DAILY_LIMIT` | Captures per person per UTC day (default 30) |
 | `FORGE_UNLIMITED_LOGINS` | GitHub logins exempt from that limit, comma separated. The operator's escape hatch — nothing inside the product grants it |
@@ -85,11 +80,10 @@ environment use `worker/.dev.vars`. Named environments use their own complete
 `.dev.vars.<environment>` file, which replaces `.dev.vars`; secret
 variants and the two filled self-host configs are ignored by Git.
 
-### V2 runtime and client refresh
+### Runtime and client refresh
 
 The Worker build compiles the pinned TypeScript 5.9.3 package in browser mode,
-then aliases only that import to the generated parser. It has no filesystem
-system in the Worker; the analysis CLI still uses the ordinary Node package.
+then aliases only that import to the generated parser. It has no filesystem in the Worker; the analysis CLI still uses the ordinary Node package.
 `wrangler check startup` and a parser-backed local Worker read verify this
 boundary in addition to the Node test suite.
 
@@ -105,9 +99,7 @@ resource-bound tokens. Refresh the catalog and start a new conversation.
 
 Results include the same evidence in structured and text content, so clients
 that read only text still receive files, commit receipts and approval links.
-The configured OAuth callbacks now include Cursor’s documented HTTPS agent
-callback. Grok Bot’s remote HTTPS/OAuth support is documented, but a successful
-connection in the app remains unverified.
+For client connection instructions, see [Using Forge](./using-forge.md).
 
 GitHub atomically checks the proposal head on merge. Forge checks the reviewed
 base just before merging; GitHub provides no atomic base condition. A concurrent
@@ -166,8 +158,8 @@ observability disabled until the operator chooses retention. After deployment,
 read back the actual Worker setting and invoke a disposable non-production URL
 with synthetic `t`, `code` and `state` values. Inspect the stored invocation:
 the request path should remain and query values should be absent. Do not use a
-real approval token for this test. Record the result and retention period; source
-configuration alone does not prove deployed redaction or erase older logs.
+real approval token for this test. Record the result and retention period.
+Redaction does not remove earlier logs.
 
 JEV is different from telemetry: semantic operations send their bounded state
 to the configured Cloudflare inference route. With
@@ -232,8 +224,7 @@ and inference charges.
 Measure rendering duration, inference input/output usage and provider prices.
 Per-user capture attempts and shared semantic call/concurrency caps bound work,
 not monetary spend. Verify account-level spend notifications and edge rules
-separately; their live configuration is not established by local tests. No provider billing
-or edge-control changes were made by this release.
+in your provider account.
 
 ## Releasing MCP metadata
 

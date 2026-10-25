@@ -15,8 +15,8 @@ export function privacyPage(env: Env): Response {
     cache: 'public,max-age=300',
     body: `
 <h1>Privacy</h1>
-<p class="lead">Forge stores the minimum state needed to connect your GitHub account,
-  prepare reviewable changes and carry out decisions you approve.</p>
+<p class="lead">Forge stores account and connection details so it can work with GitHub
+  and carry out changes you approve.</p>
 <p class="note">Access is limited to operator-configured GitHub accounts. Each operator
   supplies their own accounts, credentials and retention policy.</p>
 
@@ -46,7 +46,7 @@ export function privacyPage(env: Env): Response {
   <p>Forge renders public pages on demand and returns screenshots in the tool response.
     It stores only your daily capture-attempt count; it does not keep a screenshot gallery or
     persistent copy of captured pages. Capture is restricted to operator-enabled
-    accounts while the provider network boundary is verified.</p>
+    accounts chosen by the operator.</p>
 
   <h3>Usage and analytics</h3>
   <p>Forge stores one daily capture-attempt count per user. Shared inference admission keeps
@@ -61,8 +61,8 @@ export function privacyPage(env: Env): Response {
 <p>Cloudflare also processes automatic request logs separately from these measurements,
 including request paths, timestamps, IP addresses and browser information.
 The source configuration requests removal of URL query strings from logs and traces.
-Each operator must verify the deployed setting and retention policy; this does not
-remove earlier logs.</p>
+Operators choose their log retention and check that redaction is enabled.
+Existing logs are kept under their retention policy.</p>
 
 <h2>What Forge does not keep</h2>
 <ul>

@@ -8,7 +8,7 @@ historical reset record, and [`../docs/plans/product-route.md`](../docs/plans/pr
 for the active product plan.
 
 Forge distributes MIT source for independent self-hosting. [Operations](../docs/operating-forge.md) and the [release checklist](../docs/going-live.md)
-keep deployment, client catalogue and fresh-account proof separate.
+cover setup, updates and connection checks.
 
 This package has no workspace dependencies and can install and run its commands
 from this directory. Keep the full checkout: public documentation imports the
@@ -48,7 +48,7 @@ OAuth issuer and generated links cannot quietly disagree.
 
 To use your own accounts, follow [self-hosting](../docs/self-hosting.md) and copy
 `wrangler.self-host.example.jsonc`. It names no existing resources or quota
-exemptions. That guide has local checks, not a fresh-account deployment claim.
+exemptions.
 The development command below uses the local-only configuration.
 
 ```sh
@@ -98,8 +98,8 @@ existing bearer/refresh tokens and approval links. Each operator chooses the
 accounts that may connect.
 
 Capture separately requires `FORGE_CAPTURE_ALLOWED_LOGINS`; it cannot grant
-instance access. Empty denies capture before quota/provider work. Provider
-network isolation remains unresolved. Shared JEV limits default to 200 daily
+instance access. Empty disables capture. Keep it limited to trusted, consenting
+users; browser request isolation depends on the provider. Shared JEV limits default to 200 daily
 calls and 4 concurrent calls, backed atomically by D1; these are not monetary
 guarantees. Repository calls retain each person's GitHub App user authority.
 
